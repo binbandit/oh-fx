@@ -4,9 +4,9 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_config::ContextLimits;
 use ofx_contract::{
-    ActionLabel, BoxFuture, CallDescription, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES,
-    PreparedCall, Tool, ToolActivity, ToolArgValue, ToolArgs, ToolContext, ToolEffect, ToolOutput,
-    ToolSpec, format_plain_action, parse_tool_args_object,
+    ActionLabel, BoxFuture, CallDescription, CallPresentation, Concurrency,
+    DEFAULT_MAX_TOOL_RESULT_BYTES, PreparedCall, Tool, ToolActivity, ToolArgValue, ToolArgs,
+    ToolContext, ToolEffect, ToolOutput, ToolSpec, format_plain_action, parse_tool_args_object,
 };
 use ofx_skills::{
     CallPreparation, ExecuteOutput, ExecuteResult, Locations, PreparedSkill, RootPolicy,
@@ -18,6 +18,8 @@ use crate::tool_args::{optional_integer, optional_string, parse_arguments};
 use crate::tool_runtime::run_blocking;
 
 const TOOL_NAME: &str = "skill";
+const ACTION_LABEL: &str = "Loading skill";
+const COMPLETED_LABEL: &str = "Loaded skill";
 const DESCRIPTION: &str = "Load an installed skill or one required relative text resource completely. Copy the exact advertised location. Resolve paths mentioned in skill instructions from the selected skill directory, not the workspace. Read referenced text with the same location and its relative resource path. When to use: the user explicitly invokes a listed skill or the task clearly matches one. When NOT to use: installing a missing skill.";
 const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"location":{"type":"string","description":"The exact advertised location of the selected skill."},"resource":{"type":"string","description":"Optional relative text resource within the selected skill. Omit or pass an empty string to read SKILL.md."}},"additionalProperties":false,"required":["location"]}"#;
 const LOCATION_PREFIX: &str = "skill:";
@@ -68,6 +70,16 @@ impl SkillTool {
 impl Tool for SkillTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+
+    fn provisional_presentation(&self) -> Option<CallPresentation> {
+        Some(CallPresentation {
+            activity: ToolActivity::Read,
+            action_label: ACTION_LABEL,
+            completed_label: COMPLETED_LABEL,
+            label_argument: "",
+            label_default: "",
+        })
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
@@ -312,8 +324,8 @@ fn label(arguments: &str, resolved_name: Option<&str>) -> Option<ActionLabel> {
         .or_else(|| arguments.optional_string("name"))
         .unwrap_or(TOOL_NAME);
     Some(ActionLabel {
-        active: "Loading skill",
-        completed: "Loaded skill",
+        active: ACTION_LABEL,
+        completed: COMPLETED_LABEL,
         target: name.to_owned(),
     })
 }
