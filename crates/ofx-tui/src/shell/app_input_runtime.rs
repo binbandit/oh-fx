@@ -60,6 +60,9 @@ impl Shell<'_> {
         if self.question.is_some() {
             return self.handle_question_input(event);
         }
+        if self.statusline_menu.is_some() {
+            return self.handle_statusline_menu_input(&event);
+        }
         let revision = self.composer.edit_revision();
         let preserved = self.model_edit_preserved(&event);
         match event {

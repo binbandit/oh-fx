@@ -1038,6 +1038,7 @@ impl Presenter {
             | UiEvent::ModelCatalog { .. }
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
+            | UiEvent::StatuslineMenuOpened
             | UiEvent::HelpRequested
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }

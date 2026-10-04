@@ -336,6 +336,7 @@ pub enum UiEvent {
         item: StatuslineItem,
         enabled: bool,
     },
+    StatuslineMenuOpened,
     HelpRequested,
     StatsRequested,
     CompactionActivity {
@@ -376,6 +377,9 @@ pub enum UiCommand {
     Submit {
         prompt: String,
         skills: Vec<SkillBinding>,
+    },
+    ToggleStatusline {
+        item: StatuslineItem,
     },
     RunCommand {
         text: String,
