@@ -1,4 +1,5 @@
 mod frame_decode;
+mod history_codec;
 
 use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
@@ -15,6 +16,7 @@ use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
+pub(crate) use history_codec::{decode_history_envelope, encode_history_envelope};
 
 pub(crate) const CONVERSATION_SCHEMA_VERSION: u8 = 3;
 pub(crate) const EVENT_FRAME_MAX_BYTES: usize = EMERGENCY_CEILING_BYTES;

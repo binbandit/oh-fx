@@ -1,4 +1,5 @@
 mod fixed_field;
+mod history_snapshot;
 mod json_fields;
 mod process_presentation;
 mod prompt_history_store;
