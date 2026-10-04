@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use ofx_contract::{
-    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolExecutionProvenance,
-    ToolSpec, Usage,
+    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
+    ToolExecutionProvenance, ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
 use serde_json::Value;
