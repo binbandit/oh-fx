@@ -9,8 +9,8 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
+use crate::session_catalog_cache::{CatalogScan, scan_catalog};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
-use crate::session_discovery::classify_session;
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{
@@ -76,11 +76,6 @@ pub struct SessionStore {
     workspace_root: String,
     writable: bool,
     lock_deadline: Duration,
-}
-
-struct SummaryScan {
-    summaries: Vec<SessionSummary>,
-    skipped_invalid: usize,
 }
 
 impl SessionStore {
@@ -271,20 +266,12 @@ impl SessionStore {
         }
     }
 
-    fn scan_summaries(&self) -> Result<SummaryScan, SessionError> {
-        let mut scan = SummaryScan {
-            summaries: Vec::new(),
-            skipped_invalid: 0,
-        };
+    fn scan_summaries(&self) -> Result<CatalogScan, SessionError> {
         let Some(sessions) = &self.sessions else {
-            return Ok(scan);
+            return Ok(CatalogScan::default());
         };
-        for name in session_directory_names(sessions)? {
-            match classify_session(sessions, &name) {
-                Ok(summary) => scan.summaries.push(summary),
-                Err(_) => scan.skipped_invalid += 1,
-            }
-        }
+        let names = session_directory_names(sessions)?;
+        let mut scan = scan_catalog(sessions, &names, self.writable);
         sort_summaries_newest_first(&mut scan.summaries);
         Ok(scan)
     }
