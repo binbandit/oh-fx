@@ -1,6 +1,6 @@
 use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
 use ofx_contract::BoxFuture;
@@ -98,7 +98,6 @@ impl<P: Fn(String)> Reporter<P> {
 
 pub(crate) struct SessionUpgrader {
     control: Arc<UpgradeControl>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl SessionUpgrader {
@@ -118,20 +117,16 @@ impl SessionUpgrader {
             .build()?;
         let reporter = Reporter { status, publish };
         let worker_control = Arc::clone(&control);
-        let thread = thread::Builder::new()
+        thread::Builder::new()
             .name(THREAD_NAME.to_owned())
             .spawn(move || {
                 runtime.block_on(run(&mut check, &worker_control, timing, &reporter));
             })?;
-        Ok(Self {
-            control,
-            thread: Some(thread),
-        })
+        Ok(Self { control })
     }
 
-    pub(crate) fn stop_for_process_exit(&mut self) {
+    pub(crate) fn stop_for_process_exit(&self) {
         self.control.stop_for_process_exit();
-        self.thread.take();
     }
 }
 

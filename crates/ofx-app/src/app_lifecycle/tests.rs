@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::PoisonError;
@@ -11,10 +12,12 @@ use ofx_config::{PrivateDir, ProfilePaths, Settings};
 use ofx_gateway::{CodexEndpoints, CodexModelsEndpoints};
 use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events};
 use ofx_tui::PromptHistory;
+use ofx_upgrade::UpgradeControl;
 use serde_json::{Value, json};
 
 use super::*;
 use crate::app_panic_runtime::HOOK_TESTS;
+use crate::app_upgrade_runtime::{CheckOutcome, ReleaseCheck, Timing};
 
 const CHILD_HOME: &str = "OH_FX_LIFECYCLE_CHILD_HOME";
 const CHILD_AUTH: &str = "OH_FX_LIFECYCLE_CHILD_AUTH";
@@ -22,8 +25,11 @@ const CHILD_CODEX: &str = "OH_FX_LIFECYCLE_CHILD_CODEX";
 const CHILD_CATALOG: &str = "OH_FX_LIFECYCLE_CHILD_CATALOG";
 const CHILD_PANIC: &str = "OH_FX_LIFECYCLE_CHILD_PANIC";
 const CHILD_CLIPBOARD: &str = "OH_FX_LIFECYCLE_CHILD_CLIPBOARD";
+const CHILD_UPGRADE: &str = "OH_FX_LIFECYCLE_CHILD_UPGRADE";
 const CLIPBOARD_TEST: &str =
     "app_lifecycle::tests::leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight";
+const UPGRADE_TEST: &str =
+    "app_lifecycle::tests::a_signal_exit_restores_the_terminal_then_waits_out_an_admitted_install";
 const PANIC_TEST: &str =
     "app_lifecycle::tests::a_worker_panic_ends_the_shell_and_a_contained_one_does_not";
 const REFRESH_TEST: &str = "app_lifecycle::tests::an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login";
@@ -38,6 +44,8 @@ const FRESH_TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL
 const REFRESH_TOKEN: &str = "rt-refresh-secret-0123456789";
 const ROTATED_REFRESH_TOKEN: &str = "rt-rotated-secret-9876543210";
 const FAR_FUTURE_MS: i64 = 4_102_444_800_000;
+const SIGTERM: i32 = 15;
+const INSTALL_HELD: Duration = Duration::from_millis(500);
 
 #[test]
 fn terminal_refusals_read_as_upstream_prints_them() {
@@ -298,31 +306,11 @@ fn a_worker_panic_ends_the_shell_and_a_contained_one_does_not() {
 
 fn run_a_worker_that_panics() -> ! {
     let (events, receiver) = ui_channel().unwrap();
-    let options = ShellOptions {
-        version: "0.1.0".to_owned(),
-        model: "model-a".to_owned(),
-        provider: "local".to_owned(),
-        providers: Vec::new(),
-        permission_mode: PermissionMode::Auto,
-        full_access_warning: false,
-        workspace_label: "workspace".to_owned(),
-        startup_scrollback: true,
-        commands: Vec::new(),
-        command_categories: Vec::new(),
-        prompt_history: PromptHistory::disabled(),
-        file_mentions: None,
-        skill_catalog: None,
-        lifecycle: None,
-        steering: None,
-        opening: Opening::Welcome,
-        statusline: ofx_contract::StatuslineToggles::default(),
-        workspace_identity: None,
-        theme: None,
-    };
     let outcome = host(
-        options,
+        shell_options(),
         events,
         receiver,
+        None,
         None,
         None,
         |events, mut commands| {
@@ -388,32 +376,12 @@ fn leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight() {
 
 fn run_a_shell_that_copies(directory: &Path) -> ! {
     let (events, receiver) = ui_channel().unwrap();
-    let options = ShellOptions {
-        version: "0.1.0".to_owned(),
-        model: "model-a".to_owned(),
-        provider: "local".to_owned(),
-        providers: Vec::new(),
-        permission_mode: PermissionMode::Auto,
-        full_access_warning: false,
-        workspace_label: "workspace".to_owned(),
-        startup_scrollback: true,
-        commands: Vec::new(),
-        command_categories: Vec::new(),
-        prompt_history: PromptHistory::disabled(),
-        file_mentions: None,
-        skill_catalog: None,
-        lifecycle: None,
-        steering: None,
-        opening: Opening::Welcome,
-        statusline: ofx_contract::StatuslineToggles::default(),
-        workspace_identity: None,
-        theme: None,
-    };
     let stopped = directory.join("stopped");
     let outcome = host(
-        options,
+        shell_options(),
         events,
         receiver,
+        None,
         None,
         None,
         move |_, mut commands| {
@@ -589,4 +557,113 @@ fn unrelated_provider_work_keeps_the_existing_shutdown_grace() {
     ));
     release.send(()).unwrap();
     completed.recv_timeout(WAIT).unwrap();
+}
+
+fn shell_options() -> ShellOptions {
+    ShellOptions {
+        version: "0.1.0".to_owned(),
+        model: "model-a".to_owned(),
+        provider: "local".to_owned(),
+        providers: Vec::new(),
+        permission_mode: PermissionMode::Auto,
+        full_access_warning: false,
+        workspace_label: "workspace".to_owned(),
+        startup_scrollback: true,
+        commands: Vec::new(),
+        command_categories: Vec::new(),
+        prompt_history: PromptHistory::disabled(),
+        file_mentions: None,
+        skill_catalog: None,
+        lifecycle: None,
+        steering: None,
+        opening: Opening::Welcome,
+        statusline: ofx_contract::StatuslineToggles::default(),
+        workspace_identity: None,
+        theme: None,
+    }
+}
+
+#[test]
+fn a_signal_exit_restores_the_terminal_then_waits_out_an_admitted_install() {
+    if let Some(directory) = env::var_os(CHILD_UPGRADE) {
+        run_a_shell_while_an_install_is_held(Path::new(&directory));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let installing = directory.path().join("installing");
+    let installed = directory.path().join("installed");
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args([UPGRADE_TEST, "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD_UPGRADE, directory.path())
+        .env("TERM", "xterm-256color");
+    let mut session = PtySession::spawn(command, 24, 80).unwrap();
+    session
+        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
+        .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
+    wait_until(|| installing.exists());
+    session.terminate().unwrap();
+    wait_until(|| session.cooked().unwrap());
+    assert!(
+        session.wait_exit(INSTALL_HELD).is_none(),
+        "the signal ended the process during the install"
+    );
+    assert!(!installed.exists());
+    fs::write(directory.path().join("released"), "").unwrap();
+    let status = session
+        .wait_exit(WAIT)
+        .expect("the signal ends the process once the install settles");
+    assert_eq!(status.signal(), Some(SIGTERM), "{status:?}");
+    assert!(installed.exists());
+}
+
+struct HeldInstall {
+    directory: PathBuf,
+}
+
+impl ReleaseCheck for HeldInstall {
+    fn check<'a>(
+        &'a mut self,
+        control: &'a UpgradeControl,
+        _found: &'a mut (dyn FnMut(&str) + Send),
+    ) -> BoxFuture<'a, CheckOutcome> {
+        Box::pin(async move {
+            let installed = control.install_unless_stopped(|| {
+                fs::write(self.directory.join("installing"), "").unwrap();
+                while !self.directory.join("released").exists() {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                fs::write(self.directory.join("installed"), "").unwrap();
+                Ok(())
+            });
+            match installed {
+                Ok(()) => CheckOutcome::Installed,
+                Err(_) => CheckOutcome::Stopped,
+            }
+        })
+    }
+}
+
+fn run_a_shell_while_an_install_is_held(directory: &Path) -> ! {
+    let (events, receiver) = ui_channel().unwrap();
+    let upgrader = SessionUpgrader::start(
+        HeldInstall {
+            directory: directory.to_owned(),
+        },
+        Timing {
+            initial_delay: Duration::ZERO,
+            interval: Duration::from_mins(10),
+        },
+        drop,
+    )
+    .unwrap();
+    let outcome = host(
+        shell_options(),
+        events,
+        receiver,
+        None,
+        None,
+        Some(&upgrader),
+        |_, mut commands| while commands.blocking_recv().is_some() {},
+    );
+    process::exit(i32::from(outcome.is_err()));
 }

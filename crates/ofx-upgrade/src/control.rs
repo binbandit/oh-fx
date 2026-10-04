@@ -43,7 +43,7 @@ impl UpgradeControl {
             .ok_or(UpgradeError::Cancelled)
     }
 
-    pub(crate) fn install_unless_stopped<T>(
+    pub fn install_unless_stopped<T>(
         &self,
         install: impl FnOnce() -> Result<T, UpgradeError>,
     ) -> Result<T, UpgradeError> {

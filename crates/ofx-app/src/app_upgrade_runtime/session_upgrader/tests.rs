@@ -136,7 +136,7 @@ fn the_version_label_drops_its_v_and_keeps_32_bytes() {
 
 #[test]
 fn a_process_exit_stop_ends_the_wait_before_the_first_check() {
-    let mut started = start(
+    let started = start(
         vec![Step::Current],
         Timing {
             initial_delay: Duration::from_mins(10),
@@ -153,7 +153,7 @@ fn a_process_exit_stop_ends_the_wait_before_the_first_check() {
 
 #[test]
 fn a_process_exit_stop_ends_a_check_under_way() {
-    let mut started = start(vec![Step::Hold], QUICK);
+    let started = start(vec![Step::Hold], QUICK);
     started.checks.recv_timeout(WAIT).expect("a check");
     let stopping = Instant::now();
     started.upgrader.stop_for_process_exit();

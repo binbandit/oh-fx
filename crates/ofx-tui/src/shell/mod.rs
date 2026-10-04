@@ -299,6 +299,7 @@ pub fn run_shell(
     events: UiEventReceiver,
     clipboard: impl Clipboard + 'static,
     send: impl FnMut(UiCommand),
+    before_signal_exit: impl FnOnce(),
 ) -> Result<(), TerminalError> {
     let mut shell = Shell::bootstrap(options, events, Arc::new(clipboard), Box::new(send))?;
     let result = shell.run();
@@ -307,6 +308,7 @@ pub fn run_shell(
         lifecycle.shutdown();
     }
     if let Some(signal) = fatal {
+        before_signal_exit();
         crate::terminal::signal_pipe::raise_default(signal);
     }
     shell.into_clipboard().finish();

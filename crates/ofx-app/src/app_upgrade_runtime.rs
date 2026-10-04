@@ -8,7 +8,9 @@ use ofx_contract::{Notice, NoticeTone, UiEvent};
 use ofx_tui::UiEventSender;
 
 use live_release::LiveRelease;
-use session_upgrader::{SessionUpgrader, Timing};
+#[cfg(test)]
+pub(crate) use session_upgrader::{CheckOutcome, ReleaseCheck};
+pub(crate) use session_upgrader::{SessionUpgrader, Timing};
 
 const SESSION_TIMING: Timing = Timing {
     initial_delay: Duration::from_secs(10),
