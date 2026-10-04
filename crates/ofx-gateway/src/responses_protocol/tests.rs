@@ -1,4 +1,4 @@
-use ofx_contract::{ToolCallId, ToolResultStatus};
+use ofx_contract::{ToolCallId, ToolExecutionProvenance, ToolResultStatus};
 use serde_json::json;
 
 use super::*;
@@ -225,6 +225,20 @@ fn responses_request_preserves_assistant_commentary_phase() {
     assert_eq!(
         items[0].to_string(),
         r#"{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"I will inspect the file first.","annotations":[]}],"phase":"commentary"}"#
+    );
+}
+
+#[test]
+fn non_object_provider_owned_arguments_retain_their_responses_representation() {
+    let native = ToolCall {
+        provider_result: Some("native result".to_owned()),
+        provenance: ToolExecutionProvenance::ProviderExecuted,
+        ..call("native:0", "native_tool", "[]")
+    };
+    let items = input(&[assistant(None, vec![native])], &[None]).unwrap();
+    assert_eq!(
+        items[0].to_string(),
+        r#"{"type":"function_call","call_id":"native:0","name":"native_tool","arguments":"[]"}"#
     );
 }
 
