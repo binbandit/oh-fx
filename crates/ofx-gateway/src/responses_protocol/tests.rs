@@ -21,6 +21,68 @@ const START: &str = r#"{"type":"response.output_item.added","output_index":0,"it
 const FINALIZED: &str = r#"{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","name":"write_file","arguments":"{\"path\":\"preview.txt\"}"}"#;
 const TERMINAL: &str = r#"{"type":"response.completed","response":{"status":"completed"}}"#;
 
+#[test]
+fn an_added_tool_emits_its_start_before_arguments_are_complete() {
+    let mut reducer = Reducer::new(LIMITS);
+    let (result, deltas) = reducer.apply(START.as_bytes(), false);
+    assert!(!result.unwrap());
+    assert_eq!(
+        deltas,
+        vec![Delta::ToolCallStarted {
+            call_id: ToolCallId::new("call_1"),
+            tool_name: "write_file".to_owned(),
+        }]
+    );
+    let (result, deltas) = reducer.apply(START.as_bytes(), false);
+    assert!(!result.unwrap());
+    assert!(deltas.is_empty());
+}
+
+#[test]
+fn tool_starts_preserve_interleaved_event_order_without_argument_progress() {
+    let mut reducer = Reducer::new(LIMITS);
+    let second = json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{"}}).to_string();
+    for (event, expected) in [(START.to_owned(), "call_1"), (second, "call_2")] {
+        let (result, deltas) = reducer.apply(event.as_bytes(), false);
+        assert!(!result.unwrap());
+        assert!(
+            matches!(&deltas[..], [Delta::ToolCallStarted { call_id, .. }] if call_id.as_str() == expected)
+        );
+    }
+    let delta = r#"{"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"path\":\"next.txt\"}"}"#;
+    let (result, deltas) = reducer.apply(delta.as_bytes(), false);
+    assert!(!result.unwrap());
+    assert!(deltas.is_empty());
+}
+
+#[test]
+fn completion_only_tool_calls_are_rejected_without_a_provisional_start() {
+    let event = r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}"#;
+    let mut reducer = Reducer::new(LIMITS);
+    let (result, deltas) = reducer.apply(event.as_bytes(), false);
+    assert_eq!(result.unwrap_err().error, ResponsesError::ToolCallConflict);
+    assert!(deltas.is_empty());
+}
+
+#[test]
+fn invalid_added_tools_emit_no_start() {
+    let cases = [
+        json!({"call_id":"call_1","name":"read_file","id":null}),
+        json!({"call_id":"call_1","name":"read_file","arguments":{}}),
+        json!({"call_id":"call_1","name":"read_file","arguments":"x".repeat(LIMITS.tool_arguments_bytes + 1)}),
+        json!({"call_id":"x".repeat(LIMITS.tool_identity_bytes + 1),"name":"read_file"}),
+    ];
+    for mut item in cases {
+        item["type"] = json!("function_call");
+        let event =
+            json!({"type":"response.output_item.added","output_index":0,"item":item}).to_string();
+        let mut reducer = Reducer::new(LIMITS);
+        let (result, deltas) = reducer.apply(event.as_bytes(), false);
+        assert!(result.is_err());
+        assert!(deltas.is_empty());
+    }
+}
+
 struct Stream {
     reducer: Reducer,
     emitted: String,
