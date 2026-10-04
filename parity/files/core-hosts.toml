@@ -81,7 +81,7 @@ modules = []
 upstream = "src/core/hosts/url_opener.zig"
 status = "ported"
 modules = ["crates/ofx-auth/src/url_opener.rs"]
-note = "Both sign-ins ignore the result, as upstream's do; the launcher is reaped on its own thread instead of holding the sign-in until it exits, as architecture.md records."
+note = "Both sign-ins ignore the result, as upstream's do; the launcher is reaped on its own thread instead of holding the sign-in until it exits, as docs/differences/auth.md records."
 
 [[file]]
 upstream = "src/core/hosts/wasm.zig"

@@ -2,7 +2,7 @@
 upstream = "src/ui/approval_screen.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/file_approval.rs", "crates/ofx-tui/src/footer/file_approval/review_document.rs", "crates/ofx-tui/src/footer/file_approval/wrapped_line.rs", "crates/ofx-tui/src/footer/approval_panel.rs"]
-note = "The file review (numbered rows, context, elisions, trailing newline markers, wrapped and escaped lines, spaced, compact and choices-only controls) and the command review layout are drawn in the live region below the transcript, as architecture.md records; the alternate-screen transcript document, mouse-wheel scrolling and the progressive first frame are absent."
+note = "The file review (numbered rows, context, elisions, trailing newline markers, wrapped and escaped lines, spaced, compact and choices-only controls) and the command review layout are drawn in the live region below the transcript, as docs/differences/shell-approvals.md records; the alternate-screen transcript document, mouse-wheel scrolling and the progressive first frame are absent."
 
 [[file]]
 upstream = "src/ui/ask_presentation.zig"

@@ -137,7 +137,7 @@ modules = []
 upstream = "src/core/app/input_history_runtime.zig"
 status = "ported"
 modules = ["crates/ofx-app/src/prompt_history_runtime.rs", "crates/ofx-tui/src/shell/input_history_runtime.rs"]
-note = "The startup runtime loads 100 workspace-scoped recent entries and installs their text in composer history; persistent encoding differences are documented in architecture.md."
+note = "The startup runtime loads 100 workspace-scoped recent entries and installs their text in composer history; persistent encoding differences are documented in docs/differences/shell-composer.md."
 
 [[file]]
 upstream = "src/core/app/input_interrupt_runtime.zig"
@@ -179,7 +179,7 @@ note = "Prompt submission, compaction requests and steering a running turn exist
 upstream = "src/core/app/model_cache_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-app/src/model_cache_runtime.rs", "crates/ofx-tui/src/shell/model_menu.rs"]
-note = "Codex catalog caching, the model menu catalog with its filtering and vendor navigation, and retryable load failures exist; Vercel and Grok catalogs and the launch warm-up and timed retry are absent as architecture.md describes."
+note = "Codex catalog caching, the model menu catalog with its filtering and vendor navigation, and retryable load failures exist; Vercel and Grok catalogs and the launch warm-up and timed retry are absent as docs/differences/slash-settings.md describes."
 
 [[file]]
 upstream = "src/core/app/prompt_history_runtime.zig"
