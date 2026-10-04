@@ -23,6 +23,7 @@ pub enum SlashKind {
     Fast,
     Statusline,
     Workspace,
+    Shell,
     Version,
     Quit,
 }
@@ -228,6 +229,7 @@ mod tests {
                 "/fast",
                 "/statusline",
                 "/workspace",
+                "/shell",
                 "/version",
                 "/quit",
             ]
@@ -265,10 +267,12 @@ mod tests {
             ),
             (SlashKind::Undo, "undo the latest tracked file operation"),
             (SlashKind::Statusline, "toggle status line segments"),
+            (SlashKind::Shell, "reload shell startup files for commands"),
         ] {
             assert_eq!(spec(kind).completion_description, description, "{kind:?}");
         }
         assert!(spec(SlashKind::Statusline).accepts_payload());
+        assert!(spec(SlashKind::Shell).accepts_payload());
     }
 
     #[test]
@@ -302,6 +306,7 @@ mod tests {
                 ("/fast", "Model"),
                 ("/statusline", "Appearance"),
                 ("/workspace", "Workspace"),
+                ("/shell", "Workspace"),
                 ("/version", "General"),
                 ("/quit", "General"),
             ]

@@ -2446,6 +2446,24 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn shell_reload_answers_from_the_slash_registry() {
+        let server = FakeServer::start([]);
+        let mut harness = Harness::start(&server).await;
+        harness.command("/shell reload");
+        assert_eq!(
+            notices_until(&mut harness, "shell").await,
+            [
+                "shell|The next command reloads your shell startup files. Remembered command approvals were reset."
+            ]
+        );
+        harness.command("/shell");
+        assert_eq!(
+            notices_until(&mut harness, "").await,
+            ["|usage: /shell reload"]
+        );
+    }
+
     async fn undo_notice(harness: &mut Harness) -> String {
         harness.command("/undo");
         let shown = harness
