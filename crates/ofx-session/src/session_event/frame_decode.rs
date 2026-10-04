@@ -1,4 +1,4 @@
-use ofx_contract::{ToolArgumentIntegrity, ToolResultStatus};
+use ofx_contract::{ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus};
 
 use super::{
     AssistantEvent, CONVERSATION_SCHEMA_VERSION, ContextCheckpointEvent, ConversationEnvelope,
@@ -100,9 +100,11 @@ fn tool_call(fields: &mut Fields<'_>) -> Option<ToolCallEvent> {
             |value| tag(&value),
         )?,
         provisional_id: fields.fixed("provisional_id")?,
-        provider_result: fields.fixed("provider_result")?,
+        provider_result: fields.nullable("provider_result", |value| string(value).map(Some))?,
         final_identity: fields.fixed("final_identity")?,
-        provenance: fields.fixed("provenance")?,
+        provenance: fields.or("provenance", ToolExecutionProvenance::FxLocal, |value| {
+            tag(&value)
+        })?,
     })
 }
 
@@ -117,7 +119,7 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         stored_bytes: fields.unsigned("stored_bytes")?,
         completeness: tag(&fields.required("completeness")?)?,
         preview: fields.nullable("preview", |value| string(value).map(Some))?,
-        provider_native: fields.fixed("provider_native")?,
+        provider_native: fields.or("provider_native", false, |value| value.as_bool())?,
         review_feedback: fields.fixed("review_feedback")?,
         created_at_ms: fields.or("created_at_ms", 0, |value| value.as_i64())?,
         permission_feedback: fields.fixed("permission_feedback")?,

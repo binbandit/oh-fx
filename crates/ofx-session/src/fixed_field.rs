@@ -49,7 +49,6 @@ fixed_field!(Null, Value::Null, Json::Null);
 fixed_field!(NoItems, Value::Array(Vec::new()), Json::Array(items) if items.is_empty());
 fixed_field!(False, Value::Bool(false), Json::Bool(false));
 fixed_field!(ValidIdentity, Value::from("valid"), Json::String(text) if text == "valid");
-fixed_field!(LocalProvenance, Value::from("fx_local"), Json::String(text) if text == "fx_local");
 fixed_field!(TurnOrigin, Value::from("turn"), Json::String(text) if text == "turn");
 
 #[cfg(test)]
@@ -62,10 +61,6 @@ mod tests {
         assert_eq!(serde_json::to_string(&NoItems).unwrap(), "[]");
         assert_eq!(serde_json::to_string(&False).unwrap(), "false");
         assert_eq!(serde_json::to_string(&ValidIdentity).unwrap(), "\"valid\"");
-        assert_eq!(
-            serde_json::to_string(&LocalProvenance).unwrap(),
-            "\"fx_local\""
-        );
         assert_eq!(serde_json::to_string(&TurnOrigin).unwrap(), "\"turn\"");
         assert!(serde_json::from_str::<Null>("null").is_ok());
         assert!(serde_json::from_str::<Null>("\"x\"").is_err());
@@ -73,7 +68,6 @@ mod tests {
         assert!(serde_json::from_str::<NoItems>("[1]").is_err());
         assert!(serde_json::from_str::<False>("true").is_err());
         assert!(serde_json::from_str::<ValidIdentity>("\"absent\"").is_err());
-        assert!(serde_json::from_str::<LocalProvenance>("\"provider_executed\"").is_err());
         assert!(serde_json::from_str::<TurnOrigin>("\"compaction\"").is_err());
         assert!(serde_json::from_str::<TurnOrigin>("0").is_err());
     }
@@ -89,7 +83,6 @@ mod tests {
         assert!(accepts_what_it_writes(&NoItems));
         assert!(accepts_what_it_writes(&False));
         assert!(accepts_what_it_writes(&ValidIdentity));
-        assert!(accepts_what_it_writes(&LocalProvenance));
         assert!(accepts_what_it_writes(&TurnOrigin));
     }
 }

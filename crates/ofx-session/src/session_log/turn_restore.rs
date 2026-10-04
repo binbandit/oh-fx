@@ -315,7 +315,11 @@ pub(crate) fn complete_result_output(result: &ToolResultEvent, dir: &PrivateDir)
 }
 
 fn tool_call(call: ToolCallEvent) -> ToolCall {
-    ToolCall::new(call.call_id, call.tool_name, call.arguments_json)
+    ToolCall {
+        provider_result: call.provider_result,
+        provenance: call.provenance,
+        ..ToolCall::new(call.call_id, call.tool_name, call.arguments_json)
+    }
 }
 
 #[cfg(test)]

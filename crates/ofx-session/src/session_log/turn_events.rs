@@ -115,12 +115,15 @@ fn step_events(
         }));
     }
     for call in step.tool_calls {
-        events.push(ConversationEvent::ToolCall(ToolCallEvent::new(
+        let mut event = ToolCallEvent::new(
             call.id.as_str(),
             call.name.as_str(),
             call.arguments.as_str(),
             ToolArgumentIntegrity::classify_function_input(&call.arguments),
-        )));
+        );
+        event.provider_result.clone_from(&call.provider_result);
+        event.provenance = call.provenance;
+        events.push(ConversationEvent::ToolCall(event));
     }
     for result in &step.tool_results {
         let handle = make_handle(result.call_id, result.tool_name, result.output);
