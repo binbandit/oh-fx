@@ -1238,3 +1238,6 @@ fn write_request(text: &mut String, plan: &Plan<'_>, after_conversation: bool) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod golden_tests;
