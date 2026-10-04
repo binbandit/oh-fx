@@ -8,10 +8,10 @@ queue_rules:
       - base = main
       - -draft
       - or:
-          - -label = codex
           - and:
-              - label = codex-approved
-              - check-success = @github-actions/maintainer-approval
+              - -label = codex
+              - -head ~= ^codex/
+          - approved-reviews-by = binbandit
       # Review the source PR once, including PRs authored by Pullfrog itself.
       - check-success = @pullfrog/pullfrog
       - check-success = @pullfrog/pullfrog-approval
@@ -39,10 +39,10 @@ merge_protections_settings:
     - base = main
     - -draft
     - or:
-        - -label = codex
         - and:
-            - label = codex-approved
-            - check-success = @github-actions/maintainer-approval
+            - -label = codex
+            - -head ~= ^codex/
+        - approved-reviews-by = binbandit
 
 merge_protections:
   - name: Resolve requested changes
@@ -53,7 +53,8 @@ merge_protections:
   - name: Hold Codex pull requests for maintainer review
     if:
       - base = main
-      - label = codex
+      - or:
+          - label = codex
+          - head ~= ^codex/
     success_conditions:
-      - label = codex-approved
-      - check-success = @github-actions/maintainer-approval
+      - approved-reviews-by = binbandit

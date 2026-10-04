@@ -24,11 +24,11 @@ Never credit an AI agent, model, or tool anywhere in the history or on a pull re
 - Work on a branch and open a ready-for-review pull request against `main`.
 - Rebase onto the latest `main` before opening the PR. Keep the title and description concise and explain the change and validation.
 - Prefer many small PRs over one large PR. Each PR must build, pass CI, and leave `main` releasable.
-- Run `node --test .github/tests/*.test.cjs` and `actionlint` for automation changes.
+- Run `node --test .github/tests/tidy-pullfrog-reviews.test.cjs` and `actionlint` for automation changes.
 - Rust build, lint, and test jobs feed the required `Repository checks` job. Keep it that way when adding jobs.
 - Pullfrog reviews new PRs and new commits, including agent-authored PRs. Fix valid findings and rerun relevant tests; don't approve or merge around a failing review check.
 - Mergify automatically queues reviewed PRs, runs CI against the current base, and squash-merges passing changes. No manual merge or human approval is needed.
-- Mergify holds PRs labelled `codex` until they carry `codex-approved` and their head commit has a successful `maintainer-approval` status posted by the `Guard maintainer approval` workflow. A maintainer or admin adding the label approves the current head; the label from anyone else is removed. A push carries the approval to the new head only when the previous head was approved and replaying the approved change onto the new fork point from the base branch reproduces the pushed tree exactly, as a clean rebase does. Any other push removes the label and fails the new head, and removing the label fails the head. Only the source PR's conditions require the status, never `merge_conditions`, so the temporary queue PRs never wait for it.
+- Mergify holds PRs labelled `codex` or opened from a `codex/` branch until `binbandit` approves them with a GitHub review. Branch protection dismisses that approval when a push changes the PR's diff, so every new head needs a fresh approval. Approvals from other accounts, labels, and commit statuses don't count. GitHub doesn't let authors approve their own PRs, so these PRs must come from an account other than `binbandit`.
 - Keep drafts as drafts while work is incomplete. Pullfrog waits until they are marked ready.
 - Leave `mergify/merge-queue/` branches and temporary PRs alone. They run CI without a duplicate Pullfrog review.
 - Preserve the Pullfrog approval checks in Mergify's `queue_conditions`. Adding them to GitHub required checks or `merge_conditions` blocks the temporary queue PRs.
