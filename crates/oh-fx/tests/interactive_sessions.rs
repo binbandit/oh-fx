@@ -2241,3 +2241,72 @@ fn a_refused_continuation_leaves_the_paused_turn_for_the_next_prompt_to_commit()
     );
     assert!(!home.sessions().join(&id).join("recovery.json").exists());
 }
+
+fn turn_summary(duration_ms: u64, input_tokens: u64, output_tokens: u64) -> Value {
+    json!({
+        "started_at_ms": 1_000,
+        "completed_at_ms": 1_000 + duration_ms,
+        "thinking_duration_ms": 400,
+        "turn_duration_ms": duration_ms,
+        "token_progress": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "input_exact": true,
+            "output_exact": false
+        }
+    })
+}
+
+#[test]
+fn a_resumed_shell_shows_the_turn_summaries_upstream_saved() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "fix the build"}})),
+            frame(5, &json!({"assistant": {"text": "Fixed it."}})),
+            frame(
+                6,
+                &json!({"turn_completed": {"files": [], "turn_summary": turn_summary(65_000, 1_234, 340)}}),
+            ),
+            frame(7, &json!({"user": {"text": "stop now"}})),
+            frame(
+                8,
+                &json!({"interrupted": {
+                    "reason": "cancelled",
+                    "partial_text": null,
+                    "command_replay_ref": null,
+                    "command_replay_bytes": null,
+                    "command_artifact_ref": null,
+                    "files": [],
+                    "turn_summary": turn_summary(2_000, 50, 0)
+                }}),
+            ),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, CANCELLATION);
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ fix the build",
+                "Fixed it.",
+                "  1m 5s (↑1.2k ↓340)",
+                "┃ stop now",
+                CANCELLATION,
+                "  2s (↑50 ↓0)",
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+}

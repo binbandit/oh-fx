@@ -181,6 +181,27 @@ fn interrupted_checkpoint() -> String {
 }
 
 #[test]
+fn a_settled_checkpoint_keeps_its_turn_summary_in_the_interrupted_frame() {
+    let summary = "{\"started_at_ms\":1000,\"completed_at_ms\":4500,\"thinking_duration_ms\":1200,\"turn_duration_ms\":3500,\"token_progress\":{\"input_tokens\":1234,\"output_tokens\":340,\"input_exact\":true,\"output_exact\":false}}";
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(
+        3,
+        &interrupted_checkpoint().replace(
+            "\"turn_summary\":null",
+            &format!("\"turn_summary\":{summary}"),
+        ),
+    );
+    fixture.resume().unwrap().settle_recovery().unwrap();
+    let log = fixture.log();
+    assert!(
+        log[7].ends_with(&format!("\"turn_summary\":{summary}}}}}}}")),
+        "{}",
+        log[7]
+    );
+}
+
+#[test]
 fn a_matching_checkpoint_waits_until_it_is_settled_as_its_interrupted_turn() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());

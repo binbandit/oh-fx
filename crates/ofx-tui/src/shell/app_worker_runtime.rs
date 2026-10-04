@@ -1412,6 +1412,50 @@ mod tests {
         })
     }
 
+    #[test]
+    fn a_resumed_turn_shows_its_saved_summary_row_after_the_reply() {
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::SessionResumed {
+            history: vec![
+                HistoryEntry::User("fix the build".to_owned()),
+                HistoryEntry::Assistant("Fixed.".to_owned()),
+                HistoryEntry::TurnSummary(ofx_contract::TurnSummary {
+                    turn_duration_ms: 3500,
+                    token_progress: ofx_contract::TurnTokenProgress {
+                        input_tokens: 1234,
+                        output_tokens: 340,
+                        ..ofx_contract::TurnTokenProgress::default()
+                    },
+                    ..ofx_contract::TurnSummary::default()
+                }),
+            ],
+        });
+        let screen = test.screen();
+        assert!(
+            in_order(&screen, &["┃ fix the build", "Fixed.", "  3s (↑1.2k ↓340)"]),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_history_past_the_retention_cap_reaches_the_terminal_whole_and_keeps_its_tail() {
+        let mut test = TestShell::start();
+        let marker = |index: usize| format!("marker {index:04} {}", "z".repeat(150));
+        let history = (0..8000)
+            .map(|index| {
+                HistoryEntry::Notice(Notice::new(NoticeTone::Neutral, "history", marker(index)))
+            })
+            .collect();
+        test.deliver(UiEvent::SessionResumed { history });
+        let published = test.written();
+        assert!(published.contains("marker 0000"));
+        assert!(published.contains("marker 7999"));
+        test.draining(super::super::Shell::replay);
+        let replayed = test.written();
+        assert!(!replayed.contains("marker 0000"));
+        assert!(replayed.contains("marker 7999"));
+    }
+
     fn resumed_with_typeahead() -> TestShell {
         let mut test = TestShell::start();
         test.deliver(UiEvent::SessionResumed {

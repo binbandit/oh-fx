@@ -22,6 +22,7 @@ mod session_store;
 mod session_store_paths;
 mod session_summary_codec;
 mod session_title_generation;
+mod turn_summary;
 
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
