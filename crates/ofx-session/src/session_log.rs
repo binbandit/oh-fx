@@ -280,9 +280,7 @@ impl WritableSession {
             provider,
             credential,
         )?;
-        if !matches!(self.recovery, Recovery::Continuing) {
-            self.recovery = Recovery::Saved;
-        }
+        self.recovery = Recovery::Saved;
         Ok(())
     }
 
