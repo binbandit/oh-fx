@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::{
-    ChatMessage, HistoryCut, HistoryStep, HistoryTurn, ModelRecoveryCause, ProviderReplay,
-    ReasoningEffort, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
-    ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolResultStatus,
-    TurnEnd, TurnId,
+    ChatMessage, HistoryCut, HistoryEntry, HistoryStep, HistoryTurn, ModelRecoveryCause,
+    ProviderReplay, ReasoningEffort, RecoveredTurn, RecoveryPoint, RecoveryProgress,
+    RecoveryStrategy, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall, ToolCallId,
+    ToolResultStatus, TurnEnd, TurnId,
 };
 
 use super::*;
@@ -1067,4 +1067,74 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
         "{saved}"
     );
     assert_eq!(recovered_files(&fixture), files);
+}
+
+#[test]
+fn a_compaction_prepared_checkpoint_is_committed_when_the_session_opens() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let prepared = checkpoint("fix the build", &[step("c2", "out")], "", "")
+        .replace("\"network_interrupted\"", "\"compaction_prepared\"");
+    fixture.save_checkpoint(3, &prepared);
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.take_recovery().is_none());
+    assert!(resumed.recovery_transcript().is_none());
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+    let log = fixture.log();
+    assert_eq!(log.len(), 7, "{log:#?}");
+    assert!(
+        log[6].contains("\"interrupted\":{\"reason\":\"failed\""),
+        "{}",
+        log[6]
+    );
+}
+
+#[test]
+fn a_pending_checkpoint_shows_its_prompt_replies_and_steering() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let spoken = step("c2", "out").replace("\"assistant\":null", "\"assistant\":\"Checking.\"");
+    let uncertain = checkpoint(
+        "fix the build",
+        &[spoken],
+        "{\"text\":\"also tests\",\"assistant_prefix\":null,\"after_tool_step_count\":1}",
+        "Looking at",
+    )
+    .replace("\"tool_state\":\"none\"", "\"tool_state\":\"uncertain\"");
+    fixture.save_checkpoint(3, &uncertain);
+    let resumed = fixture.resume().unwrap();
+    let shown = resumed.recovery_transcript().unwrap();
+    assert!(shown.uncertain_tool);
+    assert_eq!(
+        shown.entries,
+        [
+            HistoryEntry::User("fix the build".to_owned()),
+            HistoryEntry::Assistant("Checking.".to_owned()),
+            HistoryEntry::User("also tests".to_owned()),
+            HistoryEntry::Assistant("Looking at".to_owned()),
+        ]
+    );
+    fixture.save_checkpoint(3, &checkpoint("fix the build", &[], "", ""));
+    drop(resumed);
+    let resumed = fixture.resume().unwrap();
+    assert!(!resumed.recovery_transcript().unwrap().uncertain_tool);
+}
+
+#[test]
+fn the_recovery_ask_marker_lasts_until_the_checkpoint_changes() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(3, &checkpoint("fix the build", &[], "", ""));
+    fs::remove_file(fixture.path(RECOVERY_ASKED_FILE)).unwrap();
+    let resumed = fixture.resume().unwrap();
+    assert!(!resumed.recovery_was_asked());
+    resumed.mark_recovery_asked();
+    let marker = fs::read_to_string(fixture.path(RECOVERY_ASKED_FILE)).unwrap();
+    assert!(marker.starts_with("{\"asked_at_ms\":"), "{marker}");
+    assert!(marker.ends_with("}\n"), "{marker}");
+    drop(resumed);
+    let mut resumed = fixture.resume().unwrap();
+    assert!(resumed.recovery_was_asked());
+    resumed.discard_recovery();
+    assert!(!resumed.recovery_was_asked());
 }
