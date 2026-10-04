@@ -9,8 +9,8 @@ use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
     CommandProcessPresentation, HistoryEntry, HistorySteering, HistoryStep, HistoryTurn,
-    ProviderReplay, RecoveryStrategy, StepResult, ToolArgumentIntegrity, ToolCall,
-    ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
+    ProviderReplay, RecoveryStrategy, RecoveryToolState, StepResult, ToolArgumentIntegrity,
+    ToolCall, ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
@@ -50,7 +50,12 @@ const ACTIONS: [&str; 8] = [
     "checking_liveness",
     "paused",
 ];
-const TOOL_STATES: [&str; 4] = ["none", "proven_unexecuted", "confirmed", "uncertain"];
+const TOOL_STATES: [RecoveryToolState; 4] = [
+    RecoveryToolState::None,
+    RecoveryToolState::ProvenUnexecuted,
+    RecoveryToolState::Confirmed,
+    RecoveryToolState::Uncertain,
+];
 const CREDENTIAL_SOURCES: [&str; 8] = [
     "vercel_oidc_token",
     "ai_gateway_api_key",
@@ -67,6 +72,7 @@ pub(crate) struct RecoveryCheckpoint {
     user: String,
     assistant_source: String,
     execution: SavedExecution,
+    tool_state: RecoveryToolState,
     strategy: RecoveryStrategy,
     route: RecoveryRoute,
     compaction_prepared: bool,
@@ -268,7 +274,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
     let execution = execution(fields.required("execution")?)?;
     let cause = one_of(&fields.required("cause")?, &CAUSES)?;
     one_of(&fields.required("action")?, &ACTIONS)?;
-    let tool_state = one_of(&fields.required("tool_state")?, &TOOL_STATES)?;
+    let tool_state = tool_state(&fields.required("tool_state")?)?;
     let (provider, model, credential) = authority(fields.required("authority")?)?;
     let requested_fast_mode = fields.flag("requested_fast_mode")?;
     let fast_mode = fields.flag("fast_mode")?;
@@ -278,7 +284,8 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
     let checkpoint = RecoveryCheckpoint {
         strategy: strategy(cause, tool_state, &assistant_source),
         compaction_prepared: cause == "compaction_prepared",
-        uncertain_tool: tool_state == "uncertain",
+        uncertain_tool: tool_state == RecoveryToolState::Uncertain,
+        tool_state,
         user,
         assistant_source,
         execution,
@@ -313,14 +320,18 @@ fn push_steering(entries: &mut Vec<HistoryEntry>, entry: &SavedSteering) {
     }
 }
 
-fn strategy(cause: &str, tool_state: &str, assistant_source: &str) -> RecoveryStrategy {
+fn strategy(
+    cause: &str,
+    tool_state: RecoveryToolState,
+    assistant_source: &str,
+) -> RecoveryStrategy {
     match tool_state {
         _ if cause == "request_limit_reached" => RecoveryStrategy::RetryRequest,
-        "proven_unexecuted" => RecoveryStrategy::RegenerateTool,
-        "confirmed" => RecoveryStrategy::ContinueAfterTool,
-        "uncertain" => RecoveryStrategy::ReconcileTool,
-        _ if assistant_source.is_empty() => RecoveryStrategy::RetryRequest,
-        _ => RecoveryStrategy::ContinueResponse,
+        RecoveryToolState::ProvenUnexecuted => RecoveryStrategy::RegenerateTool,
+        RecoveryToolState::Confirmed => RecoveryStrategy::ContinueAfterTool,
+        RecoveryToolState::Uncertain => RecoveryStrategy::ReconcileTool,
+        RecoveryToolState::None if assistant_source.is_empty() => RecoveryStrategy::RetryRequest,
+        RecoveryToolState::None => RecoveryStrategy::ContinueResponse,
     }
 }
 
@@ -516,6 +527,11 @@ fn list<T>(value: Json<'_>, item: impl Fn(Json<'_>) -> Option<T>) -> Option<Vec<
 
 fn fixed<T: FixedField>(fields: &mut Fields<'_>, key: &str) -> Option<()> {
     T::accepts(&fields.required(key)?).then_some(())
+}
+
+fn tool_state(value: &Json<'_>) -> Option<RecoveryToolState> {
+    let text = value.as_str()?;
+    TOOL_STATES.into_iter().find(|state| state.as_str() == text)
 }
 
 fn one_of(value: &Json<'_>, tags: &[&'static str]) -> Option<&'static str> {

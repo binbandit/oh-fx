@@ -108,7 +108,7 @@ note = "Only the subagent control directory exists, with a child's owner marker 
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_codec.rs"]
-note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with assistant_source written empty until the next recovery slice saves a restart's partial text; the legacy connection preferences and older checkpoint versions only older fx sessions hold are not needed."
+note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply and tool evidence written and restored as upstream does; the legacy connection preferences and older checkpoint versions only older fx sessions hold are not needed."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"

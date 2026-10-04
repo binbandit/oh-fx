@@ -128,7 +128,7 @@ pub(crate) fn encode_recovery_file(
             text: point.turn.user,
             images: NoItems,
         },
-        assistant_source: "",
+        assistant_source: point.source,
         execution: ExecutionWire {
             schema_version: EXECUTION_SCHEMA_VERSION,
             tool_steps: point
@@ -156,7 +156,7 @@ pub(crate) fn encode_recovery_file(
             RecoveryProgress::Waiting(action) => action.as_str(),
             RecoveryProgress::Paused => "paused",
         },
-        tool_state: "none",
+        tool_state: point.tool_state.as_str(),
         authority: AuthorityWire {
             provider: source.provider,
             model: point.model,

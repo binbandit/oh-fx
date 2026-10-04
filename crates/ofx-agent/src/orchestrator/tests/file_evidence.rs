@@ -220,6 +220,9 @@ async fn a_continued_turn_keeps_its_checkpoints_evidence_and_adds_its_own() {
                 whole_read("gone.rs", "call-0"),
                 whole_read("a.rs", "call-1"),
             ],
+            source: String::new(),
+            source_presented: false,
+            tool_state: RecoveryToolState::Confirmed,
             strategy: RecoveryStrategy::ContinueAfterTool,
             fast_mode: false,
         };

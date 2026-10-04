@@ -906,6 +906,10 @@ impl Controller {
             self.state.fast_mode(),
         ) {
             Ok(recovered) => {
+                let recovered = RecoveredTurn {
+                    source_presented: true,
+                    ..recovered
+                };
                 observe_prompt(self.persistence.as_ref(), &recovered.prompt);
                 self.state.emit(UiEvent::RecoveryContinuing {
                     prompt: recovered.prompt.clone(),

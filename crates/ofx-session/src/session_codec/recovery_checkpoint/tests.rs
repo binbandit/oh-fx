@@ -1,8 +1,8 @@
 use ofx_config::ProviderId;
 use ofx_contract::{
     ChatMessage, HistorySteering, HistoryStep, HistoryTurn, ModelRecoveryAction,
-    ModelRecoveryCause, RecordedOutput, RecoveryPoint, RecoveryProgress, ReplaySource, StepResult,
-    ToolCallId, TurnId, TurnSummary, TurnTokenProgress,
+    ModelRecoveryCause, RecordedOutput, RecoveryPoint, RecoveryProgress, RecoveryToolState,
+    ReplaySource, StepResult, ToolCallId, TurnId, TurnSummary, TurnTokenProgress,
 };
 
 use super::*;
@@ -49,6 +49,7 @@ fn checkpoint() -> RecoveryCheckpoint {
             }],
             turn_summary: None,
         },
+        tool_state: RecoveryToolState::Confirmed,
         strategy: RecoveryStrategy::ContinueAfterTool,
         route: RecoveryRoute {
             provider: SavedProvider::new(ProviderId::Codex, None).unwrap(),
@@ -107,7 +108,7 @@ fn every_upstream_tag_and_credential_form_is_accepted() {
         decoded(&base.replace("continuing_response", action));
     }
     for tool_state in TOOL_STATES {
-        decoded(&base.replace("\"confirmed\"", &format!("\"{tool_state}\"")));
+        decoded(&base.replace("\"confirmed\"", &format!("\"{}\"", tool_state.as_str())));
     }
     for source in CREDENTIAL_SOURCES {
         decoded(&base.replace("chatgpt_subscription", source));
@@ -592,8 +593,10 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                 provider_replay: None,
             },
         },
+        source: "Looking at",
         cause: ModelRecoveryCause::RateLimited,
         progress: RecoveryProgress::Waiting(ModelRecoveryAction::RetryingRequest),
+        tool_state: RecoveryToolState::Confirmed,
         model: "gpt-5.4",
         requested_fast_mode: false,
         fast_mode: true,
@@ -629,8 +632,10 @@ fn a_recovery_point_is_written_in_upstream_recovery_json_form() {
     };
     let written = encode_recovery_file(12, &source).unwrap().unwrap();
     let expected = upstream_checkpoint()
-        .replace("\"cause\":\"response_interrupted\",\"action\":\"continuing_response\",\"tool_state\":\"confirmed\"", "\"cause\":\"rate_limited\",\"action\":\"retrying_request\",\"tool_state\":\"none\"")
-        .replace("\"assistant_source\":\"Looking at\"", "\"assistant_source\":\"\"")
+        .replace(
+            "\"cause\":\"response_interrupted\",\"action\":\"continuing_response\"",
+            "\"cause\":\"rate_limited\",\"action\":\"retrying_request\"",
+        )
         .replace(IDENTITY, ACCOUNT_IDENTITY);
     assert_eq!(
         String::from_utf8(written.clone()).unwrap(),
@@ -639,11 +644,25 @@ fn a_recovery_point_is_written_in_upstream_recovery_json_form() {
     let read = decode_recovery_file(&written, 12).unwrap().unwrap();
     assert!(read.authorizes(RouteCredential::chatgpt_subscription("acct_1")));
     assert!(!read.authorizes(RouteCredential::chatgpt_subscription("acct_2")));
-    assert_eq!(read.strategy, RecoveryStrategy::RetryRequest);
+    assert_eq!(read.strategy, RecoveryStrategy::ContinueAfterTool);
     assert_eq!(
         read.execution.tool_steps[0].tool_results[0].output,
         "fn main() {}"
     );
+}
+
+#[test]
+fn a_continuation_restarts_from_the_saved_partial_reply() {
+    let continued = decoded(
+        &upstream_checkpoint().replace("\"tool_state\":\"confirmed\"", "\"tool_state\":\"none\""),
+    )
+    .into_continuation(
+        &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        "gpt-5.4",
+        false,
+    );
+    assert_eq!(continued.source, "Looking at");
+    assert_eq!(continued.strategy, RecoveryStrategy::ContinueResponse);
 }
 
 #[test]
