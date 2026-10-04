@@ -1,8 +1,11 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Take};
 
+use crate::history_snapshot::{CacheView, CachedFrames};
 use crate::session_error::SessionError;
-use crate::session_event::EVENT_FRAME_MAX_BYTES;
+use crate::session_event::{
+    ConversationEnvelope, ConversationEvent, EVENT_FRAME_MAX_BYTES, decode_conversation_frame,
+};
 
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
@@ -51,6 +54,102 @@ impl<'a> LineReader<'a> {
         }
         self.offset += u64::try_from(line.len()).unwrap_or(u64::MAX);
         Ok(LineRead::Line(line))
+    }
+}
+
+pub(crate) struct Frame {
+    pub(crate) offset: u64,
+    pub(crate) envelope: ConversationEnvelope,
+    pub(crate) line: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct History<'a> {
+    log: &'a File,
+    cache: Option<CacheView<'a>>,
+}
+
+impl<'a> History<'a> {
+    pub(crate) fn log(log: &'a File) -> Self {
+        Self { log, cache: None }
+    }
+
+    pub(crate) fn cached(log: &'a File, cache: CacheView<'a>) -> Self {
+        Self {
+            log,
+            cache: Some(cache),
+        }
+    }
+
+    pub(crate) fn frames(self, start: u64, end: u64) -> FrameReader<'a> {
+        FrameReader {
+            cached: self.cache.and_then(|cache| cache.frames(start, end)),
+            log: self.log,
+            offset: start,
+            end,
+            lines: None,
+            torn: false,
+        }
+    }
+
+    pub(crate) fn event_at(self, offset: u64, end: u64) -> Result<ConversationEvent, SessionError> {
+        self.frames(offset, end)
+            .next_frame()?
+            .map(|frame| frame.envelope.event)
+            .ok_or(SessionError::InvalidConversationFrame)
+    }
+}
+
+pub(crate) struct FrameReader<'a> {
+    cached: Option<CachedFrames<'a>>,
+    log: &'a File,
+    offset: u64,
+    end: u64,
+    lines: Option<LineReader<'a>>,
+    torn: bool,
+}
+
+impl FrameReader<'_> {
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub(crate) fn torn(&self) -> bool {
+        self.torn
+    }
+
+    pub(crate) fn next_frame(&mut self) -> Result<Option<Frame>, SessionError> {
+        if let Some(frame) = self.cached.as_mut().and_then(Iterator::next) {
+            self.offset = frame.offset + frame.bytes;
+            return Ok(Some(Frame {
+                offset: frame.offset,
+                envelope: frame.envelope,
+                line: None,
+            }));
+        }
+        self.cached = None;
+        if self.lines.is_none() {
+            self.lines = Some(LineReader::new(self.log, self.offset, self.end)?);
+        }
+        let Some(lines) = self.lines.as_mut() else {
+            return Ok(None);
+        };
+        let line = match lines.next_line()? {
+            LineRead::Line(line) => line,
+            LineRead::End => return Ok(None),
+            LineRead::Torn => {
+                self.torn = true;
+                return Ok(None);
+            }
+        };
+        let envelope = decode_conversation_frame(&line)?;
+        let frame = Frame {
+            offset: self.offset,
+            envelope,
+            line: Some(line),
+        };
+        self.offset = lines.offset();
+        Ok(Some(frame))
     }
 }
 

@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 base64.workspace = true
+crc32fast.workspace = true
 getrandom.workspace = true
 memchr.workspace = true
 ofx-config.workspace = true
