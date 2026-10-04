@@ -1,5 +1,6 @@
 use ofx_contract::{
-    ProviderOptions, ProviderReplay, ReplaySource, ToolCallId, ToolResultStatus, ToolSpec,
+    ProviderOptions, ProviderReplay, ReplaySource, ToolCallId, ToolExecutionProvenance,
+    ToolResultStatus, ToolSpec,
 };
 use serde_json::{Value, json};
 
@@ -865,7 +866,7 @@ fn chat_completions_rejects_unsupported_requests_and_ambiguous_selection() {
 }
 
 #[test]
-fn chat_completions_rejects_unmatched_malformed_and_duplicate_history_calls() {
+fn chat_completions_rejects_unmatched_native_malformed_and_duplicate_history_calls() {
     let history = |calls: Vec<ToolCall>, result_id: &str| {
         let mut request = test_request();
         request.messages = vec![
@@ -881,6 +882,22 @@ fn chat_completions_rejects_unmatched_malformed_and_duplicate_history_calls() {
     assert_eq!(
         history(vec![call("call-1", "read_file", "{}")], "other"),
         Err(ProtocolError::InvalidToolHistory)
+    );
+    let native = ToolCall {
+        provenance: ToolExecutionProvenance::ProviderExecuted,
+        ..call("call-1", "read_file", "{}")
+    };
+    assert_eq!(
+        history(vec![native], "call-1"),
+        Err(ProtocolError::UnsupportedToolProvenance)
+    );
+    let answered = ToolCall {
+        provider_result: Some("provider".to_owned()),
+        ..call("call-1", "read_file", "{}")
+    };
+    assert_eq!(
+        history(vec![answered], "call-1"),
+        Err(ProtocolError::UnsupportedToolProvenance)
     );
     assert_eq!(
         history(vec![call("call-1", "read_file", "[]")], "call-1"),
