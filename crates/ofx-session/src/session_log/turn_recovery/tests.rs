@@ -424,11 +424,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
     let recovered = pending.into_turn(&provider, "openai/gpt-5", false);
     assert_eq!(recovered.prompt, "fix the build");
     assert_eq!(recovered.strategy, RecoveryStrategy::ContinueResponse);
-    let calls = vec![ToolCall {
-        id: ToolCallId::new("c2"),
-        name: "shell".to_owned(),
-        arguments: "{\"command\":\"ls\"}".to_owned(),
-    }];
+    let calls = vec![ToolCall::new("c2", "shell", "{\"command\":\"ls\"}")];
     assert_eq!(
         recovered.messages,
         [
@@ -512,13 +508,7 @@ fn continued_turn<'a>(
 
 fn shell_calls(ids: &[&str]) -> Vec<Vec<ToolCall>> {
     ids.iter()
-        .map(|id| {
-            vec![ToolCall {
-                id: ToolCallId::new(*id),
-                name: "shell".to_owned(),
-                arguments: "{\"command\":\"ls\"}".to_owned(),
-            }]
-        })
+        .map(|id| vec![ToolCall::new(*id, "shell", "{\"command\":\"ls\"}")])
         .collect()
 }
 
