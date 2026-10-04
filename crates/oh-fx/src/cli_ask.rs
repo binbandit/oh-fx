@@ -1078,6 +1078,7 @@ impl Presenter {
             | UiEvent::SessionsUnavailable { .. }
             | UiEvent::SessionResumeFailed { .. }
             | UiEvent::SessionResumed { .. }
+            | UiEvent::RecoveryContinuing { .. }
             | UiEvent::ExitRequested => Ok(()),
         };
         match written {
