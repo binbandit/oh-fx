@@ -6,6 +6,7 @@ use super::{
 };
 
 const MARKER: &str = "fx-compactor-v1\n";
+const MAX_NUMBER: usize = 1 << 30;
 const CONTINUATION_PREAMBLE: &str = "This session is being continued from earlier compacted context. The summary below covers the earlier portion of the conversation.\n\n";
 const RECENT_MESSAGES_NOTE: &str = "Recent conversation turns are preserved verbatim.";
 const DIRECT_RESUME_INSTRUCTION: &str = "Continue the conversation from where it left off without asking the user to repeat context. Resume directly.";
@@ -188,9 +189,13 @@ fn payload_from(object: &Object) -> Option<Payload> {
             .map(|turn| turn_from(turn?))
             .collect::<Option<_>>()?,
         open,
-        turn_count: count(object, "turn_count")?,
-        tool_count: count(object, "tool_count")?,
+        turn_count: number(object, "turn_count")?,
+        tool_count: number(object, "tool_count")?,
     })
+}
+
+fn number(object: &Object, key: &str) -> Option<usize> {
+    count(object, key).filter(|count| *count <= MAX_NUMBER)
 }
 
 fn used_from(object: &Object) -> Option<Used> {

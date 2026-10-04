@@ -73,7 +73,7 @@ pub(crate) fn write_request(text: &mut String, asked: &Asked<'_>) {
             ""
         }
     );
-    text.push_str("Facts:\nF1, F2, ...: facts the work depends on, from these turns: names, paths, values, results, causes.\n\nDecisions:\nD1, D2, ...: each decision and why. When it changes an earlier entry, end with \"replaces\" and that entry's ID.\n\nStatus:\nS1, S2, ...: where each part of the work stands now. When it updates an earlier entry, end with \"replaces\" and that entry's ID.\n\nOpen:\nO1, O2, ...: questions waiting on the user, and next steps the user asked for.\n\n");
+    text.push_str("Facts:\nF1, F2, ...: facts the work depends on, from these turns: names, paths, values, results, causes.\n\nDecisions:\nD1, D2, ...: each decision and why. When it changes an earlier entry, end with \"replaces\" and that entry's ID.\n\nStatus:\nS1, S2, ...: where each part of the work stands now. When it updates an earlier entry, or answers or finishes an earlier open entry, end with \"replaces\" and that entry's ID.\n\nOpen:\nO1, O2, ...: questions waiting on the user, and next steps the user asked for.\n\n");
     text.push_str("Never repeat or rewrite an entry that already exists; add a new one that replaces it. Write \"none\" under a section with nothing new.");
     write_highest_ids(text, &asked.highest);
     text.push_str(" Be exact: say what was verified, and mark anything only planned, assumed or not checked. Write only these notes.");
@@ -524,9 +524,13 @@ pub(crate) fn read(reply: &str, known: &Known, earlier: &[Entry]) -> Written {
             known.turns.last().copied()
         };
         if let Some(number) = newest {
+            let text = reply.trim_matches([' ', '\t', '\r', '\n']);
+            if number > 0 && !text.is_empty() {
+                reader.noted.push(number);
+            }
             reader.works.push(Building {
                 number,
-                text: reply.trim_matches([' ', '\t', '\r', '\n']).to_owned(),
+                text: text.to_owned(),
                 limit: MAX_UNREAD_BYTES,
             });
         }

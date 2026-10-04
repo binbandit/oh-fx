@@ -65,6 +65,7 @@ impl Fixture {
             turns: &self.turns,
             tools: &self.tools,
             users: &USERS,
+            kept: &[],
             highest,
         }
     }
@@ -131,6 +132,32 @@ fn what_an_entry_gets_wrong_is_marked_and_the_entry_stays() {
             "R2 (M4): keep it small [check: no quote of the user's words]",
             "F4 (T9): LIBFX went to 0.0.10-dev after ~707AFAC508E1",
             "F5 (turn 9): 141 tests [check: M9 does not exist]",
+        ]
+    );
+}
+
+#[test]
+fn every_entry_names_its_source_and_one_about_a_failed_call_does_not_call_it_a_success() {
+    let entries = [
+        entry("D1", "D1: keep the fix small"),
+        entry("S1", "S1: the tests run"),
+        entry("O1", "O1: which branch ships it?"),
+        entry("F1", "F1 (T7): the tests passed"),
+        entry("S2", "S2 (M4, T7): the suite is green"),
+        entry("S3", "S3 (T7, T8): the suite passes after the fix"),
+        entry("S4", "S4 (T7\u{2013}T9): tests pass"),
+    ];
+    let result = Fixture::new().checked(with_entries(&entries), &[]);
+    assert_eq!(
+        texts(&result.entries),
+        [
+            "D1: keep the fix small [check: no source]",
+            "S1: the tests run [check: no source]",
+            "O1: which branch ships it? [check: no source]",
+            "F1 (T7): the tests passed [check: T7 failed]",
+            "S2 (M4, T7): the suite is green [check: T7 failed]",
+            entries[5].text.as_str(),
+            entries[6].text.as_str(),
         ]
     );
 }
