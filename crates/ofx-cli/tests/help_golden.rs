@@ -104,7 +104,7 @@ fn ask_help_renders_documented_options() {
 Run one noninteractive request
 
 Usage:
-  oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>
+  oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>
 
 Options:
   --auto                      Automatically review unresolved permission requests
@@ -114,6 +114,8 @@ Options:
   --effort <level>            Override the reasoning effort for this request
   --fast                      Enable Fast mode for this request when the model supports it
   --no-fast                   Disable Fast mode for this request
+  --ultrafast                 Request Ultra mode for this request when the model supports it
+  --no-ultrafast              Disable Ultra mode for this request
   --provider-order <a,b,...>  Prefer these gateway providers in order for this request
   --provider-strict           Restrict this request to only the providers in --provider-order
   --no-provider-strict        Clear the provider restriction for this request
@@ -157,7 +159,9 @@ fn session_help_documents_inspect_resume_migrate_and_recover() {
 #[test]
 fn acp_help_documents_accepted_options() {
     let text = command(TopLevelKind::Acp);
-    assert!(text.contains("Usage:\n  oh-fx acp [--model <id>] [--log-file <path>]"));
+    assert!(text.contains(
+        "Usage:\n  oh-fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]"
+    ));
     assert!(text.contains("--model <id>"));
     assert!(text.contains("--log-file <path>"));
 }

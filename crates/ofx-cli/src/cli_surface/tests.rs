@@ -360,13 +360,49 @@ fn model_launch_modifiers_apply_only_to_interactive_sessions() {
         &["--model", "x", "--version"],
         &["--fast", "-c", "--help"],
         &["--provider", "grok", "status"],
+        &["--ultrafast", "status"],
+        &["--ultrafast", "--model", "m", "acp"],
+        &["--no-fast", "acp"],
     ] {
         assert_eq!(
             stderr(args),
-            "oh-fx: --provider, --model, --effort, --fast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`\n",
+            "oh-fx: --provider, --model, --effort, --fast, --ultrafast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `oh-fx ask`\n",
             "{args:?}"
         );
     }
+}
+
+#[test]
+fn an_ultra_mode_request_alone_reaches_acp() {
+    for args in [
+        &["--ultrafast", "acp"][..],
+        &["--no-ultrafast", "acp", "--model", "m"],
+        &["--no-fast", "--ultrafast", "acp"],
+        &[
+            "acp",
+            "--ultrafast",
+            "--ultrafast",
+            "--log-file",
+            "/tmp/acp.log",
+        ],
+        &["acp", "--no-ultrafast"],
+    ] {
+        assert!(matches!(command(args), Command::Acp), "{args:?}");
+    }
+    for args in [
+        &["acp", "--ultrafast", "--no-ultrafast"][..],
+        &["acp", "--no-ultrafast", "--ultrafast"],
+    ] {
+        assert_eq!(
+            stderr(args),
+            "usage: oh-fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        stderr(&["--ultrafast", "--no-ultrafast"]),
+        "oh-fx: --ultrafast and --no-ultrafast cannot be used together\nusage: oh-fx [--context-limit NAME=BYTES|off] [--add-dir PATH]... [--no-additional-dirs] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] <command>\n"
+    );
 }
 
 fn raw_args(args: &[&[u8]]) -> Vec<OsString> {
@@ -575,7 +611,7 @@ fn command_usage_errors_use_the_spec_usage() {
     for (args, expected) in [
         (
             &["acp", "--bogus"][..],
-            "usage: oh-fx acp [--model <id>] [--log-file <path>]\n",
+            "usage: oh-fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
         ),
         (
             &["login", "foo"],

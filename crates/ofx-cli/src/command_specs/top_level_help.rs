@@ -544,8 +544,11 @@ mod tests {
     fn acp_help_documents_accepted_options() {
         let text = render_command_help(TopLevelKind::Acp);
         assert!(text.contains("oh-fx acp\n"));
-        assert!(text.contains("Usage:\n  oh-fx acp [--model <id>] [--log-file <path>]"));
+        assert!(text.contains(
+            "Usage:\n  oh-fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]"
+        ));
         assert!(text.contains("--model <id>"));
+        assert!(text.contains("--no-ultrafast"));
         assert!(text.contains("--log-file <path>"));
     }
 

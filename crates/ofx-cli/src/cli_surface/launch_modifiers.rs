@@ -24,6 +24,8 @@ struct ModelModifiers {
     model: Option<OsString>,
     effort: Option<ReasoningEffort>,
     fast: Option<bool>,
+    ultrafast: Option<bool>,
+    routes: bool,
 }
 
 #[derive(Debug, Default)]
@@ -68,6 +70,16 @@ impl LaunchModifiers {
     pub(crate) fn has_model_overrides(&self) -> bool {
         self.model.overridden
     }
+
+    pub(crate) fn has_only_ultrafast_override(&self) -> bool {
+        let model = &self.model;
+        model.ultrafast.is_some()
+            && !model.provider
+            && model.model.is_none()
+            && model.effort.is_none()
+            && model.fast != Some(true)
+            && !model.routes
+    }
 }
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
@@ -92,6 +104,8 @@ pub enum GlobalLaunchError {
     InvalidEffortValue,
     #[error("--fast and --no-fast cannot be used together")]
     ConflictingFastFlags,
+    #[error("--ultrafast and --no-ultrafast cannot be used together")]
+    ConflictingUltrafastFlags,
     #[error("--provider-order requires a comma-separated provider list")]
     MissingProviderOrderValue,
     #[error("--provider-order accepts comma-separated provider slugs (letters, digits, '-')")]
@@ -108,6 +122,8 @@ pub(crate) fn parse_launch_modifiers(
     while modifiers.take_next(args, &mut model_overrides)? {}
     modifiers.model.effort = model_overrides.effort;
     modifiers.model.fast = model_overrides.fast;
+    modifiers.model.ultrafast = model_overrides.ultrafast;
+    modifiers.model.routes = model_overrides.routes;
     Ok(modifiers)
 }
 
@@ -359,10 +375,56 @@ mod tests {
                 &["--provider-strict", "--no-provider-strict"],
                 GlobalLaunchError::ConflictingProviderStrictFlags,
             ),
+            (
+                &["--ultrafast", "--no-ultrafast"],
+                GlobalLaunchError::ConflictingUltrafastFlags,
+            ),
+            (
+                &["--fast", "--ultrafast"],
+                GlobalLaunchError::ConflictingUltrafastFlags,
+            ),
+            (
+                &["--ultrafast", "--fast"],
+                GlobalLaunchError::ConflictingFastFlags,
+            ),
         ] {
             assert_eq!(error(args), expected.to_string(), "{args:?}");
         }
         assert!(parse(&["--fast", "--fast"]).is_ok());
+        assert!(parse(&["--ultrafast", "--ultrafast"]).is_ok());
+        assert_eq!(
+            GlobalLaunchError::ConflictingUltrafastFlags.to_string(),
+            "--ultrafast and --no-ultrafast cannot be used together"
+        );
+    }
+
+    #[test]
+    fn requesting_ultra_mode_turns_fast_mode_off_and_only_it_reaches_acp() {
+        let (ultra, remaining) = parse(&["--ultrafast", "acp"]).unwrap();
+        assert!(ultra.has_model_overrides());
+        assert!(ultra.has_only_ultrafast_override());
+        assert_eq!(ultra.fast_mode(), Some(false));
+        assert_eq!(remaining, vec![OsString::from("acp")]);
+
+        let (fast_then_off, _) = parse(&["--fast", "--no-ultrafast"]).unwrap();
+        assert_eq!(fast_then_off.fast_mode(), Some(true));
+        assert!(!fast_then_off.has_only_ultrafast_override());
+
+        for args in [&["--no-ultrafast"][..], &["--no-fast", "--ultrafast"]] {
+            let (only, _) = parse(args).unwrap();
+            assert!(only.has_only_ultrafast_override(), "{args:?}");
+        }
+        for args in [
+            &["--no-fast"][..],
+            &["--ultrafast", "--model", "m"],
+            &["--ultrafast", "--provider", "codex"],
+            &["--ultrafast", "--effort", "low"],
+            &["--ultrafast", "--provider-order", "azure"],
+            &["--ultrafast", "--no-provider-strict"],
+        ] {
+            let (mixed, _) = parse(args).unwrap();
+            assert!(!mixed.has_only_ultrafast_override(), "{args:?}");
+        }
     }
 
     #[test]

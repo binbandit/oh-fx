@@ -15,6 +15,8 @@ pub(crate) enum ModelOverride {
 pub(crate) struct ModelOverrides {
     pub(crate) effort: Option<ReasoningEffort>,
     pub(crate) fast: Option<bool>,
+    pub(crate) ultrafast: Option<bool>,
+    pub(crate) routes: bool,
     provider_strict: Option<bool>,
 }
 
@@ -36,6 +38,19 @@ impl ModelOverrides {
         } else if let Some(enabled) = args.take_toggle("--fast", "--no-fast") {
             let fast = merge_toggle(self.fast, enabled, GlobalLaunchError::ConflictingFastFlags)?;
             self.fast = Some(fast);
+            if enabled {
+                self.ultrafast = Some(false);
+            }
+        } else if let Some(enabled) = args.take_toggle("--ultrafast", "--no-ultrafast") {
+            let ultrafast = merge_toggle(
+                self.ultrafast,
+                enabled,
+                GlobalLaunchError::ConflictingUltrafastFlags,
+            )?;
+            self.ultrafast = Some(ultrafast);
+            if enabled {
+                self.fast = Some(false);
+            }
         } else if let Some(value) = args.take_option("provider-order", ValueForm::SeparateOrJoined)
         {
             let value =
@@ -43,6 +58,7 @@ impl ModelOverrides {
             if !is_text(&value, is_valid_provider_order_list) {
                 return Err(GlobalLaunchError::InvalidProviderOrderValue);
             }
+            self.routes = true;
         } else if let Some(strict) = args.take_toggle("--provider-strict", "--no-provider-strict") {
             let strict = merge_toggle(
                 self.provider_strict,
@@ -50,6 +66,7 @@ impl ModelOverrides {
                 GlobalLaunchError::ConflictingProviderStrictFlags,
             )?;
             self.provider_strict = Some(strict);
+            self.routes = true;
         } else {
             return Ok(None);
         }

@@ -41,7 +41,8 @@ Rows marked `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-
 | #1120 | `b437987` | (same) | `defer:sessions` | future session store, `read_tool_result` | After an unreadable checkpoint, `records.zig` leaves a saved record numbered past `1 << 30` out of the numbering. |
 | #1120 | `b437987` | (same) | `n/a` | none | The scripted replies of the gateway flow tests and the TUI compaction activity end-to-end test. |
 | #1121 | `7e39bf1` | Avoid redundant Base64 decoding buffers | `ported` | `ofx-session` | Decoding stops re-encoding to compare, and the input accepted is unchanged. oh-fx decodes with the `base64` crate's `STANDARD` engine, which rejects non-canonical padding and trailing bits without re-encoding. |
-| #1112 | `88e6658` | Add opt-in Ultrafast mode | `defer:ultrafast-cli` | `ofx-cli`, `ofx-app` | See [Ultrafast](#ultrafast). |
+| #1112 | `88e6658` | Add opt-in Ultrafast mode | `ported` | `ofx-cli` | The `ask`, `acp` and top-level usage lines gain `[--ultrafast|--no-ultrafast]` and their option tables the two flags. `--ultrafast` turns Fast mode off and `--fast` turns the Ultra request off, so asking for both fails as `ConflictingFastFlags` or `ConflictingUltrafastFlags` (`--ultrafast and --no-ultrafast cannot be used together`), or as `InvalidAskArgs` after `ask`. The interactive-only model flags hint names `--ultrafast`, and an Ultra request on its own still reaches `acp`. |
+| #1112 | `88e6658` | (same) | `defer:ultrafast-cli` | `ofx-app` | See [Ultrafast](#ultrafast). |
 | #1112 | `88e6658` | (same) | `defer:ai-gateway` | future Vercel AI Gateway transport | The `openai.serviceTier: "ultrafast"` request, the `ultrafast_mode` setting and `FX_ULTRAFAST`, the model, settings and footer indicators, subagent inheritance, ACP, and the session and recovery-checkpoint fields, which upstream writes only when the mode is on. |
 | #1112 | `88e6658` | (same) | `n/a` | none | SDK, `scripts/pgso` corpus and end-to-end test changes. |
 | #1122 | `3cc5ddf` | Raise the CI unit test timeout | `n/a` | none | Upstream CI. |
@@ -149,7 +150,7 @@ The private result reader supports bounded raw pages, and storage no longer appl
 
 ### Ultrafast
 
-#1112 changes text oh-fx already ports: the `ask`, `acp` and top-level usage lines gain `[--ultrafast|--no-ultrafast]` and their option tables the two flags, `ConflictingUltrafastFlags` reports `--ultrafast and --no-ultrafast cannot be used together`, the interactive-only model flags hint names `--ultrafast`, `/status` and `status --json` report `ultrafast_requested`, and `/ultrafast [on|off|status]` joins the slash registry. The request itself needs the Vercel AI Gateway (`defer:ai-gateway`).
+#1112 adds `/ultrafast [on|off|status]` to the slash registry, keeps the interactive session's requested Ultra mode, which `--ultrafast` sets at launch, and reports it as `ultrafast_requested` in `/status` and `status --json`. The request itself needs the Vercel AI Gateway (`defer:ai-gateway`).
 
 ### MCP OAuth
 
