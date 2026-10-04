@@ -4439,4 +4439,66 @@ done
         assert!(listing.contains("state=disabled"), "{listing}");
         assert!(listing.contains("    admission=rejected\n"), "{listing}");
     }
+
+    async fn approved_docs_harness() -> (Harness, std::path::PathBuf) {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let workspace = fs::canonicalize(home.path()).unwrap().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join(".mcp.json"),
+            json!({"mcpServers": {"docs": {"command": "/bin/sh", "args": ["-c", MCP_SERVER]}}})
+                .to_string(),
+        )
+        .unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.command("/mcp trust approve docs");
+        assert_eq!(
+            mcp_notices(&mut harness, 2).await[1],
+            "mcp|MCP configuration reloaded successfully."
+        );
+        (harness, workspace)
+    }
+
+    fn save_workspace_choices(harness: &Harness, workspace: &std::path::Path, choices: Value) {
+        let path = harness.home.path().join("config/settings.json");
+        let mut settings: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        settings["workspaces"][workspace.to_string_lossy().as_ref()] = choices;
+        fs::write(&path, settings.to_string()).unwrap();
+    }
+
+    async fn docs_listing(harness: &mut Harness) -> String {
+        harness.command("/mcp list");
+        mcp_notices(harness, 1).await.pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_server_settings_already_reject_still_retires_it() {
+        let (mut harness, workspace) = approved_docs_harness().await;
+        save_workspace_choices(
+            &harness,
+            &workspace,
+            json!({"disabledMcpjsonServers": ["docs"]}),
+        );
+        assert!(docs_listing(&mut harness).await.contains("state=ready"));
+        harness.command("/mcp trust reject docs");
+        let notices = mcp_notices(&mut harness, 2).await;
+        assert_eq!(notices[0], "mcp|Rejecting project MCP server 'docs'.");
+        let listing = docs_listing(&mut harness).await;
+        assert!(listing.contains("state=disabled"), "{listing}");
+        assert!(listing.contains("    admission=rejected\n"), "{listing}");
+    }
+
+    #[tokio::test]
+    async fn resetting_choices_settings_already_cleared_still_retires_approved_servers() {
+        let (mut harness, workspace) = approved_docs_harness().await;
+        save_workspace_choices(&harness, &workspace, json!({}));
+        harness.command("/mcp trust reset");
+        mcp_notices(&mut harness, 2).await;
+        let listing = docs_listing(&mut harness).await;
+        assert!(!listing.contains("state=ready"), "{listing}");
+        assert!(!listing.contains("admission=approved"), "{listing}");
+    }
 }

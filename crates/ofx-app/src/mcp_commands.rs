@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::path::Path;
 
 use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
@@ -130,16 +129,12 @@ fn apply_project_action(
         action,
         ProjectMcpAction::Reject(_) | ProjectMcpAction::Reset
     );
-    let reduced = Cell::new(false);
     let saved = save_workspace_entry(paths, host.sources().workspace_root(), |entry| {
-        apply_project_mcp_action_to_entry(entry, action).map(|change| {
-            reduced.set(change.authority_reduced);
-            change.changed
-        })
+        apply_project_mcp_action_to_entry(entry, action).map(|change| change.changed)
     });
     match saved {
         Ok(committed) => {
-            if committed && reduced.get() {
+            if reducing {
                 host.begin_authority_reduction(true);
             } else if committed {
                 host.begin_reload();
