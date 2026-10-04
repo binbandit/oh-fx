@@ -1113,6 +1113,7 @@ impl Agent {
         needs_newline: bool,
         events: EventSink<'_>,
     ) -> bool {
+        self.enter_tool_phase();
         let Some(tool) = self.tool(&tool_name) else {
             return false;
         };
@@ -1121,7 +1122,6 @@ impl Agent {
         }
         let presentation = contained(|| tool.provisional_presentation()).flatten();
         if let Some(presentation) = presentation.filter(|_| !call_id.as_str().is_empty()) {
-            self.enter_tool_phase();
             events(UiEvent::ToolProvisional {
                 turn_id,
                 call_id,

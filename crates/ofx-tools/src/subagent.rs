@@ -48,12 +48,10 @@ impl Tool for SubagentTool {
     fn provisional_presentation(&self) -> Option<CallPresentation> {
         Some(CallPresentation {
             activity: ToolActivity::Subagent,
-            action_label: UNTARGETED_TITLE
-                .split_once(' ')
-                .map_or(UNTARGETED_TITLE, |(activity, _)| activity),
-            completed_label: UNTARGETED_TITLE,
+            action_label: "Managing",
+            completed_label: "Managed",
             label_argument: "",
-            label_default: TOOL_NAME,
+            label_default: "",
         })
     }
 

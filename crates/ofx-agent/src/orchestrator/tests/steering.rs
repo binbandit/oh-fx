@@ -972,3 +972,80 @@ async fn steering_after_a_provisional_start_waits_for_model_step_completion() {
         ]
     );
 }
+
+#[tokio::test]
+async fn unknown_streamed_starts_hold_steering_until_the_tool_step_completes() {
+    every_streamed_start_holds_steering("unknown", "missing", false).await;
+}
+
+#[tokio::test]
+async fn ineligible_streamed_starts_hold_steering_until_the_tool_step_completes() {
+    every_streamed_start_holds_steering("ineligible", "echo", false).await;
+}
+
+#[tokio::test]
+async fn empty_identity_streamed_starts_hold_steering_until_the_tool_step_completes() {
+    every_streamed_start_holds_steering("", "echo", true).await;
+}
+
+async fn every_streamed_start_holds_steering(id: &str, name: &str, eligible: bool) {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            vec![
+                StreamEvent::TextDelta {
+                    text: "Looking.".to_owned(),
+                },
+                streamed_start(id, name),
+                StreamEvent::TextDelta {
+                    text: "Still working.".to_owned(),
+                },
+            ],
+            completion(
+                None,
+                vec![echo_call("call-1", r#"{"text":"one"}"#)],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply("Done."),
+    ]);
+    let worker = Arc::new(WorkerRuntime::default());
+    let tool = if eligible {
+        stream_start_tool(ToolActivity::Read, Arc::new(AtomicUsize::new(0)))
+    } else {
+        echo_tool()
+    };
+    let mut agent = new_agent(provider.clone(), vec![tool]).with_steering(worker.clone());
+    worker.admit(plain(0, "check the parser"));
+    let (report, events) = run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, _| {
+            if matches!(event, UiEvent::AssistantText { text, .. } if text == "Still working.") {
+                worker.admit(plain(1, "check the tests too"));
+            }
+        },
+    )
+    .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+    assert_eq!(applied(&events), [(1, "check the tests too")]);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+    let finished = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::ToolFinished { .. }))
+        .unwrap();
+    let applied = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::SteeringApplied { .. }))
+        .unwrap();
+    assert!(finished < applied);
+    assert_eq!(provider.requests().len(), 2);
+    assert!(
+        matches!(&provider.requests()[1].messages[2], ChatMessage::Tool { call_id, .. } if call_id.as_str() == "call-1")
+    );
+}

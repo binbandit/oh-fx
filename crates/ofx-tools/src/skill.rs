@@ -19,6 +19,7 @@ use crate::tool_runtime::run_blocking;
 
 const TOOL_NAME: &str = "skill";
 const ACTION_LABEL: &str = "Loading skill";
+const COMPLETED_LABEL: &str = "Loaded skill";
 const DESCRIPTION: &str = "Load an installed skill or one required relative text resource completely. Copy the exact advertised location. Resolve paths mentioned in skill instructions from the selected skill directory, not the workspace. Read referenced text with the same location and its relative resource path. When to use: the user explicitly invokes a listed skill or the task clearly matches one. When NOT to use: installing a missing skill.";
 const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"location":{"type":"string","description":"The exact advertised location of the selected skill."},"resource":{"type":"string","description":"Optional relative text resource within the selected skill. Omit or pass an empty string to read SKILL.md."}},"additionalProperties":false,"required":["location"]}"#;
 const LOCATION_PREFIX: &str = "skill:";
@@ -75,7 +76,7 @@ impl Tool for SkillTool {
         Some(CallPresentation {
             activity: ToolActivity::Read,
             action_label: ACTION_LABEL,
-            completed_label: "Loaded skill",
+            completed_label: COMPLETED_LABEL,
             label_argument: "",
             label_default: "",
         })
@@ -324,7 +325,7 @@ fn label(arguments: &str, resolved_name: Option<&str>) -> Option<ActionLabel> {
         .unwrap_or(TOOL_NAME);
     Some(ActionLabel {
         active: ACTION_LABEL,
-        completed: "Loaded skill",
+        completed: COMPLETED_LABEL,
         target: name.to_owned(),
     })
 }

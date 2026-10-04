@@ -1027,20 +1027,16 @@ impl Presenter {
                 content,
                 command_result,
                 ..
-            } => {
-                self.tool_calls.push(ToolRecord::finished(
+            } => self.tool_finished(
+                &call_id,
+                ToolRecord::finished(
                     tool_name,
                     &arguments,
                     status,
                     &content,
                     command_result.as_deref(),
-                ));
-                match self.take_settling_progress(&call_id) {
-                    Some(line) => self.write_status(StatusBlock::Progress, &line),
-                    None => Ok(()),
-                }
-                .and_then(|()| self.finish_command_output(&call_id))
-            }
+                ),
+            ),
             UiEvent::ToolRejected {
                 call_id,
                 tool_name,
@@ -1106,6 +1102,15 @@ impl Presenter {
                 false
             }
         }
+    }
+
+    fn tool_finished(&mut self, call_id: &ToolCallId, record: ToolRecord) -> io::Result<()> {
+        self.tool_calls.push(record);
+        match self.take_settling_progress(call_id) {
+            Some(line) => self.write_status(StatusBlock::Progress, &line),
+            None => Ok(()),
+        }
+        .and_then(|()| self.finish_command_output(call_id))
     }
 
     fn tool_started(
