@@ -14,7 +14,7 @@ use ofx_contract::{
     SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId, TurnOutcome, UiCommand,
     UiEvent,
 };
-use ofx_session::{PendingRecovery, SessionError, prompt_display_title};
+use ofx_session::{SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -28,7 +28,7 @@ use crate::app_commands::{
 use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{
-    NOT_CONTINUED, Persistence, RECOVERY_TOPIC, RestoredPreferences, SessionTitle, continued_turn,
+    NOT_CONTINUED, Persistence, RECOVERY_TOPIC, RestoredPreferences, SessionTitle,
 };
 use crate::approval_queue::ApprovalQueue;
 use crate::model_cache_runtime::ModelSource;
@@ -470,10 +470,10 @@ impl Controller {
                 .persistence
                 .as_ref()
                 .and_then(Persistence::resumed_title);
-            let (opened, pending) = self
+            let (opened, continues) = self
                 .persistence
                 .as_mut()
-                .map_or((None, None), |persistence| {
+                .map_or((None, false), |persistence| {
                     persistence.open(&mut self.agent)
                 });
             if let Some(title) = resumed_title {
@@ -481,7 +481,7 @@ impl Controller {
             }
             self.bind_children();
             self.session_notice(opened);
-            self.continue_recovery(pending);
+            self.continue_recovery(continues);
         }
         if let Some(herdr) = &self.herdr {
             herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
@@ -697,7 +697,7 @@ impl Controller {
                 });
                 self.show_startup_notices();
                 self.session_notice(switched.notice);
-                self.continue_recovery(switched.pending);
+                self.continue_recovery(switched.continues);
             }
             Err(refused) => {
                 self.session_notice(refused.notice);
@@ -706,12 +706,11 @@ impl Controller {
         }
     }
 
-    fn continue_recovery(&mut self, pending: Option<PendingRecovery>) {
-        let Some(pending) = pending else {
+    fn continue_recovery(&mut self, continues: bool) {
+        let Some(persistence) = self.persistence.as_ref().filter(|_| continues) else {
             return;
         };
-        match continued_turn(
-            pending,
+        match persistence.continue_recovery(
             &self.state.setup,
             &self.state.model,
             self.state.fast_mode,

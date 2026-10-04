@@ -3,14 +3,14 @@ use ofx_contract::{
     HistoryEntry, Notice, NoticeTone, ResumeRefusal, SessionCursor, SessionPage, SessionRow,
     SessionScope,
 };
-use ofx_session::{ListScope, PendingRecovery, ResumeContinuation, SessionError, SessionSummary};
+use ofx_session::{ListScope, ResumeContinuation, SessionError, SessionSummary};
 
 use super::persistence::{Persistence, SESSION_TOPIC};
 use super::{LiveSession, RestoredPreferences, ResumedSession};
 use crate::app_bootstrap_runtime::AgentSetup;
 
 pub(crate) struct Switched {
-    pub(crate) pending: Option<PendingRecovery>,
+    pub(crate) continues: bool,
     pub(crate) history: Vec<HistoryEntry>,
     pub(crate) title: Option<String>,
     pub(crate) preferences: RestoredPreferences,
@@ -76,7 +76,7 @@ impl Persistence {
         }
         self.store.move_here(&mut session).map_err(refused)?;
         let mut resumed = ResumedSession::for_shell(session).map_err(refused)?;
-        let pending = resumed.take_pending_recovery();
+        let continues = resumed.take_continuation();
         let history = resumed.transcript(setup).map_err(refused)?;
         let title = resumed.display_title().map(str::to_owned);
         let preferences = self.overrides.restore(resumed.preferences());
@@ -88,7 +88,7 @@ impl Persistence {
         let notice = self.remember(live.id());
         self.live = Some(live);
         Ok(Switched {
-            pending,
+            continues,
             history,
             title,
             preferences,

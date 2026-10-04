@@ -1090,6 +1090,38 @@ fn a_compaction_prepared_checkpoint_is_committed_when_the_session_opens() {
 }
 
 #[test]
+fn a_refused_credential_leaves_the_checkpoint_pending_until_it_is_settled() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(3, &interrupted_checkpoint());
+    let mut resumed = fixture.resume().unwrap();
+    assert!(matches!(
+        resumed.take_authorized_recovery(RouteCredential::configured()),
+        Err(SessionError::RecoveryCredentialAuthorityChanged)
+    ));
+    assert!(resumed.recovery_transcript().is_some());
+    resumed.settle_recovery().unwrap();
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+    assert!(matches!(
+        resumed.take_authorized_recovery(RouteCredential::configured()),
+        Err(SessionError::NoPendingRecovery)
+    ));
+
+    let unsent = interrupted_checkpoint().replace(
+        "\"consumed_provider_attempts\":1",
+        "\"consumed_provider_attempts\":0",
+    );
+    fixture.save_checkpoint(u64::try_from(fixture.log().len()).unwrap(), &unsent);
+    drop(resumed);
+    let mut resumed = fixture.resume().unwrap();
+    let pending = resumed
+        .take_authorized_recovery(RouteCredential::configured())
+        .unwrap();
+    assert_eq!(pending.prompt(), "fix the build");
+    assert!(resumed.recovery_transcript().is_none());
+}
+
+#[test]
 fn a_pending_checkpoint_shows_its_prompt_replies_and_steering() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());

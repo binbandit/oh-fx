@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
-use ofx_contract::{Notice, NoticeTone, ReasoningEffort, TurnOutcome};
-use ofx_session::{
-    PendingRecovery, SessionCatalog, SessionError, SessionPreferences, SessionStore,
-};
+use ofx_contract::{Notice, NoticeTone, ReasoningEffort, RecoveredTurn, TurnOutcome};
+use ofx_session::{SessionCatalog, SessionError, SessionPreferences, SessionStore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -67,15 +65,15 @@ impl Persistence {
             .map(str::to_owned)
     }
 
-    pub(crate) fn open(&mut self, agent: &mut Agent) -> (Option<Notice>, Option<PendingRecovery>) {
+    pub(crate) fn open(&mut self, agent: &mut Agent) -> (Option<Notice>, bool) {
         let Some(Resumption {
             mut session,
             remember,
         }) = self.resumption.take()
         else {
-            return (self.begin_fresh(agent), None);
+            return (self.begin_fresh(agent), false);
         };
-        let pending = session.take_pending_recovery();
+        let continues = session.take_continuation();
         let live = LiveSession::resume(session, self.route.clone(), agent);
         live.attach(agent);
         let notice = if remember {
@@ -84,7 +82,19 @@ impl Persistence {
             None
         };
         self.live = Some(live);
-        (notice, pending)
+        (notice, continues)
+    }
+
+    pub(crate) fn continue_recovery(
+        &self,
+        setup: &AgentSetup,
+        model: &str,
+        fast_mode: bool,
+    ) -> Result<RecoveredTurn, SessionError> {
+        self.live
+            .as_ref()
+            .ok_or(SessionError::NoPendingRecovery)?
+            .continue_recovery(setup, model, fast_mode)
     }
 
     pub(crate) fn begin_fresh(&mut self, agent: &mut Agent) -> Option<Notice> {
