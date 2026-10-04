@@ -13,8 +13,8 @@ use ofx_agent::{
 };
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
-    ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, open_store,
-    recovered_turn,
+    ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, default_mode,
+    open_store, recovered_turn,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -481,6 +481,7 @@ async fn prepare_agent(
         executions: request.executions,
         endpoints,
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
+        mode: Some(default_mode()),
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending

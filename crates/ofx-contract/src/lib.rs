@@ -4,6 +4,7 @@ mod compactor_settings;
 mod history_turn;
 mod ids;
 mod model_capabilities;
+mod modes;
 mod permission_gate;
 mod session_picker;
 mod skill_menu;
@@ -15,6 +16,7 @@ mod tool_dispatch;
 mod tool_presentation;
 mod tool_result_errors;
 mod tool_result_limits;
+mod tool_set;
 mod types;
 mod ui;
 
@@ -27,6 +29,7 @@ pub use history_turn::{
 };
 pub use ids::{RequestId, ToolCallId, TurnId};
 pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
+pub use modes::{ActiveMode, ModeRegistry, ModeSpec, ToolPolicy};
 pub use permission_gate::{
     Admission, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest, FileChange,
     FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate, ProposedFileChange,
@@ -69,6 +72,7 @@ pub use tool_result_errors::{
     tool_permission_denied_json, tool_review_held_json, valued_execution_failure_json,
 };
 pub use tool_result_limits::{DEFAULT_MAX_TOOL_RESULT_BYTES, prepare_model_output};
+pub use tool_set::ToolSet;
 pub use types::{
     CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
     FileChangeStats, FinishReason, LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction,

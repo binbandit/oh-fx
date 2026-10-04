@@ -2642,6 +2642,7 @@ mod approvals;
 mod capabilities;
 mod compaction;
 mod malformed_arguments;
+mod modes;
 mod project_context;
 mod recovery;
 mod recovery_pause;

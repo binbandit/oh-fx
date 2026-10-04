@@ -54,6 +54,17 @@ pub struct ExecutionFailure<'a> {
     pub suggestion: Option<&'a str>,
 }
 
+pub(crate) fn pre_tool_use_blocked_json(tool_name: &str, reason: &str) -> String {
+    tool_execution_failure_json(&ExecutionFailure {
+        tool_name,
+        message: reason,
+        details: &[],
+        suggestion: Some(
+            "Do not retry the same tool call unchanged. Adjust the request or use an allowed alternative.",
+        ),
+    })
+}
+
 pub fn tool_execution_failure_json(failure: &ExecutionFailure<'_>) -> String {
     let details = failure
         .details
