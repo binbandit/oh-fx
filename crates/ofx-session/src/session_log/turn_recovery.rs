@@ -13,7 +13,7 @@ use crate::session_error::SessionError;
 use crate::session_event::{ConversationEvent, FileEvidence, InterruptReason, InterruptedEvent};
 use crate::session_log::conversation_progress::ProgressPoint;
 use crate::session_log::conversation_writer::ConversationWriter;
-use crate::session_log::managed_file::read_managed_file;
+use crate::session_log::managed_file::{entry_exists, read_managed_file};
 use crate::session_log::now_ms;
 use crate::session_log::turn_events::{TurnArtifacts, saved_replay, turn_events};
 
@@ -59,8 +59,13 @@ impl PendingRecovery {
 pub(crate) fn open_unfinished_turn(
     dir: &PrivateDir,
     writer: &mut ConversationWriter,
+    provider: &SavedProvider,
 ) -> Result<Recovery, SessionError> {
     if let Some(checkpoint) = read_checkpoint(dir, writer.last_seq())? {
+        if checkpoint.compaction_prepared() {
+            commit_checkpoint(dir, writer, provider, Box::new(checkpoint))?;
+            return Ok(Recovery::Absent);
+        }
         return Ok(Recovery::Pending(Box::new(checkpoint)));
     }
     if writer.turn_open() {
@@ -156,6 +161,15 @@ fn spilled_output(dir: &PrivateDir, result: &StepResult<'_>) -> SavedOutput {
         handle: Some(handle),
         preview: Some(preview(result.output).to_owned()),
     }
+}
+
+pub(crate) fn recovery_was_asked(dir: &PrivateDir) -> bool {
+    entry_exists(dir, RECOVERY_ASKED_FILE).unwrap_or(false)
+}
+
+pub(crate) fn mark_recovery_asked(dir: &PrivateDir) {
+    let marker = format!("{{\"asked_at_ms\":{}}}\n", now_ms());
+    let _ = dir.replace(RECOVERY_ASKED_FILE, marker.as_bytes());
 }
 
 pub(crate) fn clear_recovery(dir: &PrivateDir) {
