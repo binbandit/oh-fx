@@ -8,8 +8,8 @@ use ofx_agent::{
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
-    ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider, ReasoningEffort,
-    ReviewTransport, SubagentProvider, Tool, TurnId,
+    ActiveMode, ApprovalRequest, CapabilityResolver, LivePermissionMode, ModelProvider,
+    ReasoningEffort, ReviewTransport, SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
@@ -35,6 +35,7 @@ pub(crate) struct ChildFactory {
     pub(crate) workspace_root: PathBuf,
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) parent: Mutex<AgentConfig>,
+    pub(crate) mode: Option<ActiveMode>,
 }
 
 pub(crate) struct Delegation {
@@ -118,6 +119,9 @@ impl ChildAgents for ChildFactory {
         }
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.approvals().clone());
+        }
+        if let Some(mode) = self.mode {
+            agent = agent.with_mode(mode);
         }
         match &self.project {
             Some((provider, snapshot)) => {
