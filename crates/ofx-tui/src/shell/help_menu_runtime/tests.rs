@@ -1,5 +1,10 @@
-use ofx_contract::{SkillMenuFocus, UiCommand, UiEvent};
+use std::path::PathBuf;
 
+use ofx_contract::{
+    SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource, UiCommand, UiEvent,
+};
+
+use crate::shell::SkillCatalogSource;
 use crate::shell::test_shell::TestShell;
 
 const HEADER: &str = "Commands 4  [All]  General  Model";
@@ -153,4 +158,38 @@ fn escape_closes_the_menu_and_clears_its_query() {
     let screen = test.screen();
     assert!(!screen.contains("Commands"), "{screen}");
     assert!(screen.contains("auto · model-a"), "{screen}");
+}
+
+struct ReviewSkill;
+
+impl SkillCatalogSource for ReviewSkill {
+    fn menu_items(&self) -> Vec<SkillMenuItem> {
+        vec![SkillMenuItem {
+            name: "review".to_owned(),
+            description: "review workflow".to_owned(),
+            path: PathBuf::from("/skills/review"),
+            source: SkillMenuSource::OhFx,
+            group: SkillMenuGroup::Workspace,
+            scope: "oh-fx · Workspace".to_owned(),
+            source_label: String::new(),
+        }]
+    }
+}
+
+#[test]
+fn skill_mentions_stay_search_text_while_the_menu_is_open() {
+    let mut test = TestShell::start_with(|options| {
+        options.skill_catalog = Some(Box::new(ReviewSkill));
+    });
+    test.deliver(UiEvent::HelpRequested);
+    let screen = press(&mut test, b"\x1b[200~line1\n$rev\x1b[201~");
+    assert!(test.shell.skills_menu.is_none());
+    assert!(screen.contains("No commands found."), "{screen}");
+    assert!(!screen.contains("Skills"), "{screen}");
+    assert_eq!(test.shell.composer.text(), "line1\n$rev");
+    press(&mut test, b"\x1b[A");
+    assert!(test.shell.composer.cursor() <= "line1".len());
+    press(&mut test, b"\x1b[B $");
+    assert!(test.shell.skills_menu.is_none());
+    assert!(test.shell.help_menu.is_some());
 }

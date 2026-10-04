@@ -170,6 +170,7 @@ impl Shell<'_> {
 
     pub(super) fn open_pasted_skill_mention(&mut self, start: usize, pasted: &str) {
         if self.skills_menu.is_some()
+            || self.help_menu.is_some()
             || self.model_menu.is_some()
             || self.model_draft.is_some()
             || self.skill_catalog.is_none()
