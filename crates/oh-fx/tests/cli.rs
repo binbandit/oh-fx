@@ -318,7 +318,6 @@ fn interactive_and_resume_launches_need_a_terminal() {
 fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
     for (args, kind) in [
         (&["models", "--json"][..], "models"),
-        (&["doctor", "--json"], "doctor"),
         (&["balance", "--json"], "credits"),
         (&["sessions", "--json"], "sessions"),
         (&["session", "last", "--json"], "session"),

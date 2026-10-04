@@ -166,6 +166,17 @@ impl fmt::Display for ConfigDiagnostic {
     }
 }
 
+impl ConfigDiagnostic {
+    pub fn doctor_detail(&self) -> String {
+        let rendered = self.to_string();
+        let (layer, detail) = rendered
+            .strip_prefix("config ")
+            .and_then(|rest| rest.split_once(": "))
+            .unwrap_or(("", &rendered));
+        format!("{layer} config diagnostic: {detail}")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SettingsError {
     #[error("{0}")]
@@ -413,6 +424,28 @@ impl Settings {
 
     pub fn diagnostics(&self) -> &[ConfigDiagnostic] {
         &self.diagnostics
+    }
+
+    pub fn user_file(paths: &ProfilePaths) -> PathBuf {
+        paths.config.join(SETTINGS_FILE)
+    }
+
+    pub fn project_file(workspace_root: &Path) -> PathBuf {
+        workspace_root.join(PROJECT_FILE)
+    }
+
+    pub fn user_layer_rejected(&self) -> bool {
+        self.layer_rejected(ConfigLayer::User)
+    }
+
+    pub fn project_layer_rejected(&self) -> bool {
+        self.layer_rejected(ConfigLayer::Project)
+    }
+
+    fn layer_rejected(&self, layer: ConfigLayer) -> bool {
+        self.diagnostics.iter().any(|diagnostic| {
+            diagnostic.layer == layer && diagnostic.cause.resolution_failure().is_some()
+        })
     }
 
     pub fn workspace_entry(&self) -> Option<&Map<String, Value>> {
@@ -1353,6 +1386,26 @@ mod tests {
         let listed =
             fixture_settings(r#"{"grok_model":"old-grok","models":{"grok":"listed-grok"}}"#);
         assert_eq!(listed.saved_model(&ProviderId::Grok), Some("listed-grok"));
+    }
+
+    #[test]
+    fn doctor_details_name_the_layer_before_the_diagnostic() {
+        let fixture = fixture(Some("{"), Some(r#"{"model":"x"}"#));
+        let settings = load(&fixture).unwrap();
+        let details: Vec<String> = settings
+            .diagnostics()
+            .iter()
+            .map(ConfigDiagnostic::doctor_detail)
+            .collect();
+        assert_eq!(
+            details,
+            [
+                "project config diagnostic: ignored_project_user_only_setting; key=model",
+                "user config diagnostic: malformed_settings"
+            ]
+        );
+        assert!(settings.user_layer_rejected());
+        assert!(!settings.project_layer_rejected());
     }
 
     #[test]

@@ -50,6 +50,10 @@ pub struct SessionCatalog {
 }
 
 impl SessionCatalog {
+    pub fn summaries(&self) -> &[SessionSummary] {
+        &self.summaries
+    }
+
     pub fn page(
         &self,
         scope: ListScope,
@@ -223,6 +227,10 @@ impl SessionStore {
             }
             _ => SessionDisposal::Retained,
         }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.sessions.is_some()
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession, SessionError> {
