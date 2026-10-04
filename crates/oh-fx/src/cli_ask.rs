@@ -28,6 +28,7 @@ use ofx_contract::{
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
+use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_session::{
     SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
 };
@@ -189,6 +190,7 @@ impl From<ConnectError> for Failure {
             }
             ConnectError::Codex(error) => error.into(),
             ConnectError::InvalidModel(model) => Self::invalid_model(model),
+            ConnectError::Mcp(error) => Self::code(error.to_string()),
         }
     }
 }
@@ -372,8 +374,25 @@ async fn answer(
     cancel: &CancellationToken,
     received: &ReceivedSignals,
 ) -> Result<ExitCode, Signalled> {
+    let mut mcp = None;
+    let answered = respond(request, endpoints, echo, cancel, received, &mut mcp).await;
+    if let Some(mcp) = mcp {
+        mcp.shutdown(ShutdownMode::Immediate).await;
+    }
+    answered
+}
+
+async fn respond(
+    request: &AskRequest<'_>,
+    endpoints: SubscriptionEndpoints,
+    echo: Option<Arc<CommandEcho>>,
+    cancel: &CancellationToken,
+    received: &ReceivedSignals,
+    mcp: &mut Option<Arc<McpRuntime>>,
+) -> Result<ExitCode, Signalled> {
     let args = request.args;
-    let prepared = received.unless_signalled(prepare_agent(request, endpoints, cancel).await)?;
+    let prepared =
+        received.unless_signalled(prepare_agent(request, endpoints, cancel, mcp).await)?;
     let PreparedAsk {
         mut agent,
         model,
@@ -421,6 +440,7 @@ async fn prepare_agent(
     request: &AskRequest<'_>,
     endpoints: SubscriptionEndpoints,
     cancel: &CancellationToken,
+    mcp: &mut Option<Arc<McpRuntime>>,
 ) -> Result<PreparedAsk, Failure> {
     let args = request.args;
     let mut profile = Profile::load().map_err(|error| Failure::code(error.to_string()))?;
@@ -456,6 +476,10 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
     };
     let setup = profile.connect(launch, cancel).await?;
+    *mcp = setup.mcp().cloned();
+    if let Some(mcp) = setup.mcp() {
+        start_mcp(mcp, cancel).await?;
+    }
     let store = match &resumed {
         Some(_) => None,
         None if args.session.no_save => None,
@@ -491,6 +515,38 @@ async fn prepare_agent(
         saved,
         title,
     })
+}
+
+async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), Failure> {
+    let mut lines = String::new();
+    for diagnostic in mcp.workspace_diagnostics() {
+        lines.push_str("oh-fx ask: ");
+        lines.push_str(&render_workspace_diagnostic(diagnostic));
+        lines.push('\n');
+    }
+    let pending = mcp.pending_workspace_names();
+    if !pending.is_empty() {
+        let names: Vec<String> = pending
+            .iter()
+            .map(|name| encode_terminal_safe(name.as_bytes(), usize::MAX).text)
+            .collect();
+        lines.push_str("oh-fx ask: skipped unapproved project MCP servers: ");
+        lines.push_str(&names.join(", "));
+        lines.push_str(". Approve with oh-fx mcp trust approve <name> before retrying.\n");
+    }
+    write_stderr(&lines).map_err(|error| Failure::written(&error))?;
+    let mut connecting = mcp.connect(StartupPhase::All);
+    tokio::select! {
+        () = &mut connecting => {}
+        () = cancel.cancelled() => {
+            connecting.abandon().await;
+            return Ok(());
+        }
+    }
+    match mcp.required_startup_failure() {
+        Some(failure) => Err(Failure::notice("McpRequiredServerUnavailable", failure)),
+        None => Ok(()),
+    }
 }
 
 fn announce_settings(

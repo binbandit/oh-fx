@@ -138,9 +138,26 @@ impl PermissionGate for PermissionPolicy {
         command_admission(self.mode.get(), &self.workspace_root, request)
     }
 
+    fn admit_mcp_tool(&self, call: &ToolCall) -> Admission {
+        let grant = SessionGrant::McpTool(call.name.clone());
+        match self.mode.get() {
+            PermissionMode::Yolo => Admission::Allowed(PathAccess::WorkspaceOrExternal),
+            _ if self.session_grants.contains(&grant) => {
+                Admission::Allowed(PathAccess::WorkspaceOrExternal)
+            }
+            PermissionMode::Ask => Admission::ApprovalRequired,
+            PermissionMode::Auto => Admission::ReviewRequired,
+        }
+    }
+
     fn approval_scope(&self, action: GatedAction<'_>) -> ApprovalScope {
         match action {
             GatedAction::Call(call) => self.call_approval_scope(call),
+            GatedAction::McpTool(call) => ApprovalScope {
+                target: None,
+                access: PathAccess::WorkspaceOrExternal,
+                always: Some(SessionGrant::McpTool(call.name.clone())),
+            },
             GatedAction::FileMutation(mutation) => ApprovalScope {
                 target: None,
                 access: PathAccess::WorkspaceOrExternal,
@@ -1059,6 +1076,44 @@ mod tests {
         assert_eq!(
             policy.admit(&call),
             Admission::Allowed(PathAccess::WorkspaceOnly)
+        );
+    }
+
+    #[test]
+    fn mcp_tools_follow_the_mode_and_an_always_grant_covers_one_tool() {
+        let call = |name: &str| ToolCall::new("call-1", name, "{}");
+        let mode = LivePermissionMode::from(PermissionMode::Ask);
+        let policy = PermissionPolicy::new(mode.clone(), "/ws");
+        let send = call("mcp_mail_send");
+        assert_eq!(policy.admit_mcp_tool(&send), Admission::ApprovalRequired);
+        let scope = policy.approval_scope(GatedAction::McpTool(&send));
+        assert_eq!(
+            scope.always,
+            Some(SessionGrant::McpTool("mcp_mail_send".to_owned()))
+        );
+        approve_always(&policy, GatedAction::McpTool(&send));
+        assert_eq!(
+            policy.admit_mcp_tool(&send),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
+        );
+        assert_eq!(
+            policy.admit_mcp_tool(&call("mcp_mail_delete")),
+            Admission::ApprovalRequired
+        );
+        assert!(
+            policy
+                .notice_body()
+                .contains(" - mcp_mail_send -> mcp_mail_send")
+        );
+        mode.set(PermissionMode::Auto);
+        assert_eq!(
+            policy.admit_mcp_tool(&call("mcp_mail_delete")),
+            Admission::ReviewRequired
+        );
+        mode.set(PermissionMode::Yolo);
+        assert_eq!(
+            policy.admit_mcp_tool(&call("mcp_mail_delete")),
+            Admission::Allowed(PathAccess::WorkspaceOrExternal)
         );
     }
 }

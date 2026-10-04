@@ -47,7 +47,7 @@ fn tool_request() -> OwnedRequest {
         tools: vec![ToolSpec {
             name: "read_file".to_owned(),
             description: "Read a file.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         }],
         ..test_request()
     }

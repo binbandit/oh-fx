@@ -48,6 +48,12 @@ pub enum McpError {
     McpProtocolError(RpcError),
     #[error("McpInvalidServerConfig")]
     McpInvalidServerConfig,
+    #[error("McpToolCatalogChanged")]
+    McpToolCatalogChanged,
+    #[error("McpRestartLimitReached")]
+    McpRestartLimitReached,
+    #[error("McpToolNameLimitExceeded")]
+    McpToolNameLimitExceeded,
     #[error("McpWorkspaceApprovalRequired")]
     McpWorkspaceApprovalRequired,
     #[error("McpHeaderEnvironmentMissing")]

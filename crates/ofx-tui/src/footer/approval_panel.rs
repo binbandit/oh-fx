@@ -4,7 +4,7 @@ use std::ops::Range;
 use ofx_contract::ApprovalDecision;
 use ofx_text::visible_width;
 
-use super::approval_content::{ActionBlock, ApprovalContent};
+use super::approval_content::{ActionBlock, ApprovalContent, MCP_KIND};
 use super::command_text::command_segments;
 use super::phrase::Phrase;
 use crate::row_text::{Paint, Row};
@@ -57,6 +57,17 @@ impl Choice {
 pub(crate) fn choices_for(content: &ApprovalContent) -> Vec<Choice> {
     if content.deny_only() {
         return vec![no_choice()];
+    }
+    if content.kind == MCP_KIND {
+        return vec![
+            Choice::new(b'1', Phrase::plain("1. Allow once"), ApprovalDecision::Once),
+            Choice::new(
+                b'2',
+                Phrase::plain("2. Allow this MCP tool for this session"),
+                ApprovalDecision::Always,
+            ),
+            Choice::new(b'3', Phrase::plain("3. Deny"), ApprovalDecision::Deny),
+        ];
     }
     choices(content.remember.as_ref())
 }
@@ -1008,6 +1019,34 @@ mod tests {
                 "  mcp_fixture_echo ·",
                 r#"  {"text":"\x1b\x0a\xff"#,
                 r#"  sentinel"}"#
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_tool_choices_use_the_allow_and_deny_wording() {
+        let content = ApprovalContent {
+            kind: MCP_KIND,
+            question: "Allow this MCP tool call?",
+            reason: None,
+            action: Vec::new(),
+            remember: None,
+            requester: None,
+        };
+        let labels: Vec<_> = choices_for(&content)
+            .into_iter()
+            .map(|choice| (choice.key, choice.label.fit(usize::MAX).0, choice.decision))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                (b'1', "1. Allow once".to_owned(), ApprovalDecision::Once),
+                (
+                    b'2',
+                    "2. Allow this MCP tool for this session".to_owned(),
+                    ApprovalDecision::Always
+                ),
+                (b'3', "3. Deny".to_owned(), ApprovalDecision::Deny),
             ]
         );
     }

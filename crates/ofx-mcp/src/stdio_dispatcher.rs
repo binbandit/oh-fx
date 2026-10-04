@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -11,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::Instant;
 
 use crate::docker_run::{self, Cleanup};
 use crate::error::McpError;
@@ -19,10 +20,11 @@ use crate::legacy_elicitation_runtime::{
     ElicitationContext, method_not_found_response, server_request_failed_response,
 };
 use crate::mcp_contract::validate_json_rpc_response_envelope;
-use crate::protocol_messages::build_cancellation_notification;
+use crate::protocol_messages::{build_cancellation_notification, parse_json};
+use crate::timing::{spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
-    BoxFuture, McpTransport, Progress, ProgressSink, ServerRequestPolicy, ShutdownMode,
-    TransportRequest,
+    Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
+    ShutdownMode, TransportRequest,
 };
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
@@ -37,7 +39,7 @@ const STDERR_TAIL_CAPACITY: usize = 3072;
 const REJECTED_OUTPUT_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StderrCapture {
+pub(crate) struct StderrCapture {
     head: Vec<u8>,
     tail: Vec<u8>,
     omitted: bool,
@@ -64,21 +66,21 @@ impl StderrCapture {
         self.tail.extend_from_slice(rest);
     }
 
-    pub fn head(&self) -> &[u8] {
+    pub(crate) fn head(&self) -> &[u8] {
         &self.head
     }
 
-    pub fn tail(&self) -> &[u8] {
+    pub(crate) fn tail(&self) -> &[u8] {
         &self.tail
     }
 
-    pub fn omitted(&self) -> bool {
+    pub(crate) fn omitted(&self) -> bool {
         self.omitted
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RejectedOutput {
+pub(crate) struct RejectedOutput {
     pub bytes: Vec<u8>,
     pub truncated: bool,
 }
@@ -94,7 +96,7 @@ impl RejectedOutput {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ChildDiagnostics {
+pub(crate) struct ChildDiagnostics {
     pub status: Option<ExitStatus>,
     pub stderr: StderrCapture,
     pub rejected_output: Option<RejectedOutput>,
@@ -164,13 +166,13 @@ enum ProgressToken {
 #[derive(Debug, PartialEq)]
 enum Inbound {
     Response(ResponseId),
-    Progress(ProgressToken, Progress),
+    ProgressNotification(ProgressToken, ProgressNotification),
     Notification,
     Cancelled,
     Request,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     pid: u32,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     responses: Correlator<String, McpError>,
@@ -235,9 +237,8 @@ impl StdioDispatcher {
             notifications,
             diagnostics: Mutex::new(ChildDiagnostics::default()),
         });
-        let stderr_task =
-            stderr.map(|stderr| tokio::spawn(drain_stderr(Arc::clone(&shared), stderr)));
-        let reader = tokio::spawn(reader_main(Arc::clone(&shared), stdout, child));
+        let stderr_task = stderr.map(|stderr| spawn(drain_stderr(Arc::clone(&shared), stderr)));
+        let reader = spawn(reader_main(Arc::clone(&shared), stdout, child));
         Ok(Self {
             shared,
             reader: Mutex::new(Some(reader)),
@@ -255,10 +256,8 @@ impl StdioDispatcher {
     }
 
     pub(crate) async fn settled_diagnostics(&self) -> ChildDiagnostics {
-        let mut reader_done = self.shared.reader_done.subscribe();
-        let _ = timeout(STDERR_EOF_GRACE * 2, reader_done.wait_for(|done| *done)).await;
-        let mut stderr_done = self.shared.stderr_done.subscribe();
-        let _ = timeout(STDERR_EOF_GRACE, stderr_done.wait_for(|done| *done)).await;
+        wait_until_set(&self.shared.reader_done, STDERR_EOF_GRACE * 2).await;
+        wait_until_set(&self.shared.stderr_done, STDERR_EOF_GRACE).await;
         self.child_diagnostics()
     }
 
@@ -323,13 +322,13 @@ impl StdioDispatcher {
         shared.responses.close(McpError::McpConnectionClosed);
         shared.close_stdin().await;
         match mode {
-            StopMode::Graceful => shared.wait_reader_done(SHUTDOWN_GRACE).await,
-            StopMode::Immediate => shared.wait_reader_done(IMMEDIATE_DRAIN).await,
+            StopMode::Graceful => wait_until_set(&shared.reader_done, SHUTDOWN_GRACE).await,
+            StopMode::Immediate => wait_until_set(&shared.reader_done, IMMEDIATE_DRAIN).await,
             StopMode::Forced | StopMode::Abandon => {}
         }
         if matches!(mode, StopMode::Graceful | StopMode::Forced) && shared.child_may_be_running() {
             terminate_child_gracefully(shared.pid);
-            shared.wait_reader_done(TERMINATION_GRACE).await;
+            wait_until_set(&shared.reader_done, TERMINATION_GRACE).await;
         }
         shared.kill_child();
         let reader = lock(&self.reader).take();
@@ -367,7 +366,7 @@ impl Drop for StdioDispatcher {
         kill_process_group(self.shared.pid);
         let cleanup = lock(&self.docker_cleanup).take();
         if let (Some(cleanup), Ok(runtime)) = (cleanup, tokio::runtime::Handle::try_current()) {
-            runtime.spawn(cleanup.run());
+            spawn_on(&runtime, cleanup.run());
         }
     }
 }
@@ -382,23 +381,24 @@ impl McpTransport for StdioDispatcher {
         Ok(id)
     }
 
-    fn request(&self, request: TransportRequest) -> BoxFuture<'_, Result<String, McpError>> {
-        Box::pin(self.run_request(request))
+    fn request(
+        &self,
+        request: TransportRequest,
+    ) -> impl Future<Output = Result<String, McpError>> + Send {
+        self.run_request(request)
     }
 
-    fn notify(&self, body: String, deadline: Instant) -> BoxFuture<'_, Result<(), McpError>> {
-        Box::pin(async move {
-            let phase = AtomicU8::new(WritePhase::Waiting as u8);
-            self.shared.write_bounded(&body, deadline, &phase).await
-        })
+    async fn notify(&self, body: String, deadline: Instant) -> Result<(), McpError> {
+        let phase = AtomicU8::new(WritePhase::Waiting as u8);
+        self.shared.write_bounded(&body, deadline, &phase).await
     }
 
     fn is_running(&self) -> bool {
         *lock(&self.shared.state) == ConnectionState::Running
     }
 
-    fn shutdown(self: Box<Self>, mode: ShutdownMode) -> BoxFuture<'static, ()> {
-        Box::pin(async move { self.stop(mode.into()).await })
+    fn shutdown(&self, mode: ShutdownMode) -> impl Future<Output = ()> + Send {
+        self.stop(mode.into())
     }
 }
 
@@ -437,11 +437,6 @@ impl Shared {
         if self.child_may_be_running() {
             terminate_child(self.pid);
         }
-    }
-
-    async fn wait_reader_done(&self, limit: Duration) {
-        let mut done = self.reader_done.subscribe();
-        let _ = timeout(limit, done.wait_for(|done| *done)).await;
     }
 
     async fn close_stdin(&self) {
@@ -499,7 +494,7 @@ impl Shared {
         written.map_err(write_error)
     }
 
-    async fn send_cancellation(&self, request_id: u64, reason: &str) {
+    pub(crate) async fn send_cancellation(&self, request_id: u64, reason: &str) {
         let body = build_cancellation_notification(request_id, reason);
         let phase = AtomicU8::new(WritePhase::Waiting as u8);
         let _ = self
@@ -512,7 +507,7 @@ impl Shared {
     }
 
     fn dispatch_frame(self: &Arc<Self>, frame: Vec<u8>) -> Result<(), McpError> {
-        let Ok(value) = serde_json::from_slice::<Value>(&frame) else {
+        let Some(value) = parse_json(&frame) else {
             self.record_rejected_output(&frame);
             return Err(McpError::McpInvalidJson);
         };
@@ -527,7 +522,7 @@ impl Shared {
         };
         match inbound {
             Inbound::Response(ResponseId::Integer(id)) => self.deliver_response(id, frame),
-            Inbound::Progress(ProgressToken::Integer(id), progress) => {
+            Inbound::ProgressNotification(ProgressToken::Integer(id), progress) => {
                 let sink = lock(&self.pending)
                     .get(&id)
                     .and_then(|meta| meta.progress.clone());
@@ -540,7 +535,7 @@ impl Shared {
             }
             Inbound::Request => self.dispatch_server_request(frame),
             Inbound::Response(ResponseId::String)
-            | Inbound::Progress(ProgressToken::String, _)
+            | Inbound::ProgressNotification(ProgressToken::String, _)
             | Inbound::Cancelled => {}
         }
         Ok(())
@@ -575,7 +570,7 @@ impl Shared {
             }
         };
         let shared = Arc::clone(self);
-        tokio::spawn(async move {
+        spawn(async move {
             let response = match owner {
                 Some(context) => context
                     .respond(&frame)
@@ -592,6 +587,11 @@ impl Shared {
                 .await;
         });
     }
+}
+
+async fn wait_until_set(flag: &watch::Sender<bool>, limit: Duration) {
+    let mut set = flag.subscribe();
+    let _ = timeout(limit, set.wait_for(|set| *set)).await;
 }
 
 struct PendingMetaGuard<'a> {
@@ -631,11 +631,7 @@ impl Drop for CancelOnDrop<'_> {
         if !self.armed || load_phase(self.phase) != WritePhase::Committed {
             return;
         }
-        let shared = Arc::clone(&self.shared);
-        let id = self.id;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { shared.send_cancellation(id, "Cancelled").await });
-        }
+        Cancellation::Stdio(Arc::clone(&self.shared)).send_in_background(self.id);
     }
 }
 
@@ -679,7 +675,9 @@ async fn drain_stderr(shared: Arc<Shared>, mut stderr: ChildStderr) {
         if count == 0 {
             break;
         }
-        lock(&shared.diagnostics).stderr.append(&buffer[..count]);
+        lock(&shared.diagnostics)
+            .stderr
+            .append(buffer.get(..count).unwrap_or_default());
     }
     shared.stderr_done.send_replace(true);
 }
@@ -694,7 +692,7 @@ fn classify_inbound(value: &Value) -> Result<Inbound, McpError> {
         if method == "notifications/progress" {
             let params = object.get("params").ok_or(McpError::McpInvalidProgress)?;
             let (token, progress) = parse_progress(params)?;
-            return Ok(Inbound::Progress(token, progress));
+            return Ok(Inbound::ProgressNotification(token, progress));
         }
         if method == "notifications/cancelled" && parse_cancelled_request_id(object.get("params")) {
             return Ok(Inbound::Cancelled);
@@ -720,7 +718,7 @@ fn parse_cancelled_request_id(params: Option<&Value>) -> bool {
         .is_some()
 }
 
-fn parse_progress(value: &Value) -> Result<(ProgressToken, Progress), McpError> {
+fn parse_progress(value: &Value) -> Result<(ProgressToken, ProgressNotification), McpError> {
     let object = value.as_object().ok_or(McpError::McpInvalidProgress)?;
     let token = match object.get("progressToken") {
         Some(Value::Number(number)) => {
@@ -741,7 +739,7 @@ fn parse_progress(value: &Value) -> Result<(ProgressToken, Progress), McpError> 
     };
     Ok((
         token,
-        Progress {
+        ProgressNotification {
             progress,
             total,
             message,
@@ -880,7 +878,7 @@ done"#;
         let progress = json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":8,"progress":2,"total":4,"message":"half"}});
         assert!(matches!(
             classify_inbound(&progress),
-            Ok(Inbound::Progress(ProgressToken::Integer(8), _))
+            Ok(Inbound::ProgressNotification(ProgressToken::Integer(8), _))
         ));
     }
 
@@ -889,9 +887,9 @@ done"#;
         let value = json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":42,"progress":1.5,"total":3,"message":"working"}});
         assert_eq!(
             classify_inbound(&value),
-            Ok(Inbound::Progress(
+            Ok(Inbound::ProgressNotification(
                 ProgressToken::Integer(42),
-                Progress {
+                ProgressNotification {
                     progress: 1.5,
                     total: Some(3.0),
                     message: Some("working".to_owned()),
@@ -977,7 +975,7 @@ cat >/dev/null"#;
         let (first, second) = tokio::join!(dispatcher.request(first), dispatcher.request(second));
         assert!(first.unwrap().contains("\"first\""));
         assert!(second.unwrap().contains("\"second\""));
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 
     #[tokio::test]
@@ -1000,7 +998,7 @@ cat >/dev/null"#;
         );
         assert_eq!(
             *lock(&seen),
-            vec![Progress {
+            vec![ProgressNotification {
                 progress: 1.0,
                 total: Some(2.0),
                 message: None,
@@ -1010,7 +1008,7 @@ cat >/dev/null"#;
             notifications.recv().await.unwrap()["method"],
             "notifications/tools/list_changed"
         );
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 
     #[tokio::test]
@@ -1034,7 +1032,7 @@ done"#;
             )
             .await
         );
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 
     #[tokio::test]
@@ -1060,7 +1058,7 @@ while :; do sleep 1; done"#;
         );
         let started = std::time::Instant::now();
         let pid = dispatcher.shared.pid;
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(rustix::process::test_kill_process(rustix_pid(pid).unwrap()).is_err());
     }
@@ -1078,7 +1076,7 @@ while :; do sleep 1; done"#;
             diagnostics.rejected_output.map(|output| output.bytes),
             Some(b"Server banner v1".to_vec())
         );
-        Box::new(dispatcher).shutdown(ShutdownMode::Immediate).await;
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
     }
 
     #[tokio::test]
@@ -1094,7 +1092,7 @@ while :; do sleep 1; done"#;
         assert_eq!(diagnostics.status.and_then(|status| status.code()), Some(3));
         assert_eq!(diagnostics.stderr.head(), b"fatal: missing token\n");
         assert!(!dispatcher.is_running());
-        Box::new(dispatcher).shutdown(ShutdownMode::Immediate).await;
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
     }
 
     #[tokio::test]
@@ -1112,7 +1110,7 @@ cat >/dev/null";
             Err(McpError::McpResponseFrameTooLarge)
         );
         assert!(!dispatcher.is_running());
-        Box::new(dispatcher).shutdown(ShutdownMode::Immediate).await;
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
     }
 
     #[tokio::test]
@@ -1179,7 +1177,7 @@ cat >/dev/null";
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let sleeper = sleeper.unwrap();
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
         let mut ended = false;
         for _ in 0..200 {
             if process_ended(sleeper) {
@@ -1203,6 +1201,6 @@ cat >/dev/null"#;
         let outcome = timeout(Duration::from_millis(200), dispatcher.request(call)).await;
         assert!(outcome.is_err());
         assert!(stderr_eventually_contains(&dispatcher, "\"reason\":\"Cancelled\"").await);
-        Box::new(dispatcher).shutdown(ShutdownMode::Graceful).await;
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
     }
 }

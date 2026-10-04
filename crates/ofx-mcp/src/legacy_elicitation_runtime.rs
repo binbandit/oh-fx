@@ -4,6 +4,7 @@ use ofx_jsonrpc::{ErrorCode, Frame, RequestId, RpcError};
 use serde_json::Value;
 
 use crate::error::McpError;
+use crate::protocol_messages::parse_json;
 
 const MAX_SERVER_REQUESTS: usize = 32;
 const MAX_SERVER_REQUEST_FRAME_BYTES: usize = 128 * 1024;
@@ -19,7 +20,7 @@ impl ElicitationContext {
         if frame.len() > MAX_SERVER_REQUEST_FRAME_BYTES {
             return Err(McpError::McpResponseFrameTooLarge);
         }
-        let request: Value = serde_json::from_slice(frame).map_err(|_| McpError::McpInvalidJson)?;
+        let request = parse_json(frame).ok_or(McpError::McpInvalidJson)?;
         let object = request.as_object().ok_or(McpError::McpInvalidJson)?;
         let id = object.get("id").ok_or(McpError::McpInvalidJson)?;
         if !valid_server_request_id(id) {
@@ -67,16 +68,14 @@ fn valid_server_request_id(value: &Value) -> bool {
 }
 
 pub(crate) fn method_not_found_response(frame: &[u8]) -> String {
-    let id = serde_json::from_slice::<Value>(frame)
-        .ok()
+    let id = parse_json(frame)
         .and_then(|request| request.get("id").cloned())
         .unwrap_or(Value::Null);
     error_response(&id, ErrorCode::METHOD_NOT_FOUND, "Method not found")
 }
 
 pub(crate) fn server_request_failed_response(frame: &[u8]) -> String {
-    let id = serde_json::from_slice::<Value>(frame)
-        .ok()
+    let id = parse_json(frame)
         .and_then(|request| request.get("id").cloned())
         .unwrap_or(Value::Null);
     error_response(&id, ErrorCode::INTERNAL_ERROR, "Server request failed")

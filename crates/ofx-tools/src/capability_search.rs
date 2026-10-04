@@ -46,7 +46,7 @@ impl CapabilitySearch {
             spec: ToolSpec {
                 name: NAME.to_owned(),
                 description: DESCRIPTION.to_owned(),
-                input_schema: SCHEMA,
+                input_schema: SCHEMA.into(),
             },
             context: Arc::new(SearchContext {
                 discovery,

@@ -197,7 +197,12 @@ fn unavailable(failure: ReviewFailure, usage: Usage) -> Reviewed {
 
 fn review_view(action: &Action<'_>) -> ReviewView {
     match action {
-        Action::Command { .. } | Action::ShellInput { .. } => ReviewView::Contextual,
+        Action::Command { .. }
+        | Action::ShellInput { .. }
+        | Action::Tool {
+            schema_required: true,
+            ..
+        } => ReviewView::Contextual,
         Action::FileMutation { .. } | Action::Tool { .. } => ReviewView::Normal,
     }
 }
@@ -244,7 +249,7 @@ fn function_spec() -> ToolSpec {
     ToolSpec {
         name: TOOL_NAME.to_owned(),
         description: TOOL_DESCRIPTION.to_owned(),
-        input_schema: TOOL_INPUT_SCHEMA,
+        input_schema: TOOL_INPUT_SCHEMA.into(),
     }
 }
 

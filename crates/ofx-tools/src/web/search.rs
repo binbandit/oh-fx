@@ -17,7 +17,7 @@ impl Default for WebSearch {
             spec: ToolSpec {
                 name: TOOL_NAME.to_owned(),
                 description: DESCRIPTION.to_owned(),
-                input_schema: INPUT_SCHEMA,
+                input_schema: INPUT_SCHEMA.into(),
             },
         }
     }
@@ -57,7 +57,7 @@ mod tests {
         assert!(search.provider_executed());
         assert_eq!(search.spec().name, "web_search");
         assert_eq!(search.spec().description, DESCRIPTION);
-        let schema: Value = serde_json::from_str(search.spec().input_schema).unwrap();
+        let schema: Value = serde_json::from_str(&search.spec().input_schema).unwrap();
         assert_eq!(schema["required"], serde_json::json!(["query"]));
         assert_eq!(schema.to_string(), INPUT_SCHEMA);
     }
