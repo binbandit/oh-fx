@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/core/config/agent_steps.zig"
-status = "partial"
-modules = ["crates/ofx-config/src/config_runtime.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Maximum-step settings and turn limits exist; the full upstream override resolution API and host-specific override consumers are not ported as a shared interface."
+status = "ported"
+modules = ["crates/ofx-config/src/agent_steps.rs", "crates/ofx-config/src/config_runtime.rs", "crates/ofx-agent/src/agent_steps.rs", "crates/ofx-agent/src/orchestrator.rs"]
+note = "The step limit resolves as upstream's resolveMaxAgentStepsWithOverride does, with OH_FX_MAX_AGENT_STEPS read by upstream's unsigned parse, and the orchestrator checks it with allows_step."
 
 [[file]]
 upstream = "src/core/config/config_runtime.zig"

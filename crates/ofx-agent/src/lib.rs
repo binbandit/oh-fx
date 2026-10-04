@@ -1,3 +1,4 @@
+mod agent_steps;
 mod approvals;
 mod assistant_stream;
 mod compactor;
