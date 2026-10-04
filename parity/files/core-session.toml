@@ -74,7 +74,7 @@ note = "Stored result handles and previews exist; paged ResultReader, image snap
 upstream = "src/core/session/session.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session.rs", "crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs", "crates/ofx-session/src/session_log/turn_restore.rs"]
-note = "The modern event, log and store domain exists, and restored turns send their file evidence context as upstream does; the legacy image id repair only older fx sessions need is not needed, and the remaining recovery and child-session domain belongs to OH-37 and OH-28."
+note = "The modern event, log and store domain exists, restored turns send their file evidence context as upstream does, and restored tool steps put their permission feedback after every result; the legacy image id repair only older fx sessions need is not needed, and the remaining recovery and child-session domain belongs to OH-37 and OH-28."
 
 [[file]]
 upstream = "src/core/session/session_adapter.zig"
@@ -137,7 +137,7 @@ note = "Display-title derivation exists; the display.json sidecar belongs to the
 upstream = "src/core/session/session_event.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_event.rs"]
-note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, and provider-executed tool calls and provider-native results round-trip; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
+note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
 
 [[file]]
 upstream = "src/core/session/session_json.zig"

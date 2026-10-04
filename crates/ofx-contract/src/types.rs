@@ -151,6 +151,7 @@ pub enum ChatMessage {
     User {
         content: String,
         restored_steering: bool,
+        feedback_for: Option<ToolCallId>,
     },
     Assistant {
         content: Option<String>,
@@ -170,6 +171,7 @@ impl ChatMessage {
         Self::User {
             content: content.into(),
             restored_steering: false,
+            feedback_for: None,
         }
     }
 
@@ -177,6 +179,15 @@ impl ChatMessage {
         Self::User {
             content: content.into(),
             restored_steering: true,
+            feedback_for: None,
+        }
+    }
+
+    pub fn permission_feedback(call_id: ToolCallId, content: impl Into<String>) -> Self {
+        Self::User {
+            content: content.into(),
+            restored_steering: false,
+            feedback_for: Some(call_id),
         }
     }
 }

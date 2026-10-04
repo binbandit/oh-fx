@@ -125,7 +125,7 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         provider_native: fields.or("provider_native", false, |value| value.as_bool())?,
         review_feedback: fields.fixed("review_feedback")?,
         created_at_ms: fields.or("created_at_ms", 0, |value| value.as_i64())?,
-        permission_feedback: fields.fixed("permission_feedback")?,
+        permission_feedback: fields.or("permission_feedback", Vec::new(), strings)?,
         committed_file_presentation: fields.fixed("committed_file_presentation")?,
         command_replay_ref: fields.fixed("command_replay_ref")?,
         command_replay_bytes: fields.fixed("command_replay_bytes")?,
@@ -149,6 +149,13 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
         })?,
         cancellation_origin: fields.fixed("cancellation_origin")?,
     })
+}
+
+fn strings(value: Json<'_>) -> Option<Vec<String>> {
+    let Json::Array(items) = value else {
+        return None;
+    };
+    items.into_iter().map(string).collect()
 }
 
 fn files(value: Json<'_>) -> Option<Vec<FileEvidence>> {

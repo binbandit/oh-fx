@@ -1082,8 +1082,11 @@ impl Agent {
         let ran = self
             .run_groups(turn, &calls, &mut malformed, &mut feedback, events, cancel)
             .await;
-        self.history
-            .extend(feedback.into_iter().map(ChatMessage::user));
+        self.history.extend(
+            feedback
+                .into_iter()
+                .map(|(call_id, text)| ChatMessage::permission_feedback(call_id, text)),
+        );
         ran?;
         self.settle_batch_retries(turn, all_malformed, more_steps, events)
     }
@@ -1154,7 +1157,7 @@ impl Agent {
         turn: &mut Turn,
         calls: &[ToolCall],
         malformed: &mut [Option<ToolOutput>],
-        feedback: &mut Vec<String>,
+        feedback: &mut Vec<(ToolCallId, String)>,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<(), Stop> {
@@ -1218,7 +1221,7 @@ impl Agent {
         &mut self,
         turn: &mut Turn,
         outcomes: Vec<Settled<'_>>,
-        feedback: &mut Vec<String>,
+        feedback: &mut Vec<(ToolCallId, String)>,
     ) {
         for Settled {
             call,
@@ -1229,7 +1232,7 @@ impl Agent {
             feedback: given,
         } in outcomes
         {
-            feedback.extend(given);
+            feedback.extend(given.map(|text| (call.id.clone(), text)));
             let Some(output) = output else {
                 continue;
             };
@@ -1565,7 +1568,10 @@ impl Agent {
                 ChatMessage::User {
                     content,
                     restored_steering,
-                } => *restored_steering || steering_text(content).is_some(),
+                    feedback_for,
+                } => {
+                    *restored_steering || feedback_for.is_some() || steering_text(content).is_some()
+                }
                 ChatMessage::System { .. } | ChatMessage::Assistant { .. } => false,
             })
     }

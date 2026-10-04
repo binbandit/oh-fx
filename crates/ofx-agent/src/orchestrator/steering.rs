@@ -152,6 +152,7 @@ impl Agent {
             let ChatMessage::User {
                 content,
                 restored_steering: false,
+                feedback_for: None,
             } = message
             else {
                 continue;

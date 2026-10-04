@@ -92,8 +92,13 @@ fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
                         .process
                         .map(|process| format!(" process={process:?}"))
                         .unwrap_or_default();
+                    let feedback = if result.permission_feedback.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" feedback={:?}", result.permission_feedback)
+                    };
                     format!(
-                        "{}={}:{:?}{raw}{whole}{process}",
+                        "{}={}:{:?}{raw}{whole}{process}{feedback}",
                         result.call_id, result.output, result.status
                     )
                 })

@@ -3,6 +3,7 @@ use ofx_contract::{
     ProposedFileChange, RequestId, SessionGrant,
 };
 
+use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 
 #[derive(Default)]
@@ -235,8 +236,11 @@ async fn feedback_given_with_an_answer_follows_every_result_of_its_step() {
     assert_eq!(
         messages[4..],
         [
-            ChatMessage::user("read the tests next"),
-            ChatMessage::user("use the copy in the workspace"),
+            ChatMessage::permission_feedback(ToolCallId::new("call-1"), "read the tests next"),
+            ChatMessage::permission_feedback(
+                ToolCallId::new("call-3"),
+                "use the copy in the workspace"
+            ),
         ]
     );
     assert!(
@@ -244,6 +248,64 @@ async fn feedback_given_with_an_answer_follows_every_result_of_its_step() {
             .iter()
             .all(|message| matches!(message, ChatMessage::Tool { .. })),
         "{messages:?}"
+    );
+}
+
+#[tokio::test]
+async fn feedback_is_saved_with_the_result_it_follows() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"access":"outside","serial":true}"#),
+            ("call-2", r#"{"access":"workspace","serial":true}"#),
+        ]),
+        text_reply("done"),
+    ]);
+    let approvals = Approvals::default();
+    let (log, entries) = MemoryLog::shared();
+    let shared: Arc<FakeProvider> = Arc::clone(&provider);
+    let mut agent = logged(
+        Agent::new(
+            shared,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            Arc::new(RememberingGate::default()),
+            config(),
+        )
+        .with_approvals(approvals.clone()),
+        log,
+    );
+    let cancel = CancellationToken::new();
+    agent
+        .run_turn(
+            "go",
+            &mut |event| {
+                if let UiEvent::ApprovalRequested { request, .. } = &event {
+                    assert!(approvals.resolve(
+                        request.id,
+                        ApprovalAnswer {
+                            decision: ApprovalDecision::Once,
+                            feedback: Some("then read the tests".to_owned()),
+                        }
+                    ));
+                }
+            },
+            &cancel,
+        )
+        .await;
+    let entries = entries.lock().unwrap();
+    let [Logged::Turn { steps, .. }] = entries.as_slice() else {
+        panic!("{entries:?}");
+    };
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(
+        steps[0].contains(
+            r#"call-1=Within(\"/approved/1\"):Success feedback=[\"then read the tests\"]"#
+        ),
+        "{steps:?}"
+    );
+    assert!(
+        steps[0].contains(r#"call-2=WorkspaceOnly:Success""#),
+        "{steps:?}"
     );
 }
 
