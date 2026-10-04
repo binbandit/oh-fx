@@ -20,9 +20,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/session/history_snapshot.zig"
-status = "not-applicable"
-modules = []
-note = "Resume replays events.jsonl itself: a 7.5 MB, 3,000-turn log replays in 15 ms, so the binary history-cache.bin mirror would add a codec for every event type and a writer on every open for little gain, as docs/differences/session-store.md records. Upstream rebuilds the disposable file on its next writable open of a session that lacks it."
+status = "ported"
+modules = ["crates/ofx-session/src/history_snapshot.rs", "crates/ofx-session/src/session_event/history_codec.rs", "crates/ofx-session/src/session_replay.rs"]
+note = "The codec is written out for the event fields oh-fx stores, in upstream's field order, and rejects a set value in a field oh-fx keeps at its default. The cache is not synced after it is written, and an open cuts it to the log's length, as docs/differences/session-store.md records."
 
 [[file]]
 upstream = "src/core/session/js_host_prompt_history.zig"
@@ -184,7 +184,7 @@ note = "Buffered line reading exists; exact-commit, recovery checkpoint and chil
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, the .resume-catalog index exists, history-cache.bin is left out as docs/differences/session-store.md records, and doctor (OH-41) and v2 routing (OH-27) remain."
+note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, the .resume-catalog index and history-cache.bin exist, and doctor (OH-41) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
