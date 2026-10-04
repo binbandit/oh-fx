@@ -1,10 +1,11 @@
 use std::path::Path;
 
-use crate::mcp_contract::{McpServerConfig, ProfileConfigWarning};
+use crate::mcp_contract::{ConfigSource, McpServerConfig, ProfileConfigWarning};
 use crate::profile_store::{ProfileStoreError, load_profile_document};
 use crate::project_config::{
     ProfileParseResult, ProjectMcpChoices, WorkspaceDiagnostic, merge_native,
 };
+use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
 use crate::workspace_config::load_workspace_config_with_environment;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,6 +38,27 @@ pub fn load_native_configs(
         profile_warning: profile.diagnostic,
         workspace_diagnostics: workspace.diagnostics,
     })
+}
+
+pub fn preview_workspace_authority(
+    workspace_root: &Path,
+    choices: Option<&ProjectMcpChoices>,
+    environment: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<String>, ProfileStoreError> {
+    let Some(choices) = choices else {
+        return Ok(Vec::new());
+    };
+    let workspace = load_workspace_config_with_environment(workspace_root, choices, environment)?;
+    let mut names: Vec<String> = Vec::new();
+    for config in workspace.configs {
+        if config.source == ConfigSource::Workspace
+            && decide_startup(&config, StartupPhase::All) == StartupDecision::Connect
+            && !names.contains(&config.name)
+        {
+            names.push(config.name);
+        }
+    }
+    Ok(names)
 }
 
 #[cfg(test)]
@@ -110,6 +132,38 @@ mod tests {
         assert_eq!(
             without_home.configs[0].workspace_admission,
             Some(WorkspaceAdmission::Pending)
+        );
+    }
+
+    #[test]
+    fn workspace_authority_names_the_approved_project_servers_that_may_start() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(
+            workspace.path().join(".mcp.json"),
+            r#"{"mcpServers":{"docs":{"command":"node"},"db":{"command":"node"},"off":{"command":"node","enabled":false}}}"#,
+        )
+        .unwrap();
+        let choices = ProjectMcpChoices {
+            approved: vec!["docs".to_owned(), "off".to_owned()],
+            rejected: vec!["db".to_owned()],
+            ..ProjectMcpChoices::default()
+        };
+        assert_eq!(
+            preview_workspace_authority(workspace.path(), Some(&choices), &|_| None).unwrap(),
+            ["docs"]
+        );
+        let everything = ProjectMcpChoices {
+            enable_all: true,
+            ..ProjectMcpChoices::default()
+        };
+        assert_eq!(
+            preview_workspace_authority(workspace.path(), Some(&everything), &|_| None).unwrap(),
+            ["docs", "db"]
+        );
+        assert!(
+            preview_workspace_authority(workspace.path(), None, &|_| None)
+                .unwrap()
+                .is_empty()
         );
     }
 }

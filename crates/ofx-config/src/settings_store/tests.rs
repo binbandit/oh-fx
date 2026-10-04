@@ -942,3 +942,85 @@ fn a_statusline_that_is_not_an_object_is_refused_unchanged() {
     assert!(save_statusline_item(&fixture.paths, StatuslineItem::Session, true).is_err());
     assert_eq!(fixture.read(), text);
 }
+
+fn put_flag(entry: &mut Value, flag: bool) -> Result<bool, &'static str> {
+    let mut workspace = match entry {
+        Value::Null => Map::new(),
+        Value::Object(workspace) => workspace.clone(),
+        _ => return Err("NotAnObject"),
+    };
+    let changed = if flag {
+        workspace.insert("flag".to_owned(), Value::Bool(true)) != Some(Value::Bool(true))
+    } else {
+        workspace.shift_remove("flag").is_some()
+    };
+    *entry = Value::Object(workspace);
+    Ok(changed)
+}
+
+#[test]
+fn a_workspace_entry_is_edited_in_place_and_removed_once_empty() {
+    let fixture = Fixture::with_settings(
+        r#"{"provider":"local","workspaces":{"/other":{"context":false},"/ws":{"context":true}}}"#,
+    );
+    let workspace = Path::new("/ws");
+    assert_eq!(
+        save_workspace_entry(&fixture.paths, workspace, |entry| put_flag(entry, true)),
+        Ok(true)
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"provider\":\"local\",\"workspaces\":{\"/other\":{\"context\":false},\"/ws\":{\"context\":true,\"flag\":true}}}\n"
+    );
+    assert_eq!(
+        save_workspace_entry(&fixture.paths, workspace, |entry| put_flag(entry, true)),
+        Ok(false)
+    );
+    let fresh = Path::new("/fresh");
+    assert_eq!(
+        save_workspace_entry(&fixture.paths, fresh, |entry| put_flag(entry, true)),
+        Ok(true)
+    );
+    assert!(fixture.read().contains(r#""/fresh":{"flag":true}"#));
+    assert_eq!(
+        save_workspace_entry(&fixture.paths, fresh, |entry| put_flag(entry, false)),
+        Ok(true)
+    );
+    assert!(!fixture.read().contains("/fresh"));
+}
+
+#[test]
+fn the_last_workspace_entry_takes_the_empty_workspaces_object_with_it() {
+    let fixture =
+        Fixture::with_settings(r#"{"provider":"local","workspaces":{"/ws":{"flag":true}}}"#);
+    assert_eq!(
+        save_workspace_entry(&fixture.paths, Path::new("/ws"), |entry| put_flag(
+            entry, false
+        )),
+        Ok(true)
+    );
+    assert_eq!(fixture.read(), "{\"provider\":\"local\"}\n");
+}
+
+#[test]
+fn a_refused_workspace_edit_leaves_the_settings_untouched() {
+    let original = r#"{"workspaces":{"/ws":[1]}}"#;
+    let fixture = Fixture::with_settings(original);
+    assert_eq!(
+        save_workspace_entry(&fixture.paths, Path::new("/ws"), |entry| put_flag(
+            entry, true
+        )),
+        Err(WorkspaceSaveError::Edit("NotAnObject"))
+    );
+    assert_eq!(fixture.read(), original);
+    let locked = Fixture::with_settings(r#"{"workspaces":[]}"#);
+    assert!(matches!(
+        save_workspace_entry(&locked.paths, Path::new("/ws"), |entry| put_flag(
+            entry, true
+        )),
+        Err(WorkspaceSaveError::Settings(SettingsWriteFailure {
+            error: SettingsWriteError::InvalidFormat,
+            ..
+        }))
+    ));
+}

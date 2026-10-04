@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -196,7 +197,15 @@ pub enum CommitOutcome {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceSaveError<E> {
+    Edit(E),
+    Settings(SettingsWriteFailure),
+}
+
+type WorkspaceEdit<'a> = &'a dyn Fn(&mut Value) -> Result<bool, SettingsWriteError>;
+
+#[derive(Clone, Copy)]
 enum Patch<'a> {
     CodexModel(&'a str),
     ModelPreference {
@@ -215,6 +224,10 @@ enum Patch<'a> {
     Permission {
         workspace: Option<&'a str>,
         patch: PermissionPatch<'a>,
+    },
+    WorkspaceEntry {
+        key: &'a str,
+        edit: WorkspaceEdit<'a>,
     },
 }
 
@@ -303,6 +316,36 @@ pub fn save_permission_patch(
         },
         &mut || {},
     )
+}
+
+pub fn save_workspace_entry<E>(
+    paths: &ProfilePaths,
+    workspace_root: &Path,
+    edit: impl Fn(&mut Value) -> Result<bool, E>,
+) -> Result<bool, WorkspaceSaveError<E>> {
+    let key = workspace_root.to_string_lossy();
+    let refused = RefCell::new(None);
+    let changed = Cell::new(false);
+    let apply_edit = |entry: &mut Value| match edit(entry) {
+        Ok(edited) => {
+            changed.set(edited);
+            Ok(edited)
+        }
+        Err(error) => {
+            *refused.borrow_mut() = Some(error);
+            Err(SettingsWriteError::InvalidField)
+        }
+    };
+    let patch = Patch::WorkspaceEntry {
+        key: &key,
+        edit: &apply_edit,
+    };
+    let committed = commit(paths, patch, &mut || {});
+    if let Some(error) = refused.into_inner() {
+        return Err(WorkspaceSaveError::Edit(error));
+    }
+    committed.map_err(WorkspaceSaveError::Settings)?;
+    Ok(changed.get())
 }
 
 fn commit(
@@ -550,8 +593,44 @@ fn apply(
             application.changed |= changed;
             application.permission_rules_removed = removed;
         }
+        Patch::WorkspaceEntry { key, edit } => {
+            application.changed |= edit_workspace(root, key, edit)?;
+        }
     }
     Ok(application)
+}
+
+fn edit_workspace(
+    root: &mut Map<String, Value>,
+    key: &str,
+    edit: WorkspaceEdit<'_>,
+) -> Result<bool, SettingsWriteError> {
+    let mut entry = root
+        .get("workspaces")
+        .and_then(|workspaces| workspaces.get(key))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if !edit(&mut entry)? {
+        return Ok(false);
+    }
+    let Value::Object(workspaces) = root
+        .entry("workspaces")
+        .or_insert_with(|| Value::Object(Map::new()))
+    else {
+        return Err(SettingsWriteError::InvalidFormat);
+    };
+    match entry {
+        Value::Object(entry) if !entry.is_empty() => {
+            workspaces.insert(key.to_owned(), Value::Object(entry));
+        }
+        _ => {
+            workspaces.shift_remove(key);
+            if workspaces.is_empty() {
+                root.shift_remove("workspaces");
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn workspace_object<'r>(
