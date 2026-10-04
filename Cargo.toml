@@ -88,19 +88,7 @@ strip = true
 [profile.release.package.ofx-agent]
 opt-level = 3
 
-[profile.release.package.ofx-app]
-opt-level = 3
-
-[profile.release.package.ofx-cli]
-opt-level = 3
-
-[profile.release.package.ofx-config]
-opt-level = 3
-
 [profile.release.package.ofx-contract]
-opt-level = 3
-
-[profile.release.package.ofx-exec]
 opt-level = 3
 
 [profile.release.package.ofx-gateway]
@@ -110,15 +98,6 @@ opt-level = 3
 opt-level = 3
 
 [profile.release.package.ofx-markdown]
-opt-level = 3
-
-[profile.release.package.ofx-permissions]
-opt-level = 3
-
-[profile.release.package.ofx-text]
-opt-level = 3
-
-[profile.release.package.ofx-tools]
 opt-level = 3
 
 [profile.release.package.ofx-tui]
