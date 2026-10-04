@@ -35,10 +35,13 @@ fn spawn_background_upgrade() {
         .spawn();
 }
 
+pub fn auto_upgrade_allowed() -> bool {
+    auto_upgrade_enabled(env::var(DISABLE_VARIABLE).ok().as_deref())
+        && build_identity::release_version().is_some()
+}
+
 fn claim_auto_upgrade_check(state_directory: &Path) -> bool {
-    if !auto_upgrade_enabled(env::var(DISABLE_VARIABLE).ok().as_deref())
-        || build_identity::release_version().is_none()
-    {
+    if !auto_upgrade_allowed() {
         return false;
     }
     let marker = state_directory.join(CHECK_MARKER);

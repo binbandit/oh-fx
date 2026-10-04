@@ -332,12 +332,18 @@ mod tests {
             theme: None,
         };
         let outcome = panics.contain_shell(|| {
-            run_shell(options, events, NativeClipboard, |command| {
-                assert!(
-                    !matches!(command, UiCommand::Submit { .. }),
-                    "shell exploded"
-                );
-            })
+            run_shell(
+                options,
+                events,
+                NativeClipboard,
+                |command| {
+                    assert!(
+                        !matches!(command, UiCommand::Submit { .. }),
+                        "shell exploded"
+                    );
+                },
+                || {},
+            )
         });
         std::process::exit(if outcome.is_err() { 101 } else { 0 });
     }

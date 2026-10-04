@@ -19,6 +19,7 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 ofx-http.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 tokio = { workspace = true, features = ["macros", "time"] }
 
 [lints]

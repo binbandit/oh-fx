@@ -24,10 +24,11 @@ ofx-tools.workspace = true
 ofx-tui.workspace = true
 ofx-upgrade.workspace = true
 ofx-workspace.workspace = true
+reqwest.workspace = true
 rustix = { workspace = true, features = ["event", "fs"] }
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "sync"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

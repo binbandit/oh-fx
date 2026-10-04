@@ -36,17 +36,14 @@ impl UpgradeControl {
         Ok(())
     }
 
-    pub(crate) async fn unless_stopped<F: Future>(
-        &self,
-        transfer: F,
-    ) -> Result<F::Output, UpgradeError> {
+    pub async fn unless_stopped<F: Future>(&self, transfer: F) -> Result<F::Output, UpgradeError> {
         self.stop
             .run_until_cancelled(transfer)
             .await
             .ok_or(UpgradeError::Cancelled)
     }
 
-    pub(crate) fn install_unless_stopped<T>(
+    pub fn install_unless_stopped<T>(
         &self,
         install: impl FnOnce() -> Result<T, UpgradeError>,
     ) -> Result<T, UpgradeError> {

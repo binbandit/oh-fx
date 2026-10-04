@@ -265,6 +265,7 @@ pub(crate) struct Shell<'a> {
     should_exit: bool,
     frame: FrameCache,
     metrics: Metrics,
+    upgrade_status: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +299,7 @@ pub fn run_shell(
     events: UiEventReceiver,
     clipboard: impl Clipboard + 'static,
     send: impl FnMut(UiCommand),
+    before_signal_exit: impl FnOnce(),
 ) -> Result<(), TerminalError> {
     let mut shell = Shell::bootstrap(options, events, Arc::new(clipboard), Box::new(send))?;
     let result = shell.run();
@@ -306,6 +308,7 @@ pub fn run_shell(
         lifecycle.shutdown();
     }
     if let Some(signal) = fatal {
+        before_signal_exit();
         crate::terminal::signal_pipe::raise_default(signal);
     }
     shell.into_clipboard().finish();
@@ -472,6 +475,7 @@ impl<'a> Shell<'a> {
                 ..FrameCache::default()
             },
             metrics: Metrics::default(),
+            upgrade_status: String::new(),
         };
         if picking {
             shell.session_picker_opened(SessionScope::CurrentWorkspace);
@@ -788,6 +792,11 @@ impl<'a> Shell<'a> {
             } else {
                 DangerStatus::None
             },
+            upgrade_status: if self.question.is_none() {
+                &self.upgrade_status
+            } else {
+                ""
+            },
         };
         if let Some(menu_hint) = menu_hint {
             let ctrl_c_pending = hint_state.ctrl_c_pending;
@@ -948,6 +957,13 @@ impl<'a> Shell<'a> {
         if theme != self.theme {
             self.theme = theme;
             self.replay();
+        }
+    }
+
+    fn upgrade_status_changed(&mut self, label: String) {
+        if label != self.upgrade_status {
+            self.upgrade_status = label;
+            self.invalidate();
         }
     }
 
@@ -1390,5 +1406,27 @@ mod tests {
         test.draining(Shell::drain_ui_events);
         let written = test.written();
         assert!(written.contains("\x1b]2;oh-fx v"), "{written:?}");
+    }
+
+    #[test]
+    fn the_hint_row_shows_the_upgrade_status_until_it_clears() {
+        let mut test = test_shell::TestShell::start();
+        test.screen();
+        test.queue(UiEvent::UpgradeStatus {
+            label: "update ready: ctrl+g to reload".to_owned(),
+        });
+        test.draining(Shell::drain_ui_events);
+        let screen = test.screen();
+        let row = screen
+            .lines()
+            .find(|line| line.contains("auto · model-a"))
+            .unwrap_or_default();
+        assert!(row.ends_with("update ready: ctrl+g to reload"), "{screen}");
+        test.queue(UiEvent::UpgradeStatus {
+            label: String::new(),
+        });
+        test.draining(Shell::drain_ui_events);
+        let screen = test.screen();
+        assert!(!screen.contains("update ready"), "{screen}");
     }
 }

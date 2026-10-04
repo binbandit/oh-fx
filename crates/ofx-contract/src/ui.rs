@@ -368,6 +368,9 @@ pub enum UiEvent {
         turn_id: TurnId,
         activity: CompactionActivity,
     },
+    UpgradeStatus {
+        label: String,
+    },
     SkillsMenu {
         items: Vec<SkillMenuItem>,
         focus: SkillMenuFocus,

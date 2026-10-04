@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/core/upgrade/auto_upgrade.zig"
 status = "partial"
-modules = ["crates/ofx-upgrade/src/auto.rs", "crates/oh-fx/src/auto_upgrade.rs"]
-note = "Detached update scheduling exists; upstream live state, dirty/relaunch tracking and stop-during-install control are missing; cadence is a documented difference."
+modules = ["crates/ofx-app/src/app_upgrade_runtime/session_upgrader.rs", "crates/ofx-app/src/app_upgrade_runtime/live_release.rs", "crates/ofx-upgrade/src/auto.rs", "crates/oh-fx/src/auto_upgrade.rs"]
+note = "The interactive shell's in-process upgrader, its downloading and failed footer labels, and stop-during-install are ported; the ready label asks for a restart until Ctrl+G and its relaunch request are ported; one-shot commands keep the detached run and the five-minute cadence is a documented difference."
 
 [[file]]
 upstream = "src/core/upgrade/update_notes.zig"

@@ -1070,6 +1070,7 @@ impl Presenter {
             | UiEvent::StatsRequested
             | UiEvent::CompactionActivity { .. }
             | UiEvent::TurnCompaction { .. }
+            | UiEvent::UpgradeStatus { .. }
             | UiEvent::SkillsMenu { .. }
             | UiEvent::ConversationCleared { .. }
             | UiEvent::SessionPickerOpened { .. }
