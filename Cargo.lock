@@ -970,6 +970,7 @@ dependencies = [
  "ofx-text",
  "rustix",
  "signal-hook",
+ "tempfile",
  "thiserror",
  "unicode-width",
  "vt100",

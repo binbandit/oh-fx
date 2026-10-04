@@ -335,8 +335,8 @@ note = "Upstream Zig test harness excluded from shipped native binary behavior; 
 [[file]]
 upstream = "src/ui/shell_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/terminal/shell_runtime.rs", "crates/ofx-tui/src/shell/mod.rs"]
-note = "Native terminal shell exists; upstream transcript frame state and full alternate-screen ownership are absent."
+modules = ["crates/ofx-tui/src/terminal/shell_runtime.rs", "crates/ofx-tui/src/terminal/tmux_history.rs", "crates/ofx-tui/src/shell/mod.rs"]
+note = "Native terminal shell exists, including the tmux pane history clear on resets; upstream transcript frame state and full alternate-screen ownership are absent."
 
 [[file]]
 upstream = "src/ui/terminal/cursor_probe.zig"
