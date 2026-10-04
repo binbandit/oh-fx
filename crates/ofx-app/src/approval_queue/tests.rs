@@ -184,3 +184,22 @@ fn a_withdrawn_request_leaves_the_queue_and_the_next_one_shows() {
         ]
     );
 }
+
+#[test]
+fn a_childs_feedback_reaches_the_transcript_only_during_its_turn() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&events);
+    let queue = ApprovalQueue::default();
+    queue.attach(Arc::new(move |event| seen.lock().unwrap().push(event)));
+    queue.child_feedback(Some(TurnId::new(1)), "too early".to_owned());
+    queue.turn_started(TurnId::new(2));
+    queue.child_feedback(Some(TurnId::new(1)), "stale".to_owned());
+    queue.child_feedback(Some(TurnId::new(2)), "then stop".to_owned());
+    assert_eq!(
+        *events.lock().unwrap(),
+        [UiEvent::ApprovalFeedback {
+            turn_id: TurnId::new(2),
+            text: "then stop".to_owned(),
+        }]
+    );
+}

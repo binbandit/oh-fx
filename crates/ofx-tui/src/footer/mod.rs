@@ -1,4 +1,5 @@
 pub(crate) mod approval_content;
+pub(crate) mod approval_draft;
 pub(crate) mod approval_panel;
 mod command_text;
 pub(crate) mod compact_command_menu_presentation;

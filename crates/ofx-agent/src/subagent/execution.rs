@@ -13,6 +13,11 @@ use crate::orchestrator::{Agent, TurnFailure, TurnReport};
 
 const MAX_DIAGNOSTIC_BYTES: usize = 256;
 
+pub(crate) struct ChildRelay<'a> {
+    pub(crate) approvals: &'a (dyn Fn(ApprovalRequest) -> Result<(), LogFailure> + Sync),
+    pub(crate) feedback: &'a (dyn Fn(String) + Sync),
+}
+
 pub(crate) struct ChildRuntime {
     agent: Agent,
     base_prompt: String,
@@ -63,7 +68,7 @@ impl ChildRuntime {
         work: &ActiveWork,
         instructions: &str,
         tools: WorkTools,
-        approvals: &(dyn Fn(ApprovalRequest) -> Result<(), LogFailure> + Sync),
+        relay: &ChildRelay<'_>,
         cancel: &CancellationToken,
     ) -> WorkOutcome {
         let WorkTools { tools, release } = tools;
@@ -89,11 +94,12 @@ impl ChildRuntime {
                     | UiEvent::AssistantRestarted { text, .. } => partial.push_str(&text),
                     UiEvent::ToolStarted { .. } | UiEvent::ToolRejected { .. } => partial.clear(),
                     UiEvent::ApprovalRequested { request, .. } => {
-                        if let Err(failure) = approvals(*request) {
+                        if let Err(failure) = (relay.approvals)(*request) {
                             unsaved.get_or_insert(failure);
                             stop.cancel();
                         }
                     }
+                    UiEvent::ApprovalFeedback { text, .. } => (relay.feedback)(text),
                     _ => {}
                 },
                 &stop,
