@@ -173,7 +173,7 @@ note = "Selection copy/cut exists; documented asynchronous clipboard and timeout
 [[file]]
 upstream = "src/core/app/input_submit_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/input_submit_runtime.rs", "crates/ofx-tui/src/shell/steering_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-tui/src/shell/held_prompt_runtime.rs", "crates/ofx-tui/src/shell/sign_in_runtime.rs"]
+modules = ["crates/ofx-tui/src/shell/input_submit_runtime.rs", "crates/ofx-tui/src/shell/steering_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-tui/src/shell/held_prompt_runtime.rs"]
 note = "Prompt submission, compaction requests, steering a running turn and prompts held until sign-in exist; image ownership transitions are absent."
 
 [[file]]
