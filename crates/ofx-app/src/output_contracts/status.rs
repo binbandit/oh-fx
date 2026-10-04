@@ -37,7 +37,7 @@ pub(crate) struct AuthStatus {
 }
 
 impl AuthStatus {
-    fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self.active {
             None => "missing",
             Some(Credential::Connection) => CredentialSource::Configured.label(),
@@ -46,11 +46,11 @@ impl AuthStatus {
         }
     }
 
-    fn refreshable(&self) -> bool {
+    pub(crate) fn refreshable(&self) -> bool {
         matches!(self.active, Some(Credential::Codex { .. }))
     }
 
-    fn expired(&self) -> bool {
+    pub(crate) fn expired(&self) -> bool {
         self.active == Some(Credential::Codex { expired: true })
     }
 
@@ -215,7 +215,7 @@ impl StatusReport {
     }
 }
 
-fn safe(raw: &str) -> String {
+pub(crate) fn safe(raw: &str) -> String {
     encode_terminal_safe(raw.as_bytes(), usize::MAX).text
 }
 

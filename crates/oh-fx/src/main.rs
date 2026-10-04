@@ -2,6 +2,7 @@ mod ask_session;
 mod auto_upgrade;
 mod cli_ask;
 mod command_echo;
+mod doctor_command;
 mod help;
 mod login_command;
 mod models_command;
@@ -89,6 +90,7 @@ fn run(invocation: Invocation) -> ExitCode {
         Invocation::Command(CommandLaunch { modifiers, command }) => match command {
             Command::Ask(args) => cli_ask::run(&args, &modifiers),
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
+            Command::Doctor(format) => doctor_command::run(format, &modifiers),
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),
             Command::Models(format) => models_command::run(format),
