@@ -264,6 +264,33 @@ fn parse_interactive_launch_accepts_legacy_and_revision_bearing_upgrade_relaunch
 }
 
 #[test]
+fn an_upgrade_relaunch_restores_the_launch_flags_it_carries() {
+    let Ok(Invocation::Interactive(launch)) = parse(&[
+        "--add-dir",
+        "/tmp/cli-only",
+        "--no-additional-dirs",
+        "--context-limit=skill_chunk_bytes=4096",
+        "--model",
+        "vendor/model-b",
+    ]) else {
+        panic!("the launch is interactive");
+    };
+    let mut relaunch = launch.relaunch_args().to_vec();
+    relaunch.extend(["resume", "session-123", UPGRADE_RELAUNCH_ARG].map(OsString::from));
+    let Ok(Invocation::Resume(resumed, target)) = parse_args(relaunch) else {
+        panic!("the relaunch resumes the session");
+    };
+    assert_eq!(target, RequestedResume::Id("session-123".to_owned()));
+    assert_eq!(resumed.additional_directories(), ["/tmp/cli-only"]);
+    assert!(resumed.saved_directories_suppressed());
+    assert_eq!(
+        resumed.context_limit_overrides(),
+        launch.context_limit_overrides()
+    );
+    assert_eq!(resumed.model(), None);
+}
+
+#[test]
 fn parse_interactive_launch_shares_native_resume_grammar() {
     for args in [
         &["--resume"][..],

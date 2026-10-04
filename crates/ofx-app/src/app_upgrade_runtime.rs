@@ -3,6 +3,7 @@ mod ready_upgrade;
 mod relaunch;
 mod session_upgrader;
 
+use std::ffi::OsString;
 use std::time::Duration;
 
 use ofx_config::ProfilePaths;
@@ -32,10 +33,10 @@ pub(crate) struct InteractiveUpgrade {
 }
 
 impl InteractiveUpgrade {
-    pub(crate) fn start(events: UiEventSender) -> Self {
+    pub(crate) fn start(events: UiEventSender, launch: Vec<OsString>) -> Self {
         Self {
             upgrader: start_session_upgrader(events),
-            relaunch: Relaunch::default(),
+            relaunch: Relaunch::carrying(launch),
         }
     }
 
