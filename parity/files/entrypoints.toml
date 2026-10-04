@@ -29,12 +29,6 @@ modules = []
 note = "Upstream JavaScript-host surface; WASM, Node-API and browser hosts are outside the native binary target described in docs/architecture.md."
 
 [[file]]
-upstream = "src/terminal_client_fixture.zig"
-status = "not-applicable"
-modules = []
-note = "Upstream Zig benchmark or test fixture entrypoint; not part of the shipped native binary. Product behavior is tracked by its implementation rows."
-
-[[file]]
 upstream = "src/wasm_core_main.zig"
 status = "not-applicable"
 modules = []

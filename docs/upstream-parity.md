@@ -2,9 +2,9 @@
 
 oh-fx follows [vercel-labs/fx](https://github.com/vercel-labs/fx). This page records how far upstream has been reviewed and where each upstream change lands in oh-fx.
 
-- **Sync point:** `34f1ed1` (vercel-labs/fx#1062, merged 2026-10-01). Every upstream pull request merged up to this commit has been classified.
-- **Previous sync point:** `d9f7766` (vercel-labs/fx#1094).
-- **Last pass:** 2026-10-01, covering `d9f7766..34f1ed1`: 60 commits and 12 merge commits (72 in all). They arrived in 8 first-parent merges, plus #1091, which was merged into #1082's branch.
+- **Sync point:** `6bdd497` (vercel-labs/fx#1137, merged 2026-10-03). Every upstream pull request merged up to this commit has been classified.
+- **Previous sync point:** `34f1ed1` (vercel-labs/fx#1062).
+- **Last pass:** 2026-10-04, covering `34f1ed1..6bdd497`: 46 commits and 23 merge commits (69 in all). They arrived in 14 first-parent merges; the other 9 merges bring main into feature branches.
 
 ## Statuses
 
@@ -26,6 +26,37 @@ Syntax-highlighting profile storage uses pointerless tables as recorded in [arch
 The full checkout commit is read from `parity/UPSTREAM`. With that checkout available locally, run `cargo xtask parity --upstream <path>` or set `OH_FX_UPSTREAM` and run `cargo xtask parity`. The command fetches nothing and rejects a different checkout commit, missing or stale entries, duplicate entries, invalid statuses, missing required notes and nonexistent or escaping Rust module paths. It prints a count for each status. `cargo xtask lint` validates the local schema, statuses, notes and module paths without an upstream checkout, so pre-push CI includes that validation. Full coverage reads the pinned Git tree rather than dirty or untracked files. CI fetches that tree without checking out source blobs and requires coverage through Repository checks. The CI coverage gate depends on the upstream repository and pinned commit remaining reachable.
 
 The file map measures structural coverage. Re-audit entries and missing-behavior notes when main gains an implementation. The question tool and answer codec remain partial because ignored out-of-range JSON numbers and duplicate result keys differ from upstream. Byte-exact schema, help and prompt goldens remain a separate follow-up.
+
+## 34f1ed1..6bdd497
+
+Rows marked `defer:compactor`, `defer:shell`, `defer:startup-probe` and `defer:ultrafast-cli` change behaviour oh-fx already ports. Each is synced by its own pull request in this pass, which moves its rows to `ported`.
+
+| PR | Merge | Title | Status | oh-fx | Note |
+|---|---|---|---|---|---|
+| #1108 | `11d3425` | Make the compactor independent of the session module | `ported` | `ofx-agent` | A refactor: `rawHistoryTurnCount` and `contextHistoryRange` move unchanged into `src/core/shared/history_range.zig`, and behaviour is unchanged. The file map gains the new file. |
+| #1113 | `07b4e7a` | Send libfx images as raw bytes | `defer:acp` | future ACP | Without an attachment store, `fx acp` refuses an image block that names an `_meta.fx.attachment`; base64 image `data` is read as before. |
+| #1113 | `07b4e7a` | (same) | `n/a` | none | libfx hosts pass prompt images and kernel checkpoints as raw attachments beside their JSON-RPC frames (`host_attachments.zig`, `js_host_attachments.zig`), and kernel checkpoints store image bytes raw. Only the NAPI and WebAssembly entry points supply the store. The JavaScript SDK and its tests. |
+| #1116 | `0107787` | Move sessions v2 bodies to blobs and terminal state to its own folder | `defer:sessions-v2` | future session store | Tool results, tool images, command replay, web-fetch downloads and compaction records become blobs of a v2 session; hosted terminal state moves to `terminal/{id}`; an ACP client's system prompt and tool identities become session settings; older v2 sessions move on their first writable open. See [Sessions v2](#sessions-v2). |
+| #1120 | `b437987` | Fix compaction note retries, entry checks and damaged checkpoints | `defer:compactor` | `ofx-agent` | See [Compactor checks](#compactor-checks). |
+| #1121 | `7e39bf1` | Avoid redundant Base64 decoding buffers | `ported` | `ofx-session` | Decoding stops re-encoding to compare, and the input accepted is unchanged. oh-fx decodes with the `base64` crate's `STANDARD` engine, which rejects non-canonical padding and trailing bits without re-encoding. |
+| #1112 | `88e6658` | Add opt-in Ultrafast mode | `defer:ultrafast-cli` | `ofx-cli`, `ofx-app` | See [Ultrafast](#ultrafast). |
+| #1112 | `88e6658` | (same) | `defer:ai-gateway` | future Vercel AI Gateway transport | The `openai.serviceTier: "ultrafast"` request, the `ultrafast_mode` setting and `FX_ULTRAFAST`, the model, settings and footer indicators, subagent inheritance, ACP, and the session and recovery-checkpoint fields, which upstream writes only when the mode is on. |
+| #1112 | `88e6658` | (same) | `n/a` | none | SDK, `scripts/pgso` corpus and end-to-end test changes. |
+| #1122 | `3cc5ddf` | Raise the CI unit test timeout | `n/a` | none | Upstream CI. |
+| #1124 | `0a8a391` | Keep a running step's text when fx crashes on sessions v2 | `defer:sessions-v2` | future session store | The running save writes the issuing message's text as an `assistant_running` item with its calls. |
+| #1096 | `335eef8` | Let models recover oversized images | `defer:images` | future image attachments | Before each request, images that fit (8000 pixels per side for up to 20 images, 2000 for more, and 5 MiB encoded each) are sent and the rest are replaced by recovery guidance naming the source path, instead of being downscaled; history keeps file-backed originals until request assembly; pasted `/image` paths become attachments; the history replay cache format advances. oh-fx's `read_file` returns no images yet, so its text results are unchanged. |
+| #1096 | `335eef8` | (same) | `n/a` | none | SDK image recovery through host tools and request-flow test fixtures. |
+| #1127 | `0994a05` | Draw the first frame before slow startup work | `defer:startup-probe` | `ofx-tui` | See [Startup probe](#startup-probe). |
+| #1127 | `0994a05` | (same) | `defer:interactive` | future interactive startup | The first frame is drawn before a Keychain login is read, before skills are discovered and before the other sign-in sources are checked; a prompt sent first waits for the login; the full-transcript session details show `skills: loading`. oh-fx's event loop waits on its descriptors instead of polling, so upstream's 1 ms first-input wait has no counterpart. |
+| #1127 | `0994a05` | (same) | `n/a` | none | `benchmarks/first_frame.py`, AGENTS.md and CONTRIBUTING.md text, and the single-threaded WebAssembly credential path. |
+| #1129 | `d3c28f3` | Title a v2 session whose first turn crashed | `defer:sessions-v2` | future session store | A resumed v2 session without a stored title writes the title its first prompt gives with its next turn end. |
+| #1135 | `463663f` | Fix false compaction check marks and close finished open entries | `defer:compactor` | `ofx-agent` | See [Compactor checks](#compactor-checks). |
+| #1139 | `be6d092` | Exit without waiting on MCP servers or the usage ledger | `defer:mcp` | MCP runtime | At exit, every stdio MCP server's process group gets SIGKILL in one pass after launches under way settle, for at most 1 s. A Docker-backed server, a launch that does not settle or a full kill list falls back to the full teardown. |
+| #1139 | `be6d092` | (same) | `defer:sessions` | future profile usage ledger and session picker catalog | The first usage publication's ledger parse checks the lock's abandon flag every 256 lines, so exit stops it, and process exit leaves the session picker catalog to the exiting process instead of freeing each cached session. oh-fx has neither yet. |
+| #1137 | `6bdd497` | Load shell startup files once per fx process | `defer:shell` | `ofx-tools`, `ofx-app`, `ofx-cli` | See [Shell tool](#shell-tool). |
+| #1137 | `6bdd497` | (same) | `defer:shell-snapshot` | future shell startup snapshot | `shell_snapshot.zig`: user-profile commands capture the login shell's PATH, environment, aliases, functions and options once per process and restore them, refresh after a watched startup file changes, and fall back to full startup with a one-time notice when a capture fails, passes 8 MiB or takes over 10 s. In auto mode, a routine command whose words a capture defines as an alias or function goes to review, as does every routine command while captures fail, and remembered approvals are bound to the snapshot. |
+| #1137 | `6bdd497` | (same) | `defer:tty` | future TTY sessions | The terminal host daemon, the tmux backend and the `FX_TERMINAL_HOST_*` variables are removed: tty terminals run inside the fx process and end when it exits. A resumed session's terminal answers with the new `TerminalEnded` code, and its tool row reads "ended when fx exited". Job-controlled commands end on exit. |
+| #1137 | `6bdd497` | (same) | `n/a` | none | The terminal host end-to-end suite, `terminal_client_fixture.zig`, the shell-path evals and the CI shard weights. |
 
 ## d9f7766..34f1ed1
 
@@ -107,6 +138,36 @@ The private result reader supports bounded raw pages, and storage no longer appl
 - **Vercel AI Gateway:** `model.zig` sends a failed or empty summary once more to another model family.
 - **Trace:** `trace.zig`'s ring and the compaction trace lines.
 
+### Compactor checks
+
+#1120 and #1135 change the compactor oh-fx ports:
+
+- A reply with entries but no turn notes gets the notes follow-up, and a plain-text reply counts as the notes of the turn that keeps it.
+- Every entry must name its source, and an entry about one failed tool call may not call it a success.
+- A rule quoting the user's answer to a question tool counts as the user's words; the questions do not.
+- Values read in the tool calls that stay after the cut, the rest of a turn in progress included, are searched before an entry is marked as found nowhere.
+- The notes request adds that a status entry can replace an open entry it answers or finishes.
+- A checkpoint whose counts pass `1 << 30` is read as damaged.
+
+### Shell tool
+
+#1137 changes surfaces oh-fx already ports:
+
+- The `shell` description adds that each call starts a new shell with the user's startup files applied, that `cd`, `export` and alias changes do not carry over, and how zsh treats unquoted globs and words that begin with `=`.
+- `shell.run` accepts `reload: true`.
+- The turn context's `shell_path` names the login shell the shell tool resolves for the user profile.
+- `/shell reload` makes the next command run the startup files again and resets remembered command approvals.
+
+Without the startup snapshot, every oh-fx command already runs the startup files, so `reload` changes nothing until the snapshot is ported.
+
+### Startup probe
+
+#1127 sends the startup OSC 11 background query with a device attributes query behind it and ends the probe when that reply arrives, so a terminal that ignores OSC 11 costs one round trip; the 200 ms wait remains for terminals that answer neither. The primary device attributes parser moves from `theme_monitor.zig` to `theme_protocol.zig`.
+
+### Ultrafast
+
+#1112 changes text oh-fx already ports: the `ask`, `acp` and top-level usage lines gain `[--ultrafast|--no-ultrafast]` and their option tables the two flags, `ConflictingUltrafastFlags` reports `--ultrafast and --no-ultrafast cannot be used together`, the interactive-only model flags hint names `--ultrafast`, `/status` and `status --json` report `ultrafast_requested`, and `/ultrafast [on|off|status]` joins the slash registry. The request itself needs the Vercel AI Gateway (`defer:ai-gateway`).
+
 ### MCP OAuth
 
 Port `src/core/mcp/mcp_auth.zig` with the #1101 messages above. Slack's fx-app bridge in that file (`slack_bridge_config` and the fx.sh callback) stays out with the Slack preset.
@@ -127,7 +188,7 @@ Port `src/gateway/xai_grok_models.zig` as of #1110 or later with the next OH-9 r
 2. List the first-parent merges since the sync point. Each one is an upstream pull request.
 
    ```sh
-   git -C fx-upstream log --first-parent --oneline 34f1ed1..origin/main
+   git -C fx-upstream log --first-parent --oneline 6bdd497..origin/main
    ```
 
    For each merge, read the pull request's commits and its changed files:

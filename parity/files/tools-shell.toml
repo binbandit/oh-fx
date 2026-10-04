@@ -14,4 +14,4 @@ note = "Managed process handles exist; provider-bound process-instance token cap
 upstream = "src/tools/shell/shell.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/shell.rs", "crates/ofx-tools/src/shell/request.rs", "crates/ofx-tools/src/shell/snapshot_format.rs"]
-note = "Run/interact/stop/list request validation and captured snapshots exist; TTY execution, direct read-only routes and persisted command replay are absent."
+note = "Run/interact/stop/list request validation and captured snapshots exist; TTY execution, direct read-only routes and persisted command replay are absent. #1137's description sentences on startup files and zsh quoting, the reload field and the startup snapshot are not yet synced."

@@ -10,6 +10,18 @@ status = "todo"
 modules = []
 
 [[file]]
+upstream = "src/core/hosts/host_attachments.zig"
+status = "not-applicable"
+modules = []
+note = "Raw prompt images and kernel checkpoints beside libfx JSON-RPC frames (#1113); only the NAPI and WebAssembly entry points supply a store, so the native executable has none."
+
+[[file]]
+upstream = "src/core/hosts/js_host_attachments.zig"
+status = "not-applicable"
+modules = []
+note = "JavaScript host binding for libfx attachments; excluded from the native Rust executable target."
+
+[[file]]
 upstream = "src/core/hosts/js_host_clipboard.zig"
 status = "not-applicable"
 modules = []
