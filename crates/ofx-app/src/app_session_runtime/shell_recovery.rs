@@ -14,9 +14,7 @@ pub(super) struct ShellRecovery {
 
 pub(super) fn shell_recovery(session: &mut WritableSession) -> Option<ShellRecovery> {
     let unclean = session.previous_owner_died() || session.recovery_was_asked();
-    let Some(shown) = session.recovery_transcript() else {
-        return None;
-    };
+    let shown = session.recovery_transcript()?;
     let mut entries = shown.entries;
     if unclean {
         session.mark_recovery_asked();
