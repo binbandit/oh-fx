@@ -4,6 +4,7 @@ mod prompt_history_store;
 mod result_store;
 mod session;
 mod session_adapter;
+mod session_catalog_cache;
 mod session_codec;
 mod session_commands;
 mod session_conversation_log;

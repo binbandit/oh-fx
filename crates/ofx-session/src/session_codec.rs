@@ -14,7 +14,7 @@ use crate::session_store_paths::is_valid_workspace_root;
 
 const SESSION_METADATA_SCHEMA_VERSION: u8 = 4;
 pub(crate) const MAX_SESSION_METADATA_BYTES: usize = 64 * 1024;
-const MAX_SESSION_TITLE_BYTES: usize = 240;
+pub(crate) const MAX_SESSION_TITLE_BYTES: usize = 240;
 const MAX_MODEL_BYTES: usize = 1024;
 const MAX_CONVERSATION_LANGUAGE_BYTES: usize = 24;
 pub(crate) const DEFAULT_CONVERSATION_LANGUAGE: &str = "und";
@@ -234,7 +234,7 @@ fn is_valid_model(model: &str) -> bool {
         && !model.bytes().any(|byte| byte.is_ascii_control())
 }
 
-fn is_valid_conversation_language(language: &str) -> bool {
+pub(crate) fn is_valid_conversation_language(language: &str) -> bool {
     (1..=MAX_CONVERSATION_LANGUAGE_BYTES).contains(&language.len())
         && language.trim_matches(['\t', '\n', '\r', ' ']) == language
         && !language.bytes().any(|byte| byte.is_ascii_control())
