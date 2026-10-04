@@ -731,6 +731,7 @@ impl Controller {
                 observe_prompt(self.persistence.as_ref(), &recovered.prompt);
                 self.state.emit(UiEvent::RecoveryContinuing {
                     prompt: recovered.prompt.clone(),
+                    id: self.state.received_prompts,
                 });
                 self.state.receive_recovery(recovered);
             }

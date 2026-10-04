@@ -381,6 +381,7 @@ pub enum UiEvent {
     },
     RecoveryContinuing {
         prompt: String,
+        id: u64,
     },
     ExitRequested,
 }
