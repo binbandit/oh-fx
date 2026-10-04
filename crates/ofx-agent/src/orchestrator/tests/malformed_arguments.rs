@@ -15,8 +15,12 @@ impl Tool for PrepareCounter {
         self.inner.prepare(arguments)
     }
 
-    fn history_arguments(&self, arguments: &str) -> Option<String> {
-        self.inner.history_arguments(arguments)
+    fn saved_arguments(&self, arguments: &str) -> Option<String> {
+        self.inner.saved_arguments(arguments)
+    }
+
+    fn request_arguments(&self, arguments: &str) -> Option<String> {
+        self.inner.request_arguments(arguments)
     }
 }
 

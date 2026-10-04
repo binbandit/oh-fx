@@ -101,8 +101,12 @@ impl Tool for Shell {
         }))
     }
 
-    fn history_arguments(&self, arguments: &str) -> Option<String> {
-        Some(request::history_arguments(arguments)).filter(|history| history != arguments)
+    fn saved_arguments(&self, arguments: &str) -> Option<String> {
+        request::saved_arguments(arguments)
+    }
+
+    fn request_arguments(&self, arguments: &str) -> Option<String> {
+        request::request_arguments(arguments)
     }
 
     fn describe_saved(&self, arguments: &str) -> Option<CallDescription> {

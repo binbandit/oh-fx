@@ -1,6 +1,6 @@
 use std::mem;
 
-use ofx_contract::{ToolCall, ToolResultStatus};
+use ofx_contract::ToolResultStatus;
 use sha2::{Digest, Sha256};
 
 const SHELL_TOOL: &str = "shell";
@@ -46,13 +46,13 @@ impl ShellExecutionFailureRetry {
         self.0.begin_batch();
     }
 
-    pub(crate) fn observe(&mut self, call: &ToolCall, status: ToolResultStatus) {
-        if call.name != SHELL_TOOL || status != ToolResultStatus::Failure {
+    pub(crate) fn observe(&mut self, tool_name: &str, arguments: &str, status: ToolResultStatus) {
+        if tool_name != SHELL_TOOL || status != ToolResultStatus::Failure {
             return;
         }
         let mut hash = Sha256::new();
         hash.update(SHELL_EXECUTION_FAILURE_DOMAIN);
-        hash.update(call.arguments.as_bytes());
+        hash.update(arguments.as_bytes());
         self.0.observe(hash.finalize().into());
     }
 

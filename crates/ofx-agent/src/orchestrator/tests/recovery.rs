@@ -1,4 +1,8 @@
-use ofx_contract::{RecoveredTurn, RecoveryProgress, RecoveryStrategy};
+use std::sync::Mutex;
+
+use ofx_contract::{
+    HistoryCut, HistoryTurn, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+};
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
 use super::turn_log::{Logged, MemoryLog, logged};
@@ -292,4 +296,78 @@ async fn a_checkpoint_that_cannot_be_saved_fails_the_turn() {
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(report.failure.unwrap().code(), "RecoveryWriteFailed");
     assert_eq!(provider.requests().len(), 1);
+}
+
+type Recorded = Vec<(&'static str, Vec<String>)>;
+
+#[derive(Default)]
+struct SavedArguments {
+    saved: Arc<Mutex<Recorded>>,
+}
+
+impl SavedArguments {
+    fn note(&self, record: &'static str, turn: &HistoryTurn<'_>) {
+        let arguments = turn
+            .steps
+            .iter()
+            .flat_map(|step| step.tool_calls.iter())
+            .map(|call| call.arguments.clone())
+            .collect();
+        self.saved.lock().unwrap().push((record, arguments));
+    }
+}
+
+impl ConversationLog for SavedArguments {
+    fn require_writable(&self) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
+        self.note("turn", turn);
+        Ok(())
+    }
+
+    fn record_compaction(
+        &mut self,
+        _checkpoint: &str,
+        _cut: HistoryCut,
+        _active: Option<&HistoryTurn<'_>>,
+    ) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure> {
+        self.note("recovery", &point.turn);
+        Ok(())
+    }
+
+    fn clear_recovery(&self) -> Result<(), LogFailure> {
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn checkpoints_and_saved_turns_hold_each_call_in_its_saved_form() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"in_history":true}"#)]),
+        unavailable(),
+        text_reply("done"),
+    ]);
+    let log = SavedArguments::default();
+    let saved = Arc::clone(&log.saved);
+    let mut agent = logged(
+        new_agent(Arc::clone(&provider), vec![echo_tool()]),
+        Box::new(log),
+    );
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let form = vec![r#"saved {"in_history":true}"#.to_owned()];
+    assert_eq!(
+        *saved.lock().unwrap(),
+        [("recovery", form.clone()), ("turn", form)]
+    );
+    let ChatMessage::Assistant { tool_calls, .. } = &provider.requests()[1].messages[1] else {
+        panic!("the tool step");
+    };
+    assert_eq!(tool_calls[0].arguments, r#"sent saved {"in_history":true}"#);
 }

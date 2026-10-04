@@ -315,6 +315,64 @@ fn shell_decoder_rejects_removed_handoff_and_legacy_actions() {
     assert!(decode(r#"{"action":"wait","session_id":"shell-session"}"#).is_err());
 }
 
+fn replayed(arguments: &str) -> String {
+    let saved = saved_arguments(arguments).unwrap_or_else(|| arguments.to_owned());
+    request_arguments(&saved).unwrap_or(saved)
+}
+
+#[test]
+fn a_lone_request_object_is_saved_unwrapped_and_everything_else_as_sent() {
+    for (sent, saved) in [
+        (
+            r#"{ "request" : { "action" : "run" } }"#,
+            r#"{"action":"run"}"#,
+        ),
+        (
+            r#"{"request":{"timeout_ms":5E3,"action":"run"}}"#,
+            r#"{"timeout_ms":5000,"action":"run"}"#,
+        ),
+        (
+            r#"{"request":{"request":{"action":"run"}}}"#,
+            r#"{"request":{"action":"run"}}"#,
+        ),
+    ] {
+        assert_eq!(saved_arguments(sent).as_deref(), Some(saved), "{sent}");
+    }
+    for sent in [
+        r#"{"action":"run","timeout_ms":5E3}"#,
+        r#"{"request":{"action":"run"},"extra":1}"#,
+        r#"{"request":"{\"action\":\"run\"}"}"#,
+        r#"{"request":null}"#,
+        r#"{"request":{"a":1,"\u0061":2}}"#,
+        "[]",
+        "{",
+    ] {
+        assert_eq!(saved_arguments(sent), None, "{sent}");
+    }
+}
+
+#[test]
+fn a_saved_call_is_sent_wrapped_unless_it_is_already_a_lone_request_object() {
+    for (saved, sent) in [
+        (r#"{"action":"run"}"#, r#"{"request":{"action":"run"}}"#),
+        (
+            r#"{"action":"run","timeout_ms":5E3}"#,
+            r#"{"request":{"action":"run","timeout_ms":5000}}"#,
+        ),
+        (r#"{"request":null}"#, r#"{"request":{"request":null}}"#),
+    ] {
+        assert_eq!(request_arguments(saved).as_deref(), Some(sent), "{saved}");
+    }
+    for saved in [
+        r#"{"request":{"action":"run"}}"#,
+        r#"{ "request" : { "action" : "run" } }"#,
+        "[]",
+        "{",
+    ] {
+        assert_eq!(request_arguments(saved), None, "{saved}");
+    }
+}
+
 #[test]
 fn single_request_wrappers_unwrap_and_everything_else_stays_as_sent() {
     assert_eq!(
@@ -364,13 +422,13 @@ fn shell_request_projection_wraps_eligible_flat_objects_without_changing_source_
         ("[]", "[]"),
         ("{", "{"),
     ] {
-        assert_eq!(history_arguments(input), expected, "{input}");
-        assert_eq!(history_arguments(expected), expected, "{expected}");
+        assert_eq!(replayed(input), expected, "{input}");
+        assert_eq!(replayed(expected), expected, "{expected}");
     }
 }
 
 #[test]
-fn history_arguments_reencode_shell_requests_as_upstream_replays_them() {
+fn replayed_shell_requests_are_reencoded_as_upstream_replays_them() {
     for (input, expected) in [
         (
             r#"{ "request" : { "command" : "true",  "action": "run" } }"#,
@@ -409,7 +467,7 @@ fn history_arguments_reencode_shell_requests_as_upstream_replays_them() {
             r#"{"request":{"a":true,"b\"":false}}"#,
         ),
     ] {
-        assert_eq!(history_arguments(input), expected, "{input}");
+        assert_eq!(replayed(input), expected, "{input}");
     }
     for unchanged in [
         r#"{"action":"run","command":"a","command":"b"}"#,
@@ -421,7 +479,7 @@ fn history_arguments_reencode_shell_requests_as_upstream_replays_them() {
         r#"{"a":1} x"#,
         "",
     ] {
-        assert_eq!(history_arguments(unchanged), unchanged, "{unchanged:?}");
+        assert_eq!(replayed(unchanged), unchanged, "{unchanged:?}");
     }
 }
 
