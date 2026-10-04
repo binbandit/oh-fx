@@ -151,6 +151,8 @@ fn reverse_load_reads_records_however_their_json_spells_the_workspace() {
     );
 }
 
+const WRITERS_QUEUE_BEHIND_WHOLE_RUNS: Duration = Duration::from_mins(1);
+
 #[test]
 fn concurrent_appends_from_separate_stores_keep_every_record_whole() {
     let fixture = Fixture::new();
@@ -160,6 +162,7 @@ fn concurrent_appends_from_separate_stores_keep_every_record_whole() {
             let data = fixture.data();
             std::thread::spawn(move || {
                 let mut store = PromptHistoryStore::open(&data).unwrap();
+                store.lock_deadline = WRITERS_QUEUE_BEHIND_WHOLE_RUNS;
                 for index in 0..25 {
                     let text = format!("writer-{writer}-prompt-{index}-{}", "x".repeat(300));
                     assert_eq!(
