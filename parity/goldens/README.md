@@ -2,7 +2,7 @@
 
 This is the first fixed-prompt slice of OH-7 Part 2. Tool metadata, CLI help, dynamic compaction notes requests, and other prompts remain outside this slice.
 
-Regenerate offline with `cargo xtask parity goldens --upstream PATH` (or `OH_FX_UPSTREAM`). The repository must contain the commit named by `parity/UPSTREAM`; its HEAD and working files are not inputs. The command reads Git objects and does not fetch, check out, or change the upstream repository. Both sources are read and validated before either golden is replaced.
+Regenerate offline with `cargo xtask parity goldens --upstream PATH` (or `OH_FX_UPSTREAM`). The repository must contain the commit named by `parity/UPSTREAM`; its HEAD and working files are not inputs. The command reads Git objects with lazy fetching explicitly disabled and does not fetch, check out, or change the upstream repository. A missing blob in a partial clone fails locally; source blobs must already be available. Both sources are read and validated before either golden is replaced.
 
 | Golden | Upstream source | Extraction |
 |---|---|---|
