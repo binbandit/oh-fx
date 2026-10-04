@@ -897,6 +897,68 @@ fn startup_scrollback_is_saved_at_top_level_and_workspace_copies_are_migrated() 
 }
 
 #[test]
+fn session_titles_are_saved_at_top_level_and_workspace_copies_are_migrated() {
+    let fixture = Fixture::with_settings(
+        "{\"workspaces\":{\"/work\":{\"session_titles\":true,\"model\":\"kept\"}}}\n",
+    );
+    let recovery = fixture
+        .paths
+        .config
+        .join("backups/settings.json.preference-migration.session_titles.json");
+    assert_eq!(
+        save_session_titles(&fixture.paths, false),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 0,
+            cleanup: LegacyCleanup {
+                fields_removed: 1,
+                workspaces_changed: 1,
+                recovery_paths: vec![recovery.clone()],
+            },
+        })
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"workspaces\":{\"/work\":{\"model\":\"kept\"}},\"session_titles\":false}\n"
+    );
+    assert!(recovery.exists());
+    assert_eq!(
+        save_session_titles(&fixture.paths, false),
+        Ok(CommitOutcome::Unchanged)
+    );
+}
+
+#[test]
+fn prompt_history_is_saved_under_prompt_history_and_workspace_copies_are_migrated() {
+    let fixture = Fixture::with_settings(
+        "{\"prompt_history\":{\"limit\":5},\"workspaces\":{\"/work\":{\"prompt_history\":{\"enabled\":true},\"model\":\"kept\"}}}\n",
+    );
+    let recovery = fixture
+        .paths
+        .config
+        .join("backups/settings.json.preference-migration.prompt_history_enabled.json");
+    assert_eq!(
+        save_prompt_history_enabled(&fixture.paths, false),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed: 0,
+            cleanup: LegacyCleanup {
+                fields_removed: 1,
+                workspaces_changed: 1,
+                recovery_paths: vec![recovery.clone()],
+            },
+        })
+    );
+    assert_eq!(
+        fixture.read(),
+        "{\"prompt_history\":{\"limit\":5,\"enabled\":false},\"workspaces\":{\"/work\":{\"model\":\"kept\"}}}\n"
+    );
+    let invalid = Fixture::with_settings("{\"prompt_history\":true}\n");
+    assert_eq!(
+        save_prompt_history_enabled(&invalid.paths, true).map_err(|failure| failure.error),
+        Err(SettingsWriteError::InvalidFormat)
+    );
+}
+
+#[test]
 fn statusline_items_are_saved_under_status_line_and_workspace_copies_are_migrated() {
     let fixture = Fixture::with_settings(
         "{\"statusLine\":{\"sandbox\":true},\"workspaces\":{\"/work\":{\"statusLine\":{\"context\":true},\"model\":\"kept\"},\"/other\":{\"statusLine\":{\"context\":false,\"session\":true}}}}\n",

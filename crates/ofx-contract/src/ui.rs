@@ -4,6 +4,7 @@ use crate::permission_gate::{
     ApprovalDecision, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
 };
 use crate::session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionScope};
+use crate::settings_catalog::{SettingId, SettingsSnapshot};
 use crate::skill_menu::{SkillBinding, SkillMenuFocus, SkillMenuItem};
 use crate::subagent::SubagentStatus;
 use crate::tool_dispatch::CallDescription;
@@ -337,6 +338,15 @@ pub enum UiEvent {
         enabled: bool,
     },
     StatuslineMenuOpened,
+    SettingsMenuOpened {
+        snapshot: SettingsSnapshot,
+    },
+    SettingsChanged {
+        snapshot: SettingsSnapshot,
+    },
+    PromptHistoryChanged {
+        enabled: bool,
+    },
     HelpRequested,
     StatsRequested,
     CompactionActivity {
@@ -380,6 +390,10 @@ pub enum UiCommand {
     },
     ToggleStatusline {
         item: StatuslineItem,
+    },
+    StepSetting {
+        setting: SettingId,
+        delta: isize,
     },
     RunCommand {
         text: String,

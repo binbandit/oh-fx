@@ -396,6 +396,26 @@ impl Row {
     }
 }
 
+pub(crate) fn single_line_ellipsized(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let line: String = text
+        .chars()
+        .map(|character| {
+            if matches!(character, '\n' | '\r') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    if visible_width(&line) <= width {
+        return line;
+    }
+    format!("{}\u{2026}", prefix_by_width(&line, width - 1))
+}
+
 pub(crate) fn escaped_in_rows(character: char) -> bool {
     character.is_control() || is_terminal_control(character)
 }
