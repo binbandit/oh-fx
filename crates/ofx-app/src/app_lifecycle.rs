@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
+use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{
     BoxFuture, DynamicTools, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent,
@@ -31,6 +32,7 @@ use crate::app_panic_runtime::PanicCapture;
 use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, session_route,
 };
+use crate::app_steering_runtime::WaitingSteering;
 use crate::app_upgrade_runtime;
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
@@ -234,6 +236,7 @@ impl From<io::Error> for SessionError {
 
 fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(), SessionError> {
     let (sender, receiver) = ui_channel()?;
+    let steering = Arc::new(WorkerRuntime::default());
     for diagnostic in session.profile.settings().diagnostics() {
         sender.send(UiEvent::Notice {
             notice: Notice::new(NoticeTone::Warning, "", diagnostic.to_string()),
@@ -275,6 +278,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         lifecycle: lifecycle.as_ref().map(|client| {
             Box::new(HerdrObserver(Arc::clone(client))) as Box<dyn ofx_tui::ForegroundLifecycle>
         }),
+        steering: Some(Box::new(WaitingSteering(Arc::clone(&steering)))),
         opening: session.opening,
         statusline: session.setup.statusline(),
         workspace_identity: Some(Box::new(StatuslineIdentity::new(
@@ -289,6 +293,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         session.setup,
         (session.persistence, picking),
         session.executions,
+        steering,
         runtime,
         lifecycle,
     );
@@ -306,6 +311,7 @@ fn agent_work(
     setup: AgentSetup,
     (persistence, pick_at_start): (Option<Persistence>, bool),
     executions: ManagedExecutions,
+    steering: Arc<WorkerRuntime>,
     runtime: Runtime,
     herdr: Option<Arc<Herdr>>,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
@@ -318,6 +324,7 @@ fn agent_work(
             Arc::new(move |event| events.send(event)),
             persistence,
             pick_at_start,
+            steering,
         )
         .with_herdr(herdr);
         runtime.block_on(async {
