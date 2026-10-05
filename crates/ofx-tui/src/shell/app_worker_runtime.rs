@@ -921,11 +921,11 @@ mod tests {
         assert!(test.written().is_empty());
         test.advance(50);
         assert!(test.written().is_empty());
-        let now_ms = test.shell.now_ms();
+        let mid_resize_ms = now_ms + 50;
         assert!(
             test.shell
-                .next_deadline_ms(now_ms)
-                .is_some_and(|due_ms| due_ms > now_ms)
+                .next_deadline_ms(mid_resize_ms)
+                .is_some_and(|due_ms| due_ms > mid_resize_ms)
         );
         test.advance(50);
         test.draining(|shell| {
