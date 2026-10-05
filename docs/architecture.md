@@ -142,3 +142,5 @@ Crates land in the order they are wired into the binary.
 
 Saved tool outputs already live in private `tool-results` sidecars. Storage keeps complete outputs above 8 MiB; replay retains upstream's 8 MiB limit and exact byte-count requirement. A private reader holds the opened regular file and reads raw bounded pages without reopening its path or creating a missing route. Replay consumes this reader. The `read_tool_result` tool, artifact retention, compaction record search and web-fetch artifact integration remain pending.
 
+
+Token-only streaming updates coalesce within 50 ms of the last frame, while visible assistant output, phase changes and usage reports remain immediate. This adapts upstream's armed animation cadence to the current renderer; upstream requests token changes immediately when no animation is armed. Pending token updates survive blocked frames without an overdue token deadline. Full render-request and assistant-pacer parity remain partial.
