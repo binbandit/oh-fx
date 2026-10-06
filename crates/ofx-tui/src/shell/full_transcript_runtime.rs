@@ -157,6 +157,7 @@ impl Shell<'_> {
             || self.skills_menu_visible()
             || self.help_menu.is_some()
             || self.model_menu.is_some()
+            || self.model_query().is_some()
             || self.model_draft.is_some()
             || self.picker_active()
             || self.has_file_query()
@@ -393,6 +394,52 @@ mod tests {
             assert!(test.shell.full_transcript.is_none());
             assert_eq!(test.shell.composer.text(), "/");
             assert!(test.sent().is_empty());
+        }
+    }
+
+    #[test]
+    fn inline_model_columns_keep_navigation_before_and_after_viewer_entry() {
+        use ofx_contract::{
+            ModelCapabilities, ModelCatalog, ModelCatalogSource, ModelOption, UiCommand, UiEvent,
+        };
+
+        for viewer_first in [false, true] {
+            let mut test = TestShell::start();
+            test.screen();
+            if viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+                test.screen();
+            }
+            test.type_bytes(b"/model ");
+            test.step();
+            test.deliver(UiEvent::ModelCatalog {
+                provider: "local".to_owned(),
+                catalog: ModelCatalog::Listed {
+                    models: ["model-first", "model-second"]
+                        .into_iter()
+                        .map(|id| ModelOption {
+                            id: id.to_owned(),
+                            capabilities: ModelCapabilities::default(),
+                            max_output_tokens: None,
+                        })
+                        .collect(),
+                    source: ModelCatalogSource::ProfileSettings,
+                },
+            });
+            test.screen();
+            if !viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+                test.screen();
+            }
+            test.type_bytes(b"\x1b[B\r");
+            test.step();
+            assert!(matches!(
+                test.sent().last(),
+                Some(UiCommand::SelectModel { model, .. }) if model == "model-second"
+            ));
+            assert!(test.shell.full_transcript.is_none());
         }
     }
 
