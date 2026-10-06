@@ -132,7 +132,7 @@ note = "Slash/file completion, history routes and the model and provider column 
 upstream = "src/core/app/input_full_transcript_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/full_transcript_runtime.rs"]
-note = "Ctrl+O, encoded toggle, Escape/Ctrl+C close, three-row wheel/arrow scroll, page scroll, redraw, composer editing and pending-open cancellation have a live viewer consumer. Approval and skills-catalog ownership are preserved; remaining alternate-screen modal ownership and full-page preparation are missing."
+note = "Ctrl+O, encoded toggle, Escape/Ctrl+C close, three-row wheel/arrow scroll, page scroll, redraw, composer editing and pending-open cancellation have a live viewer consumer. Existing approval, question and footer-menu owners retain input by returning to inline mode. Native-clear probes are suspended in the viewer, and source-pinned native mouse selection is retained; full alternate-screen modal handoff and full-page preparation are missing."
 
 [[file]]
 upstream = "src/core/app/input_history_runtime.zig"

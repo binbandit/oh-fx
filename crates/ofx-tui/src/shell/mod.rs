@@ -1017,6 +1017,7 @@ impl<'a> Shell<'a> {
     fn native_clear_row(&self) -> Option<u16> {
         let blocked = self.approval.is_some()
             || self.question.is_some()
+            || self.full_transcript.is_some()
             || self.pending_resize.is_some()
             || self.dimensions_invalid
             || self.layout.cols < CONFIRMATION_TAG_COLUMN;

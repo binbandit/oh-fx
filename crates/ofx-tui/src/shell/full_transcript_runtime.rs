@@ -29,9 +29,8 @@ impl Shell<'_> {
         &mut self,
         event: &InputEvent,
     ) -> Result<bool, TerminalError> {
-        if self.approval.is_some()
-            || (self.full_transcript.is_none() && self.command_skills_menu_open())
-        {
+        if self.full_transcript_input_blocked() {
+            self.close_full_transcript()?;
             return Ok(false);
         }
         let toggles = matches!(event, InputEvent::Action(decoded) if decoded.action == Action::ToggleFullTranscript);
@@ -144,10 +143,23 @@ impl Shell<'_> {
     }
 
     pub(super) fn settle_full_transcript_owner(&mut self) -> Result<(), TerminalError> {
-        if self.approval.is_some() {
+        if self.full_transcript_input_blocked() {
             self.close_full_transcript()?;
         }
         Ok(())
+    }
+
+    fn full_transcript_input_blocked(&self) -> bool {
+        self.approval.is_some()
+            || self.question.is_some()
+            || self.statusline_menu.is_some()
+            || self.settings_menu.is_some()
+            || self.skills_menu_visible()
+            || self.help_menu.is_some()
+            || self.model_menu.is_some()
+            || self.model_draft.is_some()
+            || self.picker_active()
+            || self.has_file_query()
     }
 
     pub(super) fn present_full_transcript_frame(
@@ -241,7 +253,148 @@ fn projection_rows<'a>(
 #[cfg(test)]
 mod tests {
     use super::super::test_shell::TestShell;
+    use crate::render_engine::frame_sink::FrameSink;
     use crate::render_engine::transcript_blocks::Entry;
+    use crate::terminal::TAGGED_CURSOR_QUERY;
+
+    #[test]
+    fn typing_with_native_clear_probing_keeps_the_retained_transcript() {
+        let mut test = TestShell::start();
+        test.shell.input.start_native_clear_probe();
+        test.shell.transcript.push(Entry::UserTurn {
+            text: "retained before probing".to_owned(),
+        });
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        test.screen();
+        let row = test
+            .shell
+            .full_transcript
+            .as_ref()
+            .unwrap()
+            .renderer
+            .cursor_row()
+            .unwrap();
+        assert_ne!(Some(row), test.shell.renderer.cursor_row());
+        test.type_bytes(b"x");
+        test.step();
+        let written = test.written();
+        if written.contains(TAGGED_CURSOR_QUERY) {
+            test.type_bytes(format!("\x1b[{row};1R\x1b[{row};2R").as_bytes());
+            test.step();
+        }
+        assert!(test.screen().contains("retained before probing"));
+        assert!(!written.contains(TAGGED_CURSOR_QUERY));
+        assert_eq!(test.shell.composer.text(), "x");
+        test.type_bytes(b"\x0f");
+        test.step();
+        test.screen();
+        let row = test.shell.renderer.cursor_row().unwrap();
+        test.type_bytes(b"y");
+        test.step();
+        assert_eq!(test.written(), TAGGED_CURSOR_QUERY);
+        test.type_bytes(format!("\x1b[{row};1R\x1b[{row};2R").as_bytes());
+        test.step();
+        assert!(test.screen().contains("retained before probing"));
+        assert_eq!(test.shell.composer.text(), "xy");
+        assert!(test.sent().is_empty());
+    }
+
+    #[test]
+    fn questions_keep_navigation_before_and_after_viewer_entry() {
+        use ofx_contract::{
+            QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, TurnId, UiCommand,
+            UiEvent,
+        };
+
+        for viewer_first in [false, true] {
+            let mut test = TestShell::start();
+            test.submit("pick an option");
+            test.deliver(UiEvent::TurnStarted {
+                turn_id: TurnId::new(1),
+            });
+            test.type_bytes(b"unfinished draft");
+            test.step();
+            test.screen();
+            if viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+                test.screen();
+            }
+            test.deliver(UiEvent::QuestionRequested {
+                turn_id: TurnId::new(1),
+                request: QuestionRequest {
+                    id: RequestId::new(7),
+                    entries: vec![QuestionBatchEntry {
+                        question: "Which option?".to_owned(),
+                        options: ["First", "Second"]
+                            .into_iter()
+                            .map(|label| QuestionOption {
+                                label: label.to_owned(),
+                                description: None,
+                            })
+                            .collect(),
+                    }],
+                },
+            });
+            if !viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+            }
+            test.written();
+            test.type_bytes(b"\x1b[B\r");
+            test.step();
+            assert_eq!(
+                test.sent()
+                    .into_iter()
+                    .filter(|command| matches!(command, UiCommand::QuestionAnswered { .. }))
+                    .collect::<Vec<_>>(),
+                [UiCommand::QuestionAnswered {
+                    request_id: RequestId::new(7),
+                    answers: Some(vec!["Second".to_owned()]),
+                }]
+            );
+            assert!(test.shell.full_transcript.is_none());
+            assert_eq!(test.shell.composer.text(), "unfinished draft");
+            assert!(
+                !test
+                    .sent()
+                    .iter()
+                    .any(|command| matches!(command, UiCommand::Cancel { .. }))
+            );
+        }
+    }
+
+    #[test]
+    fn the_help_menu_keeps_navigation_before_and_after_viewer_entry() {
+        use ofx_contract::UiEvent;
+
+        for viewer_first in [false, true] {
+            let mut test = TestShell::start();
+            test.screen();
+            if viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+                test.screen();
+            }
+            test.type_bytes(b"/");
+            test.step();
+            test.deliver(UiEvent::HelpRequested);
+            test.screen();
+            if !viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+            }
+            assert_eq!(test.shell.help_menu.unwrap().selected(), 0);
+            test.type_bytes(b"\x1b[B");
+            test.step();
+            assert_eq!(test.shell.help_menu.unwrap().selected(), 1);
+            assert!(test.shell.full_transcript.is_none());
+            assert_eq!(test.shell.composer.text(), "/");
+            assert!(test.sent().is_empty());
+        }
+    }
 
     #[test]
     fn ctrl_o_opens_the_transcript_and_restores_the_inline_draft() {
@@ -277,6 +430,60 @@ mod tests {
         test.step();
         assert!(test.written().contains("\x1b[?1049l"));
         assert_eq!(test.screen(), before);
+        assert!(test.sent().is_empty());
+    }
+
+    #[test]
+    fn ordinary_viewer_entry_and_exit_preserve_native_mouse_selection() {
+        for close in [b"\x0f".as_slice(), b"\x03", b"\x1b"] {
+            let mut test = TestShell::start();
+            test.screen();
+            test.type_bytes(b"\x0f");
+            test.step();
+            let entered = test.written();
+            assert_eq!(entered.matches("\x1b[?1049h").count(), 1);
+            test.type_bytes(close);
+            test.step();
+            test.advance(40);
+            test.settle();
+            let left = test.written();
+            assert_eq!(left.matches("\x1b[?1049l").count(), 1);
+            for sequence in ["\x1b[?1000h", "\x1b[?1006h", "\x1b[?1000l", "\x1b[?1006l"] {
+                assert!(!entered.contains(sequence), "{entered:?}");
+                assert!(!left.contains(sequence), "{left:?}");
+            }
+            assert!(test.sent().is_empty());
+        }
+    }
+
+    #[test]
+    fn reported_wheel_input_scrolls_three_rows_without_editing_the_draft() {
+        let mut test = TestShell::start();
+        for index in 0..40 {
+            test.shell.transcript.push(Entry::UserTurn {
+                text: format!("retained-{index:02}"),
+            });
+        }
+        test.type_bytes(b"draft");
+        test.step();
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        test.screen();
+        let tail = test.shell.full_transcript.as_ref().unwrap().offset;
+        assert!(tail > 3);
+        test.type_bytes(b"\x1b[<64;1;1M");
+        test.step();
+        test.screen();
+        assert_eq!(
+            test.shell.full_transcript.as_ref().unwrap().offset,
+            tail - 3
+        );
+        test.type_bytes(b"\x1b[<65;1;1M");
+        test.step();
+        test.screen();
+        assert_eq!(test.shell.full_transcript.as_ref().unwrap().offset, tail);
+        assert_eq!(test.shell.composer.text(), "draft");
         assert!(test.sent().is_empty());
     }
 
