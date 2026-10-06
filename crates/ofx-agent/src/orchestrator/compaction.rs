@@ -66,7 +66,7 @@ impl Agent {
         summarizing: &mut (dyn FnMut() + Send),
         cancel: &CancellationToken,
     ) -> Result<Compaction, CompactionError> {
-        self.close_interrupted_turn();
+        self.close_interrupted_turns(false);
         if self.resolve_capabilities(cancel).await.is_err() {
             return Err(CompactionError::Cancelled);
         }
@@ -324,6 +324,15 @@ impl Agent {
     }
 
     fn install_compaction(&mut self, compacted: Compacted) {
+        let pending_turns: Vec<_> = self
+            .pending_interruptions
+            .iter()
+            .filter_map(|range| {
+                self.turn_starts
+                    .iter()
+                    .position(|start| *start == range.start)
+            })
+            .collect();
         self.last_reply = self.last_reply.take().and_then(|reply| {
             reply
                 .turn
@@ -337,6 +346,19 @@ impl Agent {
             compacted.cut,
             ChatMessage::user(compacted.text),
         );
+        self.pending_interruptions = pending_turns
+            .into_iter()
+            .filter_map(|turn| turn.checked_sub(compacted.cut.turns))
+            .filter_map(|turn| {
+                let start = *self.turn_starts.get(turn)?;
+                let end = self
+                    .turn_starts
+                    .get(turn + 1)
+                    .copied()
+                    .unwrap_or(self.history.len());
+                Some(start..end)
+            })
+            .collect();
         self.compacted = Some(compacted.payload);
         self.calibration = None;
     }

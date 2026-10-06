@@ -1,4 +1,5 @@
 use std::mem;
+use std::ops::Range;
 
 use ofx_contract::{
     ChatMessage, HistorySteering, HistoryStep, ProviderReplay, RecordedOutput, StepResult,
@@ -11,10 +12,11 @@ const STEERING_CLOSE: &str = "\n</user_steering>";
 const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
 const INTERRUPTED_TURN_CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
 
-pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, start: usize) {
-    let Some(messages) = history.get_mut(start..) else {
-        return;
+pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, range: Range<usize>) -> usize {
+    let Some(messages) = history.get_mut(range.clone()) else {
+        return 0;
     };
+    let mut closing = Vec::with_capacity(2);
     if let Some(ChatMessage::Assistant {
         content,
         tool_calls,
@@ -31,13 +33,16 @@ pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, start: usiz
         .iter()
         .any(|message| matches!(message, ChatMessage::Tool { .. }))
     {
-        history.push(ChatMessage::Assistant {
+        closing.push(ChatMessage::Assistant {
             content: Some(INTERRUPTED_BEFORE_COMPLETION.to_owned()),
             tool_calls: Vec::new(),
             provider_replay: None,
         });
     }
-    history.push(ChatMessage::user(INTERRUPTED_TURN_CONTEXT));
+    closing.push(ChatMessage::user(INTERRUPTED_TURN_CONTEXT));
+    let added = closing.len();
+    history.splice(range.end..range.end, closing);
+    added
 }
 
 pub(crate) fn steering_message(text: &str) -> String {

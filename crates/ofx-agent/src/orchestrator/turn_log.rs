@@ -30,7 +30,7 @@ impl Agent {
     }
 
     pub fn restore(&mut self, restored: RestoredHistory) {
-        self.pending_interruption = None;
+        self.pending_interruptions.clear();
         let RestoredHistory {
             checkpoint,
             mut messages,
