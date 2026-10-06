@@ -137,6 +137,12 @@ impl Shell<'_> {
         Ok(())
     }
 
+    pub(super) fn reset_full_transcript_frame(&mut self) {
+        if let Some(screen) = &mut self.full_transcript {
+            screen.renderer.reset_screen();
+        }
+    }
+
     pub(super) fn settle_full_transcript_owner(&mut self) -> Result<(), TerminalError> {
         if self.approval.is_some() {
             self.close_full_transcript()?;
@@ -334,6 +340,27 @@ mod tests {
             assert_eq!(test.sent(), commands);
             assert!(test.screen().contains("a live reply"));
         }
+    }
+
+    #[test]
+    fn a_terminal_repaint_repairs_the_active_alternate_buffer() {
+        let mut test = TestShell::start();
+        test.type_bytes(b"draft");
+        test.step();
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        let before = test.screen();
+        test.draining(|shell| {
+            shell
+                .terminal
+                .write_all(b"\x1b[1;1Hdamaged terminal")
+                .unwrap();
+        });
+        assert!(test.screen().contains("damaged terminal"));
+        test.draining(|shell| shell.repaint_after_stop(Some(shell.layout)).unwrap());
+        assert_eq!(test.screen(), before);
+        assert!(test.sent().is_empty());
     }
 
     #[test]

@@ -526,6 +526,7 @@ impl<'a> Shell<'a> {
             return;
         }
         self.metrics.full_redraws += 1;
+        self.reset_full_transcript_frame();
         self.renderer.resize(self.layout.rows, self.layout.cols);
         self.renderer.reset_screen();
         self.transcript.replay(self.cols());
