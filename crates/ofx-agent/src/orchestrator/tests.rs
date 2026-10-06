@@ -2888,6 +2888,7 @@ mod approvals;
 mod capabilities;
 mod compaction;
 mod file_evidence;
+mod interrupted_closure;
 mod malformed_arguments;
 mod modes;
 mod project_context;

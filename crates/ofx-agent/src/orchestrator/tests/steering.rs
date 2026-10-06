@@ -588,3 +588,54 @@ async fn steering_typed_after_streamed_tool_input_waits_for_the_tool_result() {
         Some(&ChatMessage::user(steering_message("also run the linter")))
     );
 }
+
+#[tokio::test]
+async fn a_continuation_omits_only_the_latest_interrupted_turns_closure() {
+    let provider = FakeProvider::new(vec![
+        streaming("older partial"),
+        streaming("active partial"),
+        text_reply("continued"),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "older"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, _, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    worker.admit(plain(1, "active"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                worker.admit(plain(2, "continue"));
+                worker.request_cancel();
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages,
+        [
+            ChatMessage::user("older"),
+            assistant(&format!(
+                "older partial\n\n{}",
+                interrupted_closure::CLOSURE
+            )),
+            ChatMessage::user(interrupted_closure::CONTEXT),
+            ChatMessage::user("active"),
+            assistant("active partial"),
+            ChatMessage::user(steering_message("continue")),
+        ]
+    );
+}

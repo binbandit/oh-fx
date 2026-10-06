@@ -113,6 +113,8 @@ Port each area from the latest upstream. These notes list what changed in the ra
 
 ### Steering
 
+Live interrupted text history now matches upstream’s closed projection before an ordinary follow-up or manual compaction: the synthetic assistant closure precedes `<turn_aborted>`, and a steering continuation leaves out only the latest closure. Turn-loop and PTY request-body tests cover cancellation, partial failure, repeat follow-ups, older interruptions, and clear/restore. Completed-tool interruption summaries and active-call abort records remain partial, as recorded in [agent differences](differences/agent.md).
+
 Steering is ported in `ofx-agent` (`worker_runtime`, the turn loop's boundaries, steering in execution memory and compaction), `ofx-session`, `ofx-app`, and `ofx-tui`. What remains belongs to subagents:
 
 - feedback to a running persistent child (`SteerPersistent`): parent-agent steering of the child's turn (`parentSteeringMessage`), direct admission into it (`admitActiveSteering`, `direct_steering_closed`), and the steering receipt behind `feedback_result`, which the subagent runtime answers with `child_busy` until then;

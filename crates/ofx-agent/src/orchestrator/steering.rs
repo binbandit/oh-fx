@@ -8,6 +8,20 @@ use crate::execution_memory::{steering_message, steering_text};
 use crate::worker_runtime::{Boundary, BoundaryKind, Steering, WorkerRuntime};
 
 impl Agent {
+    pub(super) fn close_interrupted_turn(&mut self) {
+        let Some(start) = self.pending_interruption.take() else {
+            return;
+        };
+        if self
+            .steering
+            .as_ref()
+            .is_some_and(|worker| worker.continues_steering())
+        {
+            return;
+        }
+        crate::execution_memory::close_interrupted_turn(&mut self.history, start);
+    }
+
     #[must_use]
     pub fn with_steering(mut self, worker: Arc<WorkerRuntime>) -> Self {
         self.steering = Some(worker);

@@ -189,7 +189,14 @@ async fn a_prompt_submitted_after_a_cancel_runs_next_as_its_own_turn() {
         .to_vec();
     assert_eq!(started(&events), 1);
     let body = server.requests()[1].json();
-    assert_eq!(user_texts(&body), ["slow", "next"]);
+    assert_eq!(
+        user_texts(&body),
+        [
+            "slow",
+            "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
+            "next",
+        ]
+    );
 }
 
 #[tokio::test]

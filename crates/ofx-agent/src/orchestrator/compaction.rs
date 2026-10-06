@@ -66,6 +66,7 @@ impl Agent {
         summarizing: &mut (dyn FnMut() + Send),
         cancel: &CancellationToken,
     ) -> Result<Compaction, CompactionError> {
+        self.close_interrupted_turn();
         if self.resolve_capabilities(cancel).await.is_err() {
             return Err(CompactionError::Cancelled);
         }

@@ -8,6 +8,38 @@ use ofx_contract::{
 const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
 const STEERING_CLOSE: &str = "\n</user_steering>";
 
+const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
+const INTERRUPTED_TURN_CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
+
+pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, start: usize) {
+    let Some(messages) = history.get_mut(start..) else {
+        return;
+    };
+    if let Some(ChatMessage::Assistant {
+        content,
+        tool_calls,
+        ..
+    }) = messages.last_mut()
+        && tool_calls.is_empty()
+    {
+        let text = content.get_or_insert_with(String::new);
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(INTERRUPTED_BEFORE_COMPLETION);
+    } else if !messages
+        .iter()
+        .any(|message| matches!(message, ChatMessage::Tool { .. }))
+    {
+        history.push(ChatMessage::Assistant {
+            content: Some(INTERRUPTED_BEFORE_COMPLETION.to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        });
+    }
+    history.push(ChatMessage::user(INTERRUPTED_TURN_CONTEXT));
+}
+
 pub(crate) fn steering_message(text: &str) -> String {
     format!("{STEERING_OPEN}{text}{STEERING_CLOSE}")
 }

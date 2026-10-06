@@ -253,6 +253,7 @@ pub struct Agent {
     skills: Option<Arc<dyn SkillContextProvider>>,
     history: Vec<ChatMessage>,
     turn_starts: Vec<usize>,
+    pending_interruption: Option<usize>,
     inherited_requests: Option<Arc<RootUserRequests>>,
     ledger: TurnLedger,
     compacted: Option<Payload>,
@@ -298,6 +299,7 @@ impl Agent {
             skills: None,
             history: Vec::new(),
             turn_starts: Vec::new(),
+            pending_interruption: None,
             inherited_requests: None,
             ledger: TurnLedger::default(),
             compacted: None,
@@ -416,6 +418,7 @@ impl Agent {
     }
 
     pub fn clear_history(&mut self) {
+        self.pending_interruption = None;
         self.history.clear();
         self.turn_starts.clear();
         self.ledger.reset(0);
@@ -515,6 +518,7 @@ impl Agent {
                 failure: Some(TurnFailure::Persistence(failure)),
             };
         }
+        self.close_interrupted_turn();
         let mut turn = self.new_turn(id, prompt);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
@@ -578,6 +582,9 @@ impl Agent {
             && failure.is_none()
         {
             failure = Some(TurnFailure::Persistence(error));
+        }
+        if matches!(ending, Ending::Stopped(_)) {
+            self.pending_interruption = Some(turn.start);
         }
         events(UiEvent::TurnFinished {
             turn_id: id,
