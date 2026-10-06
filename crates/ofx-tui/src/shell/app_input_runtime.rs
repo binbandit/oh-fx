@@ -78,6 +78,9 @@ impl Shell<'_> {
             _ => {}
         }
         self.invalidate();
+        if self.route_full_transcript_input(&event)? {
+            return Ok(());
+        }
         if requests_upgrade(&event) {
             self.apply_ready_upgrade();
             return Ok(());

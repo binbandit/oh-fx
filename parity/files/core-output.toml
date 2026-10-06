@@ -39,8 +39,9 @@ note = "Interactive and CLI status with the local MCP view, the doctor report, a
 
 [[file]]
 upstream = "src/core/output/transcript_presentation.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/full_transcript_runtime.rs"]
+note = "The retained-text viewer tracks offset, tail following, saturating scroll and page navigation, clamps on resize, and restores the inline shell. Stable source-ID anchors and restore bookmarks are missing."
 
 [[file]]
 upstream = "src/core/output/transcript_release.zig"

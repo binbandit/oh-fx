@@ -130,8 +130,9 @@ note = "Slash/file completion, history routes and the model and provider column 
 
 [[file]]
 upstream = "src/core/app/input_full_transcript_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/full_transcript_runtime.rs"]
+note = "Ctrl+O, encoded toggle, Escape/Ctrl+C close, three-row wheel/arrow scroll, page scroll, redraw, composer editing and pending-open cancellation have a live viewer consumer. Approval and skills-catalog ownership are preserved; remaining alternate-screen modal ownership and full-page preparation are missing."
 
 [[file]]
 upstream = "src/core/app/input_history_runtime.zig"
