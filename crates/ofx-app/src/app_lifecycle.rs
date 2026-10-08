@@ -32,6 +32,7 @@ use crate::app_bootstrap_runtime::{
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_mcp_runtime;
 use crate::app_panic_runtime::PanicCapture;
+use crate::app_recording;
 use crate::app_session_runtime::{
     LaunchOverrides, Persistence, configured_preferences, open_store, session_route,
 };
@@ -316,6 +317,10 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.workspace_root(),
         ))),
         theme: session.profile.settings().theme().map(str::to_owned),
+        recording: Some(app_recording::start_recording(
+            session.profile.paths().map(|paths| paths.state.clone()),
+            sender.clone(),
+        )),
     };
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();

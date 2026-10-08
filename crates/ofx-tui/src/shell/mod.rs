@@ -96,8 +96,8 @@ use crate::render_engine::transcript_blocks::Entry;
 use crate::row_text::Row;
 use crate::terminal::signal_pipe::SignalPipe;
 use crate::terminal::{
-    CONFIRMATION_TAG_COLUMN, ColorSupport, ExitCleanup, HistoryReset, Layout, StartupViewport,
-    Terminal, TerminalError, TmuxHistory, interactive_mode_enable_sequence,
+    CONFIRMATION_TAG_COLUMN, ColorSupport, ExitCleanup, HistoryReset, Layout, StartRecording,
+    StartupViewport, Terminal, TerminalError, TmuxHistory, interactive_mode_enable_sequence,
 };
 use crate::theme::Theme;
 use crate::transcript::history_replay::replayed_entries;
@@ -145,6 +145,7 @@ pub struct ShellOptions {
     pub workspace_identity: Option<Box<dyn WorkspaceIdentitySource>>,
     pub theme: Option<String>,
     pub model_controls: ModelControls,
+    pub recording: Option<StartRecording>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,13 +359,20 @@ impl<'a> Shell<'a> {
     }
 
     fn bootstrap(
-        options: ShellOptions,
+        mut options: ShellOptions,
         events: UiEventReceiver,
         clipboard: Arc<dyn Clipboard>,
         send: Box<dyn FnMut(UiCommand) + 'a>,
     ) -> Result<Self, TerminalError> {
         let (signals, mut terminal) = claim_terminal()?;
         let layout = terminal.query_layout(FOOTER_ROWS)?;
+        if let Some(start) = options.recording.take() {
+            let recorder =
+                start(layout.cols, layout.rows).map_err(|_| TerminalError::RecordingStartFailed)?;
+            if let Some(recorder) = recorder {
+                terminal.record_with(recorder);
+            }
+        }
         let detection = terminal.detect_theme(options.theme.as_deref());
         let theme_pinned = detection.pinned;
         let capabilities = terminal.capabilities();
@@ -385,6 +393,7 @@ impl<'a> Shell<'a> {
         terminal.push_launch_rows_into_scrollback(layout, plan.scrollback_rows)?;
         terminal.enter_interactive_mode()?;
         let mut input = TerminalInput::new();
+        terminal.record_input(&typeahead);
         input.push_bytes(&typeahead);
         if !capabilities.tmux {
             input.start_native_clear_probe();
@@ -944,6 +953,7 @@ impl<'a> Shell<'a> {
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
         let cleanup = self.exit_cleanup();
         let _ = self.terminal.leave_interactive_mode();
+        self.terminal.stop_recording();
         if let Some(signal) = self.pending_fatal_signal() {
             return Some(signal);
         }
@@ -980,11 +990,11 @@ impl<'a> Shell<'a> {
             return;
         };
         self.metrics.debounced_resizes += 1;
-        if pending.replay
-            || self.dimensions_invalid
-            || layout.rows != self.layout.rows
-            || layout.cols != self.layout.cols
-        {
+        let resized = layout.rows != self.layout.rows || layout.cols != self.layout.cols;
+        if resized {
+            self.terminal.record_resize(layout);
+        }
+        if pending.replay || self.dimensions_invalid || resized {
             self.dimensions_invalid = false;
             self.layout = layout;
             self.replay();
@@ -996,6 +1006,9 @@ impl<'a> Shell<'a> {
             self.terminal.enable_theme_notifications()?;
         }
         if let Some(layout) = layout {
+            if layout.rows != self.layout.rows || layout.cols != self.layout.cols {
+                self.terminal.record_resize(layout);
+            }
             self.layout = layout;
         } else {
             self.lose_dimensions();
@@ -1172,7 +1185,96 @@ mod tests {
     use super::*;
     use crate::output::activity_status::ACTIVITY_BLINK_HALF_PERIOD_MS;
     use crate::terminal::fake_tmux::FakeTmux;
-    use crate::terminal::test_pty;
+    use crate::terminal::{TerminalRecorder, test_pty};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Recorded {
+        Stdout(Vec<u8>),
+        Stdin(Vec<u8>),
+        Resize(u16, u16),
+        Stopped,
+    }
+
+    #[derive(Clone, Default)]
+    struct Recording(std::rc::Rc<std::cell::RefCell<Vec<Recorded>>>);
+
+    impl Recording {
+        fn take(&self) -> Vec<Recorded> {
+            mem::take(&mut *self.0.borrow_mut())
+        }
+    }
+
+    impl TerminalRecorder for Recording {
+        fn stdout(&self, bytes: &[u8]) {
+            self.0.borrow_mut().push(Recorded::Stdout(bytes.to_vec()));
+        }
+
+        fn stdin(&self, bytes: &[u8]) {
+            self.0.borrow_mut().push(Recorded::Stdin(bytes.to_vec()));
+        }
+
+        fn resize(&self, cols: u16, rows: u16) {
+            self.0.borrow_mut().push(Recorded::Resize(cols, rows));
+        }
+
+        fn stop(&self) {
+            self.0.borrow_mut().push(Recorded::Stopped);
+        }
+    }
+
+    fn recorded_screen(frames: &[Recorded], rows: u16, cols: u16) -> String {
+        let mut screen = vt100::Parser::new(rows, cols, 0);
+        for frame in frames {
+            if let Recorded::Stdout(bytes) = frame {
+                screen.process(bytes);
+            }
+        }
+        screen.screen().contents()
+    }
+
+    #[test]
+    fn a_recorder_sees_the_screen_typed_input_and_size_changes() {
+        let recording = Recording::default();
+        let mut test = test_shell::TestShell::start();
+        test.shell.terminal.record_with(Box::new(recording.clone()));
+        let screen = test.screen();
+        let frames = recording.take();
+        assert!(screen.contains("Run /help for commands"), "{screen}");
+        assert_eq!(recorded_screen(&frames, 24, 80), screen);
+        assert!(
+            frames
+                .iter()
+                .all(|frame| matches!(frame, Recorded::Stdout(bytes) if !bytes.is_empty()))
+        );
+
+        test.type_bytes(b"hi");
+        test.step();
+        assert_eq!(
+            recording
+                .take()
+                .into_iter()
+                .filter(|frame| !matches!(frame, Recorded::Stdout(_)))
+                .collect::<Vec<_>>(),
+            [Recorded::Stdin(b"hi".to_vec())]
+        );
+
+        test.resize(24, 80);
+        test.resize(30, 100);
+        test.resize(3, 100);
+        let resizes: Vec<Recorded> = recording
+            .take()
+            .into_iter()
+            .filter(|frame| matches!(frame, Recorded::Resize(..)))
+            .collect();
+        assert_eq!(resizes, [Recorded::Resize(100, 30)]);
+
+        test.shell.terminal.stop_recording();
+        assert_eq!(recording.take(), [Recorded::Stopped]);
+        test.type_bytes(b"x");
+        test.step();
+        test.screen();
+        assert_eq!(recording.take(), []);
+    }
 
     #[test]
     fn a_reset_inside_tmux_clears_the_pane_and_its_history_before_the_frame() {
@@ -1464,6 +1566,7 @@ mod tests {
             workspace_identity: None,
             theme: None,
             model_controls: ModelControls::default(),
+            recording: None,
         }
     }
 

@@ -332,6 +332,7 @@ mod tests {
             workspace_identity: None,
             theme: None,
             model_controls: ofx_contract::ModelControls::default(),
+            recording: None,
         };
         let outcome = panics.contain_shell(|| {
             run_shell(

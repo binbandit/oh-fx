@@ -57,7 +57,7 @@ impl TmuxHistory {
     }
 
     pub(crate) fn clear(&self, terminal: &Terminal) {
-        if terminal.write_all(CLEAR_SCREEN_AND_HISTORY).is_err() {
+        if terminal.write_unrecorded(CLEAR_SCREEN_AND_HISTORY).is_err() {
             return;
         }
         let interrupt = terminal.fatal_signal_wakeup();

@@ -307,6 +307,7 @@ fn options() -> ShellOptions {
         workspace_identity: None,
         theme: None,
         model_controls: ofx_contract::ModelControls::default(),
+        recording: None,
     }
 }
 

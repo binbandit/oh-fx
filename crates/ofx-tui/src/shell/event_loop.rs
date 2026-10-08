@@ -147,6 +147,7 @@ impl Shell<'_> {
             if count == 0 {
                 return Ok(InputRead::Closed);
             }
+            self.terminal.record_input(&buffer[..count]);
             self.input.push_bytes(&buffer[..count]);
             self.process_input()?;
             if self.should_exit {
