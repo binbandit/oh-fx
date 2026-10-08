@@ -1592,6 +1592,7 @@ mod tests {
     use crate::app_session_runtime::{LaunchOverrides, ResumedSession, Resumption, session_route};
     use crate::codex_provider::SubscriptionEndpoints;
 
+    mod sign_out;
     mod steering;
     mod workspace;
 
@@ -5311,6 +5312,7 @@ mod tests {
             .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"))
             .await;
         assert_eq!(notices(refused), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        harness.send(UiCommand::DropHeldPrompt);
         assert_eq!(
             notices_of(&mut harness, "/logout").await,
             [
