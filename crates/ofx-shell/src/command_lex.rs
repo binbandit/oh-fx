@@ -177,6 +177,47 @@ fn control_operator_len(input: &[u8], start: usize) -> Option<usize> {
     }
 }
 
+pub(crate) fn is_safe_env_assignment(token: &str) -> bool {
+    token
+        .split_once('=')
+        .is_some_and(|(name, _)| is_safe_env_name(name))
+}
+
+fn is_safe_env_name(name: &str) -> bool {
+    matches!(
+        name,
+        "CI" | "NODE_ENV"
+            | "BUN_ENV"
+            | "DENO_ENV"
+            | "PYTHONUNBUFFERED"
+            | "PYTHONWARNINGS"
+            | "RUST_LOG"
+            | "RUST_BACKTRACE"
+            | "TERM"
+            | "COLORTERM"
+            | "NO_COLOR"
+            | "FORCE_COLOR"
+            | "CLICOLOR"
+            | "CLICOLOR_FORCE"
+            | "LANG"
+            | "LC_ALL"
+            | "LC_CTYPE"
+            | "LC_MESSAGES"
+            | "TZ"
+            | "CC"
+            | "CXX"
+            | "AR"
+            | "AS"
+            | "LD"
+            | "CFLAGS"
+            | "CXXFLAGS"
+            | "CPPFLAGS"
+            | "LDFLAGS"
+            | "MAKEFLAGS"
+            | "CMAKE_BUILD_TYPE"
+    )
+}
+
 fn is_whitespace(byte: u8) -> bool {
     WHITESPACE.contains(&byte)
 }
