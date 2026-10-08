@@ -38,9 +38,9 @@ note = "JavaScript host callback binding for the embedded runtime; excluded from
 
 [[file]]
 upstream = "src/core/session/legacy_background_migration.zig"
-status = "not-applicable"
+status = "todo"
 modules = []
-note = "Clears background run_command records and logs that fx releases up to 0.0.7 left in session folders; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as docs/differences/session-store.md records."
+note = "Clears background run_command records and logs that fx releases up to 0.0.7 left in session folders; it comes with the import of fx's older sessions, as session_migration's row records (NEW-G)."
 
 [[file]]
 upstream = "src/core/session/profile_usage_runtime.zig"
@@ -74,7 +74,7 @@ note = "Stored result handles and previews exist; paged ResultReader, image snap
 upstream = "src/core/session/session.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session.rs", "crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_store.rs", "crates/ofx-session/src/session_log/turn_restore.rs"]
-note = "The modern event, log and store domain exists, restored turns send their file evidence context as upstream does, and restored tool steps put their permission feedback after every result; the legacy image id repair only older fx sessions need is not needed, and the remaining recovery and child-session domain belongs to OH-37 and OH-28."
+note = "The modern event, log and store domain exists, restored turns send their file evidence context as upstream does, and restored tool steps put their permission feedback after every result; the legacy image id repair only older fx sessions need comes with their import (NEW-G), and the remaining recovery and child-session domain belongs to OH-37 and OH-28."
 
 [[file]]
 upstream = "src/core/session/session_adapter.zig"
@@ -84,9 +84,9 @@ note = "Environment-flag parsing exists; v1/v2 store routing, recovery, doctor a
 
 [[file]]
 upstream = "src/core/session/session_authority.zig"
-status = "not-applicable"
+status = "todo"
 modules = []
-note = "Classifies the schema-v3 layout of older fx releases by its authority marker; not needed for the reason in session_migration's row (NEW-G)."
+note = "Classifies the schema-v3 layout of older fx releases by its authority marker; it comes with the import of fx's older sessions, as session_migration's row records (NEW-G)."
 
 [[file]]
 upstream = "src/core/session/session_catalog.zig"
@@ -108,7 +108,7 @@ note = "Only the subagent control directory exists, with a child's owner marker 
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_codec.rs"]
-note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, and approval feedback written and restored as upstream does; the legacy connection preferences and older checkpoint versions only older fx sessions hold are not needed."
+note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, and approval feedback written and restored as upstream does; the legacy connection preferences and older checkpoint versions only older fx sessions hold come with their import (NEW-G)."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"
@@ -125,13 +125,13 @@ modules = []
 upstream = "src/core/session/session_discovery.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_discovery.rs"]
-note = "Classification of the layout upstream writes today exists; schema-v3 and legacy snapshot candidates and the fenced legacy upgrade are not needed for the reason in session_migration's row, and the doctor inspection belongs to oh-fx doctor (OH-41)."
+note = "Classification of the layout upstream writes today exists, for oh-fx's sessions and for the sessions fx saves in ~/.fx/sessions; schema-v3 and legacy snapshot candidates and the fenced legacy upgrade come with the import of fx's older sessions, as session_migration's row records (NEW-G), and the doctor inspection belongs to oh-fx doctor (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_display_metadata.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_display_metadata.rs"]
-note = "Display-title derivation exists; the display.json sidecar belongs to the schema-v3 layout and the bounded first-prompt preview to legacy snapshot summaries, neither of which is needed for the reason in session_migration's row (NEW-G), and the image-only fallback remains."
+note = "Display-title derivation exists; the display.json sidecar belongs to the schema-v3 layout and the bounded first-prompt preview to legacy snapshot summaries, which come with the import of fx's older sessions, as session_migration's row records (NEW-G), and the image-only fallback remains."
 
 [[file]]
 upstream = "src/core/session/session_event.zig"
@@ -143,7 +143,7 @@ note = "Modern conversation event encoding and sequencing exist, file evidence o
 upstream = "src/core/session/session_json.zig"
 status = "todo"
 modules = []
-note = "The legacy snapshot decoders and the snapshot writer upstream uses for test fixtures are not needed, since oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as docs/differences/session-store.md records; writeExecutionMemoryJson renders the session detail output of oh-fx session (OH-41)."
+note = "The legacy snapshot decoders come with the import of fx's older sessions, as session_migration's row records (NEW-G), and the snapshot writer upstream uses for test fixtures is not shipped; writeExecutionMemoryJson renders the session detail output of oh-fx session (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_layout.zig"
@@ -159,15 +159,15 @@ note = "Modern append/replay exists, and a matching recovery checkpoint stays pe
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
-status = "not-applicable"
+status = "todo"
 modules = []
-note = "Imports the session layouts older fx releases wrote: v1 and v2 session.json snapshots, which predate fx's public repository, and the schema-v3 semantic event log that releases 0.0.1 to 0.0.7 wrote before 0.0.8 cut over to the conversation layout; oh-fx keeps sessions in its own data directory, has only ever written the layout upstream writes today, and never reads ~/.fx, so no older fx session reaches it, as docs/differences/session-store.md records."
+note = "Imports the session layouts older fx releases wrote: v1 and v2 session.json snapshots, which predate fx's public repository, and the schema-v3 semantic event log that releases 0.0.1 to 0.0.7 wrote before 0.0.8 cut over to the conversation layout. oh-fx lists the sessions fx saves today from ~/.fx/sessions, read-only, and imports none yet; these layouts come with the import of fx's sessions (NEW-G), as docs/differences/session-store.md records."
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
-status = "not-applicable"
+status = "todo"
 modules = []
-note = "Reads the manifest and checkpoint projections of the schema-v3 layout older fx releases wrote; not needed for the reason in session_migration's row (NEW-G)."
+note = "Reads the manifest and checkpoint projections of the schema-v3 layout older fx releases wrote; it comes with the import of fx's older sessions, as session_migration's row records (NEW-G)."
 
 [[file]]
 upstream = "src/core/session/session_relationship_index_codec.zig"
@@ -184,7 +184,7 @@ note = "Buffered line reading exists; exact-commit, recovery checkpoint and chil
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists; legacy migration and the legacy image repair are not needed, the .resume-catalog index and history-cache.bin exist, and doctor (OH-41) and v2 routing (OH-27) remain."
+note = "Modern create, resume and list storage exists, and a listing can include the sessions fx saves in ~/.fx/sessions, read-only; legacy migration and the legacy image repair come with the import of fx's sessions (NEW-G), the .resume-catalog index and history-cache.bin exist, and doctor (OH-41) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
@@ -196,7 +196,7 @@ note = "Workspace normalization and root validation exist; sessions open through
 upstream = "src/core/session/session_store_types.zig"
 status = "todo"
 modules = []
-note = "The legacy snapshot ceilings and migration results are not needed for the reason in session_migration's row; the listing, resume and history page types live in ofx-session's own types, and the doctor results belong to oh-fx doctor (OH-41)."
+note = "The legacy snapshot ceilings and migration results come with the import of fx's older sessions, as session_migration's row records (NEW-G); the listing, resume and history page types live in ofx-session's own types, and the doctor results belong to oh-fx doctor (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_summary_codec.zig"

@@ -9,6 +9,7 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
+use crate::fx_sessions::FxSessions;
 use crate::session_catalog_cache::{CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
@@ -275,11 +276,22 @@ impl SessionStore {
 
     pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
         let scan = self.scan_summaries()?;
-        Ok(SessionCatalog {
+        Ok(self.catalog_of(scan))
+    }
+
+    pub fn catalog_with_fx(&self, fx: &FxSessions) -> Result<SessionCatalog, SessionError> {
+        let names = self.session_names()?;
+        let mut scan = self.scan_names(&names);
+        fx.merge_into(&mut scan.summaries, &names);
+        Ok(self.catalog_of(scan))
+    }
+
+    fn catalog_of(&self, scan: CatalogScan) -> SessionCatalog {
+        SessionCatalog {
             summaries: scan.summaries,
             skipped_invalid: scan.skipped_invalid,
             workspace_root: self.workspace_root.clone(),
-        })
+        }
     }
 
     pub fn remembered_session_id(&self) -> Result<Option<String>, SessionError> {
@@ -328,13 +340,24 @@ impl SessionStore {
     }
 
     fn scan_summaries(&self) -> Result<CatalogScan, SessionError> {
+        let names = self.session_names()?;
+        Ok(self.scan_names(&names))
+    }
+
+    fn session_names(&self) -> Result<Vec<String>, SessionError> {
+        match &self.sessions {
+            Some(sessions) => session_directory_names(sessions),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn scan_names(&self, names: &[String]) -> CatalogScan {
         let Some(sessions) = &self.sessions else {
-            return Ok(CatalogScan::default());
+            return CatalogScan::default();
         };
-        let names = session_directory_names(sessions)?;
-        let mut scan = scan_catalog(sessions, &names, self.writable);
+        let mut scan = scan_catalog(sessions, names, self.writable);
         sort_summaries_newest_first(&mut scan.summaries);
-        Ok(scan)
+        scan
     }
 }
 

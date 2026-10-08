@@ -1,3 +1,5 @@
+use ofx_session::SessionSource;
+
 use super::*;
 
 fn session(id: &str, title: Option<&str>, history_len: usize, language: &str) -> SessionSummary {
@@ -11,6 +13,7 @@ fn session(id: &str, title: Option<&str>, history_len: usize, language: &str) ->
         conversation_language: language.to_owned(),
         history_len,
         has_checkpoint: false,
+        source: SessionSource::OhFx,
     }
 }
 
@@ -53,6 +56,28 @@ fn sessions_list_titles_details_paging_and_skipped_records() {
     assert_eq!(
         snapshot.render(OutputFormat::Json),
         "{\"kind\":\"sessions\",\"count\":2,\"skipped_invalid\":1,\"has_more\":true,\"next_cursor\":\"v1:1700000000123:def\",\"sessions\":[{\"id\":\"abc\",\"title\":\"Fix \\u001b[31mbug\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":1,\"conversation_language\":\"en-US\"},{\"id\":\"def\",\"title\":\"Untitled session\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":2,\"conversation_language\":\"und-Cyrl\"}]}\n"
+    );
+}
+
+#[test]
+fn sessions_fx_saved_carry_its_marker_after_their_details() {
+    let mut saved_by_fx = session("fx-one", Some("From fx"), 3, "en");
+    saved_by_fx.source = SessionSource::Fx;
+    let sessions = [saved_by_fx, session("own", Some("Here"), 1, "en")];
+    let snapshot = SessionListSnapshot {
+        sessions: &sessions,
+        has_more: false,
+        next_cursor: None,
+        skipped_invalid: 0,
+        all_workspaces: false,
+    };
+    assert_eq!(
+        snapshot.render(OutputFormat::Text),
+        "[sessions] 2 saved\n - From fx\n   id=fx-one | 3 turns | English | updated 2023-11-14 22:13:20.123 UTC | fx\n - Here\n   id=own | 1 turn | English | updated 2023-11-14 22:13:20.123 UTC\n"
+    );
+    assert_eq!(
+        snapshot.render(OutputFormat::Json),
+        "{\"kind\":\"sessions\",\"count\":2,\"sessions\":[{\"id\":\"fx-one\",\"title\":\"From fx\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":3,\"conversation_language\":\"en\",\"source\":\"fx\"},{\"id\":\"own\",\"title\":\"Here\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":1,\"conversation_language\":\"en\"}]}\n"
     );
 }
 

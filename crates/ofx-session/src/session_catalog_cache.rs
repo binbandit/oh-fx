@@ -10,7 +10,7 @@ use rustix::fs::Mode;
 
 use crate::session_codec::{MAX_SESSION_TITLE_BYTES, is_valid_conversation_language};
 use crate::session_log::managed_file::{Access, open_managed_file, permissions};
-use crate::session_summary_codec::SessionSummary;
+use crate::session_summary_codec::{SessionSource, SessionSummary};
 
 use catalog_codec::{decode_catalog, encode_catalog};
 pub(crate) use catalog_scan::{CatalogScan, scan_catalog};
@@ -89,6 +89,7 @@ impl RowSummary {
             conversation_language: self.language.clone(),
             history_len: usize::try_from(self.history_len).ok()?,
             has_checkpoint: self.flags & CHECKPOINT_FLAG != 0,
+            source: SessionSource::OhFx,
         })
     }
 }

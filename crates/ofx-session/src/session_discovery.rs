@@ -8,7 +8,7 @@ use crate::session_event::{ConversationEvent, decode_conversation_frame};
 use crate::session_log::managed_file::{Access, open_managed_file};
 use crate::session_log::{EVENTS_FILE, read_metadata};
 use crate::session_replay::{LineRead, LineReader};
-use crate::session_summary_codec::SessionSummary;
+use crate::session_summary_codec::{SessionSource, SessionSummary};
 
 const NANOS_PER_MILLI: i64 = 1_000_000;
 const MILLIS_PER_SECOND: i64 = 1_000;
@@ -58,6 +58,7 @@ pub(crate) fn classify_session(
         conversation_language: metadata.conversation_language,
         history_len,
         has_checkpoint,
+        source: SessionSource::OhFx,
     }))
 }
 
