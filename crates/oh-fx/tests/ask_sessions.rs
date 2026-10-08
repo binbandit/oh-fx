@@ -9,6 +9,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ofx_contract::{INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
 use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events, chat_tool_call_events};
 use serde_json::{Value, json};
 
@@ -737,9 +738,9 @@ fn a_crash_after_a_compaction_inside_a_turn_resumes_with_the_turn_closed() {
     assert_eq!(
         texts(&resumed[live.len()..]),
         [
-            "assistant: The previous response ended before completion.",
-            "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
-            "user: next",
+            format!("assistant: {INTERRUPTED_BEFORE_COMPLETION}"),
+            format!("user: {INTERRUPTED_TURN_CONTEXT}"),
+            "user: next".to_owned(),
         ]
     );
 }
@@ -841,8 +842,8 @@ fn an_interrupted_turn_is_saved_and_resumes_with_its_partial_reply_closed() {
             format!(
                 "user: {FILE_EVIDENCE}\n- action=read status=success path=small.txt model_view=full tool=read_file"
             ),
-            "assistant: half\n\nThe previous response ended before completion.".to_owned(),
-            "user: <turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>".to_owned(),
+            format!("assistant: half\n\n{INTERRUPTED_BEFORE_COMPLETION}"),
+            format!("user: {INTERRUPTED_TURN_CONTEXT}"),
             "user: next".to_owned(),
         ]
     );
