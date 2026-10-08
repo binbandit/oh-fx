@@ -650,7 +650,7 @@ done
     }
 
     #[tokio::test]
-    async fn tool_arguments_reach_the_server_as_written_unless_nested_too_deep() {
+    async fn tool_arguments_reach_the_server_as_written_unless_refused_before_the_call() {
         let state = tempfile::tempdir().unwrap();
         let runtime = runtime(vec![config("fixture", SERVER, state.path())]);
         runtime.connect(StartupPhase::All).await;
@@ -662,14 +662,36 @@ done
             "{}",
             output.content
         );
-        let deep = format!("{{\"x\":{}0{}}}", "[".repeat(200), "]".repeat(200));
-        let refused = call(&runtime, "mcp_fixture_alpha", &deep).await;
-        assert_eq!(refused.status, ToolResultStatus::Failure);
-        assert!(
-            refused.content.contains("InstanceLimitExceeded"),
-            "{}",
-            refused.content
-        );
+        let tool = runtime
+            .tools()
+            .into_iter()
+            .find(|tool| tool.spec().name == "mcp_fixture_alpha")
+            .expect("an advertised tool");
+        let deep = format!("{{\"x\":{}0{}}}", "[".repeat(64), "]".repeat(64));
+        let deepest = format!("{{\"x\":{}0{}}}", "[".repeat(63), "]".repeat(63));
+        let crowded = format!("{{\"x\":[{}]}}", vec!["0"; 4095].join(","));
+        let oversized = format!("{{\"x\":\"{}\"}}", "a".repeat(1024 * 1024));
+        for (arguments, error) in [
+            (deep.as_str(), Some("InstanceLimitExceeded")),
+            (deepest.as_str(), None),
+            (crowded.as_str(), Some("InstanceLimitExceeded")),
+            (oversized.as_str(), Some("InstanceLimitExceeded")),
+            ("[]", Some("InvalidJson")),
+            (r#"{"x":{"y":1,"y":2}}"#, Some("InvalidJson")),
+        ] {
+            let refusal = tool.prepare(arguments).err().map(|output| {
+                assert_eq!(output.status, ToolResultStatus::Failure);
+                output.content
+            });
+            assert_eq!(
+                refusal,
+                error.map(|error| format!(
+                    "Invalid arguments for MCP tool mcp_fixture_alpha: {error}"
+                )),
+                "{}",
+                &arguments[..arguments.len().min(80)]
+            );
+        }
         let calls = std::fs::read_to_string(state.path().join("calls")).unwrap();
         let sent: Vec<&str> = calls.lines().collect();
         assert_eq!(sent.len(), 1, "{calls}");

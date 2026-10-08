@@ -307,10 +307,14 @@ fn ask_mode_blocks_an_mcp_tool_call_without_running_it() {
 }
 
 fn echo_call() -> Reply {
+    echo_call_with(r#"{"text":"hi"}"#)
+}
+
+fn echo_call_with(arguments: &str) -> Reply {
     Reply::sse(&chat_tool_call_events(
         "call_1",
         "mcp_fixture_echo",
-        r#"{"text":"hi"}"#,
+        arguments,
     ))
 }
 
@@ -389,6 +393,72 @@ fn auto_mode_holds_an_mcp_tool_call_the_reviewer_cautions_against() {
         "{held}"
     );
     assert!(held.contains(r#""reason":"review_caution""#), "{held}");
+    assert!(!home.state.join("calls").exists());
+}
+
+fn echo_call_with_values(count: usize) -> Reply {
+    echo_call_with(&format!(
+        "{{\"text\":\"hi\",\"items\":[{}]}}",
+        vec!["0"; count - 3].join(",")
+    ))
+}
+
+#[test]
+fn auto_mode_refuses_mcp_arguments_with_too_many_values_before_the_reviewer() {
+    let server = FakeServer::start([
+        echo_call_with_values(4097),
+        Reply::sse(&chat_text_events(&["done"])),
+        Reply::sse(&chat_text_events(&["unused"])),
+        Reply::sse(&chat_text_events(&["unused"])),
+    ]);
+    let home = Home::in_mode(&server.base_url(), "auto");
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "echo hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        tool_result(&requests[1]),
+        "Invalid arguments for MCP tool mcp_fixture_echo: InstanceLimitExceeded"
+    );
+    assert!(!home.state.join("calls").exists());
+}
+
+#[test]
+fn ask_mode_refuses_mcp_arguments_with_too_many_values_without_a_permission_prompt() {
+    let server = FakeServer::start([
+        echo_call_with_values(4097),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "--json", "echo hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], Value::Null, "{result}");
+    assert_eq!(result["tool_calls"][0]["status"], "error", "{result}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        tool_result(&requests[1]),
+        "Invalid arguments for MCP tool mcp_fixture_echo: InstanceLimitExceeded"
+    );
+    assert!(!home.state.join("calls").exists());
+}
+
+#[test]
+fn ask_mode_still_asks_for_permission_for_mcp_arguments_at_the_value_limit() {
+    let server = FakeServer::start([
+        echo_call_with_values(4096),
+        Reply::sse(&chat_text_events(&["never"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "--json", "echo hi"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["error"], "NonInteractivePermissionRequired");
+    assert_eq!(server.requests().len(), 1);
     assert!(!home.state.join("calls").exists());
 }
 
