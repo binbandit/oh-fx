@@ -32,7 +32,9 @@ pub use history_turn::{
     RestoredHistory, StepResult, TurnEnd, TurnStop,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
-pub use model_capabilities::{CapabilityLookup, CapabilityResolver, ModelCapabilities};
+pub use model_capabilities::{
+    CapabilityLookup, CapabilityResolver, ModelCapabilities, intrinsically_fast,
+};
 pub use modes::{ActiveMode, ModeRegistry, ModeSpec, ToolPolicy};
 pub use permission_gate::{
     Admission, ApprovalAnswer, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest,
@@ -94,7 +96,7 @@ pub use types::{
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,
-    ModelCatalog, ModelCatalogSource, ModelOption, Notice, NoticeLink, NoticeTone, QuestionRequest,
-    SavedToolCall, StatuslineItem, StatuslineToggles, ToolDeferral, ToolRejection, TurnOutcome,
-    UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
+    ModelCatalog, ModelCatalogSource, ModelControls, ModelOption, Notice, NoticeLink, NoticeTone,
+    QuestionRequest, SavedToolCall, StatuslineItem, StatuslineToggles, ToolDeferral, ToolRejection,
+    TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
 };

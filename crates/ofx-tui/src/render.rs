@@ -1,4 +1,4 @@
-use ofx_contract::{PermissionMode, WorkspaceIdentity};
+use ofx_contract::{ModelControls, PermissionMode, ReasoningEffort, WorkspaceIdentity};
 use ofx_text::{prefix_by_width, visible_width};
 
 use crate::footer::statusline::{
@@ -9,6 +9,7 @@ use crate::theme::Theme;
 
 const STATUSLINE_SEPARATOR: &str = " · ";
 const MAX_SESSION_TITLE_CELLS: usize = 32;
+const FAST_MARKER: &str = "⚡︎";
 
 pub(crate) fn welcome_rows(theme: &Theme, version: &str, cols: usize) -> Vec<Row> {
     let mut row = Row::styled("oh-fx", theme.subtitle);
@@ -41,6 +42,7 @@ pub(crate) fn hint_line(
     theme: &Theme,
     model: &str,
     permission_mode: PermissionMode,
+    controls: &ModelControls,
     statusline: StatuslineView<'_>,
     login_missing: bool,
     width: usize,
@@ -68,6 +70,12 @@ pub(crate) fn hint_line(
         row.push(STATUSLINE_SEPARATOR, theme.statusline);
     }
     row.push(&model_label, theme.statusline);
+    if let (true, ReasoningEffort::Named(effort)) = (controls.effort_supported, &controls.effort) {
+        push_segment(&mut row, theme, effort);
+    }
+    if controls.fast {
+        push_segment(&mut row, theme, FAST_MARKER);
+    }
     if let Some(title) = statusline.session_title {
         push_segment(&mut row, theme, &session_title_segment(title));
     }
@@ -146,11 +154,74 @@ mod tests {
             &Theme::builtin(false, false, true),
             model,
             mode,
+            &ModelControls::default(),
             statusline,
             false,
             width,
         )
         .text()
+    }
+
+    fn controlled(model: &str, effort: Option<&str>, effort_supported: bool, fast: bool) -> Row {
+        let controls = ModelControls {
+            effort: effort.map_or(ReasoningEffort::Auto, |effort| {
+                ReasoningEffort::Named(effort.to_owned())
+            }),
+            effort_supported,
+            fast,
+        };
+        hint_line(
+            &Theme::builtin(false, false, true),
+            model,
+            PermissionMode::Ask,
+            &controls,
+            StatuslineView::default(),
+            false,
+            80,
+        )
+    }
+
+    #[test]
+    fn the_hint_line_hides_effort_when_it_is_auto() {
+        assert_eq!(
+            controlled("anthropic/claude-opus-4.7", None, true, false).text(),
+            "ask · opus 4.7"
+        );
+    }
+
+    #[test]
+    fn the_hint_line_hides_effort_for_models_without_effort_support() {
+        assert_eq!(
+            controlled("openai/gpt-4o", None, false, false).text(),
+            "ask · gpt-4o"
+        );
+        assert_eq!(
+            controlled("openai/gpt-4o", Some("high"), false, false).text(),
+            "ask · gpt-4o"
+        );
+    }
+
+    #[test]
+    fn the_hint_line_uses_a_monochrome_lightning_marker_for_fast_mode() {
+        let theme = Theme::builtin(false, false, true);
+        let row = controlled("anthropic/claude-opus-4.8", Some("low"), true, true);
+        assert_eq!(row.text(), "ask · opus 4.8 · low · ⚡︎");
+        assert_eq!(row.width(), 25);
+        assert!(
+            row.segments()
+                .iter()
+                .all(|segment| segment.paint == theme.statusline),
+            "{:?}",
+            row.segments()
+        );
+    }
+
+    #[test]
+    fn the_hint_line_shows_effort_when_active() {
+        assert_eq!(
+            controlled("openai/gpt-5", Some("high"), true, false).text(),
+            "ask · gpt-5 · high"
+        );
     }
 
     fn identity(label: &str, branch: Option<&str>) -> WorkspaceIdentity {
@@ -219,6 +290,7 @@ mod tests {
             &Theme::builtin(false, false, true),
             "anthropic/claude-opus-4.8",
             PermissionMode::Auto,
+            &ModelControls::default(),
             full,
             true,
             256,
@@ -387,6 +459,7 @@ mod tests {
             &theme,
             "fake-model",
             PermissionMode::Auto,
+            &ModelControls::default(),
             StatuslineView::default(),
             false,
             100,
@@ -398,6 +471,7 @@ mod tests {
             &theme,
             "openai/gpt-5",
             PermissionMode::Ask,
+            &ModelControls::default(),
             StatuslineView::default(),
             false,
             100,
@@ -409,6 +483,7 @@ mod tests {
                 &theme,
                 "fake-model",
                 PermissionMode::Auto,
+                &ModelControls::default(),
                 StatuslineView::default(),
                 false,
                 12
@@ -421,6 +496,7 @@ mod tests {
                 &theme,
                 "x",
                 PermissionMode::Yolo,
+                &ModelControls::default(),
                 StatuslineView::default(),
                 false,
                 40
@@ -437,6 +513,7 @@ mod tests {
             &theme,
             "mod\x1b]2;PWNED\x07",
             PermissionMode::Auto,
+            &ModelControls::default(),
             StatuslineView::default(),
             false,
             100,
@@ -448,6 +525,7 @@ mod tests {
                 &theme,
                 "mod\x1b]2;PWNED\x07",
                 PermissionMode::Auto,
+                &ModelControls::default(),
                 StatuslineView::default(),
                 false,
                 25
