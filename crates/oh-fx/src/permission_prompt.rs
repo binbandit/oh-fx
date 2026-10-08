@@ -72,8 +72,8 @@ fn decision(input: &mut impl Read) -> ApprovalDecision {
     loop {
         match input.read(&mut byte) {
             Ok(0) => break,
-            Ok(_) if byte[0] == b'\n' => break,
             Ok(_) if line.len() == MAX_ANSWER_BYTES => return ApprovalDecision::Deny,
+            Ok(_) if byte[0] == b'\n' => break,
             Ok(_) => line.push(byte[0]),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => return ApprovalDecision::Deny,

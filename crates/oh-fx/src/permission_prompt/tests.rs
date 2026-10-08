@@ -130,8 +130,13 @@ fn only_a_single_y_approves_and_everything_else_denies() {
     }
     let overlong = [b' '; 300];
     assert_eq!(decision(&mut &overlong[..]), ApprovalDecision::Deny);
-    let mut longest = vec![b' '; 255];
-    longest.push(b'y');
-    longest.push(b'\n');
-    assert_eq!(decision(&mut &longest[..]), ApprovalDecision::Once);
+    let line = |padding: usize, ending: &[u8]| {
+        let mut line = vec![b' '; padding];
+        line.push(b'y');
+        line.extend_from_slice(ending);
+        line
+    };
+    assert_eq!(decision(&mut &line(254, b"\n")[..]), ApprovalDecision::Once);
+    assert_eq!(decision(&mut &line(255, b"\n")[..]), ApprovalDecision::Deny);
+    assert_eq!(decision(&mut &line(255, b"")[..]), ApprovalDecision::Once);
 }
