@@ -120,29 +120,29 @@ pub(crate) fn parse_color_fg_bg_light(colorfgbg: &str) -> bool {
     let Some((_, background)) = colorfgbg.rsplit_once(';') else {
         return false;
     };
-    parse_unsigned_byte(background).is_some_and(|index| index >= 8)
+    parse_unsigned(background.as_bytes(), 10)
+        .and_then(|index| u8::try_from(index).ok())
+        .is_some_and(|index| index >= 8)
 }
 
-fn parse_unsigned_byte(digits: &str) -> Option<u8> {
-    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') {
+fn parse_unsigned(digits: &[u8], radix: u32) -> Option<u32> {
+    if digits.is_empty() || digits.starts_with(b"_") || digits.ends_with(b"_") {
         return None;
     }
     digits
-        .bytes()
-        .filter(|byte| *byte != b'_')
-        .try_fold(0_u8, |value, byte| {
-            let digit = char::from(byte).to_digit(10)?;
-            value
-                .checked_mul(10)?
-                .checked_add(u8::try_from(digit).ok()?)
+        .iter()
+        .filter(|byte| **byte != b'_')
+        .try_fold(0_u32, |value, byte| {
+            let digit = char::from(*byte).to_digit(radix)?;
+            value.checked_mul(radix)?.checked_add(digit)
         })
 }
 
 fn normalize_osc11_component(part: &[u8]) -> Option<u32> {
-    if part.is_empty() || part.len() > 4 || !part.iter().all(u8::is_ascii_hexdigit) {
+    if part.is_empty() || part.len() > 4 {
         return None;
     }
-    let value = u32::from_str_radix(std::str::from_utf8(part).ok()?, 16).ok()?;
+    let value = parse_unsigned(part, 16)?;
     let maximum = (1_u32 << (part.len() * 4)) - 1;
     Some(value * 0xffff / maximum)
 }
@@ -318,6 +318,34 @@ mod tests {
             let parsed = parse_osc11_response(sample).unwrap();
             assert!(!parsed.light);
             assert_eq!(parsed.rgb.r, 0x44);
+        }
+    }
+
+    #[test]
+    fn osc_11_parser_reads_components_as_upstream_parses_an_unsigned_integer() {
+        let separated = parse_osc11_response(b"\x1b]11;rgb:f_f/f_f/f_f\x07").unwrap();
+        assert!(!separated.light);
+        assert_eq!(
+            separated.rgb,
+            Rgb {
+                r: 0x0f,
+                g: 0x0f,
+                b: 0x0f
+            }
+        );
+        let repeated = parse_osc11_response(b"\x1b]11;rgb:f__f/f__f/f__f\x1b\\").unwrap();
+        assert_eq!(repeated.rgb.r, 0x00);
+        let upper = parse_osc11_response(b"\x1b]11;rgb:FFFF/FFFF/FFFF\x07").unwrap();
+        assert!(upper.light);
+        let rejected: [&[u8]; 5] = [
+            b"\x1b]11;rgb:_ff/ff/ff\x07",
+            b"\x1b]11;rgb:ff_/ff/ff\x07",
+            b"\x1b]11;rgb:+ff/ff/ff\x07",
+            b"\x1b]11;rgb:ff_ff/ff/ff\x07",
+            b"\x1b]11;rgb:f f/ff/ff\x07",
+        ];
+        for sample in rejected {
+            assert_eq!(parse_osc11_response(sample), None);
         }
     }
 
