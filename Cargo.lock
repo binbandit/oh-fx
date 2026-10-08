@@ -1038,6 +1038,7 @@ dependencies = [
  "ofx-contract",
  "ofx-exec",
  "ofx-gateway",
+ "ofx-github",
  "ofx-http",
  "ofx-mcp",
  "ofx-session",

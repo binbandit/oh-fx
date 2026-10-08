@@ -15,6 +15,7 @@ ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-exec.workspace = true
 ofx-gateway.workspace = true
+ofx-github.workspace = true
 ofx-http.workspace = true
 ofx-mcp.workspace = true
 ofx-session.workspace = true
