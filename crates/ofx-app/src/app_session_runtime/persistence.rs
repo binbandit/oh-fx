@@ -59,6 +59,10 @@ impl Persistence {
         self.live.as_ref().map(LiveSession::id)
     }
 
+    pub(crate) fn resuming(&self) -> bool {
+        self.resumption.is_some()
+    }
+
     pub(crate) fn resumed_title(&self) -> Option<String> {
         self.resumption
             .as_ref()
@@ -242,10 +246,14 @@ impl Persistence {
         live.session().select_provider(provider, model)
     }
 
-    pub(crate) fn close(&mut self, agent: &mut Agent) {
+    pub(crate) fn stop_title_generation(&mut self) {
         if let Some(task) = self.title_task.take() {
             task.abort();
         }
+    }
+
+    pub(crate) fn close(&mut self, agent: &mut Agent) {
+        self.stop_title_generation();
         agent.detach_session();
         if let Some(live) = self.live.take() {
             match self.relaunch.take() {

@@ -20,7 +20,7 @@ use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource};
+use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource, Login};
 use crate::app_commands::{
     CommandEffect, ModelChange, ModelPick, Outcome, Work, change_model, handle_command, listed,
     refuse_resume_during_turn, rename_session,
@@ -29,7 +29,7 @@ use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{
     Listed, NOT_CONTINUED, PageRequest, Persistence, RECOVERY_TOPIC, RestoredPreferences,
-    SessionListing, SessionTitle,
+    SIGN_IN_TO_CONTINUE, SessionListing, SessionTitle,
 };
 use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
 use crate::approval_queue::ApprovalQueue;
@@ -45,6 +45,7 @@ use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
 
 mod provider_switch;
+mod sign_out;
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
@@ -277,6 +278,10 @@ impl ControllerState {
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
+        if self.setup.login() == Login::Missing {
+            self.refuse_signed_out();
+            self.emit(UiEvent::PromptHeld);
+        }
         let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
         self.received_prompts += 1;
         if installing {
@@ -354,6 +359,7 @@ struct CatalogFetch {
     pending: Option<BoxFuture<'static, ModelCatalog>>,
     waiting: Vec<ModelChange>,
     settings: Option<SettingsUpdate>,
+    errand: Option<BoxFuture<'static, Vec<Notice>>>,
 }
 
 impl CatalogFetch {
@@ -393,6 +399,18 @@ impl CatalogFetch {
         }
     }
 
+    fn run(&mut self, errand: BoxFuture<'static, Vec<Notice>>) {
+        let earlier = self.errand.take();
+        self.errand = Some(Box::pin(async move {
+            let mut notices = match earlier {
+                Some(earlier) => earlier.await,
+                None => Vec::new(),
+            };
+            notices.extend(errand.await);
+            notices
+        }));
+    }
+
     async fn next_command(
         &mut self,
         commands: &mut UnboundedReceiver<UiCommand>,
@@ -401,12 +419,15 @@ impl CatalogFetch {
         work: Work,
     ) -> Option<UiCommand> {
         loop {
-            let Some(fetch) = &mut self.pending else {
-                return commands.recv().await;
-            };
             tokio::select! {
                 command = commands.recv() => return command,
-                catalog = fetch => self.arrived(state, persistence, catalog, work),
+                catalog = finished(&mut self.pending) => self.arrived(state, persistence, catalog, work),
+                notices = finished(&mut self.errand) => {
+                    self.errand = None;
+                    for notice in notices {
+                        state.emit(UiEvent::Notice { notice });
+                    }
+                }
             }
         }
     }
@@ -494,6 +515,7 @@ impl Controller {
                 pending: None,
                 waiting: Vec::new(),
                 settings: None,
+                errand: None,
             },
             state,
             persistence,
@@ -532,6 +554,7 @@ impl Controller {
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
         self.show_startup_notices();
         if !self.pick_at_start {
+            let resuming = self.persistence.as_ref().is_some_and(Persistence::resuming);
             let resumed_title = self
                 .persistence
                 .as_ref()
@@ -548,6 +571,9 @@ impl Controller {
             self.bind_children();
             self.session_notice(opened);
             self.continue_recovery(continues);
+            if resuming {
+                self.ask_for_a_login();
+            }
         }
         if let Some(persistence) = &self.persistence {
             persistence.preload(&mut self.listing);
@@ -563,18 +589,24 @@ impl Controller {
         }
     }
 
+    fn next_runnable_prompt(&mut self) -> Option<QueuedPrompt> {
+        if self.installation.is_some() || self.state.login_missing() {
+            return None;
+        }
+        let prompt = self.state.worker.take_next()?;
+        if prompt.recovered().is_none() {
+            let settled = self
+                .persistence
+                .as_mut()
+                .and_then(|persistence| persistence.settle_open_recovery(&mut self.agent));
+            self.session_notice(settled);
+        }
+        Some(prompt)
+    }
+
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
-            if self.installation.is_none()
-                && let Some(prompt) = self.state.worker.take_next()
-            {
-                if prompt.recovered().is_none() {
-                    let settled = self
-                        .persistence
-                        .as_mut()
-                        .and_then(|persistence| persistence.settle_open_recovery(&mut self.agent));
-                    self.session_notice(settled);
-                }
+            if let Some(prompt) = self.next_runnable_prompt() {
                 if !self.run_turn(&prompt, commands).await {
                     return;
                 }
@@ -614,6 +646,8 @@ impl Controller {
                 }
                 UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
+                UiCommand::RetryHeldPrompt => self.retry_held_prompt().await,
+                UiCommand::DropHeldPrompt => self.drop_held_prompts(),
                 UiCommand::SelectModel {
                     model,
                     effort,
@@ -691,6 +725,7 @@ impl Controller {
             CommandEffect::Rename(title) => {
                 rename_session(&self.state, self.persistence.as_mut(), &title);
             }
+            CommandEffect::Logout(target) => self.sign_out(&target).await,
         }
         true
     }
@@ -818,6 +853,7 @@ impl Controller {
                 self.show_startup_notices();
                 self.session_notice(switched.notice);
                 self.continue_recovery(switched.continues);
+                self.ask_for_a_login();
             }
             Err(refused) => {
                 self.session_notice(refused.notice);
@@ -830,6 +866,11 @@ impl Controller {
         let Some(persistence) = self.persistence.as_ref().filter(|_| continues) else {
             return;
         };
+        if self.state.login_missing() {
+            return self
+                .state
+                .notice(NoticeTone::Warning, RECOVERY_TOPIC, SIGN_IN_TO_CONTINUE);
+        }
         match persistence.continue_recovery(
             &self.state.setup,
             &self.state.model,
@@ -846,6 +887,12 @@ impl Controller {
             Err(_) => self
                 .state
                 .notice(NoticeTone::Warning, RECOVERY_TOPIC, NOT_CONTINUED),
+        }
+    }
+
+    fn ask_for_a_login(&self) {
+        if self.state.login_missing() {
+            self.state.refuse_signed_out();
         }
     }
 
@@ -929,6 +976,13 @@ impl Controller {
             .and_then(|persistence| persistence.begin_fresh(&mut self.agent));
         self.bind_children();
         self.state.session_title.set(None);
+        self.state.worker.discard_before(first_kept_prompt);
+        self.state
+            .pending_install_inputs
+            .retain(|input| match input {
+                InstallInput::Prompt(prompt) => prompt.id >= first_kept_prompt,
+                InstallInput::Skills { .. } | InstallInput::Clear(_) => true,
+            });
         for prompt in self.state.worker.waiting_texts() {
             observe_prompt(self.persistence.as_ref(), &prompt);
         }
@@ -1183,6 +1237,13 @@ fn drain_install_inputs(
     }
 }
 
+async fn finished<T>(slot: &mut Option<BoxFuture<'static, T>>) -> T {
+    match slot {
+        Some(future) => future.await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn next_question(requests: &mut Option<QuestionRequests>) -> QuestionRequest {
     match requests {
         Some(requests) => requests.next().await,
@@ -1228,6 +1289,7 @@ fn run_deferred(
             CommandEffect::Rename(title) => {
                 return rename_session(state, persistence.as_mut(), &title);
             }
+            CommandEffect::Logout(target) => return state.sign_out_during_work(catalog, &target),
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
                 state.worker.clear();
@@ -1263,6 +1325,8 @@ fn run_deferred(
         | UiCommand::ResumeSession { .. }
         | UiCommand::CloseSessionPicker => return refuse_session_command(state, command),
         UiCommand::Submit { .. }
+        | UiCommand::RetryHeldPrompt
+        | UiCommand::DropHeldPrompt
         | UiCommand::Cancel { .. }
         | UiCommand::PauseRecovery { .. }
         | UiCommand::Approval { .. }
@@ -1426,7 +1490,7 @@ mod tests {
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
-    use ofx_session::{SessionPreferences, SessionStore};
+    use ofx_session::{ResumeTarget, SessionPreferences, SessionStore};
     use ofx_testkit::{
         FakeServer, Gate, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
     };
@@ -1436,7 +1500,7 @@ mod tests {
 
     use super::*;
     use crate::app_bootstrap_runtime::{Launch, Profile};
-    use crate::app_session_runtime::{LaunchOverrides, session_route};
+    use crate::app_session_runtime::{LaunchOverrides, ResumedSession, Resumption, session_route};
     use crate::codex_provider::SubscriptionEndpoints;
 
     mod steering;
@@ -1688,6 +1752,60 @@ mod tests {
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
             Self::spawn(home, setup, None, UpgradeShortcut::default(), false)
+        }
+
+        async fn resuming(
+            home: tempfile::TempDir,
+            settings: &Value,
+            endpoints: SubscriptionEndpoints,
+            id: &str,
+        ) -> Self {
+            let (mut profile, setup) = profile_setup(&home, settings, endpoints).await;
+            let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
+            let store =
+                SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
+            let Ok(session) =
+                ResumedSession::open(&store, &mut profile, &ResumeTarget::Id(id.to_owned()))
+            else {
+                panic!("the saved session reopens");
+            };
+            let route = session_route(&setup).unwrap();
+            let preferences = SessionPreferences {
+                provider: route.provider.clone(),
+                model: setup.configured_model().to_owned(),
+                effort: ReasoningEffort::Auto,
+                fast_mode: false,
+            };
+            let overrides = LaunchOverrides {
+                model: None,
+                effort: None,
+                fast_mode: None,
+            };
+            let resumption = Resumption {
+                session,
+                remember: false,
+            };
+            let persistence =
+                Persistence::new(store, route, preferences, overrides, Some(resumption));
+            Self::spawn(
+                home,
+                setup,
+                Some(persistence),
+                UpgradeShortcut::default(),
+                false,
+            )
+        }
+
+        async fn finish(self) -> tempfile::TempDir {
+            let Self {
+                home,
+                commands,
+                mut events,
+                ..
+            } = self;
+            drop(commands);
+            while events.recv().await.is_some() {}
+            home
         }
 
         fn with_setup_observer(
@@ -4954,6 +5072,536 @@ mod tests {
             .map(|message| message["content"].as_str().unwrap())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    const SIGNED_OUT: &str = "Codex needs a subscription login. Run /login, open Connections, then choose Codex subscription.";
+
+    async fn notices_of(harness: &mut Harness, command: &str) -> Vec<(NoticeTone, String, String)> {
+        harness.command(command);
+        harness.command("/version");
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "version"))
+            .await;
+        let mut shown = notices(shown);
+        shown.pop();
+        shown
+    }
+
+    fn auth(tone: NoticeTone, body: &str) -> (NoticeTone, String, String) {
+        (tone, "auth".to_owned(), body.to_owned())
+    }
+
+    #[tokio::test]
+    async fn signing_out_of_the_selected_codex_login_leaves_no_provider_to_use() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        let login = harness.home.path().join("data/chatgpt-auth.json");
+        assert_eq!(
+            notices_of(&mut harness, "/logout codex").await,
+            [
+                auth(NoticeTone::Neutral, "Signed out of Codex."),
+                (
+                    NoticeTone::Warning,
+                    "provider".to_owned(),
+                    "No connected provider is available. Use /provider to sign in.".to_owned()
+                ),
+            ]
+        );
+        assert!(!login.exists());
+        harness.submit("hello");
+        let refused = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"))
+            .await;
+        assert_eq!(notices(refused), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        assert_eq!(
+            notices_of(&mut harness, "/logout").await,
+            [
+                auth(NoticeTone::Neutral, "No Codex login session found."),
+                (
+                    NoticeTone::Warning,
+                    "provider".to_owned(),
+                    "No connected provider is available. Use /provider to sign in.".to_owned()
+                ),
+            ]
+        );
+        assert!(codex.requests().is_empty());
+    }
+
+    async fn signed_out(codex: &FakeServer, catalog: &FakeServer) -> Harness {
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let setup = agent_setup_with(&home, &settings, codex_endpoints(codex, catalog)).await;
+        Harness::with_setup(home, setup)
+    }
+
+    async fn held(harness: &mut Harness, prompt: &str) {
+        harness.submit(prompt);
+        within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+    }
+
+    fn save_login(harness: &Harness) {
+        let saved = codex_home();
+        fs::create_dir_all(harness.home.path().join("data")).unwrap();
+        fs::copy(
+            saved.path().join("data/chatgpt-auth.json"),
+            harness.home.path().join("data/chatgpt-auth.json"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_prompt_retried_without_a_login_asks_again_and_runs_once_one_is_saved() {
+        let codex = FakeServer::start([codex_text("found it")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signed_out(&codex, &catalog).await;
+        held(&mut harness, "hello").await;
+        harness.send(UiCommand::RetryHeldPrompt);
+        let asked =
+            within(harness.until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"),
+            ))
+            .await;
+        assert_eq!(notices(asked), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        save_login(&harness);
+        harness.send(UiCommand::RetryHeldPrompt);
+        let ran = within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert!(notices(ran).is_empty());
+        assert!(ran.contains(&UiEvent::LoginChanged { missing: false }));
+        assert!(codex.requests()[0].json().to_string().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn a_held_prompt_dropped_from_the_shell_never_runs() {
+        let codex = FakeServer::start([codex_text("only the next one")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signed_out(&codex, &catalog).await;
+        held(&mut harness, "dropped").await;
+        harness.send(UiCommand::DropHeldPrompt);
+        save_login(&harness);
+        harness.send(UiCommand::RetryHeldPrompt);
+        within(harness.until(|event| *event == UiEvent::LoginChanged { missing: false })).await;
+        harness.submit("next");
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        let request = codex.requests()[0].json().to_string();
+        assert!(request.contains("next"), "{request}");
+        assert!(!request.contains("dropped"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn compacting_while_signed_out_asks_for_authentication() {
+        let codex = FakeServer::start([codex_text("one")]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        chat(&mut harness, &["one"]).await;
+        notices_of(&mut harness, "/logout codex").await;
+        harness.command("/compact");
+        let ended = within(harness.until(compaction_settled)).await;
+        assert_eq!(
+            activities(ended),
+            [CompactionActivity::Ended(
+                CompactionEnd::AuthenticationRejected
+            )]
+        );
+        held(&mut harness, "two").await;
+        harness.command("/compact");
+        let ended = within(harness.until(compaction_settled)).await;
+        assert_eq!(
+            activities(ended),
+            [CompactionActivity::Ended(CompactionEnd::Busy)]
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_a_session_while_signed_out_asks_for_a_login() {
+        let codex = FakeServer::start([codex_text("one")]);
+        let catalog = codex_catalog(false, 1);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["first question"]).await;
+        let first = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        notices_of(&mut harness, "/logout codex").await;
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        harness.send(UiCommand::ResumeSession { id: first });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        let shown =
+            within(harness.until(
+                |event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"),
+            ))
+            .await;
+        assert_eq!(
+            notices(shown).last(),
+            Some(&auth(NoticeTone::Warning, SIGNED_OUT))
+        );
+    }
+
+    #[tokio::test]
+    async fn signing_out_drops_the_catalog_that_carried_the_login() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        notices_of(&mut harness, "/logout codex").await;
+        let asked = catalog.requests().len();
+        assert_eq!(
+            listed_catalog(&mut harness).await,
+            ModelCatalog::Failed { retry: None }
+        );
+        assert_eq!(catalog.requests().len(), asked);
+        assert!(codex.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn signing_out_stops_a_title_request_still_running_on_the_removed_login() {
+        let title_held = Gate::default();
+        let listing_held = Gate::default();
+        let codex = FakeServer::start([
+            codex_text("Fix the renderer").after(&title_held),
+            codex_text("done"),
+        ]);
+        let catalog = FakeServer::start([
+            catalog_version(),
+            catalog_listing(false).after(&listing_held),
+            catalog_listing(false),
+        ]);
+        let mut settings = codex_settings();
+        settings["effort"] = json!("low");
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        harness.submit("please fix the renderer");
+        within(async {
+            while codex.requests().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert_eq!(title_requests(&codex).len(), 1);
+        listing_held.open();
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        notices_of(&mut harness, "/logout codex").await;
+        title_held.open();
+        let named = timeout(
+            Duration::from_millis(500),
+            harness.until(titled(Some("Fix the renderer"))),
+        )
+        .await;
+        assert!(named.is_err(), "{:?}", harness.seen);
+        assert_eq!(
+            saved_sessions(&harness.home)[0]["title"],
+            "please fix the renderer"
+        );
+        assert_eq!(codex.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn clearing_the_conversation_drops_prompts_held_while_signed_out() {
+        for command in ["/clear", "/new", "/reset"] {
+            let codex = FakeServer::start([codex_text("only the next one")]);
+            let catalog = codex_catalog(false, 2);
+            let mut harness = signed_out(&codex, &catalog).await;
+            held(&mut harness, "discard me").await;
+            harness.command(command);
+            within(harness.until(|event| matches!(event, UiEvent::ConversationCleared { .. })))
+                .await;
+            save_login(&harness);
+            harness.send(UiCommand::RetryHeldPrompt);
+            within(harness.until(|event| *event == UiEvent::LoginChanged { missing: false })).await;
+            harness.submit("next");
+            within(harness.until(finished(TurnOutcome::Completed))).await;
+            let request = codex.requests()[0].json().to_string();
+            assert!(request.contains("next"), "{command}: {request}");
+            assert!(!request.contains("discard me"), "{command}: {request}");
+        }
+    }
+
+    fn save_login_as(harness: &Harness, account: &str) {
+        let data = harness.home.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+        let session = json!({
+            "version": 1,
+            "access_token": "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl",
+            "refresh_token": "rt-refresh-secret-0123456789",
+            "expires_at_ms": 4_102_444_800_000_i64,
+            "account_id": account,
+        });
+        let file = data.join("chatgpt-auth.json");
+        fs::write(&file, format!("{session}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn rejected_after_a_retry() -> FakeServer {
+        FakeServer::start([
+            Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
+            Reply::status(400, r#"{"error":{"message":"bad"}}"#),
+        ])
+    }
+
+    async fn checkpoint_identity(harness: &mut Harness, account: &str) -> Value {
+        save_login_as(harness, account);
+        harness.send(UiCommand::RetryHeldPrompt);
+        within(harness.until(finished(TurnOutcome::Failed))).await;
+        let id = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let recovery = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(id)
+            .join("recovery.json");
+        let saved: Value = serde_json::from_slice(&fs::read(recovery).unwrap()).unwrap();
+        saved["checkpoint"]["authority"]["credential_identity"].clone()
+    }
+
+    #[tokio::test]
+    async fn a_restored_login_signs_the_recovery_checkpoints_of_the_prompts_it_releases() {
+        let codex = rejected_after_a_retry();
+        let catalog = codex_catalog(false, 2);
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let setup = agent_setup_with(&home, &settings, codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::saved(home, setup);
+        held(&mut harness, "first").await;
+        let launched_signed_out = checkpoint_identity(&mut harness, "acct_test").await;
+        assert!(launched_signed_out.is_string(), "{launched_signed_out}");
+
+        let codex = rejected_after_a_retry();
+        let catalog = codex_catalog(false, 3);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        notices_of(&mut harness, "/logout codex").await;
+        held(&mut harness, "second").await;
+        let changed_account = checkpoint_identity(&mut harness, "acct_other").await;
+        assert!(changed_account.is_string(), "{changed_account}");
+        assert_ne!(changed_account, launched_signed_out);
+    }
+
+    #[tokio::test]
+    async fn a_restored_login_keeps_the_session_s_model() {
+        let codex = FakeServer::start([codex_text("kept")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signed_out(&codex, &catalog).await;
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        settings["models"]["codex"] = json!(OTHER_CODEX_MODEL);
+        fs::write(
+            harness.home.path().join("config/settings.json"),
+            settings.to_string(),
+        )
+        .unwrap();
+        held(&mut harness, "hello").await;
+        save_login(&harness);
+        harness.send(UiCommand::RetryHeldPrompt);
+        let ran = within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert!(
+            !ran.iter()
+                .any(|event| matches!(event, UiEvent::ModelSelected { .. })),
+            "{ran:?}"
+        );
+        assert_eq!(codex.requests()[0].json()["model"], CODEX_MODEL);
+    }
+
+    fn continues_nothing(shown: &[UiEvent]) {
+        assert!(
+            !shown.iter().any(|event| matches!(
+                event,
+                UiEvent::RecoveryContinuing { .. }
+                    | UiEvent::TurnStarted { .. }
+                    | UiEvent::PromptHeld
+            )),
+            "{shown:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paused_response_reopened_signed_out_at_launch_waits_for_a_sign_in() {
+        let codex = FakeServer::start([codex_text("first answer")]);
+        let catalog = codex_catalog(false, 2);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["first question"]).await;
+        let id = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let home = harness.finish().await;
+        pause_a_saved_response(&home, &id);
+        fs::remove_file(home.path().join("data/chatgpt-auth.json")).unwrap();
+        let mut harness =
+            Harness::resuming(home, &settings, codex_endpoints(&codex, &catalog), &id).await;
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(
+            shown.contains(&(
+                NoticeTone::Warning,
+                "recovery".to_owned(),
+                SIGN_IN_TO_CONTINUE.to_owned()
+            )),
+            "{shown:?}"
+        );
+        continues_nothing(&harness.seen);
+        let recovery = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&id)
+            .join("recovery.json");
+        assert!(recovery.exists());
+        assert_eq!(codex.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_paused_response_resumed_signed_out_from_the_picker_waits_for_a_sign_in() {
+        let codex = FakeServer::start([codex_text("first answer")]);
+        let catalog = codex_catalog(false, 2);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        chat(&mut harness, &["first question"]).await;
+        let first = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        notices_of(&mut harness, "/logout codex").await;
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        pause_a_saved_response(&harness.home, &first);
+        let resumed_from = harness.seen.len();
+        harness.send(UiCommand::ResumeSession { id: first.clone() });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(
+            shown.contains(&(
+                NoticeTone::Warning,
+                "recovery".to_owned(),
+                SIGN_IN_TO_CONTINUE.to_owned()
+            )),
+            "{shown:?}"
+        );
+        continues_nothing(&harness.seen[resumed_from..]);
+        let recovery = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&first)
+            .join("recovery.json");
+        assert!(recovery.exists());
+        assert_eq!(codex.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_codex_launch_without_a_login_opens_signed_out() {
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.submit("hello");
+        let refused = harness
+            .until(|event| matches!(event, UiEvent::Notice { notice } if notice.topic == "auth"))
+            .await;
+        assert_eq!(notices(refused), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        assert_eq!(
+            notices_of(&mut harness, "/model").await,
+            [(
+                NoticeTone::Neutral,
+                "model".to_owned(),
+                CODEX_MODEL.to_owned()
+            )]
+        );
+        assert!(codex.requests().is_empty());
+        assert!(catalog.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn logout_reports_each_provider_and_keeps_a_configured_one_in_use() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["still here"]))]);
+        let home = codex_home();
+        let setup = agent_setup_with(
+            &home,
+            &local_settings(&server),
+            SubscriptionEndpoints::default(),
+        )
+        .await;
+        let mut harness = Harness::with_setup(home, setup);
+        assert_eq!(
+            notices_of(&mut harness, "/logout").await,
+            [auth(NoticeTone::Neutral, "Signed out of Codex.")]
+        );
+        for (command, body) in [
+            ("/logout", "No oh-fx login session found."),
+            ("/logout VERCEL", "No oh-fx login session found."),
+            ("/logout codex", "No Codex login session found."),
+            ("/logout grok", "No Grok login session found."),
+        ] {
+            assert_eq!(
+                notices_of(&mut harness, command).await,
+                [auth(NoticeTone::Neutral, body)],
+                "{command}"
+            );
+        }
+        assert_eq!(
+            notices_of(&mut harness, "/logout chatgpt").await,
+            [(
+                NoticeTone::Warning,
+                String::new(),
+                "usage: /logout [vercel|codex|grok]".to_owned()
+            )]
+        );
+        chat(&mut harness, &["hi"]).await;
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_selected_codex_login_stays_during_work_while_others_sign_out() {
+        let codex = FakeServer::start([codex_partial()]);
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.submit("slow");
+        harness
+            .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+            .await;
+        assert_eq!(
+            notices_of(&mut harness, "/logout codex").await,
+            [auth(
+                NoticeTone::Warning,
+                "Sign out is unavailable until active and queued work finishes."
+            )]
+        );
+        harness.command("/logout grok");
+        let signed_out = within(harness.until(|event| {
+            matches!(event, UiEvent::Notice { notice } if notice.body == "No Grok login session found.")
+        }))
+        .await;
+        assert_eq!(
+            notices(signed_out),
+            [auth(NoticeTone::Neutral, "No Grok login session found.")]
+        );
+        assert!(harness.home.path().join("data/chatgpt-auth.json").exists());
+        assert!(
+            !harness
+                .seen
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::Cancel { turn_id });
+        harness.until(finished(TurnOutcome::Interrupted)).await;
     }
 
     fn notices(events: &[UiEvent]) -> Vec<(NoticeTone, String, String)> {

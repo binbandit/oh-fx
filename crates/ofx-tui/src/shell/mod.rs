@@ -5,6 +5,7 @@ mod approval_amendment;
 mod approval_runtime;
 mod directory_completion_job;
 mod event_loop;
+mod held_prompt_runtime;
 pub(crate) mod help_menu;
 mod help_menu_runtime;
 mod input_completion_runtime;
@@ -122,6 +123,7 @@ pub struct ShellOptions {
     pub providers: Vec<String>,
     pub permission_mode: PermissionMode,
     pub full_access_warning: bool,
+    pub login_missing: bool,
     pub workspace_label: String,
     pub startup_scrollback: bool,
     pub commands: Vec<SlashCommandSpec>,
@@ -148,6 +150,7 @@ pub enum Opening {
 enum SubmissionState {
     Queued,
     Active,
+    Held,
     Cancelled,
 }
 
@@ -840,6 +843,7 @@ impl<'a> Shell<'a> {
                 &self.options.model,
                 self.options.permission_mode,
                 self.statusline.view(),
+                self.options.login_missing,
                 self.cols(),
             ),
         };
@@ -1381,6 +1385,7 @@ mod tests {
             providers: Vec::new(),
             permission_mode: PermissionMode::Auto,
             full_access_warning: false,
+            login_missing: false,
             workspace_label: "proj\x07".to_owned(),
             startup_scrollback: true,
             commands: Vec::new(),

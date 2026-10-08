@@ -164,12 +164,7 @@ impl Shell<'_> {
                 SYSTEM_NOTICE_TOPIC,
                 text,
             ))),
-            UiEvent::ModelSelected { model } => {
-                if model != self.options.model {
-                    self.statusline.model_changed();
-                }
-                self.options.model = model;
-            }
+            UiEvent::ModelSelected { model } => self.model_selected(model),
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
             UiEvent::StatuslineChanged { item, enabled } => self.statusline.set(item, enabled),
             event @ (UiEvent::ModelCatalog { .. }
@@ -179,6 +174,9 @@ impl Shell<'_> {
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
+            UiEvent::LoginChanged { missing } => self.options.login_missing = missing,
+            UiEvent::PromptHeld => self.prompt_held(),
+            UiEvent::HeldPromptDropped => self.held_prompt_dropped(),
             UiEvent::PermissionModeChanged {
                 mode,
                 full_access_warning,
@@ -236,6 +234,13 @@ impl Shell<'_> {
         if let Some(turn) = self.visible_turn(turn_id) {
             turn.recovery = Some(RecoveryStatus::new(status, now_ms));
         }
+    }
+
+    fn model_selected(&mut self, model: String) {
+        if model != self.options.model {
+            self.statusline.model_changed();
+        }
+        self.options.model = model;
     }
 
     fn stats_requested(&mut self) {
@@ -514,6 +519,7 @@ impl Shell<'_> {
                     turn.turn_id = Some(turn_id);
                 }
             }
+            SubmissionState::Held => self.resume_held_prompt(index),
             SubmissionState::Queued => {}
         }
     }
