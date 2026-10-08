@@ -2,7 +2,7 @@
 upstream = "src/core/compactor/checkpoint.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/checkpoint.rs"]
-note = "Checkpoint encoding and restoration exist; importing the fx-compaction-state-v1 state files fx's earlier compactor saved is not needed, since no fx session reaches oh-fx, and saved record-ledger reconstruction comes with saved compaction records (OH-18)."
+note = "Checkpoint encoding and restoration exist; importing the fx-compaction-state-v1 state files fx's earlier compactor saved comes with the import of fx's older sessions (NEW-G), and saved record-ledger reconstruction comes with saved compaction records (OH-18)."
 
 [[file]]
 upstream = "src/core/compactor/compactor.zig"

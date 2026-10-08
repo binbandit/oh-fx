@@ -1,5 +1,22 @@
 use std::cmp::Ordering;
 
+const FX_MARKER: &str = "fx";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSource {
+    OhFx,
+    Fx,
+}
+
+impl SessionSource {
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::OhFx => None,
+            Self::Fx => Some(FX_MARKER),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub id: String,
@@ -11,6 +28,7 @@ pub struct SessionSummary {
     pub conversation_language: String,
     pub history_len: usize,
     pub has_checkpoint: bool,
+    pub source: SessionSource,
 }
 
 impl SessionSummary {
@@ -109,6 +127,7 @@ mod tests {
             conversation_language: "en".to_owned(),
             history_len,
             has_checkpoint: false,
+            source: SessionSource::OhFx,
         }
     }
 

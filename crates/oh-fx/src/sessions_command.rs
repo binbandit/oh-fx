@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ofx_app::{SessionListSnapshot, session_lookup_message};
@@ -8,7 +9,7 @@ use ofx_cli::{
     Command, LaunchModifiers, OutputFormat, SessionListArgs, TopLevelKind, command_failure_json,
 };
 use ofx_config::ProfilePaths;
-use ofx_session::{ListScope, SessionStore};
+use ofx_session::{FxSessions, ListScope, SessionStore};
 
 enum Failure {
     Lookup(String),
@@ -55,9 +56,10 @@ fn report(format: OutputFormat, code: &str, message: &str) -> ExitCode {
 
 fn list(args: &SessionListArgs) -> Result<String, Failure> {
     let home_not_set = || Failure::Lookup("HomeNotSet".to_owned());
-    let paths = env::var_os("HOME")
-        .and_then(|_| ProfilePaths::from_environment())
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
         .ok_or_else(home_not_set)?;
+    let paths = ProfilePaths::from_environment().ok_or_else(home_not_set)?;
     let workspace_root = env::current_dir()
         .and_then(fs::canonicalize)
         .map_err(|_| Failure::Fatal("WorkspaceUnavailable"))?;
@@ -67,7 +69,7 @@ fn list(args: &SessionListArgs) -> Result<String, Failure> {
     let store = SessionStore::open_read_only(&paths.data, workspace_root)
         .map_err(|error| Failure::Lookup(error.to_string()))?;
     let catalog = store
-        .catalog()
+        .catalog_with_fx(&FxSessions::open(&home))
         .map_err(|_| Failure::Fatal("SessionStoreUnavailable"))?;
     let page = catalog.listed_page(args.scope, args.cursor.as_ref(), args.limit);
     let next_cursor = page
