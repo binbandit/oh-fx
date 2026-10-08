@@ -14,6 +14,7 @@ use rustix::termios::{
 
 use super::app_lifecycle;
 use super::cursor_probe::{CursorPosition, find_position_response, find_position_span};
+use super::recording::TerminalRecorder;
 use super::theme_detection::{THEME_ENV, ThemeDetection, configured_theme, detect_theme_with};
 use super::theme_protocol::{
     TerminalBackground, find_osc11_reply, parse_osc11_response, trailing_primary_device_attributes,
@@ -106,6 +107,7 @@ pub(crate) struct Terminal {
     write_abort: Option<OwnedFd>,
     restore_wait: Duration,
     typeahead: Vec<u8>,
+    recorder: Option<Box<dyn TerminalRecorder>>,
 }
 
 impl Terminal {
@@ -142,7 +144,30 @@ impl Terminal {
             write_abort: None,
             restore_wait: ABNORMAL_RESTORE_WAIT,
             typeahead: Vec::new(),
+            recorder: None,
         })
+    }
+
+    pub(crate) fn record_with(&mut self, recorder: Box<dyn TerminalRecorder>) {
+        self.recorder = Some(recorder);
+    }
+
+    pub(crate) fn stop_recording(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            recorder.stop();
+        }
+    }
+
+    pub(crate) fn record_input(&self, bytes: &[u8]) {
+        if let Some(recorder) = &self.recorder {
+            recorder.stdin(bytes);
+        }
+    }
+
+    pub(crate) fn record_resize(&self, layout: Layout) {
+        if let Some(recorder) = &self.recorder {
+            recorder.resize(layout.cols, layout.rows);
+        }
     }
 
     pub(crate) fn input_fd(&self) -> BorrowedFd<'_> {
@@ -206,7 +231,7 @@ impl Terminal {
     }
 
     pub(crate) fn query_cursor_position(&mut self) -> Result<CursorPosition, TerminalError> {
-        self.write_all(CURSOR_POSITION_QUERY.as_bytes())?;
+        self.write_unrecorded(CURSOR_POSITION_QUERY.as_bytes())?;
         let reply = self.read_reply(CURSOR_PROBE_TIMEOUT, PROBE_REPLY_LIMIT, |bytes| {
             find_position_span(bytes).map(|(span, _)| span)
         })?;
@@ -216,7 +241,7 @@ impl Terminal {
     }
 
     pub(crate) fn query_background(&mut self) -> Option<TerminalBackground> {
-        self.write_all(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
+        self.write_unrecorded(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
             .ok()?;
         let unclaimed = self.typeahead.len();
         let fenced = self.read_reply(
@@ -250,19 +275,19 @@ impl Terminal {
     }
 
     pub(crate) fn enable_theme_notifications(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_NOTIFICATION_ENABLE_SEQUENCE.as_bytes())
+        self.write_unrecorded(THEME_NOTIFICATION_ENABLE_SEQUENCE.as_bytes())
     }
 
     pub(crate) fn request_theme_color_scheme(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_COLOR_SCHEME_QUERY.as_bytes())
+        self.write_unrecorded(THEME_COLOR_SCHEME_QUERY.as_bytes())
     }
 
     pub(crate) fn request_theme_response_fence(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_RESPONSE_FENCE_QUERY.as_bytes())
+        self.write_unrecorded(THEME_RESPONSE_FENCE_QUERY.as_bytes())
     }
 
     pub(crate) fn request_theme_background(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
+        self.write_unrecorded(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
     }
 
     pub(crate) fn poll_input(
@@ -296,8 +321,22 @@ impl Terminal {
     }
 
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
+        let (accepted, written) = self.write_through(bytes);
+        if let Some(recorder) = &self.recorder
+            && accepted > 0
+        {
+            recorder.stdout(&bytes[..accepted]);
+        }
+        written.map_err(TerminalError::from)
+    }
+
+    pub(crate) fn write_unrecorded(&self, bytes: &[u8]) -> Result<(), TerminalError> {
+        self.write_through(bytes).1.map_err(TerminalError::from)
+    }
+
+    fn write_through(&self, bytes: &[u8]) -> (usize, std::io::Result<()>) {
         let abort = self.write_abort.as_ref().map(AsFd::as_fd);
-        write_fully(self.output.as_fd(), bytes, abort, None).map_err(TerminalError::from)
+        write_fully(self.output.as_fd(), bytes, abort, None)
     }
 
     pub(crate) fn write_all_unless_full(&self, bytes: &[u8]) -> Result<bool, TerminalError> {
@@ -309,7 +348,7 @@ impl Terminal {
                 Err(errno) => return Err(errno.into()),
             }
         };
-        self.write_all(&bytes[written..])?;
+        self.write_unrecorded(&bytes[written..])?;
         Ok(true)
     }
 
@@ -319,7 +358,7 @@ impl Terminal {
         let _ = app_lifecycle::abnormal_exit_restore_sequences(self.capabilities.tmux)
             .try_for_each(|sequence| {
                 wait_until_writable(output, None, deadline)?;
-                write_fully(output, sequence.as_bytes(), None, deadline)
+                write_fully(output, sequence.as_bytes(), None, deadline).1
             });
     }
 
@@ -416,20 +455,25 @@ fn controls_this_session(terminal: BorrowedFd<'_>) -> bool {
 
 fn write_fully(
     fd: BorrowedFd<'_>,
-    mut bytes: &[u8],
+    bytes: &[u8],
     abort: Option<BorrowedFd<'_>>,
     deadline: Option<Instant>,
-) -> std::io::Result<()> {
-    while !bytes.is_empty() {
-        match rustix::io::write(fd, bytes) {
-            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-            Ok(written) => bytes = &bytes[written..],
+) -> (usize, std::io::Result<()>) {
+    let mut accepted = 0;
+    while accepted < bytes.len() {
+        match rustix::io::write(fd, &bytes[accepted..]) {
+            Ok(0) => return (accepted, Err(std::io::ErrorKind::WriteZero.into())),
+            Ok(written) => accepted += written,
             Err(Errno::INTR) => {}
-            Err(Errno::AGAIN) => wait_until_writable(fd, abort, deadline)?,
-            Err(errno) => return Err(errno.into()),
+            Err(Errno::AGAIN) => {
+                if let Err(error) = wait_until_writable(fd, abort, deadline) {
+                    return (accepted, Err(error));
+                }
+            }
+            Err(errno) => return (accepted, Err(errno.into())),
         }
     }
-    Ok(())
+    (accepted, Ok(()))
 }
 
 fn wait_until_writable(
@@ -729,6 +773,41 @@ mod tests {
             test_pty::terminal(pty).capabilities(),
         )
         .unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct Taped(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+    impl TerminalRecorder for Taped {
+        fn stdout(&self, bytes: &[u8]) {
+            self.0.borrow_mut().extend_from_slice(bytes);
+        }
+
+        fn stdin(&self, _: &[u8]) {}
+
+        fn resize(&self, _: u16, _: u16) {}
+
+        fn stop(&self) {}
+    }
+
+    #[test]
+    fn terminal_queries_and_the_tmux_clear_stay_off_the_tape() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        let taped = Taped::default();
+        terminal.record_with(Box::new(taped.clone()));
+        terminal.enable_theme_notifications().unwrap();
+        terminal.request_theme_color_scheme().unwrap();
+        terminal.request_theme_response_fence().unwrap();
+        terminal.request_theme_background().unwrap();
+        assert!(terminal.write_all_unless_full(b"probe").unwrap());
+        let fake = crate::terminal::fake_tmux::FakeTmux::new(0, 0);
+        crate::terminal::TmuxHistory::with_program(fake.program(), "%1", test_pty::WAIT)
+            .clear(&terminal);
+        terminal.write_all(b"frame").unwrap();
+        let written = test_pty::read_written(&pty);
+        assert!(written.ends_with(b"probe\x1b[0m\x1b[2J\x1b[3J\x1b[Hframe"));
+        assert_eq!(*taped.0.borrow(), b"frame");
     }
 
     #[test]
