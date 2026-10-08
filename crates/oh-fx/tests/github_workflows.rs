@@ -479,3 +479,26 @@ fn a_signal_while_gh_publishes_ends_oh_fx_by_that_signal() {
         assert_eq!(printed, "", "{name}");
     }
 }
+
+#[test]
+fn a_captured_draft_that_fails_exits_silently_as_upstream_does() {
+    for reason in ["length", "content_filter"] {
+        let events: Vec<String> = chat_text_events(&["Title\n\nBody"])
+            .into_iter()
+            .map(|event| {
+                event.replace(
+                    r#""finish_reason":"stop""#,
+                    &format!(r#""finish_reason":"{reason}""#),
+                )
+            })
+            .collect();
+        let server = FakeServer::start([Reply::sse(&events)]);
+        let home = Home::new(&server);
+        let path = home.fake_gh();
+        let output = home.run_with(&["issue", "--create"], &path, &[]);
+        assert_eq!(output.status.code(), Some(1), "{reason}");
+        assert_eq!(stdout(&output), "", "{reason}");
+        assert_eq!(stderr(&output), "", "{reason}");
+        assert_eq!(home.gh_args(), None, "{reason}");
+    }
+}
