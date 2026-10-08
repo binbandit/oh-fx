@@ -1619,6 +1619,31 @@ fn resizing_replays_the_transcript_at_the_new_width() {
 }
 
 #[test]
+fn full_transcript_job_control_returns_to_inline_and_can_open_again() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    let mut session = home.shell(24, 80);
+    session.send(b"\x0f");
+    session
+        .wait_for(WAIT, |_| count(&session.output(), b"\x1b[?1049h") == 1)
+        .expect("the transcript opens");
+    session.send(b"\x1a");
+    assert!(session.wait_until_stopped(WAIT), "ctrl+z stops the shell");
+    session.resume().expect("continue the shell");
+    wait(&session, "auto · model-a");
+    session.send(b"\x0f");
+    session
+        .wait_for(WAIT, |_| count(&session.output(), b"\x1b[?1049h") == 2)
+        .expect("the resumed inline shell can open the transcript");
+    session.send(b"\x0f\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    assert!(session.drain_output(WAIT), "the terminal never closed");
+    let output = session.output();
+    assert_eq!(count(&output, b"\x1b[?1049h"), 2);
+    assert_eq!(count(&output, b"\x1b[?1049l"), 2);
+}
+
+#[test]
 fn job_control_stops_reenter_the_terminal_once() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&settings(&server.base_url()));

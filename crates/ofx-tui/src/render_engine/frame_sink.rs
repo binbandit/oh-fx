@@ -5,7 +5,7 @@ use crate::row_text::Row;
 const SYNC_BEGIN: &str = "\x1b[?2026h";
 const SYNC_END: &str = "\x1b[?2026l";
 const HIDE_CURSOR: &str = "\x1b[?25l";
-const SHOW_CURSOR: &str = "\x1b[?25h";
+pub(crate) const SHOW_CURSOR: &str = "\x1b[?25h";
 const ERASE_BELOW: &str = "\x1b[0m\x1b[J";
 const ERASE_LINE_TAIL: &str = "\x1b[K";
 const CLEAR_SCREEN_AND_HISTORY: &str = "\x1b[0m\x1b[2J\x1b[3J\x1b[H";

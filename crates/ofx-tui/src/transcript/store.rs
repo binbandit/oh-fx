@@ -27,6 +27,10 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn full_entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
     pub(crate) fn push(&mut self, entry: Entry) {
         if !matches!(entry, Entry::Notice(_)) {
             self.open_group = None;
