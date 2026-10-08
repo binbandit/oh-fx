@@ -177,6 +177,33 @@ fn a_recorded_session_replays_to_the_screen_the_terminal_showed() {
 }
 
 #[test]
+fn input_typed_while_the_startup_probes_wait_is_recorded_once() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let tape = home.root.join("startup.fxtape");
+    let mut session = home.spawn(&[
+        ("OH_FX_RECORD", &tape),
+        ("OH_FX_RECORD_INPUT", Path::new("1")),
+    ]);
+    session.send(b"early");
+    wait(&session, "auto · model-a");
+    session.send(b"late");
+    wait(&session, "earlylate");
+    session.send(b"\x15\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    let stdin = payloads(&read_tape(&tape), TapeKind::Stdin).concat();
+    assert!(stdin.starts_with(b"early"), "{stdin:?}");
+    let early = stdin
+        .windows(b"early".len())
+        .filter(|window| *window == b"early");
+    assert_eq!(early.count(), 1, "{stdin:?}");
+    assert!(
+        stdin.windows(b"late".len()).any(|window| window == b"late"),
+        "{stdin:?}"
+    );
+}
+
+#[test]
 fn input_is_left_out_of_a_recording_unless_it_is_asked_for() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Noted."]))]);
     let home = Home::new(&server.base_url());

@@ -390,6 +390,7 @@ impl<'a> Shell<'a> {
         terminal.push_launch_rows_into_scrollback(layout, plan.scrollback_rows)?;
         terminal.enter_interactive_mode()?;
         let mut input = TerminalInput::new();
+        terminal.record_input(&typeahead);
         input.push_bytes(&typeahead);
         if !capabilities.tmux {
             input.start_native_clear_probe();
