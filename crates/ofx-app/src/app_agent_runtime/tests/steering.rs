@@ -1,3 +1,5 @@
+use ofx_contract::INTERRUPTED_TURN_CONTEXT;
+
 use super::*;
 
 const WRAPPER: &str = "<user_steering>\nApply this live user update to the current task.";
@@ -189,7 +191,10 @@ async fn a_prompt_submitted_after_a_cancel_runs_next_as_its_own_turn() {
         .to_vec();
     assert_eq!(started(&events), 1);
     let body = server.requests()[1].json();
-    assert_eq!(user_texts(&body), ["slow", "next"]);
+    assert_eq!(
+        user_texts(&body),
+        ["slow", INTERRUPTED_TURN_CONTEXT, "next",]
+    );
 }
 
 #[tokio::test]

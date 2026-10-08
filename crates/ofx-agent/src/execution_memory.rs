@@ -1,12 +1,47 @@
 use std::mem;
+use std::ops::Range;
 
 use ofx_contract::{
-    ChatMessage, HistorySteering, HistoryStep, ProviderReplay, RecordedOutput, StepResult,
-    ToolCall, ToolCallId, ToolResultStatus,
+    ChatMessage, HistorySteering, HistoryStep, INTERRUPTED_BEFORE_COMPLETION,
+    INTERRUPTED_TURN_CONTEXT, ProviderReplay, RecordedOutput, StepResult, ToolCall, ToolCallId,
+    ToolResultStatus,
 };
 
 const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
 const STEERING_CLOSE: &str = "\n</user_steering>";
+
+pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, range: Range<usize>) -> usize {
+    let Some(messages) = history.get_mut(range.clone()) else {
+        return 0;
+    };
+    let mut closing = Vec::with_capacity(2);
+    if let Some(ChatMessage::Assistant {
+        content,
+        tool_calls,
+        ..
+    }) = messages.last_mut()
+        && tool_calls.is_empty()
+    {
+        let text = content.get_or_insert_with(String::new);
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(INTERRUPTED_BEFORE_COMPLETION);
+    } else if !messages
+        .iter()
+        .any(|message| matches!(message, ChatMessage::Tool { .. }))
+    {
+        closing.push(ChatMessage::Assistant {
+            content: Some(INTERRUPTED_BEFORE_COMPLETION.to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        });
+    }
+    closing.push(ChatMessage::user(INTERRUPTED_TURN_CONTEXT));
+    let added = closing.len();
+    history.splice(range.end..range.end, closing);
+    added
+}
 
 pub(crate) fn steering_message(text: &str) -> String {
     format!("{STEERING_OPEN}{text}{STEERING_CLOSE}")

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use ofx_contract::{INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
+
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 use crate::execution_memory::{history_turn, steering_message};
@@ -265,8 +267,11 @@ async fn an_explicit_cancel_stops_the_turn_and_leaves_the_steer_for_a_continuati
     worker.admit(plain(2, "third"));
     run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
     assert_eq!(
-        provider.requests()[2].messages[2..],
+        provider.requests()[2].messages,
         [
+            ChatMessage::user("go"),
+            assistant(&format!("partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("keep going"),
             assistant("Kept going."),
             ChatMessage::user("third"),
@@ -587,4 +592,278 @@ async fn steering_typed_after_streamed_tool_input_waits_for_the_tool_result() {
         provider.requests()[1].messages.last(),
         Some(&ChatMessage::user(steering_message("also run the linter")))
     );
+}
+
+#[tokio::test]
+async fn a_continuation_omits_only_the_latest_interrupted_turns_closure() {
+    let provider = FakeProvider::new(vec![
+        streaming("older partial"),
+        streaming("active partial"),
+        text_reply("continued"),
+        text_reply("ordinary answer"),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "older"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, _, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    worker.admit(plain(1, "active"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                worker.admit(plain(2, "continue"));
+                worker.request_cancel();
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages,
+        [
+            ChatMessage::user("older"),
+            assistant(&format!("older partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("active"),
+            assistant("active partial"),
+            ChatMessage::user(steering_message("continue")),
+        ]
+    );
+    worker.admit(plain(3, "ordinary"));
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[3].messages,
+        [
+            ChatMessage::user("older"),
+            assistant(&format!("older partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("active"),
+            assistant(&format!(
+                "active partial\n\n{INTERRUPTED_BEFORE_COMPLETION}"
+            )),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("continue"),
+            assistant("continued"),
+            ChatMessage::user("ordinary"),
+        ]
+    );
+    assert_eq!(agent.turn_starts, [0, 3, 6, 8]);
+}
+
+#[tokio::test]
+async fn successive_interrupted_continuations_close_only_the_older_boundary() {
+    let provider = FakeProvider::new(vec![
+        streaming("first partial"),
+        streaming("second partial"),
+        text_reply("continued"),
+        text_reply("ordinary answer"),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "first"));
+    for (id, prompt) in [(1, "continue once"), (2, "continue twice")] {
+        run_steered(
+            &mut agent,
+            &worker,
+            &CancellationToken::new(),
+            |event, worker, cancel| {
+                if matches!(event, UiEvent::AssistantText { .. }) {
+                    worker.admit(plain(id, prompt));
+                    worker.request_cancel();
+                    cancel.cancel();
+                }
+            },
+        )
+        .await;
+    }
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages,
+        [
+            ChatMessage::user("first"),
+            assistant(&format!("first partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("continue once"),
+            assistant("second partial"),
+            ChatMessage::user(steering_message("continue twice")),
+        ]
+    );
+    worker.admit(plain(3, "ordinary"));
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[3].messages,
+        [
+            ChatMessage::user("first"),
+            assistant(&format!("first partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("continue once"),
+            assistant(&format!(
+                "second partial\n\n{INTERRUPTED_BEFORE_COMPLETION}"
+            )),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("continue twice"),
+            assistant("continued"),
+            ChatMessage::user("ordinary"),
+        ]
+    );
+    assert_eq!(agent.turn_starts, [0, 3, 6, 8]);
+}
+
+#[tokio::test]
+async fn a_discarded_continuation_preserves_the_original_pending_closure() {
+    let provider = FakeProvider::new(vec![
+        streaming("partial"),
+        Script::Fail(
+            Vec::new(),
+            ProviderError::new(ProviderErrorKind::Protocol, "BadData"),
+        ),
+        text_reply("ordinary answer"),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    let (log, entries) = MemoryLog::shared();
+    agent = logged(agent, log);
+    worker.admit(plain(0, "first"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                worker.admit(plain(1, "continue"));
+                worker.request_cancel();
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    let (discarded, _) =
+        run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(discarded.outcome, TurnOutcome::Failed);
+    worker.admit(plain(2, "ordinary"));
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages,
+        [
+            ChatMessage::user("first"),
+            assistant(&format!("partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("ordinary"),
+        ]
+    );
+    assert_eq!(agent.turn_starts, [0, 3]);
+    let entries = entries.lock().unwrap();
+    assert!(matches!(&entries[0], Logged::Turn { end, .. } if end == "Cancelled \"partial\""));
+}
+
+#[tokio::test]
+async fn manual_compaction_closes_the_original_turn_after_a_continuation() {
+    let provider = FakeProvider::new(vec![
+        streaming("partial"),
+        text_reply("continued"),
+        text_reply("Turn 1\nIn between: The prior reply was interrupted."),
+    ]);
+    let (mut agent, worker) = steered_agent(&provider);
+    worker.admit(plain(0, "first"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                worker.admit(plain(1, "continue"));
+                worker.request_cancel();
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        agent
+            .compact(&mut || {}, &CancellationToken::new())
+            .await
+            .unwrap(),
+        Compaction::Compacted
+    );
+    let requests = provider.requests();
+    let ChatMessage::User {
+        content: summary_request,
+        ..
+    } = &requests[2].messages[0]
+    else {
+        panic!("a summary request follows the continuation");
+    };
+    assert!(
+        summary_request.contains(&format!("partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+        "{summary_request}"
+    );
+    assert!(
+        summary_request.contains(INTERRUPTED_TURN_CONTEXT),
+        "{summary_request}"
+    );
+    assert_eq!(
+        agent.history[1..],
+        [ChatMessage::user("continue"), assistant("continued")]
+    );
+    assert_eq!(agent.turn_starts, [1]);
+}
+
+#[tokio::test]
+async fn automatic_compaction_cannot_move_a_pending_closure_onto_the_continuation() {
+    let partial = "p".repeat(150_000);
+    let provider = FakeProvider::new(vec![
+        streaming(&partial),
+        compaction::unmetered(text_reply("continued")),
+        compaction::unmetered(text_reply("ordinary answer")),
+    ]);
+    let worker = Arc::new(WorkerRuntime::default());
+    let (agent, _) = compaction::windowed(&provider, 45_000, 64);
+    let mut agent = agent.with_steering(Arc::clone(&worker));
+    worker.admit(plain(0, "first"));
+    run_steered(
+        &mut agent,
+        &worker,
+        &CancellationToken::new(),
+        |event, worker, cancel| {
+            if matches!(event, UiEvent::AssistantText { .. }) {
+                worker.admit(plain(1, "continue"));
+                worker.request_cancel();
+                cancel.cancel();
+            }
+        },
+    )
+    .await;
+    let (continued, _) =
+        run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(continued.final_text, "continued");
+    let ChatMessage::User {
+        content: checkpoint,
+        ..
+    } = &agent.history[0]
+    else {
+        panic!("automatic compaction produced a checkpoint");
+    };
+    assert!(checkpoint.starts_with("<compacted_conversation>\n"));
+    worker.admit(plain(2, "ordinary"));
+    run_steered(&mut agent, &worker, &CancellationToken::new(), |_, _, _| {}).await;
+    assert_eq!(
+        provider.requests()[2].messages[1..],
+        [
+            ChatMessage::user("continue"),
+            assistant("continued"),
+            ChatMessage::user("ordinary"),
+        ]
+    );
+    assert_eq!(agent.turn_starts, [1, 3]);
 }

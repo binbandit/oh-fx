@@ -116,7 +116,7 @@ note = "Narrow traits replace runtime dependencies; image executor, durable reco
 upstream = "src/core/agent/runtime/execution_memory.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/execution_memory.rs"]
-note = "Interrupted execution memory retains finished exchanges, steering typed after a tool result, and provider-executed calls with their provider results, whose status follows upstream's tool-failure classification, and a result keeps its whole-file view only when the model saw it untruncated; tool images and result memory are absent."
+note = "Interrupted execution memory closes live cancelled and failed partial text before ordinary follow-ups or manual compaction, omits only the latest closure for steering continuations, and retains finished exchanges, steering typed after a tool result, and provider-executed calls with their provider results, whose status follows upstream's tool-failure classification, and a result keeps its whole-file view only when the model saw it untruncated; completed-tool interruption summaries, active-call abort records, tool images and result memory are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/finalization.zig"

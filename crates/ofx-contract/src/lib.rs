@@ -27,9 +27,10 @@ pub use auto_classifier::{ReviewFailure, ReviewTransport, ReviewTransportOutcome
 pub use compactor_settings::AutoCompactPercent;
 pub use file_evidence::{FileEvidence, FileEvidenceAction, file_evidence_context};
 pub use history_turn::{
-    ConversationLog, HistoryCut, HistorySteering, HistoryStep, HistoryTurn, LogFailure,
-    RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
-    RestoredHistory, StepResult, TurnEnd, TurnStop,
+    ConversationLog, HistoryCut, HistorySteering, HistoryStep, HistoryTurn,
+    INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, LogFailure, RecordedOutput,
+    RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy, RestoredHistory, StepResult,
+    TurnEnd, TurnStop,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{

@@ -2,7 +2,8 @@ use std::mem;
 
 use ofx_config::PrivateDir;
 use ofx_contract::{
-    ChatMessage, RestoredHistory, ToolCall, ToolCallId, ToolResultStatus, file_evidence_context,
+    ChatMessage, INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, RestoredHistory,
+    ToolCall, ToolCallId, ToolResultStatus, file_evidence_context,
 };
 
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
@@ -13,9 +14,7 @@ use crate::session_event::{
 };
 use crate::session_log::conversation_history::SavedHistory;
 
-const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
 const ABORTED_TOOL_OUTPUT: &str = "aborted by user";
-const INTERRUPTED_TURN_CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
 
 struct Step {
     assistant: Option<String>,
