@@ -31,7 +31,7 @@ pub(crate) fn handle_workspace(state: &mut ControllerState, payload: &str, work:
         }
         Ok(Some(action)) => action,
     };
-    if work != Work::Idle {
+    if !mutation_admitted(state, work) {
         return state.notice(NoticeTone::Neutral, TOPIC, BUSY);
     }
     match state.workspace().execute(&action) {
@@ -67,8 +67,12 @@ pub(crate) fn handle_workspace(state: &mut ControllerState, payload: &str, work:
     }
 }
 
+fn mutation_admitted(state: &ControllerState, work: Work) -> bool {
+    work == Work::Idle && !state.has_queued_prompts()
+}
+
 fn refresh_for_listing(state: &mut ControllerState, work: Work) -> bool {
-    if work != Work::Idle {
+    if !mutation_admitted(state, work) {
         return true;
     }
     match state.workspace_mut().refresh_availability() {

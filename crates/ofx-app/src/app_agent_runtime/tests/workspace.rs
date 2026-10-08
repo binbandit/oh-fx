@@ -255,6 +255,78 @@ async fn workspace_changes_wait_for_the_running_turn_and_listing_still_answers()
     assert_eq!(saved_settings(&home), Value::Null);
 }
 
+fn saved_listing(home: &Path, shared: &Path, available: bool) -> String {
+    format!(
+        "{}additional directories:\n{}",
+        header(home),
+        saved_entry(shared, available)
+    )
+}
+
+async fn refused_while_queued(harness: &mut Harness, shared: &Path) {
+    let home = harness.home.path().to_path_buf();
+    fs::remove_dir(shared).unwrap();
+    directory(&home, "other");
+    for command in [
+        "/workspace add ../other",
+        &format!("/workspace remove {}", shared.display()),
+        "/workspace clear",
+    ] {
+        let notice = harness.notice(command).await;
+        assert_eq!(
+            (notice.tone, notice.topic.as_str(), notice.body.as_str()),
+            (NoticeTone::Neutral, "workspace", BUSY),
+            "{command}"
+        );
+    }
+    assert_eq!(
+        harness.snapshot("/workspace list").await,
+        saved_listing(&home, shared, true)
+    );
+    assert_eq!(saved_settings(&home), json!([shared]));
+}
+
+#[tokio::test]
+async fn workspace_changes_wait_for_a_prompt_held_for_sign_in() {
+    let codex = FakeServer::start([]);
+    let catalog = codex_catalog(false, 2);
+    let mut harness = signed_out(&codex, &catalog).await;
+    let home = harness.home.path().to_path_buf();
+    let shared = directory(&home, "shared");
+    harness.snapshot("/workspace add ../shared").await;
+    held(&mut harness, "use the shared directory").await;
+    assert!(harness.worker.has_waiting_prompts());
+    refused_while_queued(&mut harness, &shared).await;
+    harness.send(UiCommand::DropHeldPrompt);
+    assert_eq!(
+        harness.snapshot("/workspace list").await,
+        saved_listing(&home, &shared, false)
+    );
+    assert!(codex.requests().is_empty());
+}
+
+#[tokio::test]
+async fn workspace_changes_wait_for_a_prompt_queued_behind_a_skill_installation() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+    let mut harness = Harness::start(&server).await;
+    let home = harness.home.path().to_path_buf();
+    write_skill(&harness.home, "install-pack", "new-skill");
+    let source = fs::canonicalize(home.join("workspace/install-pack")).unwrap();
+    let shared = directory(&home, "shared");
+    harness.snapshot("/workspace add ../shared").await;
+    let (release, worker) = held_install_lock(&harness.home);
+    harness.command(&format!("/skills install {}", source.display()));
+    harness.submit("use the shared directory");
+    refused_while_queued(&mut harness, &shared).await;
+    release.send(()).unwrap();
+    within(harness.until(finished(TurnOutcome::Completed))).await;
+    worker.join().unwrap();
+    assert_eq!(
+        harness.snapshot("/workspace list").await,
+        saved_listing(&home, &shared, false)
+    );
+}
+
 #[tokio::test]
 async fn listing_refreshes_whether_saved_directories_are_available() {
     let server = FakeServer::start([]);
@@ -263,16 +335,15 @@ async fn listing_refreshes_whether_saved_directories_are_available() {
     let shared = directory(&home, "shared");
     harness.snapshot("/workspace add ../shared").await;
     fs::remove_dir(&shared).unwrap();
-    let listing = |available| {
-        format!(
-            "{}additional directories:\n{}",
-            header(&home),
-            saved_entry(&shared, available)
-        )
-    };
-    assert_eq!(harness.snapshot("/workspace list").await, listing(false));
+    assert_eq!(
+        harness.snapshot("/workspace list").await,
+        saved_listing(&home, &shared, false)
+    );
     directory(&home, "shared");
-    assert_eq!(harness.snapshot("/workspace list").await, listing(true));
+    assert_eq!(
+        harness.snapshot("/workspace list").await,
+        saved_listing(&home, &shared, true)
+    );
 }
 
 #[tokio::test]

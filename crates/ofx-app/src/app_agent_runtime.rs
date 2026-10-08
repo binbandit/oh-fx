@@ -323,6 +323,14 @@ impl ControllerState {
         }
     }
 
+    pub(crate) fn has_queued_prompts(&self) -> bool {
+        self.worker.has_waiting_prompts()
+            || self
+                .pending_install_inputs
+                .iter()
+                .any(|input| matches!(input, InstallInput::Prompt(_)))
+    }
+
     fn holds_recovery(&self) -> bool {
         self.worker.holds_recovery()
     }
