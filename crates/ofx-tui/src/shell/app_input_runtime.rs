@@ -78,6 +78,9 @@ impl Shell<'_> {
             _ => {}
         }
         self.invalidate();
+        if self.route_full_transcript_input(&event)? {
+            return Ok(());
+        }
         if requests_upgrade(&event) {
             self.apply_ready_upgrade();
             return Ok(());
@@ -136,6 +139,7 @@ impl Shell<'_> {
             self.gestures.disarm_escape_interrupt();
         }
         if let Some(delta) = picker_control_delta(byte)
+            && !self.full_transcript_open()
             && self.move_footer_menu(delta)
         {
             return Ok(());
