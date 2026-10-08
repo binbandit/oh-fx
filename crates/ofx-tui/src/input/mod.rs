@@ -16,7 +16,8 @@ use crate::terminal::{
 };
 
 pub(crate) use input_action::{
-    Action, DecodedTerminalAction, MoveIntent, MoveKind, RawTerminalInput, ShortcutAction,
+    Action, DecodedTerminalAction, MouseWheel, MoveIntent, MoveKind, RawTerminalInput,
+    ShortcutAction,
 };
 pub(crate) use paste_framing::{
     COMPOSER_INPUT_LIMIT_BYTES, DECISION_INPUT_LIMIT_BYTES, PasteOutcome, PasteOwner,
