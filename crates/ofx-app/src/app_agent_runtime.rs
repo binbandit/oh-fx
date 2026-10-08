@@ -1771,7 +1771,13 @@ mod tests {
             };
             let persistence =
                 Persistence::new(store, route, preferences, overrides, Some(resumption));
-            Self::spawn(home, setup, Some(persistence))
+            Self::spawn(
+                home,
+                setup,
+                Some(persistence),
+                UpgradeShortcut::default(),
+                false,
+            )
         }
 
         async fn finish(self) -> tempfile::TempDir {
