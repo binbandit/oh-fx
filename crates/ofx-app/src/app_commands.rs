@@ -221,6 +221,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         }
         SlashKind::Copy => copy_last_reply(state),
         SlashKind::Ultrafast => ultrafast(state, payload),
+        SlashKind::Feedback => state.feedback(),
         SlashKind::Statusline => state.toggle_statusline(payload),
         SlashKind::Workspace => state.notice(
             NoticeTone::Error,

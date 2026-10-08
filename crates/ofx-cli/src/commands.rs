@@ -636,6 +636,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Session,
     ),
     SlashSpec::new(
+        SlashKind::Feedback,
+        "/feedback",
+        "open the oh-fx issue form",
+        SlashPresentationCategory::Product,
+    ),
+    SlashSpec::new(
         SlashKind::Compact,
         "/compact",
         "summarize context into a fresh window",
