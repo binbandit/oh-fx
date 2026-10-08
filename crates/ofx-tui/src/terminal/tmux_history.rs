@@ -23,6 +23,7 @@ const CLEAR_HISTORY_UNLESS_IN_MODE: &str = "#{?pane_in_mode,,clear-history -t #{
 pub(crate) struct TmuxHistory {
     program: OsString,
     pane: OsString,
+    call_limit: Duration,
 }
 
 struct Interrupted;
@@ -38,14 +39,20 @@ impl TmuxHistory {
         Some(Self {
             program: OsString::from("tmux"),
             pane: env::var_os("TMUX_PANE")?,
+            call_limit: CALL_LIMIT,
         })
     }
 
     #[cfg(test)]
-    pub(crate) fn with_program(program: impl Into<OsString>, pane: &str) -> Self {
+    pub(crate) fn with_program(
+        program: impl Into<OsString>,
+        pane: &str,
+        call_limit: Duration,
+    ) -> Self {
         Self {
             program: program.into(),
             pane: OsString::from(pane),
+            call_limit,
         }
     }
 
@@ -75,7 +82,8 @@ impl TmuxHistory {
         &self,
         interrupt: Option<BorrowedFd<'_>>,
     ) -> Result<Option<bool>, Interrupted> {
-        let finished = run_bounded(self.command(["capture-pane", "-p", "-t"]), interrupt)?;
+        let command = self.command(["capture-pane", "-p", "-t"]);
+        let finished = run_bounded(command, self.call_limit, interrupt)?;
         Ok(finished
             .filter(|finished| finished.status.success())
             .map(|finished| {
@@ -89,7 +97,7 @@ impl TmuxHistory {
     fn clear_history(&self, interrupt: Option<BorrowedFd<'_>>) -> Result<(), Interrupted> {
         let mut command = self.command(["run-shell", "-C", "-t"]);
         command.arg(CLEAR_HISTORY_UNLESS_IN_MODE);
-        run_bounded(command, interrupt).map(drop)
+        run_bounded(command, self.call_limit, interrupt).map(drop)
     }
 
     fn command<const N: usize>(&self, arguments: [&str; N]) -> Command {
@@ -107,6 +115,7 @@ impl TmuxHistory {
 
 fn run_bounded(
     mut command: Command,
+    limit: Duration,
     interrupt: Option<BorrowedFd<'_>>,
 ) -> Result<Option<Finished>, Interrupted> {
     if interrupt.is_some_and(|interrupt| readable(interrupt, Duration::ZERO)) {
@@ -115,7 +124,7 @@ fn run_bounded(
     let Ok(mut child) = command.spawn() else {
         return Ok(None);
     };
-    let deadline = Instant::now() + CALL_LIMIT;
+    let deadline = Instant::now() + limit;
     let mut output = child.stdout.take();
     let mut stdout = Vec::new();
     loop {
@@ -220,7 +229,8 @@ pub(crate) mod fake_tmux {
         }
 
         pub(crate) fn hanging() -> Self {
-            let mut fake = Self::with_body("/bin/sleep 30 &\nwait\n");
+            let mut fake =
+                Self::with_body("/bin/sleep 30 &\nprintf '\\n' >> \"$ROOT/started\"\nwait\n");
             let alive = fake.directory.path().join("alive");
             assert!(
                 Command::new("mkfifo")
@@ -277,12 +287,27 @@ pub(crate) mod fake_tmux {
             }
         }
 
+        pub(crate) fn started_within(&self, calls: usize, limit: Duration) -> bool {
+            let deadline = Instant::now() + limit;
+            while self.lines("started").len() < calls {
+                if Instant::now() > deadline {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            true
+        }
+
         pub(crate) fn program(&self) -> PathBuf {
             self.directory.path().join("tmux")
         }
 
         pub(crate) fn calls(&self) -> Vec<String> {
-            fs::read_to_string(self.directory.path().join("calls"))
+            self.lines("calls")
+        }
+
+        fn lines(&self, name: &str) -> Vec<String> {
+            fs::read_to_string(self.directory.path().join(name))
                 .unwrap_or_default()
                 .lines()
                 .map(str::to_owned)
@@ -299,25 +324,26 @@ mod tests {
 
     const CAPTURE: &str = "capture-pane|-p|-t|%7|";
     const CLEAR: &str = "run-shell|-C|-t|%7|#{?pane_in_mode,,clear-history -t #{pane_id}}|";
+    const HANGING_CALL_LIMIT: Duration = Duration::from_secs(1);
 
-    fn cleared(fake: &FakeTmux) -> Vec<u8> {
+    fn cleared(fake: &FakeTmux, call_limit: Duration) -> Vec<u8> {
         let pty = test_pty::open();
         let terminal = test_pty::terminal(&pty);
-        TmuxHistory::with_program(fake.program(), "%7").clear(&terminal);
+        TmuxHistory::with_program(fake.program(), "%7", call_limit).clear(&terminal);
         test_pty::read_written(&pty)
     }
 
     #[test]
     fn the_screen_is_cleared_then_history_once_the_pane_shows_blank() {
         let fake = FakeTmux::new(2, 0);
-        assert_eq!(cleared(&fake), CLEAR_SCREEN_AND_HISTORY);
+        assert_eq!(cleared(&fake, test_pty::WAIT), CLEAR_SCREEN_AND_HISTORY);
         assert_eq!(fake.calls(), [CAPTURE, CAPTURE, CAPTURE, CLEAR]);
     }
 
     #[test]
     fn history_is_cleared_after_five_checks_of_a_pane_that_stays_drawn() {
         let fake = FakeTmux::new(100, 0);
-        cleared(&fake);
+        cleared(&fake, test_pty::WAIT);
         let mut expected = vec![CAPTURE; 5];
         expected.push(CLEAR);
         assert_eq!(fake.calls(), expected);
@@ -326,7 +352,7 @@ mod tests {
     #[test]
     fn a_failed_capture_stops_waiting_but_still_clears_history() {
         let fake = FakeTmux::new(100, 1);
-        cleared(&fake);
+        cleared(&fake, test_pty::WAIT);
         assert_eq!(fake.calls(), [CAPTURE, CLEAR]);
     }
 
@@ -334,14 +360,15 @@ mod tests {
     fn a_tmux_call_that_never_finishes_is_killed_with_its_children_once_its_wait_runs_out() {
         let mut fake = FakeTmux::hanging();
         let begun = Instant::now();
-        assert_eq!(cleared(&fake), CLEAR_SCREEN_AND_HISTORY);
+        assert_eq!(cleared(&fake, HANGING_CALL_LIMIT), CLEAR_SCREEN_AND_HISTORY);
+        let elapsed = begun.elapsed();
+        assert!(elapsed >= HANGING_CALL_LIMIT * 2, "{elapsed:?}");
         assert!(
-            begun.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            begun.elapsed()
+            elapsed < HANGING_CALL_LIMIT * 2 + test_pty::WAIT,
+            "{elapsed:?}"
         );
         assert_eq!(fake.calls(), [CAPTURE, CLEAR]);
-        assert!(fake.every_call_exits_within(Duration::from_secs(5)));
+        assert!(fake.every_call_exits_within(test_pty::WAIT));
     }
 
     #[test]
@@ -351,20 +378,22 @@ mod tests {
         let mut terminal = test_pty::terminal(&pty);
         let (wakeup, mut signal) = std::io::pipe().unwrap();
         terminal.abort_writes_when_readable(wakeup.into());
-        let signaller = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(30));
-            std::io::Write::write_all(&mut signal, b"x").unwrap();
-            signal
+        let history = TmuxHistory::with_program(fake.program(), "%7", test_pty::WAIT);
+        thread::scope(|scope| {
+            let signaller = scope.spawn(|| {
+                assert!(fake.started_within(1, test_pty::WAIT));
+                std::io::Write::write_all(&mut signal, b"x").unwrap();
+            });
+            history.clear(&terminal);
+            signaller.join().unwrap();
         });
-        TmuxHistory::with_program(fake.program(), "%7").clear(&terminal);
-        drop(signaller.join().unwrap());
         assert_eq!(fake.calls(), [CAPTURE]);
-        assert!(fake.every_call_exits_within(Duration::from_secs(5)));
+        assert!(fake.every_call_exits_within(test_pty::WAIT));
     }
 
     #[test]
     fn a_missing_tmux_leaves_only_the_screen_clear() {
-        let missing = TmuxHistory::with_program("/nonexistent/tmux", "%7");
+        let missing = TmuxHistory::with_program("/nonexistent/tmux", "%7", CALL_LIMIT);
         let pty = test_pty::open();
         missing.clear(&test_pty::terminal(&pty));
         assert_eq!(test_pty::read_written(&pty), CLEAR_SCREEN_AND_HISTORY);
