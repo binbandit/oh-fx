@@ -343,8 +343,12 @@ impl Shell<'_> {
             return;
         };
         let affirmative = prompt.choices()[index].decision != ApprovalDecision::Deny;
+        let typing = prompt.typing(now_ms);
+        if affirmative {
+            self.admit_resize_signal();
+        }
         if affirmative && !self.affirmative_armed(now_ms) {
-            if prompt.typing(now_ms) {
+            if typing {
                 self.keep_typed_text(char::from(key));
             } else {
                 self.hold_yes();
@@ -422,6 +426,9 @@ impl Shell<'_> {
         }) else {
             return;
         };
+        if answer.decision != ApprovalDecision::Deny {
+            self.admit_resize_signal();
+        }
         if answer.decision == ApprovalDecision::Deny || self.affirmative_armed(now_ms) {
             self.decide(answer);
         } else {
@@ -429,7 +436,18 @@ impl Shell<'_> {
         }
     }
 
+    fn admit_resize_signal(&mut self) {
+        if self.signals.take_resized() {
+            let now_ms = self.now_ms();
+            self.handle_resize_signal(now_ms);
+        }
+    }
+
     fn decide(&mut self, answer: ApprovalAnswer) {
+        if answer.decision != ApprovalDecision::Deny && self.signals.resize_pending() {
+            self.hold_yes();
+            return;
+        }
         if let Some(prompt) = self.approval.take() {
             self.invalidate();
             self.send(UiCommand::Approval {
@@ -515,6 +533,34 @@ mod tests {
         test.screen();
         test.advance(ARMED_MS);
         test
+    }
+
+    #[test]
+    fn a_resize_signal_taken_after_the_signals_were_read_holds_a_yes_in_the_same_step() {
+        for key in [&b"1"[..], b"\r"] {
+            let mut test = approving();
+            test.shell.signals.note_resized();
+            test.draining(|shell| {
+                shell.input.push_bytes(key);
+                shell.process_input().unwrap();
+            });
+            assert!(
+                test.sent()
+                    .iter()
+                    .all(|command| !matches!(command, UiCommand::Approval { .. }))
+            );
+            assert!(test.shell.approval.is_some());
+            assert!(test.shell.pending_resize.is_some());
+        }
+        let mut test = approving();
+        test.shell.signals.note_resized();
+        test.draining(|shell| shell.decide(ApprovalDecision::Once.into()));
+        assert!(test.shell.approval.is_some());
+        test.draining(|shell| shell.decide(ApprovalDecision::Deny.into()));
+        assert_eq!(
+            test.sent().last(),
+            Some(&decision(4, ApprovalDecision::Deny))
+        );
     }
 
     fn decision(id: u64, decision: ApprovalDecision) -> UiCommand {
