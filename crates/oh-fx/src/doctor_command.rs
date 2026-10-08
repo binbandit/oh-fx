@@ -9,7 +9,7 @@ pub(crate) fn run(format: OutputFormat, modifiers: &LaunchModifiers) -> ExitCode
         return crate::unavailable_command(&Command::Doctor(format));
     }
     crate::auto_upgrade::announce_and_schedule();
-    match Doctor::collect(crate::login_command::host_managed()) {
+    match Doctor::collect(ofx_auth::host_managed_auth()) {
         Ok(doctor) => crate::print(
             doctor.render(format).as_bytes(),
             crate::command_write_failure(TopLevelKind::Doctor),

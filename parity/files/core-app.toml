@@ -7,8 +7,8 @@ note = "Native turn/tool dispatch and a reusable child-agent host exist; the int
 [[file]]
 upstream = "src/core/app/app_auth_runtime.zig"
 status = "partial"
-modules = ["crates/oh-fx/src/login_command.rs", "crates/oh-fx/src/provider_command.rs"]
-note = "CLI Codex login/logout/provider commands exist; interactive source inventory, login/provider pickers and Vercel/Grok flows are absent."
+modules = ["crates/oh-fx/src/login_command.rs", "crates/oh-fx/src/provider_command.rs", "crates/ofx-app/src/app_agent_runtime/sign_out.rs", "crates/ofx-app/src/app_agent_runtime/provider_switch.rs"]
+note = "CLI login/logout/provider commands, in-shell /logout and prompts held while the Codex login is missing exist; in-shell sign-in, the source inventory refresh, the setup hub and onboarding, the Vercel and Grok shell flows and credential repair prompts are absent."
 
 [[file]]
 upstream = "src/core/app/app_bootstrap_runtime.zig"
@@ -172,8 +172,8 @@ note = "Selection copy/cut exists; documented asynchronous clipboard and timeout
 [[file]]
 upstream = "src/core/app/input_submit_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/shell/input_submit_runtime.rs", "crates/ofx-tui/src/shell/steering_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Prompt submission, compaction requests and steering a running turn exist; image ownership and auth-retry submission transitions are absent."
+modules = ["crates/ofx-tui/src/shell/input_submit_runtime.rs", "crates/ofx-tui/src/shell/steering_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-tui/src/shell/held_prompt_runtime.rs"]
+note = "Prompt submission, compaction requests, steering a running turn and prompts held until a login exist; image ownership transitions are absent."
 
 [[file]]
 upstream = "src/core/app/model_cache_runtime.zig"

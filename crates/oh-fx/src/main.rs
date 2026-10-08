@@ -21,6 +21,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
 
+use ofx_auth::AUTH_MODE_VARIABLE;
 use ofx_cli::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
     RequestedResume, TopLevelKind,
@@ -28,7 +29,6 @@ use ofx_cli::{
 use rustix::io::Errno;
 use signal_hook::consts::SIGPIPE;
 
-const AUTH_MODE_VARIABLE: &str = "OH_FX_AUTH_MODE";
 const NOT_AVAILABLE_CODE: &str = "NotAvailableYet";
 const VERSION_LINE: [u8; ofx_upgrade::VERSION.len() + 1] = version_line();
 
