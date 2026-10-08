@@ -113,6 +113,23 @@ fn stream_timeout_probes_liveness_instead_of_pausing() {
         ..evidence(STREAM_TIMEOUT)
     });
     assert_eq!(probing_again.delay, Duration::from_secs(1));
+    let uncertain = decide(Evidence {
+        tool: ToolEvidence::Uncertain,
+        ..evidence(STREAM_TIMEOUT)
+    });
+    assert_eq!(uncertain.strategy, Strategy::ProbeLiveness);
+    assert_eq!(
+        uncertain.required_action,
+        ModelRecoveryRequiredAction::InspectUncertainTool
+    );
+    let unexecuted = decide(Evidence {
+        tool: ToolEvidence::ProvenUnexecuted,
+        ..evidence(STREAM_TIMEOUT)
+    });
+    assert_eq!(
+        unexecuted.required_action,
+        ModelRecoveryRequiredAction::None
+    );
 }
 
 #[test]

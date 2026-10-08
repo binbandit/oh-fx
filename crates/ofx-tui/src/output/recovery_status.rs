@@ -1,4 +1,6 @@
-use ofx_contract::{ModelRecoveryAction, RouteRecoveryKind, RouteRecoveryStatus};
+use ofx_contract::{
+    ModelRecoveryAction, ModelRecoveryRequiredAction, RouteRecoveryKind, RouteRecoveryStatus,
+};
 
 use super::activity_status::static_status_rows;
 use crate::row_text::Row;
@@ -8,6 +10,8 @@ const RECOVERED_VISIBLE_MS: i64 = 1_500;
 const SECOND_MS: i64 = 1_000;
 const ESC_TO_PAUSE: &str = " · esc to pause";
 const CONTINUE_LATER: &str = " · send a new message when you're ready";
+const REOPEN_SESSION: &str = " · reopen the session to continue";
+const KEPT_FAILING: &str = " · the response kept failing at the same point";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryStatus {
@@ -85,7 +89,13 @@ impl RecoveryStatus {
             };
         }
         if self.status.is_paused() {
-            return format!("{}{CONTINUE_LATER}", self.status.label());
+            let hint = match self.status.required_action {
+                ModelRecoveryRequiredAction::ContinueLater => CONTINUE_LATER,
+                ModelRecoveryRequiredAction::InspectUncertainTool => REOPEN_SESSION,
+                ModelRecoveryRequiredAction::SurfaceStall => KEPT_FAILING,
+                ModelRecoveryRequiredAction::None => "",
+            };
+            return format!("{}{hint}", self.status.label());
         }
         let mut projected = self.status.clone();
         projected.delay_seconds = self.shown_seconds;

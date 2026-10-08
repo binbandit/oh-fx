@@ -33,6 +33,7 @@ impl RecoveryCheckpoint {
             prompt: self.user,
             source: self.assistant_source,
             source_presented: false,
+            cause: self.cause,
             tool_state: self.tool_state,
             strategy: self.strategy,
             fast_mode: if unchanged {

@@ -1,3 +1,5 @@
+use ofx_contract::RecoveryProgress;
+
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 
@@ -67,6 +69,10 @@ async fn pausing_a_connectivity_wait_ends_the_turn_with_a_paused_status() {
     assert_eq!(provider.requests().len(), 1);
     let paused = recoveries(&events).pop().unwrap();
     assert!(paused.is_paused());
+    assert_eq!(
+        paused.required_action,
+        ModelRecoveryRequiredAction::ContinueLater
+    );
     assert_eq!(
         paused.label(),
         "⚠ Connection lost · ConnectionFailed · recovery paused after 1 attempt"
@@ -231,5 +237,26 @@ async fn a_paused_restart_saves_the_interrupted_reply_and_tool_state() {
             consumed_attempts: 1,
             fast_mode: false,
         })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pausing_with_an_uncertain_tool_asks_to_reopen_the_session() {
+    let provider = FakeProvider::new(vec![Script::Fail(
+        vec![StreamEvent::ToolCallStarted {
+            call_id: ToolCallId::new("call-1"),
+            tool_name: "echo".to_owned(),
+        }],
+        failure(ProviderErrorKind::ServerError, "ProviderError"),
+    )]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let retrying = |event: &UiEvent| matches!(event, UiEvent::Recovery { status, .. } if status.retry_wait.is_some());
+    let (report, events) = pause_on(&mut agent, "go", retrying).await;
+    assert_eq!(report.failure.unwrap().code(), "RecoveryPaused");
+    let paused = recoveries(&events).pop().unwrap();
+    assert!(paused.is_paused());
+    assert_eq!(
+        paused.required_action,
+        ModelRecoveryRequiredAction::InspectUncertainTool
     );
 }

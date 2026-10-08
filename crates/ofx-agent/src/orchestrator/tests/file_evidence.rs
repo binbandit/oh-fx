@@ -222,6 +222,7 @@ async fn a_continued_turn_keeps_its_checkpoints_evidence_and_adds_its_own() {
             ],
             source: String::new(),
             source_presented: false,
+            cause: None,
             tool_state: RecoveryToolState::Confirmed,
             strategy: RecoveryStrategy::ContinueAfterTool,
             fast_mode: false,
