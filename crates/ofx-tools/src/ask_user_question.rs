@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use ofx_contract::{
     ActionLabel, BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall,
-    QuestionAsker, QuestionBatchEntry, QuestionOption, Tool, ToolActivity, ToolContext, ToolEffect,
-    ToolOutput, ToolSpec, format_unknown_action, parse_tool_args_object,
+    QuestionAsker, QuestionBatchEntry, QuestionOption, Tool, ToolActivity, ToolArgValue,
+    ToolContext, ToolEffect, ToolOutput, ToolSpec, format_unknown_action, parse_tool_args_nested,
+    parse_tool_args_object,
 };
 use ofx_text::encode_terminal_safe;
 use serde_json::Value;
@@ -28,6 +29,7 @@ const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const MAX_QUESTIONS: usize = 4;
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 6;
+const QUESTION_BATCH_LEVELS: usize = 5;
 
 pub struct AskUserQuestion {
     spec: ToolSpec,
@@ -190,15 +192,12 @@ impl BatchError {
 }
 
 fn parse_question_batch(arguments: &str) -> Result<Vec<QuestionBatchEntry>, BatchError> {
-    if parse_tool_args_object(arguments).is_err() {
-        return Err(BatchError::InvalidArguments);
-    }
-    let Ok(Value::Object(arguments)) = serde_json::from_str::<Value>(arguments) else {
+    let Ok(arguments) = parse_tool_args_nested(arguments, QUESTION_BATCH_LEVELS) else {
         return Err(BatchError::InvalidArguments);
     };
     let questions = match arguments.get("questions") {
         None => return Err(BatchError::MissingQuestions),
-        Some(Value::Array(questions)) => questions,
+        Some(ToolArgValue::Array(questions)) => questions,
         Some(_) => return Err(BatchError::QuestionsNotArray),
     };
     if questions.is_empty() || questions.len() > MAX_QUESTIONS {
@@ -207,13 +206,13 @@ fn parse_question_batch(arguments: &str) -> Result<Vec<QuestionBatchEntry>, Batc
     questions.iter().map(parse_entry).collect()
 }
 
-fn parse_entry(item: &Value) -> Result<QuestionBatchEntry, BatchError> {
-    let Value::Object(item) = item else {
+fn parse_entry(item: &ToolArgValue) -> Result<QuestionBatchEntry, BatchError> {
+    let ToolArgValue::Object(item) = item else {
         return Err(BatchError::QuestionNotObject);
     };
     let question = match item.get("question") {
         None => return Err(BatchError::MissingQuestionText),
-        Some(Value::String(question)) => question.trim_matches(TRIMMED),
+        Some(ToolArgValue::String(question)) => question.trim_matches(TRIMMED),
         Some(_) => return Err(BatchError::QuestionTextNotString),
     };
     if question.is_empty() {
@@ -222,7 +221,7 @@ fn parse_entry(item: &Value) -> Result<QuestionBatchEntry, BatchError> {
     let question = terminal_safe_question_text(question);
     let options = match item.get("options") {
         None => return Err(BatchError::MissingOptions),
-        Some(Value::Array(options)) => options,
+        Some(ToolArgValue::Array(options)) => options,
         Some(_) => return Err(BatchError::OptionsNotArray),
     };
     if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len()) {
@@ -245,20 +244,20 @@ fn parse_entry(item: &Value) -> Result<QuestionBatchEntry, BatchError> {
     })
 }
 
-fn parse_option(option: &Value) -> Result<QuestionOption, BatchError> {
-    let Value::Object(option) = option else {
+fn parse_option(option: &ToolArgValue) -> Result<QuestionOption, BatchError> {
+    let ToolArgValue::Object(option) = option else {
         return Err(BatchError::OptionNotObject);
     };
     let label = match option.get("label") {
         None => return Err(BatchError::MissingOptionLabel),
-        Some(Value::String(label)) => label.trim_matches(TRIMMED),
+        Some(ToolArgValue::String(label)) => label.trim_matches(TRIMMED),
         Some(_) => return Err(BatchError::OptionLabelNotString),
     };
     if label.is_empty() {
         return Err(BatchError::EmptyOptionLabel);
     }
     let description = match option.get("description") {
-        Some(Value::String(description)) => Some(description.trim_matches(TRIMMED))
+        Some(ToolArgValue::String(description)) => Some(description.trim_matches(TRIMMED))
             .filter(|description| !description.is_empty())
             .map(terminal_safe_question_text),
         _ => None,

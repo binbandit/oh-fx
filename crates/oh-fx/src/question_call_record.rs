@@ -1,23 +1,22 @@
-use ofx_contract::parse_tool_args_object;
-use serde_json::Value;
+use ofx_contract::{ToolArgValue, parse_tool_args_nested};
 
 const QUESTION_TOOL: &str = "ask_user_question";
+const QUESTION_TEXT_LEVELS: usize = 3;
 const MAX_QUESTION_TEXT_BYTES: usize = 256;
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 
 pub(crate) fn question_text(tool_name: &str, arguments: &str) -> Option<String> {
-    if tool_name != QUESTION_TOOL || parse_tool_args_object(arguments).is_err() {
+    if tool_name != QUESTION_TOOL {
         return None;
     }
-    let arguments: Value = serde_json::from_str(arguments).ok()?;
-    let text = arguments
-        .get("questions")?
-        .as_array()?
-        .first()?
-        .as_object()?
-        .get("question")?
-        .as_str()?
-        .trim_matches(TRIMMED);
+    let arguments = parse_tool_args_nested(arguments, QUESTION_TEXT_LEVELS).ok()?;
+    let Some(ToolArgValue::Array(questions)) = arguments.get("questions") else {
+        return None;
+    };
+    let Some(ToolArgValue::Object(first)) = questions.first() else {
+        return None;
+    };
+    let text = first.optional_string("question")?.trim_matches(TRIMMED);
     (!text.is_empty()).then(|| text[..text.floor_char_boundary(MAX_QUESTION_TEXT_BYTES)].to_owned())
 }
 
@@ -50,6 +49,23 @@ mod tests {
                 "{arguments}"
             );
         }
+    }
+
+    #[test]
+    fn the_first_question_is_read_whatever_numbers_and_nesting_the_arguments_hold() {
+        let deep = format!("{}0{}", "[".repeat(200), "]".repeat(200));
+        let arguments = format!(
+            r#"{{"questions":[{{"question":"Handle?","weight":1e400,"options":{deep}}}],"extra":-1e400}}"#
+        );
+        assert_eq!(
+            question_text("ask_user_question", &arguments).as_deref(),
+            Some("Handle?")
+        );
+        let arguments = format!(r#"{{"questions":[{{"question":{deep}}}]}}"#);
+        assert_eq!(question_text("ask_user_question", &arguments), None);
+        let arguments =
+            format!(r#"{{"questions":[{{"question":"a"}}],"extra":[{{"b":{deep},"b":1}}]}}"#);
+        assert_eq!(question_text("ask_user_question", &arguments), None);
     }
 
     #[test]

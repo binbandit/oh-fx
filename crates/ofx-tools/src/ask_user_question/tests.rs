@@ -237,6 +237,75 @@ fn arguments_are_validated_in_upstream_order_with_its_messages() {
 }
 
 #[test]
+fn any_number_and_any_nesting_are_read_as_upstream_reads_them() {
+    let asker = FakeAsker::replying(Reply::FirstLabels);
+    let tool = tool(&asker);
+    let deep = format!("{}0{}", "[".repeat(200), "]".repeat(200));
+    let arguments = format!(
+        r#"{{"questions":[{{"question":"Q?","weight":-1e400,"options":[{{"label":"Yes","description":1e400,"rank":123456789012345678901234567890}},{{"label":"No","extra":{deep}}}]}}],"extra":{deep},"scale":1e-400}}"#
+    );
+    assert_eq!(
+        run(&tool, &arguments),
+        ToolOutput::success(r#"[{"question":"Q?","answer":"Yes"}]"#)
+    );
+    assert_eq!(
+        asker.asked(),
+        [vec![QuestionBatchEntry {
+            question: "Q?".to_owned(),
+            options: vec![option("Yes", None), option("No", None)],
+        }]]
+    );
+    let options = r#"[{"label":"a"},{"label":"b"}]"#;
+    let cases = [
+        (
+            r#"{"questions":1e400}"#.to_owned(),
+            "(ask_user_question: \"questions\" must be an array)",
+        ),
+        (
+            format!(r#"{{"questions":{deep}}}"#),
+            "(ask_user_question: each question must be an object with a \"question\" and \"options\")",
+        ),
+        (
+            format!(r#"{{"questions":[{{"question":1e400,"options":{options}}}]}}"#),
+            "(ask_user_question: question \"question\" must be a string)",
+        ),
+        (
+            format!(r#"{{"questions":[{{"question":{deep},"options":{options}}}]}}"#),
+            "(ask_user_question: question \"question\" must be a string)",
+        ),
+        (
+            r#"{"questions":[{"question":"Q?","options":-1e400}]}"#.to_owned(),
+            "(ask_user_question: \"options\" must be an array)",
+        ),
+        (
+            format!(r#"{{"questions":[{{"question":"Q?","options":[{deep},{{"label":"b"}}]}}]}}"#),
+            "(ask_user_question: each option must be an object with a \"label\")",
+        ),
+        (
+            format!(
+                r#"{{"questions":[{{"question":"Q?","options":[{{"label":{deep}}},{{"label":"b"}}]}}]}}"#
+            ),
+            "(ask_user_question: option \"label\" must be a string)",
+        ),
+        (
+            format!(
+                r#"{{"questions":[{{"question":"Q?","options":{options}}}],"extra":[[{{"a":{deep},"a":1e400}}]]}}"#
+            ),
+            "(ask_user_question: invalid arguments; provide {questions})",
+        ),
+    ];
+    for (arguments, expected) in cases {
+        assert_eq!(
+            run(&tool, &arguments),
+            ToolOutput::success(expected),
+            "{}",
+            &arguments[..arguments.len().min(80)]
+        );
+    }
+    assert_eq!(asker.asked().len(), 1);
+}
+
+#[test]
 fn trimmed_questions_reach_the_user_and_answers_return_in_order() {
     let asker = FakeAsker::replying(Reply::FirstLabels);
     let output = run(
