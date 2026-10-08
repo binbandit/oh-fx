@@ -168,8 +168,21 @@ impl Shell<'_> {
         appended: &[Row],
         live: &LiveLayout,
     ) -> bool {
-        if self.full_transcript.is_none() {
+        let Some(entering) = self.full_transcript.as_ref().map(|screen| !screen.entered) else {
             return false;
+        };
+        if entering {
+            self.footer_row = live.footer_row;
+            self.clear_tmux_history();
+            self.renderer.present(
+                &Frame {
+                    appended,
+                    live: &live.rows,
+                    cursor: live.cursor,
+                },
+                &mut self.output,
+            );
+            self.output.push_str("\x1b[?1049h");
         }
         let footer = [
             navigation_row(&self.theme, usize::from(self.layout.cols)),
@@ -179,19 +192,9 @@ impl Shell<'_> {
         let Some(screen) = &mut self.full_transcript else {
             return false;
         };
-        if !screen.entered {
-            self.footer_row = live.footer_row;
-            self.renderer.present(
-                &Frame {
-                    appended,
-                    live: &live.rows,
-                    cursor: live.cursor,
-                },
-                &mut self.output,
-            );
+        if entering {
             screen.layout = self.layout;
             screen.entered = true;
-            self.output.push_str("\x1b[?1049h");
         }
         if let Some(primary) = &screen.primary_live {
             screen.primary_changed |= !appended.is_empty() || *primary != live.rows;
@@ -858,6 +861,23 @@ mod tests {
         assert!(!output.contains("\x1b[?1049l"), "{output:?}");
         assert_eq!(test.shell.composer.text(), "draft");
         assert!(test.sent().is_empty());
+    }
+
+    #[test]
+    fn a_reset_committed_as_the_viewer_opens_still_clears_tmux_history() {
+        use crate::terminal::TmuxHistory;
+        use crate::terminal::fake_tmux::FakeTmux;
+
+        let fake = FakeTmux::new(0, 0);
+        let mut test = TestShell::start();
+        test.shell.tmux_history = Some(TmuxHistory::with_program(fake.program(), "%3"));
+        test.screen();
+        test.shell.renderer.reset_screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        let output = test.written();
+        assert!(output.contains("\x1b[?1049h"), "{output:?}");
+        assert_eq!(fake.calls().len(), 2);
     }
 
     #[test]
