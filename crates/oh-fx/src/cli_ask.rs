@@ -966,7 +966,7 @@ struct Presenter {
     command_calls: Vec<ToolCallId>,
     approvals: Option<Approvals>,
     started_before_approval: Vec<ToolCallId>,
-    envelope: bool,
+    layout: AskLayout,
 }
 
 #[derive(Debug, Default)]
@@ -1008,7 +1008,7 @@ impl Presenter {
             command_calls: Vec::new(),
             approvals: None,
             started_before_approval: Vec::new(),
-            envelope: output.layout != AskLayout::Captured,
+            layout: output.layout,
         }
     }
 
@@ -1559,6 +1559,10 @@ impl Presenter {
         })
     }
 
+    fn prints_result(&self) -> bool {
+        self.mode == OutputMode::Json && self.layout != AskLayout::Captured
+    }
+
     fn finish(mut self, report: &TurnReport, model: &str, saved: Option<SavedAsk>) -> Answered {
         self.finalize_turn(report.outcome);
         if self.mode == OutputMode::Terminal {
@@ -1589,7 +1593,7 @@ impl Presenter {
             .map(|saved| saved.close(untouched))
             .unwrap_or_default();
         let final_text = completed.then(|| report.final_text.clone());
-        if self.mode != OutputMode::Json || !self.envelope {
+        if !self.prints_result() {
             if let Some(code) = self.write_error {
                 let _ = write_stderr(&format!("oh-fx: {code}\n"));
             }
@@ -1641,7 +1645,7 @@ impl Presenter {
             blocked.tool_name.clone(),
             &blocked.arguments,
         ));
-        if self.mode != OutputMode::Json || !self.envelope {
+        if !self.prints_result() {
             return ExitCode::FAILURE;
         }
         print_result(&RunResult {
