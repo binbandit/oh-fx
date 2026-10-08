@@ -240,9 +240,13 @@ impl Shell<'_> {
     pub(super) fn footer_menu(
         &mut self,
         composer_rows: usize,
+        banner_rows: usize,
         menu: Vec<Row>,
         hint: Row,
     ) -> (Vec<Row>, Option<Row>) {
+        if let Some(band) = self.sign_in_band(composer_rows.saturating_sub(1), banner_rows) {
+            return (band, self.sign_in_hint());
+        }
         let sessions = match (&mut self.picker, &self.approval) {
             (Some(sessions), None) => sessions.menu_rows(&self.theme, self.layout, composer_rows),
             _ => Vec::new(),

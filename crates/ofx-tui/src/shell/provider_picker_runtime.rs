@@ -7,7 +7,8 @@ use crate::footer::picker_presentation::{OptionList, list_picker_rows, option_pi
 use crate::list_window::{DEFAULT_MAX_PICKER_ROWS, advance_selection, update_edge_start};
 use crate::row_text::{Row, terminal_safe};
 
-const PROVIDER_PREFIXES: [&str; 3] = ["/provider ", "/login ", "/setup "];
+const LOGIN_PREFIX: &str = "/login ";
+const PROVIDER_PREFIXES: [&str; 3] = ["/provider ", LOGIN_PREFIX, "/setup "];
 const CURRENT: &str = "current";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -198,14 +199,20 @@ impl Shell<'_> {
     }
 
     pub(super) fn submit_provider_column(&mut self) -> bool {
-        if self.provider_query().is_none() {
+        let Some(query) = self.provider_query() else {
             return false;
-        }
+        };
+        let login = query.prefix.eq_ignore_ascii_case(LOGIN_PREFIX);
+        let choose = |provider| {
+            if login {
+                UiCommand::SignIn { provider }
+            } else {
+                UiCommand::SelectProvider { provider }
+            }
+        };
         let selected = self.selected_provider();
         if self.provider_busy() {
-            self.send(UiCommand::SelectProvider {
-                provider: selected.unwrap_or_default(),
-            });
+            self.send(choose(selected.unwrap_or_default()));
             return true;
         }
         let Some(provider) = selected else {
@@ -213,7 +220,7 @@ impl Shell<'_> {
         };
         self.composer.clear();
         self.provider_column = ProviderColumn::default();
-        self.send(UiCommand::SelectProvider { provider });
+        self.send(choose(provider));
         true
     }
 

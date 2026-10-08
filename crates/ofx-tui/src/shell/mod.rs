@@ -24,6 +24,7 @@ mod provider_picker_runtime;
 pub(crate) mod question_prompt;
 mod session_picker_runtime;
 mod settings_menu_runtime;
+mod sign_in_runtime;
 pub(crate) mod skills_menu;
 mod skills_menu_runtime;
 mod statusline_menu_runtime;
@@ -64,6 +65,7 @@ use provider_picker_runtime::ProviderColumn;
 use question_prompt::QuestionPrompt;
 use session_picker_runtime::SessionPicker;
 use settings_menu_runtime::SettingsMenu;
+use sign_in_runtime::SignInScreen;
 use skills_menu::SkillsMenu;
 use statusline_menu_runtime::StatuslineMenu;
 use workspace_menu::WorkspaceMenuState;
@@ -270,6 +272,7 @@ pub(crate) struct Shell<'a> {
     provider_column: ProviderColumn,
     yolo_warning: YoloWarning,
     picker: Option<SessionPicker>,
+    sign_in: Option<SignInScreen>,
     events: UiEventReceiver,
     send: Box<dyn FnMut(UiCommand) + 'a>,
     clipboard: ClipboardRuntime,
@@ -488,6 +491,7 @@ impl<'a> Shell<'a> {
             provider_column: ProviderColumn::default(),
             yolo_warning,
             picker: None,
+            sign_in: None,
             events,
             send,
             clipboard: ClipboardRuntime::new(clipboard),
@@ -716,7 +720,7 @@ impl<'a> Shell<'a> {
             None if column.is_empty() => picker.rows,
             None => column,
         };
-        let (menu, hint) = self.footer_menu(composer.rows.len(), menu, hint);
+        let (menu, hint) = self.footer_menu(composer.rows.len(), banner_rows, menu, hint);
         let warning_included = warning_included && hint.is_some();
         let review = composer.review.clone();
         let banner = if review.as_ref().is_some_and(|review| review.screen) {

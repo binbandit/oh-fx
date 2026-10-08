@@ -321,31 +321,10 @@ impl GrokEndpoints {
             (&self.userinfo_url, &defaults.userinfo_url),
             (&self.revoke_url, &defaults.revoke_url),
         ] {
-            if url != default && !is_loopback_http_url(url) {
+            if url != default && !oauth::is_loopback_http_url(url) {
                 return Err(GrokError::InvalidGrokOAuthEndpoint);
             }
         }
         Ok(())
     }
-}
-fn is_loopback_http_url(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
-    url.scheme() == "http"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && !value
-            .bytes()
-            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-        && value
-            .split_once("://")
-            .and_then(|(_, tail)| tail.split(['/', '?', '#']).next())
-            .is_some_and(|authority| {
-                !authority.contains('@')
-                    && authority.rsplit_once(':').is_some_and(|(_, port)| {
-                        !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
-                    })
-            })
-        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
 }

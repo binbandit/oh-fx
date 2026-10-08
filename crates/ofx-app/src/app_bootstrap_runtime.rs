@@ -43,7 +43,7 @@ use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
 use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
-    CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, SubscriptionLogin,
+    CodexLogin, CodexSubscription, CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints,
     SubscriptionProvider, codex_subscription,
 };
 use crate::context::{
@@ -57,10 +57,11 @@ use crate::tool_set::{self, ToolHooks};
 
 mod provider_runtime;
 
-pub(crate) use provider_runtime::{provider_label, provider_names};
+pub(crate) use provider_runtime::{Intent, Refusal, provider_label, provider_names};
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
+const CODEX_SOURCE_REPAIR: &str = "Reconnect Codex through /login to repair this source.";
 
 #[derive(Clone)]
 pub struct Profile {
@@ -125,7 +126,7 @@ impl CredentialSource {
     pub(crate) const fn repair(self) -> &'static str {
         match self {
             Self::Configured => CONFIGURED_SOURCE_REPAIR,
-            Self::Codex => CHATGPT_RELOGIN_MESSAGE,
+            Self::Codex => CODEX_SOURCE_REPAIR,
         }
     }
 }
@@ -143,6 +144,7 @@ pub struct Launch<'a> {
     pub web_fetch_progress: Option<WebFetchProgress>,
     pub mode: Option<ActiveMode>,
     pub permission_prompts: bool,
+    pub open_browser: bool,
 }
 
 pub struct AgentSetup {
@@ -156,7 +158,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     account_id: Option<String>,
-    subscription: Option<Arc<SubscriptionLogin>>,
+    codex_login: Arc<CodexLogin>,
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
@@ -185,6 +187,7 @@ pub struct AgentSetup {
 struct Switchboard {
     profile: Profile,
     endpoints: SubscriptionEndpoints,
+    open_browser: bool,
 }
 
 pub(crate) struct Route {
@@ -197,7 +200,7 @@ pub(crate) struct Route {
     configured_model: Option<String>,
     source: CredentialSource,
     account_id: Option<String>,
-    subscription: Option<Arc<SubscriptionLogin>>,
+    subscription: Option<Arc<CodexSubscription>>,
     uses_tls: bool,
     login: Login,
 }
@@ -313,8 +316,9 @@ impl Profile {
         cancel: &CancellationToken,
     ) -> Result<AgentSetup, ConnectError> {
         let refreshes = interactive.then(Arc::default);
-        let switchboard = interactive.then(|| self.switchboard(launch.endpoints.clone()));
-        let route = self
+        let switchboard =
+            interactive.then(|| self.switchboard(launch.endpoints.clone(), launch.open_browser));
+        let (route, codex_login) = self
             .launch_route(&launch, refreshes.clone(), interactive, cancel)
             .await?;
         let mut limits = self.settings.context_limits();
@@ -381,7 +385,7 @@ impl Profile {
             connection: route.connection,
             source: route.source,
             account_id: route.account_id,
-            subscription: route.subscription,
+            codex_login,
             tools,
             delegation: Delegation::new(children),
             mcp,
@@ -487,9 +491,13 @@ impl Profile {
         refreshes: Option<Arc<DetachedRefreshes>>,
         interactive: bool,
         cancel: &CancellationToken,
-    ) -> Result<Route, ConnectError> {
+    ) -> Result<(Route, Arc<CodexLogin>), ConnectError> {
         let endpoints = launch.endpoints.clone();
-        let route = match self.route(launch.model, endpoints, refreshes, cancel).await {
+        let codex_login = Arc::<CodexLogin>::default();
+        let routed = self
+            .route(launch.model, endpoints, refreshes, &codex_login, cancel)
+            .await;
+        let mut route = match routed {
             Err(ConnectError::Codex(CodexUnavailable::MissingLogin)) if interactive => {
                 self.signed_out_route(launch.model)
             }
@@ -498,7 +506,10 @@ impl Profile {
         if route.uses_tls {
             ofx_http::warm_tls_roots();
         }
-        Ok(route)
+        if let Some(subscription) = route.subscription.take() {
+            codex_login.sign_in(subscription);
+        }
+        Ok((route, codex_login))
     }
 
     async fn route(
@@ -506,12 +517,20 @@ impl Profile {
         requested: Option<&OsStr>,
         endpoints: SubscriptionEndpoints,
         refreshes: Option<Arc<DetachedRefreshes>>,
+        codex_login: &Arc<CodexLogin>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let lookup = |name: &str| env::var(name).ok();
         if self.settings.codex_selected(&lookup)? {
             return self
-                .codex_route(requested, endpoints, &lookup, refreshes, cancel)
+                .codex_route(
+                    requested,
+                    endpoints,
+                    &lookup,
+                    refreshes,
+                    codex_login,
+                    cancel,
+                )
                 .await;
         }
         let connection = self.settings.selected_connection(&lookup)?;
@@ -528,6 +547,7 @@ impl Profile {
         endpoints: SubscriptionEndpoints,
         lookup: &dyn Fn(&str) -> Option<String>,
         refreshes: Option<Arc<DetachedRefreshes>>,
+        codex_login: &Arc<CodexLogin>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let model = select_model(requested, |model| {
@@ -535,8 +555,15 @@ impl Profile {
         })?
         .map_err(ConnectError::InvalidModel)?;
         let configured_model = self.settings.selected_codex_model(None, lookup).ok();
-        self.subscription_route(model, configured_model, endpoints, refreshes, cancel)
-            .await
+        self.subscription_route(
+            model,
+            configured_model,
+            endpoints,
+            refreshes,
+            codex_login,
+            cancel,
+        )
+        .await
     }
 
     fn signed_out_route(&self, requested: Option<&OsStr>) -> Result<Route, ConnectError> {
@@ -557,6 +584,7 @@ impl Profile {
         configured_model: Option<String>,
         endpoints: SubscriptionEndpoints,
         refreshes: Option<Arc<DetachedRefreshes>>,
+        codex_login: &Arc<CodexLogin>,
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let uses_tls = uses_tls(&endpoints.codex.responses);
@@ -568,21 +596,19 @@ impl Profile {
             cancel,
         )
         .await?;
-        let provider: Arc<dyn ModelProvider> = Arc::new(SubscriptionProvider::new(
-            subscription.provider,
-            Arc::clone(&subscription.login),
-        ));
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(SubscriptionProvider::new(Arc::clone(codex_login)));
         Ok(Route {
             reviewer: Arc::new(CodexReviewTransport::new(Arc::clone(&provider))),
             title_model: Some(CODEX_TITLE_MODEL),
             provider,
-            models: ModelSource::Codex(Arc::new(subscription.capabilities)),
+            models: ModelSource::Codex(Arc::clone(codex_login)),
             connection: None,
             model,
             configured_model,
             source: CredentialSource::Codex,
-            account_id: Some(subscription.account_id),
-            subscription: Some(subscription.login),
+            account_id: Some(subscription.account_id.clone()),
+            subscription: Some(Arc::new(subscription)),
             uses_tls,
             login: Login::Ready,
         })
@@ -1042,6 +1068,7 @@ mod tests {
                     web_fetch_progress: None,
                     mode: None,
                     permission_prompts: false,
+                    open_browser: false,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -1096,6 +1123,7 @@ mod tests {
                     web_fetch_progress: None,
                     mode: None,
                     permission_prompts: false,
+                    open_browser: false,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -1190,6 +1218,7 @@ mod tests {
                     web_fetch_progress: None,
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
+                    open_browser: false,
                     mode: Some(ActiveMode {
                         registry: &INSPECTION,
                         id: "inspect",
@@ -1372,6 +1401,7 @@ mod tests {
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
                     mode: None,
+                    open_browser: false,
                 },
                 &CancellationToken::new(),
             )

@@ -9,4 +9,4 @@
 - A tool row shows the control characters of its path, pattern, or command as visible escapes such as `\x1b`. Upstream drops them from the row, and keeps any color sequence the target carries as styling.
 - Cancelling a turn while a call runs settles the call's row as `Cancelled <target>` with its feedback row at once, and later events from that turn are ignored. Upstream shows `Cancelled` alone until the call stops, then the call's own outcome, such as `Ran …` followed by the turn's cancellation notice when it finished in the meantime.
 - The `collapse_tool_calls` setting is not read yet, so every tool group lists its calls. With the setting on, upstream shows only each group's header.
-- A Codex 401 in the interactive session ends its status text with `Run oh-fx login codex to sign in again.` Upstream says `Reconnect Codex through /login to repair this source.`, and oh-fx's `/login` cannot sign in yet.
+- A Codex 401 in the interactive session ends its status text with upstream's `Reconnect Codex through /login to repair this source.`, and `oh-fx ask` with `Run oh-fx login codex to sign in again.`, since `ask` has no `/login`.
