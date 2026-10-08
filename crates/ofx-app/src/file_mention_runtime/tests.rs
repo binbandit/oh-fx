@@ -148,6 +148,25 @@ fn the_index_follows_the_installed_scope_and_serves_no_rows_from_the_old_one() {
 }
 
 #[test]
+fn a_row_presented_before_a_scope_change_is_rejected_until_the_index_follows() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared("manual.md");
+    let manual = format!("{}/manual.md", shared.display());
+    let roots = LiveAdditionalRoots::from(vec![shared.clone()]);
+    let mut mentions = fixture.ready_following(roots.clone());
+    assert!(mentions.is_current("manual", &manual, MentionKind::File));
+    assert!(mentions.is_current("src/m", "src/main.rs", MentionKind::File));
+    roots.set(Vec::new());
+    assert!(!mentions.is_current("manual", &manual, MentionKind::File));
+    assert!(!mentions.is_current("ma", "src/main.rs", MentionKind::File));
+    assert!(!mentions.is_current("src/m", "src/main.rs", MentionKind::File));
+    settle(&mut mentions);
+    assert!(!mentions.is_current("manual", &manual, MentionKind::File));
+    assert!(mentions.is_current("ma", "src/main.rs", MentionKind::File));
+    assert!(mentions.is_current("src/m", "src/main.rs", MentionKind::File));
+}
+
+#[test]
 fn explicit_paths_bypass_the_index_and_list_the_directory() {
     let fixture = Fixture::new();
     let mentions = fixture.ready();

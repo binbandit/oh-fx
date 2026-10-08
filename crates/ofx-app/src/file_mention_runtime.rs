@@ -38,6 +38,10 @@ impl WorkspaceFileMentions {
         }
     }
 
+    fn scope_is_installed(&self) -> bool {
+        Arc::ptr_eq(&self.roots.get(), &self.indexed_roots)
+    }
+
     fn follow_scope(&mut self) -> bool {
         let roots = self.roots.get();
         if Arc::ptr_eq(&roots, &self.indexed_roots) {
@@ -101,6 +105,9 @@ impl FileMentionSource for WorkspaceFileMentions {
     }
 
     fn is_current(&self, query: &str, path: &str, kind: MentionKind) -> bool {
+        if !self.scope_is_installed() {
+            return false;
+        }
         let kind = candidate_kind(kind);
         match query_mode(query) {
             QueryMode::WorkspaceIndex => self.index.is_current_candidate_kind(path, kind),
