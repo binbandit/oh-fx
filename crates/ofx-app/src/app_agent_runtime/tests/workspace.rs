@@ -2,6 +2,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{DirectoryAccess, Notice, WorkspaceMenu, WorkspaceMenuEntry};
+use ofx_tui::{FileMentionSource, IndexRevision};
+
+use crate::file_mention_runtime::WorkspaceFileMentions;
 
 use super::*;
 
@@ -41,6 +44,11 @@ fn saved_settings(home: &Path) -> Value {
 }
 
 async fn launched(server: &FakeServer, directories: &[&Path]) -> Harness {
+    let (home, setup) = connected(server, directories).await;
+    Harness::with_setup(home, setup)
+}
+
+async fn connected(server: &FakeServer, directories: &[&Path]) -> (tempfile::TempDir, AgentSetup) {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config");
     fs::create_dir_all(&config).unwrap();
@@ -85,7 +93,19 @@ async fn launched(server: &FakeServer, directories: &[&Path]) -> Harness {
         )
         .await
         .unwrap();
-    Harness::with_setup(home, setup)
+    (home, setup)
+}
+
+fn settled(mentions: &mut WorkspaceFileMentions) -> IndexRevision {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    mentions.poll();
+    while mentions.is_loading() {
+        assert!(std::time::Instant::now() < deadline);
+        mentions.poll();
+        std::thread::yield_now();
+    }
+    mentions.poll();
+    mentions.revision()
 }
 
 impl Harness {
@@ -170,6 +190,37 @@ async fn directories_added_and_removed_in_the_shell_reach_the_next_request() {
     let requests = server.requests();
     assert!(requests[0].json().to_string().contains(&named));
     assert!(!requests[1].json().to_string().contains(&named));
+}
+
+#[tokio::test]
+async fn the_mention_index_follows_directories_added_and_removed_in_the_shell() {
+    let server = FakeServer::start([]);
+    let (home, setup) = connected(&server, &[]).await;
+    let shared = directory(home.path(), "shared");
+    fs::write(shared.join("manual.md"), "").unwrap();
+    let manual = format!("{}/manual.md", shared.display());
+    let mut mentions = WorkspaceFileMentions::start(
+        &workspace(home.path()),
+        setup.workspace().live_roots(),
+        None,
+    );
+    let mut harness = Harness::with_setup(home, setup);
+    let launch = settled(&mut mentions);
+    assert_eq!(mentions.search(launch, "manual", 32), Some(Vec::new()));
+    harness.snapshot("/workspace add ../shared").await;
+    let added = settled(&mut mentions);
+    assert_ne!(added.scope_epoch, launch.scope_epoch);
+    let rows = mentions.search(added, "manual", 32).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+        [manual.as_str()]
+    );
+    harness
+        .snapshot(&format!("/workspace remove {}", shared.display()))
+        .await;
+    let removed = settled(&mut mentions);
+    assert_ne!(removed.scope_epoch, added.scope_epoch);
+    assert_eq!(mentions.search(removed, "manual", 32), Some(Vec::new()));
 }
 
 #[tokio::test]

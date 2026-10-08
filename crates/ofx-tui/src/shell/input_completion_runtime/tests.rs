@@ -51,6 +51,7 @@ impl FileMentionSource for FakeSource {
     fn revision(&self) -> IndexRevision {
         let index = self.0.borrow();
         IndexRevision {
+            scope_epoch: 0,
             generation: index.generation,
             count: if index.loading { 0 } else { index.files.len() },
             state: if index.loading {
