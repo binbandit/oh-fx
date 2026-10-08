@@ -1,3 +1,6 @@
+use std::env;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -8,13 +11,28 @@ use tokio::time::{Instant, timeout};
 use rustix::process::Signal;
 
 use super::{
-    Collection, FORCE_SIGNAL, OutputStream, StopIntent, child_pid, termination_signal, watch_exit,
+    Collection, FORCE_SIGNAL, OutputStream, SessionSupervisor, StopIntent, child_pid,
+    termination_signal, watch_exit,
 };
 use crate::command_contract::CommandStatus;
 
 const NONCE: &str = "0123456789abcdef0123456789abcdef";
 const LONG: Duration = Duration::from_secs(30);
 const LEFTOVER_BYTES: usize = 64 * 1024;
+
+#[test]
+fn the_supervisor_reexecutes_the_live_inode_rather_than_the_on_disk_path() {
+    let supervisor = SessionSupervisor::current_executable().expect("the running executable");
+    let on_disk = env::current_exe().expect("the on-disk executable");
+    if cfg!(target_os = "linux") {
+        assert_eq!(supervisor, SessionSupervisor::new("/proc/self/exe"));
+        let live = fs::metadata("/proc/self/exe").expect("the live inode");
+        let file = fs::metadata(&on_disk).expect("the on-disk file");
+        assert_eq!((live.dev(), live.ino()), (file.dev(), file.ino()));
+    } else {
+        assert_eq!(supervisor, SessionSupervisor::new(on_disk));
+    }
+}
 
 fn block_on<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
