@@ -74,6 +74,10 @@ impl ControllerState {
         }
     }
 
+    fn selected_subscription(&self, target: &ProviderId) -> bool {
+        *target != ProviderId::Gateway && *target == self.setup.provider()
+    }
+
     fn removal(&self, target: &ProviderId) -> BoxFuture<'static, Removal> {
         match target {
             ProviderId::Codex => {
@@ -99,7 +103,7 @@ impl ControllerState {
         let Some(target) = self.logout_target(requested) else {
             return;
         };
-        if target != ProviderId::Gateway && target == self.setup.provider() {
+        if self.selected_subscription(&target) {
             return self.notice(NoticeTone::Warning, AUTH_TOPIC, SIGN_OUT_BUSY);
         }
         let removal = self.removal(&target);
@@ -124,6 +128,12 @@ impl Controller {
         let Some(target) = self.state.logout_target(requested) else {
             return;
         };
+        let selected = self.state.selected_subscription(&target);
+        if selected && self.state.has_queued_prompts() {
+            return self
+                .state
+                .notice(NoticeTone::Warning, AUTH_TOPIC, SIGN_OUT_BUSY);
+        }
         let notices = match self.state.removal(&target).await {
             Removal::Removed(notices) => notices,
             Removal::Failed(notice) => return self.state.emit(UiEvent::Notice { notice }),
@@ -131,7 +141,7 @@ impl Controller {
         for notice in notices {
             self.state.emit(UiEvent::Notice { notice });
         }
-        if target != ProviderId::Gateway && target == self.state.setup.provider() {
+        if selected {
             if let Some(persistence) = &mut self.persistence {
                 persistence.stop_title_generation();
             }
