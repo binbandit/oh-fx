@@ -251,17 +251,36 @@ fn parse_session_recovery_args_accepts_exact_ids_and_rejects_ambiguity() {
 
 #[test]
 fn workspace_arguments_accept_one_action_and_one_json_flag() {
-    assert_eq!(parse_workspace(os(&[])).unwrap(), OutputFormat::Text);
+    assert_eq!(
+        parse_workspace(os(&[])).unwrap(),
+        WorkspaceArgs {
+            format: OutputFormat::Text,
+            action: None
+        }
+    );
     assert_eq!(
         parse_workspace(os(&["list", "--json"])).unwrap(),
-        OutputFormat::Json
+        WorkspaceArgs {
+            format: OutputFormat::Json,
+            action: None
+        }
     );
-    for args in [
-        &["add", "/tmp/shared"][..],
-        &["remove", "--other"],
-        &["clear"],
+    for (args, action) in [
+        (
+            &["add", "/tmp/shared"][..],
+            WorkspaceAction::Add("/tmp/shared".into()),
+        ),
+        (
+            &["remove", "--other"],
+            WorkspaceAction::Remove("--other".into()),
+        ),
+        (&["--json", "clear"], WorkspaceAction::Clear),
     ] {
-        assert!(parse_workspace(os(args)).is_ok(), "{args:?}");
+        assert_eq!(
+            parse_workspace(os(args)).unwrap().action,
+            Some(action),
+            "{args:?}"
+        );
     }
     for args in [
         &["add"][..],
