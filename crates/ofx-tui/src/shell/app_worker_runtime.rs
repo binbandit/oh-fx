@@ -988,6 +988,45 @@ mod tests {
         assert!(test.written().contains('↓'));
     }
 
+    #[test]
+    fn provisional_tool_events_draw_at_once_and_leave_the_transcript_and_viewer_unchanged() {
+        let mut shells = [streaming(), streaming()];
+        for (index, test) in shells.iter_mut().enumerate() {
+            test.deliver(text(1, "I will read it."));
+            test.deliver(reasoning(&"think ".repeat(20)));
+            if index == 1 {
+                let drawn = test.shell.frame.drawn_ms;
+                assert!(test.shell.token_redraw_ms().is_some());
+                test.deliver(UiEvent::AssistantBoundary {
+                    turn_id: TurnId::new(1),
+                });
+                test.deliver(UiEvent::ToolProvisional {
+                    turn_id: TurnId::new(1),
+                    call_id: ToolCallId::new("call-1"),
+                    tool_name: "read_file".to_owned(),
+                    action_label: "Reading".to_owned(),
+                });
+                assert!(test.shell.frame_due(drawn));
+            }
+            test.deliver(tool_started(1, "call-1"));
+            test.deliver(tool_finished(1, "call-1"));
+            test.deliver(text(1, "It describes a service."));
+            test.deliver(finished(1, TurnOutcome::Completed));
+        }
+        let [plain, provisional] = &mut shells;
+        assert_eq!(provisional.screen(), plain.screen());
+        for test in [&mut *plain, &mut *provisional] {
+            test.type_bytes(b"\x0f");
+            test.step();
+        }
+        assert!(provisional.shell.full_transcript_open());
+        let viewer = provisional.screen();
+        assert_eq!(viewer, plain.screen());
+        assert!(viewer.contains("I will read it."), "{viewer}");
+        assert!(viewer.contains("It describes a service."), "{viewer}");
+        assert!(!viewer.contains("● Reading"), "{viewer}");
+    }
+
     fn compaction(activity: CompactionActivity) -> UiEvent {
         UiEvent::CompactionActivity { activity }
     }
