@@ -44,11 +44,34 @@ pub struct Mutation {
     pub launch_flag_can_restore: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciliation {
-    Intended,
-    Previous,
+    Intended(WorkspaceAccess),
+    Previous(WorkspaceAccess),
     Unconfirmed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailurePhase {
+    Stage,
+    Commit,
+    Reconcile,
+}
+
+impl FailurePhase {
+    fn of(self, error: impl Into<CommandError>) -> Failure {
+        Failure {
+            phase: self,
+            error: error.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{error}")]
+pub struct Failure {
+    pub phase: FailurePhase,
+    pub error: CommandError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,20 +111,59 @@ struct Observed<'a> {
 struct DurablePatch<'a> {
     change: Patch,
     observed: Vec<Observed<'a>>,
-    command_line: Vec<&'a str>,
+    command_line: Vec<String>,
 }
 
 pub fn execute(
     paths: Option<&ProfilePaths>,
     current: &WorkspaceAccess,
     action: &Action,
-) -> Result<Outcome, CommandError> {
-    let (staged, change) = stage(current, action)?;
+) -> Result<Outcome, Failure> {
+    let (staged, patch) =
+        prepare(current, action).map_err(|error| FailurePhase::Stage.of(error))?;
+    let paths = paths.ok_or_else(|| FailurePhase::Commit.of(CommandError::HomeNotSet))?;
+    let saved_changed =
+        match save_workspace_entry(paths, current.primary(), |entry| apply(entry, &patch)) {
+            Ok(changed) => changed,
+            Err(WorkspaceSaveError::Edit(error)) => return Err(FailurePhase::Commit.of(error)),
+            Err(WorkspaceSaveError::Settings(failure))
+                if failure.error == SettingsWriteError::CommitIndeterminate =>
+            {
+                return reconcile(paths, current, staged.as_ref())
+                    .map(Outcome::Indeterminate)
+                    .map_err(|error| FailurePhase::Reconcile.of(error));
+            }
+            Err(WorkspaceSaveError::Settings(failure)) => {
+                return Err(FailurePhase::Commit.of(CommandError::Settings(failure.error)));
+            }
+        };
     let runtime = staged.as_ref().unwrap_or(current);
+    let committed =
+        load_committed(paths, runtime).map_err(|error| FailurePhase::Reconcile.of(error))?;
+    let mutation = Mutation {
+        action: action.label(),
+        path: action.path().map(str::to_owned),
+        saved_changed,
+        runtime_changed: current.entries() != committed.entries(),
+        launch_flag_can_restore: current.command_line_source_removed(&committed),
+    };
+    Ok(Outcome::Updated {
+        access: committed,
+        mutation,
+    })
+}
+
+fn prepare<'a>(
+    current: &'a WorkspaceAccess,
+    action: &Action,
+) -> Result<(Option<WorkspaceAccess>, DurablePatch<'a>), CommandError> {
+    let (staged, change) = stage(current, action)?;
     let command_line = match action {
-        Action::Add(_) => runtime
+        Action::Add(_) => staged
+            .as_ref()
+            .unwrap_or(current)
             .command_line_directories()
-            .map(text)
+            .map(|path| text(path).map(str::to_owned))
             .collect::<Result<_, _>>()?,
         Action::Remove(_) | Action::Clear => Vec::new(),
     };
@@ -120,32 +182,7 @@ pub fn execute(
         observed,
         command_line,
     };
-    let paths = paths.ok_or(CommandError::HomeNotSet)?;
-    let saved_changed =
-        match save_workspace_entry(paths, current.primary(), |entry| apply(entry, &patch)) {
-            Ok(changed) => changed,
-            Err(WorkspaceSaveError::Edit(error)) => return Err(error),
-            Err(WorkspaceSaveError::Settings(failure))
-                if failure.error == SettingsWriteError::CommitIndeterminate =>
-            {
-                return reconcile(paths, current, staged.as_ref()).map(Outcome::Indeterminate);
-            }
-            Err(WorkspaceSaveError::Settings(failure)) => {
-                return Err(CommandError::Settings(failure.error));
-            }
-        };
-    let committed = load_committed(paths, runtime)?;
-    let mutation = Mutation {
-        action: action.label(),
-        path: action.path().map(str::to_owned),
-        saved_changed,
-        runtime_changed: current.entries() != committed.entries(),
-        launch_flag_can_restore: current.command_line_source_removed(&committed),
-    };
-    Ok(Outcome::Updated {
-        access: committed,
-        mutation,
-    })
+    Ok((staged, patch))
 }
 
 fn stage(
@@ -229,9 +266,9 @@ fn classify(
     durable: &WorkspaceAccess,
 ) -> Reconciliation {
     if durable.saved_directories().eq(intended.saved_directories()) {
-        Reconciliation::Intended
+        Reconciliation::Intended(intended.clone())
     } else if durable.saved_directories().eq(current.saved_directories()) {
-        Reconciliation::Previous
+        Reconciliation::Previous(current.clone())
     } else {
         Reconciliation::Unconfirmed
     }
@@ -301,7 +338,8 @@ fn add(
         kept.push(identity.to_owned());
     }
     for command_line in &durable.command_line {
-        if !unseen.contains(command_line) && !identities.contains(command_line) {
+        let command_line = command_line.as_str();
+        if !unseen.contains(&command_line) && !identities.contains(&command_line) {
             identities.push(command_line);
         }
     }

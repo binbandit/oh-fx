@@ -220,6 +220,7 @@ impl Shell<'_> {
             | UiEvent::ProviderPicker { .. }
             | UiEvent::ProviderSelected { .. }) => self.provider_event(event),
             UiEvent::StatuslineMenuOpened => self.open_statusline_menu(),
+            UiEvent::WorkspaceMenuOpened { menu } => self.open_workspace_menu(menu),
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),

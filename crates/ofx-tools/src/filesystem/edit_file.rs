@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CallDescription, CallPresentation, LivePermissionMode, PreparedCall, Tool, ToolActivity,
-    ToolOutput, ToolSpec,
+    CallDescription, CallPresentation, LiveAdditionalRoots, LivePermissionMode, PreparedCall, Tool,
+    ToolActivity, ToolOutput, ToolSpec,
 };
 use ofx_workspace::ChangeTracker;
 
@@ -35,7 +35,7 @@ impl EditFile {
                 tool_name: TOOL_NAME,
                 presentation: PRESENTATION,
                 workspace_root: workspace_root.into(),
-                additional_roots: Vec::new(),
+                additional_roots: LiveAdditionalRoots::default(),
                 permission_mode: None,
                 change_tracker: None,
             },
@@ -49,8 +49,8 @@ impl EditFile {
     }
 
     #[must_use]
-    pub fn with_additional_roots(mut self, roots: Vec<PathBuf>) -> Self {
-        self.request.additional_roots = roots;
+    pub fn with_additional_roots(mut self, roots: impl Into<LiveAdditionalRoots>) -> Self {
+        self.request.additional_roots = roots.into();
         self
     }
 

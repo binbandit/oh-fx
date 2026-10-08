@@ -17,6 +17,7 @@ use crate::app_session_runtime::{Persistence, RenameError, validate_session_titl
 use crate::mcp_commands::handle_mcp;
 use crate::session_commands::{handle_allowlist, handle_settings};
 use crate::skill_commands::{InstallRequest, handle_skills};
+use crate::workspace_commands::handle_workspace;
 
 const UNKNOWN_COMMAND: &str = "Unknown command. Try /help.";
 const AUTH_TOPIC: &str = "auth";
@@ -32,10 +33,8 @@ const ULTRAFAST_UNAVAILABLE: &str =
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
 const USAGE_TOPIC: &str = "usage";
-const WORKSPACE_TOPIC: &str = "workspace";
 const ALIASES_TOPIC: &str = "aliases";
 const ALIASES_UNAVAILABLE: &str = "Aliases are not yet configurable.";
-const WORKSPACE_ACCESS_UNAVAILABLE: &str = "Workspace access is unavailable in this runtime.";
 const PROFILE_USAGE_UNAVAILABLE: &str =
     "Durable profile usage is unavailable in this host; active session usage remains in memory.";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
@@ -149,6 +148,10 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         SlashKind::Compact => compaction_effect(state, work),
         SlashKind::Skills => handle_skills(state, command.payload)
             .map_or(CommandEffect::None, CommandEffect::Install),
+        SlashKind::Workspace => {
+            handle_workspace(state, command.payload, work);
+            CommandEffect::None
+        }
         SlashKind::Model if !command.payload.is_empty() => {
             CommandEffect::SwitchModel(command.payload.to_owned())
         }
@@ -223,11 +226,6 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         SlashKind::Ultrafast => ultrafast(state, payload),
         SlashKind::Feedback => state.feedback(),
         SlashKind::Statusline => state.toggle_statusline(payload),
-        SlashKind::Workspace => state.notice(
-            NoticeTone::Error,
-            WORKSPACE_TOPIC,
-            WORKSPACE_ACCESS_UNAVAILABLE,
-        ),
         SlashKind::Version => state.notice(NoticeTone::Neutral, "version", ofx_upgrade::VERSION),
         SlashKind::Model => state.notice(NoticeTone::Neutral, "model", state.model()),
         SlashKind::Permissions => state.permissions().handle_command(payload),
@@ -243,6 +241,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         | SlashKind::Logout
         | SlashKind::Provider
         | SlashKind::Fast
+        | SlashKind::Workspace
         | SlashKind::Compact => {}
     }
 }

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_agent::{DeliveryState, ProjectContext, ProjectContextProvider, RuntimeContext};
-use ofx_contract::{ApplicableTarget, BoxFuture, LivePermissionMode, PermissionMode};
+use ofx_contract::{
+    ApplicableTarget, BoxFuture, LiveAdditionalRoots, LivePermissionMode, PermissionMode,
+};
 use ofx_exec::{Environment, Profile, configured_login_shell};
 use ofx_text::write_scalar;
 
@@ -39,7 +41,7 @@ const YOLO_MODE_CONTEXT: &str = "Runtime context: permission mode is full access
 #[derive(Debug, Clone)]
 pub(crate) struct HostRuntimeContext {
     workspace_root: PathBuf,
-    additional_roots: Vec<PathBuf>,
+    additional_roots: LiveAdditionalRoots,
     permission_mode: LivePermissionMode,
     interactive: bool,
 }
@@ -52,15 +54,15 @@ impl HostRuntimeContext {
     ) -> Self {
         Self {
             workspace_root,
-            additional_roots: Vec::new(),
+            additional_roots: LiveAdditionalRoots::default(),
             permission_mode: permission_mode.into(),
             interactive,
         }
     }
 
     #[must_use]
-    pub(crate) fn with_additional_roots(mut self, roots: Vec<PathBuf>) -> Self {
-        self.additional_roots = roots;
+    pub(crate) fn with_additional_roots(mut self, roots: impl Into<LiveAdditionalRoots>) -> Self {
+        self.additional_roots = roots.into();
         self
     }
 }
@@ -68,7 +70,7 @@ impl HostRuntimeContext {
 impl RuntimeContext for HostRuntimeContext {
     fn runtime_context(&self) -> BoxFuture<'_, Vec<String>> {
         let workspace_root = self.workspace_root.clone();
-        let additional_roots = self.additional_roots.clone();
+        let additional_roots = self.additional_roots.get();
         let permission_mode = self.permission_mode.get();
         let interactive = self.interactive;
         Box::pin(async move {

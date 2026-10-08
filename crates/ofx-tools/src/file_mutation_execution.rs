@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use ofx_contract::{
     ActionLabel, ApplicableTarget, BoxFuture, CallDescription, CallPresentation, Concurrency,
-    FileChange, FileMutation, FileMutationState, LivePermissionMode, PathAccess, PermissionMode,
-    PreparedCall, TargetKind, ToolContext, ToolEffect, ToolOutput, ToolStatusDetail,
-    format_tool_execution_error_json, parse_tool_args_object,
+    FileChange, FileMutation, FileMutationState, LiveAdditionalRoots, LivePermissionMode,
+    PathAccess, PermissionMode, PreparedCall, TargetKind, ToolContext, ToolEffect, ToolOutput,
+    ToolStatusDetail, format_tool_execution_error_json, parse_tool_args_object,
 };
 use ofx_permissions::{FileMutationKind, FileMutationTargets, prepare_file_mutation_targets};
 use ofx_text::{encode_terminal_safe, encode_terminal_safe_path_tail};
@@ -25,7 +25,7 @@ pub(crate) struct MutationRequest {
     pub(crate) tool_name: &'static str,
     pub(crate) presentation: CallPresentation,
     pub(crate) workspace_root: PathBuf,
-    pub(crate) additional_roots: Vec<PathBuf>,
+    pub(crate) additional_roots: LiveAdditionalRoots,
     pub(crate) permission_mode: Option<LivePermissionMode>,
     pub(crate) change_tracker: Option<ChangeTracker>,
 }
@@ -180,7 +180,7 @@ enum Stage {
 struct Plan {
     tool_name: &'static str,
     workspace_root: PathBuf,
-    additional_roots: Vec<PathBuf>,
+    additional_roots: LiveAdditionalRoots,
     requested_path: String,
     full_access: bool,
     permission_mode: Option<LivePermissionMode>,
@@ -208,6 +208,7 @@ impl Plan {
         let unread = targets.target.anchor_is_external
             && !self
                 .additional_roots
+                .get()
                 .iter()
                 .any(|root| path_inside(root, &targets.target.path()));
         let stage = if unread || full_access {

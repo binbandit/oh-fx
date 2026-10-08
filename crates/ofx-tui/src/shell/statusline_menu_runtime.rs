@@ -29,6 +29,7 @@ impl Shell<'_> {
         self.skills_menu = None;
         self.help_menu = None;
         self.settings_menu = None;
+        self.workspace_menu = None;
         self.close_picker();
         self.statusline_menu = Some(StatuslineMenu::default());
         self.invalidate();

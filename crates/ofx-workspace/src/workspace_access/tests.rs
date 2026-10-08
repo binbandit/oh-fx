@@ -403,6 +403,7 @@ fn workspace_access_keeps_the_observed_identity_of_a_retargeted_saved_source() {
         [SavedSource {
             source: text(&link),
             identity: first.clone(),
+            identity_canonical: true,
         }]
     );
     fs::remove_file(&link).unwrap();
@@ -452,4 +453,136 @@ fn clearing_keeps_whether_saved_directories_are_suppressed() {
     assert!(access.saved_suppressed());
     assert!(access.stage_clear().saved_suppressed());
     assert!(!WorkspaceAccess::primary_only(&fixture.primary).saved_suppressed());
+}
+
+fn refreshed(access: &WorkspaceAccess) -> WorkspaceAccess {
+    access
+        .stage_availability_refresh()
+        .unwrap()
+        .expect("the refresh changes the access")
+}
+
+#[test]
+fn workspace_access_refreshes_availability_after_a_saved_directory_disappears_and_returns() {
+    let fixture = Fixture::new();
+    let saved = fixture.directory("saved");
+    let access = WorkspaceAccess::new(&fixture.primary, &[text(&saved)]).unwrap();
+    assert_eq!(access.entries(), [entry(&saved, true, false, true)]);
+    fs::remove_dir(&saved).unwrap();
+    let unavailable = refreshed(&access);
+    assert_eq!(unavailable.entries(), [entry(&saved, true, false, false)]);
+    fixture.directory("saved");
+    let available = refreshed(&unavailable);
+    assert_eq!(available.entries(), [entry(&saved, true, false, true)]);
+    assert_eq!(available.stage_availability_refresh(), Ok(None));
+}
+
+#[test]
+fn workspace_access_deactivates_an_observed_root_when_its_ancestor_becomes_unusable() {
+    for looped in [false, true] {
+        let fixture = Fixture::new();
+        let shared = fixture.directory("parent/shared");
+        let parent = fixture.root.join("parent");
+        let held = fixture.root.join("held");
+        let access = WorkspaceAccess::new(&fixture.primary, &[text(&shared)]).unwrap();
+        fs::rename(&parent, &held).unwrap();
+        if looped {
+            symlink("parent", &parent).unwrap();
+        } else {
+            fs::write(&parent, "not a directory").unwrap();
+        }
+        let unavailable = refreshed(&access);
+        assert!(!unavailable.entries()[0].available, "{looped}");
+        assert_eq!(unavailable.additional_root_for(&shared), None, "{looped}");
+        fs::remove_file(&parent).unwrap();
+        fs::rename(&held, &parent).unwrap();
+        let restored = refreshed(&unavailable);
+        assert!(restored.entries()[0].available, "{looped}");
+        assert_eq!(
+            restored.additional_root_for(&shared),
+            Some(shared.as_path()),
+            "{looped}"
+        );
+    }
+}
+
+#[test]
+fn workspace_access_canonicalizes_a_saved_directory_restored_through_a_symlinked_ancestor() {
+    let fixture = Fixture::new();
+    let shared = fixture.directory("real-parent/shared");
+    let source = text(&fixture.root.join("parent-link/shared"));
+    let access = WorkspaceAccess::new(&fixture.primary, std::slice::from_ref(&source)).unwrap();
+    assert!(!access.entries()[0].available);
+    symlink(
+        fixture.root.join("real-parent"),
+        fixture.root.join("parent-link"),
+    )
+    .unwrap();
+    let replacement = refreshed(&access);
+    assert_eq!(access.entries()[0].path, PathBuf::from(&source));
+    assert_eq!(replacement.entries(), [entry(&shared, true, false, true)]);
+    assert_eq!(
+        replacement.saved_sources(),
+        [SavedSource {
+            source,
+            identity: shared.clone(),
+            identity_canonical: true,
+        }]
+    );
+    assert_eq!(
+        replacement.additional_root_for(&shared),
+        Some(shared.as_path())
+    );
+}
+
+#[test]
+fn workspace_access_keeps_a_moved_observed_root_unavailable_until_it_returns() {
+    let fixture = Fixture::new();
+    let first = fixture.directory("first");
+    let second = fixture.directory("second");
+    let link = fixture.root.join("saved-link");
+    symlink(&first, &link).unwrap();
+    let access = WorkspaceAccess::new(&fixture.primary, &[text(&link)]).unwrap();
+    fs::remove_file(&link).unwrap();
+    symlink(&second, &link).unwrap();
+    assert_eq!(access.stage_availability_refresh(), Ok(None));
+    fs::remove_dir(&first).unwrap();
+    let moved = refreshed(&access);
+    assert_eq!(moved.entries(), [entry(&first, true, false, false)]);
+    let launched = WorkspaceAccess::primary_only(&fixture.primary)
+        .apply_launch(&launch(&[&text(&second)]), false)
+        .unwrap();
+    fs::remove_dir(&second).unwrap();
+    assert_eq!(
+        refreshed(&launched).entries(),
+        [entry(&second, false, true, false)]
+    );
+}
+
+#[test]
+fn workspace_access_rejects_an_availability_refresh_that_splits_past_capacity() {
+    let fixture = Fixture::new();
+    fixture.directory("real-a");
+    fixture.directory("real-b");
+    symlink(fixture.root.join("real-a"), fixture.root.join("link-a")).unwrap();
+    symlink(fixture.root.join("real-a"), fixture.root.join("link-b")).unwrap();
+    let mut saved = vec![
+        text(&fixture.root.join("link-a/shared")),
+        text(&fixture.root.join("link-b/shared")),
+    ];
+    saved.extend(
+        (0..MAX_ADDITIONAL_DIRECTORIES - 1)
+            .map(|index| text(&fixture.directory(&format!("existing-{index}")))),
+    );
+    let access = WorkspaceAccess::new(&fixture.primary, &saved).unwrap();
+    assert_eq!(access.entries().len(), MAX_ADDITIONAL_DIRECTORIES);
+    assert!(!access.entries()[0].available);
+    fixture.directory("real-a/shared");
+    fixture.directory("real-b/shared");
+    fs::remove_file(fixture.root.join("link-b")).unwrap();
+    symlink(fixture.root.join("real-b"), fixture.root.join("link-b")).unwrap();
+    assert_eq!(
+        access.stage_availability_refresh(),
+        Err(WorkspaceAccessError::TooManyDirectories)
+    );
 }

@@ -8,8 +8,9 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, BoxFuture, CommandRequest, FileMutation,
-    FileMutationState, GatedAction, LivePermissionMode, PathAccess, PermissionGate, PermissionMode,
-    ReviewFailure, ReviewRequest, ReviewVerdict, Reviewed, SessionGrant, ToolCall, Usage,
+    FileMutationState, GatedAction, LiveAdditionalRoots, LivePermissionMode, PathAccess,
+    PermissionGate, PermissionMode, ReviewFailure, ReviewRequest, ReviewVerdict, Reviewed,
+    SessionGrant, ToolCall, Usage,
 };
 use ofx_workspace::path_inside;
 use tokio_util::sync::CancellationToken;
@@ -52,7 +53,7 @@ const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
 pub struct PermissionPolicy {
     mode: LivePermissionMode,
     workspace_root: PathBuf,
-    additional_roots: Vec<PathBuf>,
+    additional_roots: LiveAdditionalRoots,
     session_grants: Arc<SessionGrants>,
     inherited_grants: Option<Arc<SessionGrants>>,
     reviewer: RwLock<Option<Arc<Reviewer>>>,
@@ -77,7 +78,7 @@ impl PermissionPolicy {
         Self {
             mode: mode.into(),
             workspace_root: workspace_root.into(),
-            additional_roots: Vec::new(),
+            additional_roots: LiveAdditionalRoots::default(),
             session_grants: Arc::default(),
             inherited_grants: None,
             reviewer: RwLock::new(None),
@@ -101,8 +102,8 @@ impl PermissionPolicy {
     }
 
     #[must_use]
-    pub fn with_additional_roots(mut self, roots: Vec<PathBuf>) -> Self {
-        self.additional_roots = roots;
+    pub fn with_additional_roots(mut self, roots: impl Into<LiveAdditionalRoots>) -> Self {
+        self.additional_roots = roots.into();
         self
     }
 
@@ -147,7 +148,7 @@ impl PermissionGate for PermissionPolicy {
                 Admission::Allowed(PathAccess::WorkspaceOnly)
             }
             Some(target) if let Some(root) = self.additional_root(&target) => {
-                Admission::Allowed(PathAccess::Within(root.to_path_buf()))
+                Admission::Allowed(PathAccess::Within(root))
             }
             Some(target) => TreePermission::of_tool(&call.name)
                 .and_then(|permission| self.granted_root(permission, &target))
@@ -168,7 +169,7 @@ impl PermissionGate for PermissionPolicy {
         command_admission(
             self.mode.get(),
             &self.workspace_root,
-            &self.additional_roots,
+            &self.additional_roots.get(),
             request,
         )
     }
@@ -226,7 +227,7 @@ impl PermissionGate for PermissionPolicy {
         let (inside, access) = if path_inside(&self.workspace_root, &mutation.target) {
             (true, PathAccess::WorkspaceOnly)
         } else if let Some(root) = self.additional_root(&mutation.target) {
-            (true, PathAccess::Within(root.to_path_buf()))
+            (true, PathAccess::Within(root))
         } else {
             (false, PathAccess::WorkspaceOrExternal)
         };
@@ -290,11 +291,12 @@ impl PermissionPolicy {
             .min_by_key(|root| root.as_os_str().len())
     }
 
-    fn additional_root(&self, target: &Path) -> Option<&Path> {
+    fn additional_root(&self, target: &Path) -> Option<PathBuf> {
         self.additional_roots
+            .get()
             .iter()
-            .map(PathBuf::as_path)
             .find(|root| path_inside(root, target))
+            .cloned()
     }
 
     fn call_approval_scope(&self, call: &ToolCall) -> ApprovalScope {
@@ -402,7 +404,7 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::Path;
 
-    use ofx_contract::CommandProfile;
+    use ofx_contract::{CommandProfile, LiveAdditionalRoots};
 
     use super::*;
 
@@ -561,6 +563,38 @@ mod tests {
                 Admission::Allowed(PathAccess::WorkspaceOnly)
             );
         }
+    }
+
+    #[test]
+    fn additional_directories_installed_while_the_policy_is_shared_decide_the_next_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let workspace = root.join("workspace");
+        let shared = root.join("shared");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("notes.md"), "notes\n").unwrap();
+        let notes = shared.join("notes.md");
+        let notes = read(notes.to_str().unwrap());
+        let status = CommandRequest::Run {
+            command: "git status".to_owned(),
+            cwd: shared.clone(),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+            reload: false,
+        };
+        let roots = LiveAdditionalRoots::default();
+        let policy = PermissionPolicy::new(PermissionMode::Auto, &workspace)
+            .with_additional_roots(roots.clone());
+        assert_eq!(policy.admit(&notes), Admission::ApprovalRequired);
+        assert_eq!(policy.admit_command(&status), Admission::ReviewRequired);
+        roots.set(vec![shared.clone()]);
+        let confined = Admission::Allowed(PathAccess::Within(shared.clone()));
+        assert_eq!(policy.admit(&notes), confined);
+        assert_eq!(policy.admit_command(&status), confined);
+        roots.set(Vec::new());
+        assert_eq!(policy.admit(&notes), Admission::ApprovalRequired);
     }
 
     #[test]

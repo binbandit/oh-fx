@@ -94,6 +94,13 @@ fn updated(outcome: Outcome) -> (WorkspaceAccess, Mutation) {
     }
 }
 
+fn failed(phase: FailurePhase, error: impl Into<CommandError>) -> Failure {
+    Failure {
+        phase,
+        error: error.into(),
+    }
+}
+
 fn observed<'a>(pairs: &[(&'a str, &'a str)]) -> Vec<Observed<'a>> {
     pairs
         .iter()
@@ -160,7 +167,7 @@ fn adding_counts_unseen_entries_and_command_line_roots_against_the_limit() {
     let patch = DurablePatch {
         change: Patch::Add("/b".to_owned()),
         observed: Vec::new(),
-        command_line: vec!["/launch", "/d1"],
+        command_line: vec!["/launch".to_owned(), "/d1".to_owned()],
     };
     assert_eq!(
         apply(&mut entry, &patch),
@@ -291,7 +298,8 @@ fn adding_refuses_effective_capacity_before_changing_settings() {
     let current = launched(&fixture.primary, &saved, &[&launch]);
     assert_eq!(
         execute(Some(&fixture.paths), &current, &Action::Add(text(&added))),
-        Err(CommandError::Access(
+        Err(failed(
+            FailurePhase::Commit,
             WorkspaceAccessError::TooManyDirectories
         ))
     );
@@ -319,23 +327,39 @@ fn removing_command_line_only_access_writes_nothing_and_warns_the_flag_can_resto
 }
 
 #[test]
-fn staging_failures_come_before_the_profile_is_needed() {
+fn failures_report_the_transaction_phase_they_stopped_in() {
     let fixture = Fixture::new();
     let shared = fixture.directory("shared");
     let current = WorkspaceAccess::primary_only(&fixture.primary);
     assert_eq!(
         execute(None, &current, &Action::Add(text(&fixture.primary))),
-        Err(CommandError::Access(WorkspaceAccessError::PrimaryDirectory))
+        Err(failed(
+            FailurePhase::Stage,
+            WorkspaceAccessError::PrimaryDirectory
+        ))
     );
     assert_eq!(
         execute(None, &current, &Action::Remove(text(&shared))),
-        Err(CommandError::Access(
+        Err(failed(
+            FailurePhase::Stage,
             WorkspaceAccessError::UnknownAdditionalDirectory
         ))
     );
     assert_eq!(
         execute(None, &current, &Action::Add(text(&shared))),
-        Err(CommandError::HomeNotSet)
+        Err(failed(FailurePhase::Commit, CommandError::HomeNotSet))
+    );
+    fixture.write_saved(&["relative".to_owned()]);
+    assert_eq!(
+        execute(Some(&fixture.paths), &current, &Action::Add(text(&shared))),
+        Err(failed(
+            FailurePhase::Reconcile,
+            CommandError::InvalidSettingsFormat
+        ))
+    );
+    assert_eq!(
+        failed(FailurePhase::Commit, CommandError::HomeNotSet).to_string(),
+        "HomeNotSet"
     );
 }
 
@@ -349,9 +373,9 @@ fn reconciliation_accepts_only_the_intended_or_previous_saved_state() {
     let intended = current.stage_clear();
     let classified = || reconcile(&fixture.paths, &current, Some(&intended)).unwrap();
     fixture.write_saved(&[]);
-    assert_eq!(classified(), Reconciliation::Intended);
+    assert_eq!(classified(), Reconciliation::Intended(intended.clone()));
     fixture.write_saved(&[text(&previous)]);
-    assert_eq!(classified(), Reconciliation::Previous);
+    assert_eq!(classified(), Reconciliation::Previous(current.clone()));
     fixture.write_saved(&[text(&third)]);
     assert_eq!(classified(), Reconciliation::Unconfirmed);
     fixture.write_saved(&[text(&previous), text(&previous)]);

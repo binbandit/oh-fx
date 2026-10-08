@@ -1010,6 +1010,48 @@ fn a_prompt_streams_a_reply_and_a_second_ctrl_c_exits() {
 }
 
 #[test]
+fn the_workspace_menu_prepares_the_commands_that_change_saved_directories() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&settings(&server.base_url()));
+    fs::create_dir_all(home.root.join("shared")).expect("create the shared directory");
+    let shared = fs::canonicalize(home.root.join("shared")).expect("canonicalize it");
+    let workspace = fs::canonicalize(&home.workspace).expect("canonicalize the workspace");
+    let session = home.shell(30, 120);
+    session.send(b"/workspace\r");
+    let screen = wait(&session, "↑↓ navigate     enter use     esc close");
+    assert!(screen.contains("0 / 16"), "{screen}");
+    assert!(screen.contains("❯ Add directory…"), "{screen}");
+    session.send(b"\r");
+    wait(&session, "┃ /workspace add");
+    session.send(b"../shared\r");
+    wait(
+        &session,
+        "add ../shared saved_changed=true runtime_changed=true launch_flag_can_restore=false",
+    );
+    let saved = saved_settings(&home);
+    assert_eq!(
+        saved["workspaces"][workspace.to_str().unwrap()]["additional_directories"],
+        json!([shared])
+    );
+    session.send(b"/workspace\r");
+    wait(&session, "1 / 16");
+    session.send(b"\x1b[B\r");
+    let removal = format!("/workspace remove {}", shared.display());
+    wait(&session, &format!("┃ {removal}"));
+    session.send(b"\r");
+    wait(
+        &session,
+        &format!("remove {} saved_changed=true", shared.display()),
+    );
+    session.send(b"/workspace\r");
+    wait(&session, "0 / 16");
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| !screen.contains("Add directory…"))
+        .unwrap_or_else(|screen| panic!("the menu stays open:\n{screen}"));
+}
+
+#[test]
 fn slash_commands_switch_models_show_help_and_exit() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Switched reply."]))]);
     let home = Home::with_settings(&settings(&server.base_url()));
@@ -1047,7 +1089,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
     session.send(b"/workspace add ../other\r");
     wait(
         &session,
-        "✗ workspace: Workspace access is unavailable in this runtime.",
+        "✗ workspace: Workspace update rejected: directory does not exist",
     );
     session.send(b"/cost\r");
     wait(

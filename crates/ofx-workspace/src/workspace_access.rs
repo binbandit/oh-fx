@@ -50,6 +50,13 @@ pub struct AdditionalDirectory {
 pub(crate) struct SavedSource {
     pub(crate) source: String,
     pub(crate) identity: PathBuf,
+    pub(crate) identity_canonical: bool,
+}
+
+struct RefreshedSource<'a> {
+    previous: &'a Path,
+    saved: SavedSource,
+    available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +76,7 @@ impl WorkspaceAccess {
             access.saved_sources.push(SavedSource {
                 source: path.clone(),
                 identity,
+                identity_canonical: available,
             });
         }
         access.recompute_active();
@@ -131,7 +139,7 @@ impl WorkspaceAccess {
         self.saved_suppressed
     }
 
-    pub(crate) fn primary(&self) -> &Path {
+    pub fn primary(&self) -> &Path {
         &self.primary
     }
 
@@ -184,6 +192,7 @@ impl WorkspaceAccess {
                 .ok_or(WorkspaceAccessError::InvalidPath)?
                 .to_owned(),
             identity: canonical.clone(),
+            identity_canonical: true,
         });
         replacement.merge(canonical, SAVED, true)?;
         replacement.recompute_active();
@@ -199,6 +208,63 @@ impl WorkspaceAccess {
             .retain(|source| source.identity != identity);
         replacement.recompute_active();
         Ok(replacement)
+    }
+
+    pub fn stage_availability_refresh(&self) -> Result<Option<Self>, WorkspaceAccessError> {
+        let refreshed = self
+            .saved_sources
+            .iter()
+            .map(|source| self.refreshed_source(source))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut replacement = Self {
+            saved_sources: refreshed
+                .iter()
+                .map(|source| source.saved.clone())
+                .collect(),
+            saved_suppressed: self.saved_suppressed,
+            ..Self::primary_only(&self.primary)
+        };
+        let mut appended = vec![false; refreshed.len()];
+        for entry in &self.entries {
+            for (source, appended) in refreshed.iter().zip(&mut appended) {
+                if *appended || source.previous != entry.path {
+                    continue;
+                }
+                replacement.merge(source.saved.identity.clone(), SAVED, source.available)?;
+                *appended = true;
+            }
+            if entry.source.command_line {
+                let (path, available) = resolve_observed_directory(&self.primary, &entry.path)?;
+                replacement.merge(path, COMMAND_LINE, available)?;
+            }
+        }
+        for (source, appended) in refreshed.iter().zip(appended) {
+            if !appended {
+                replacement.merge(source.saved.identity.clone(), SAVED, source.available)?;
+            }
+        }
+        replacement.recompute_active();
+        Ok((replacement != *self).then_some(replacement))
+    }
+
+    fn refreshed_source<'a>(
+        &self,
+        source: &'a SavedSource,
+    ) -> Result<RefreshedSource<'a>, WorkspaceAccessError> {
+        let (identity, available) = if source.identity_canonical {
+            resolve_observed_directory(&self.primary, &source.identity)?
+        } else {
+            resolve_saved_directory(&self.primary, &source.source)?
+        };
+        Ok(RefreshedSource {
+            previous: &source.identity,
+            saved: SavedSource {
+                source: source.source.clone(),
+                identity,
+                identity_canonical: source.identity_canonical || available,
+            },
+            available,
+        })
     }
 
     pub(crate) fn stage_clear(&self) -> Self {
@@ -273,6 +339,20 @@ fn resolve_saved_directory(
             let identity = resolve_from_nearest_existing(&normalized)
                 .ok_or(WorkspaceAccessError::InvalidPath)?;
             Ok((identity, false))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn resolve_observed_directory(
+    primary: &Path,
+    identity: &Path,
+) -> Result<(PathBuf, bool), WorkspaceAccessError> {
+    let text = identity.to_str().ok_or(WorkspaceAccessError::InvalidPath)?;
+    match canonical_existing_directory(primary, text) {
+        Ok(canonical) => Ok((identity.to_path_buf(), canonical == identity)),
+        Err(WorkspaceAccessError::PathNotFound | WorkspaceAccessError::NotDirectory) => {
+            Ok((identity.to_path_buf(), false))
         }
         Err(error) => Err(error),
     }
