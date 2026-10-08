@@ -83,7 +83,7 @@ pub use tool_result_limits::{
 };
 pub use tool_set::ToolSet;
 pub use types::{
-    CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
+    ArgumentShape, CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
     FileChangeStats, FinishReason, LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction,
     ModelRecoveryCause, ModelRecoveryRequiredAction, PermissionAction, PermissionMode,
     PermissionRule, ProviderReplay, QuestionBatchEntry, QuestionOption, ReasoningEffort,

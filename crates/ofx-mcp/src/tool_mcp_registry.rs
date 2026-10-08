@@ -4,8 +4,8 @@ use std::sync::Arc;
 use ofx_config::{ContextLimit, line_safe_prefix_length};
 use ofx_contract::{
     BoxFuture, CallDescription, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES, PreparedCall, Tool,
-    ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec, format_tool_execution_error_json,
-    non_object_tool_arguments_json,
+    ToolActivity, ToolArgumentIntegrity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    format_tool_execution_error_json, non_object_tool_arguments_json,
 };
 use ofx_text::write_scalar;
 use serde_json::Value;
@@ -190,11 +190,12 @@ impl Tool for McpTool {
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
-        let Ok(Value::Object(_)) = serde_json::from_str::<Value>(arguments) else {
+        if ToolArgumentIntegrity::classify_function_input(arguments) != ToolArgumentIntegrity::Valid
+        {
             return Err(ToolOutput::failure(non_object_tool_arguments_json(
                 &self.spec.name,
             )));
-        };
+        }
         Ok(Box::new(McpCall {
             spec: Arc::clone(&self.spec),
             server: Arc::clone(&self.server),
