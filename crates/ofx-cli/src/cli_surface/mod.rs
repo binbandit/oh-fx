@@ -12,7 +12,7 @@ use std::os::unix::ffi::OsStrExt;
 use ofx_config::ProviderId;
 
 use crate::cli_ask::{AskArgs, parse_ask};
-use crate::cli_replay::parse_replay;
+use crate::cli_replay::{ReplayArgs, parse_replay};
 use crate::command_specs::TopLevelKind;
 
 pub(crate) use arg_stream::{ArgStream, ValueForm, non_blank, requests_json};
@@ -75,7 +75,7 @@ pub enum Command {
     Credits(OutputFormat),
     Usage(OutputFormat),
     Upgrade(OutputFormat),
-    Replay(OutputFormat),
+    Replay(ReplayArgs),
     Workspace(WorkspaceArgs),
 }
 
@@ -117,10 +117,11 @@ impl Command {
             | Self::Credits(format)
             | Self::Usage(format)
             | Self::Upgrade(format)
-            | Self::Replay(format)
             | Self::Workspace(WorkspaceArgs { format, .. }) => *format,
             Self::Ask(args) if args.output.json => OutputFormat::Json,
+            Self::Replay(args) if args.json => OutputFormat::Json,
             Self::Ask(_)
+            | Self::Replay(_)
             | Self::Acp
             | Self::Pr(_)
             | Self::Issue(_)

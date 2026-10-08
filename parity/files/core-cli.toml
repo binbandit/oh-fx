@@ -11,9 +11,9 @@ note = "Argument parsing, ask runtime, --continue-recovery, additional directori
 
 [[file]]
 upstream = "src/core/cli/cli_replay.zig"
-status = "partial"
-modules = ["crates/ofx-cli/src/cli_replay.rs"]
-note = "Replay/session command arguments are parsed; replay execution and full transcript rendering command are not implemented."
+status = "ported"
+modules = ["crates/ofx-cli/src/cli_replay.rs", "crates/oh-fx/src/cli_replay.rs", "crates/oh-fx/src/cli_replay/frames_dir.rs"]
+note = "Its message prefix, missing debug_trace lines and corrected character widths differ as docs/differences/cli.md records."
 
 [[file]]
 upstream = "src/core/cli/cli_surface.zig"
