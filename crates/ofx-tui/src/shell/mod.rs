@@ -302,6 +302,7 @@ struct FrameCache {
     tokens_due: bool,
     drawn_ms: i64,
     drawn_activity: Option<i64>,
+    activity_visible: bool,
     composer: Option<ComposerView>,
 }
 
@@ -668,6 +669,7 @@ impl<'a> Shell<'a> {
         } else {
             self.activity_rows(now_ms)
         };
+        self.frame.activity_visible = !activity.is_empty();
         let banner = self.banner_rows();
         let banner_rows = if banner.is_empty() {
             0

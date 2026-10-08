@@ -99,6 +99,23 @@ pub fn ui_channel() -> io::Result<(UiEventSender, UiEventReceiver)> {
     ))
 }
 
+#[derive(Clone, Copy)]
+enum Streamed {
+    Shown,
+    Counted,
+    Unchanged,
+}
+
+impl Streamed {
+    fn counted(changed: bool) -> Self {
+        if changed {
+            Self::Counted
+        } else {
+            Self::Unchanged
+        }
+    }
+}
+
 impl Shell<'_> {
     pub(super) fn drain_ui_events(&mut self) {
         self.events.drain_wake();
@@ -119,14 +136,16 @@ impl Shell<'_> {
         match event {
             UiEvent::AssistantText { turn_id, text } => {
                 if self.is_visible_turn(turn_id) {
-                    let shown = self.assistant_text(&text);
-                    self.note_streamed(shown);
+                    let streamed = self.assistant_text(&text);
+                    self.note_streamed(streamed);
                 }
             }
             UiEvent::ReasoningText { turn_id, text } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
+                    let before = turn.tokens.progress();
                     turn.tokens.consume_reasoning(&text);
-                    self.note_streamed(false);
+                    let streamed = Streamed::counted(turn.tokens.progress() != before);
+                    self.note_streamed(streamed);
                 }
             }
             event => {
@@ -136,11 +155,11 @@ impl Shell<'_> {
         }
     }
 
-    fn note_streamed(&mut self, shown: bool) {
-        if shown {
-            self.mark_dirty();
-        } else {
-            self.frame.tokens_due = true;
+    fn note_streamed(&mut self, streamed: Streamed) {
+        match streamed {
+            Streamed::Counted if self.frame.activity_visible => self.frame.tokens_due = true,
+            Streamed::Shown | Streamed::Counted => self.mark_dirty(),
+            Streamed::Unchanged => {}
         }
     }
 
@@ -547,15 +566,20 @@ impl Shell<'_> {
         }
     }
 
-    fn assistant_text(&mut self, text: &str) -> bool {
+    fn assistant_text(&mut self, text: &str) -> Streamed {
         let Some(turn) = &mut self.turn else {
-            return false;
+            return Streamed::Unchanged;
         };
         let phase_changed = turn.phase != TurnPhase::Generating;
         turn.phase = TurnPhase::Generating;
+        let before = turn.tokens.progress();
         turn.tokens.consume_content(text);
-        let shown = self.present_assistant(text);
-        phase_changed || shown
+        let counted = turn.tokens.progress() != before;
+        if self.present_assistant(text) || phase_changed {
+            Streamed::Shown
+        } else {
+            Streamed::counted(counted)
+        }
     }
 
     fn restart_assistant(&mut self, text: &str) {
@@ -794,8 +818,9 @@ mod tool_rows;
 mod tests {
     use ofx_contract::{
         ActionLabel, CallDescription, CompactionActivity, CompactionEnd, Concurrency, HistoryEntry,
-        Notice, NoticeTone, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus, TurnId,
-        TurnOutcome, UiCommand, UiEvent, Usage,
+        Notice, NoticeTone, QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId,
+        ToolActivity, ToolCallId, ToolEffect, ToolResultStatus, TurnId, TurnOutcome, UiCommand,
+        UiEvent, Usage,
     };
 
     use super::super::Opening;
@@ -860,28 +885,29 @@ mod tests {
         test
     }
 
-    fn token_redraw_due_ms(test: &TestShell) -> Option<i64> {
-        let now_ms = test.shell.now_ms();
-        test.shell
-            .next_deadline_ms(now_ms)
-            .filter(|deadline_ms| *deadline_ms <= now_ms + 50)
+    fn reasoning(text: &str) -> UiEvent {
+        UiEvent::ReasoningText {
+            turn_id: TurnId::new(1),
+            text: text.to_owned(),
+        }
     }
 
     #[test]
     fn token_counts_alone_redraw_at_most_every_50_ms() {
         let mut test = streaming();
+        let drawn = test.shell.frame.drawn_ms;
         for _ in 0..20 {
-            test.deliver(UiEvent::ReasoningText {
-                turn_id: TurnId::new(1),
-                text: "think ".repeat(20),
-            });
+            test.deliver(reasoning(&"think ".repeat(20)));
         }
-        assert!(!test.written().contains('↓'));
-        assert!(token_redraw_due_ms(&test).is_some());
+        assert!(!test.shell.frame_due(drawn + 49));
+        assert!(test.shell.frame_due(drawn + 50));
         test.advance(50);
         let written = test.written();
         assert_eq!(written.matches('↓').count(), 1, "{written:?}");
-        assert_eq!(token_redraw_due_ms(&test), None);
+        test.deliver(reasoning(" "));
+        let drawn = test.shell.frame.drawn_ms;
+        assert!(!test.shell.frame_due(drawn));
+        assert_eq!(test.shell.token_redraw_ms(), None);
         test.deliver(UiEvent::AssistantText {
             turn_id: TurnId::new(1),
             text: "partial".to_owned(),
@@ -892,7 +918,9 @@ mod tests {
             turn_id: TurnId::new(1),
             text: " words".repeat(20),
         });
-        assert!(test.written().is_empty());
+        let drawn = test.shell.frame.drawn_ms;
+        assert!(!test.shell.frame_due(drawn + 49));
+        assert!(test.shell.frame_due(drawn + 50));
         test.deliver(UiEvent::AssistantText {
             turn_id: TurnId::new(1),
             text: " done\n\nnext\n".to_owned(),
@@ -910,14 +938,35 @@ mod tests {
     }
 
     #[test]
+    fn token_counts_draw_at_once_while_no_activity_row_is_on_screen() {
+        let mut test = streaming();
+        test.deliver(UiEvent::QuestionRequested {
+            turn_id: TurnId::new(1),
+            request: QuestionRequest {
+                id: RequestId::new(2),
+                entries: vec![QuestionBatchEntry {
+                    question: "Continue?".to_owned(),
+                    options: vec![QuestionOption {
+                        label: "Yes".to_owned(),
+                        description: None,
+                    }],
+                }],
+            },
+        });
+        test.screen();
+        let drawn = test.shell.frame.drawn_ms;
+        assert!(!test.shell.frame_due(drawn));
+        test.deliver(reasoning(&"think ".repeat(20)));
+        assert!(test.shell.frame_due(drawn));
+        assert_eq!(test.shell.token_redraw_ms(), None);
+    }
+
+    #[test]
     fn blocked_frames_keep_token_updates_without_an_overdue_deadline() {
         let mut test = streaming();
         let now_ms = test.shell.now_ms();
         test.shell.handle_resize_signal(now_ms);
-        test.deliver(UiEvent::ReasoningText {
-            turn_id: TurnId::new(1),
-            text: "think ".repeat(20),
-        });
+        test.deliver(reasoning(&"think ".repeat(20)));
         assert!(test.written().is_empty());
         test.advance(50);
         assert!(test.written().is_empty());
