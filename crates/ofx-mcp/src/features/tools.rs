@@ -1,8 +1,7 @@
 use std::collections::HashSet;
-use std::fmt;
 
+use ofx_contract::ArgumentShape;
 use ofx_jsonrpc::RpcError;
-use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use crate::error::McpError;
@@ -347,103 +346,11 @@ pub(crate) fn validate_arguments(arguments_json: &str, limits: Limits) -> Result
     if arguments_json.len() > limits.argument_bytes {
         return Err(McpError::InstanceLimitExceeded);
     }
-    let mut shape = ArgumentShape::default();
-    let mut deserializer = serde_json::Deserializer::from_str(arguments_json);
-    ArgumentNode {
-        shape: &mut shape,
-        depth: 0,
-    }
-    .deserialize(&mut deserializer)
-    .and_then(|()| deserializer.end())
-    .map_err(|_| McpError::InvalidJson)?;
-    if !arguments_json.trim_start().starts_with('{') {
-        return Err(McpError::InvalidJson);
-    }
-    if shape.too_deep || shape.nodes > MAX_VALUE_NODES {
+    let shape = ArgumentShape::of_function_input(arguments_json).ok_or(McpError::InvalidJson)?;
+    if shape.depth > MAX_SCHEMA_DEPTH || shape.values > MAX_VALUE_NODES {
         return Err(McpError::InstanceLimitExceeded);
     }
     Ok(())
-}
-
-#[derive(Default)]
-struct ArgumentShape {
-    nodes: usize,
-    too_deep: bool,
-}
-
-struct ArgumentNode<'a> {
-    shape: &'a mut ArgumentShape,
-    depth: usize,
-}
-
-impl ArgumentNode<'_> {
-    fn child(&mut self) -> ArgumentNode<'_> {
-        ArgumentNode {
-            shape: self.shape,
-            depth: self.depth + 1,
-        }
-    }
-}
-
-impl<'de> DeserializeSeed<'de> for ArgumentNode<'_> {
-    type Value = ();
-
-    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > MAX_SCHEMA_DEPTH {
-            self.shape.too_deep = true;
-            return deserializer.deserialize_ignored_any(IgnoredAny).map(drop);
-        }
-        self.shape.nodes += 1;
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for ArgumentNode<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON value")
-    }
-
-    fn visit_bool<E>(self, _: bool) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_i64<E>(self, _: i64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_u64<E>(self, _: u64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_f64<E>(self, _: f64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_str<E>(self, _: &str) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_unit<E>(self) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(mut self, mut items: A) -> Result<(), A::Error> {
-        while items.next_element_seed(self.child())?.is_some() {}
-        Ok(())
-    }
-
-    fn visit_map<A: MapAccess<'de>>(mut self, mut entries: A) -> Result<(), A::Error> {
-        let mut keys = HashSet::new();
-        while let Some(key) = entries.next_key::<String>()? {
-            if !keys.insert(key) {
-                return Err(de::Error::custom("duplicate key"));
-            }
-            entries.next_value_seed(self.child())?;
-        }
-        Ok(())
-    }
 }
 
 fn validate_icons(value: &Value, limits: Limits) -> Result<(), McpError> {
@@ -1131,6 +1038,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tool_argument_numbers_are_checked_as_written_without_reading_their_value() {
+        assert_eq!(
+            validate_arguments(
+                r#"{"big":1e400,"tiny":-1e-400,"id":12345678901234567890123}"#,
+                Limits::default()
+            ),
+            Ok(())
+        );
+    }
+
     fn nested_arrays(depth: usize) -> String {
         format!("{}0{}", "[".repeat(depth), "]".repeat(depth))
     }
@@ -1148,6 +1066,11 @@ mod tests {
             "{\"a\":{\"b\":1,\"b\":2}}".to_owned(),
             format!("{{\"x\":{},\"x\":0}}", nested_arrays(64)),
             format!("{{\"x\":[{}],\"x\":0}}", zeros(5000)),
+            format!(
+                "{{\"x\":{}{{\"a\":1,\"a\":2}}{}}}",
+                "[".repeat(100),
+                "]".repeat(100)
+            ),
         ] {
             assert_eq!(
                 validate_arguments(&arguments, limits),

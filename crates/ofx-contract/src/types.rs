@@ -11,7 +11,7 @@ use crate::ids::ToolCallId;
 
 pub use question_batch::{QuestionBatchEntry, QuestionOption};
 pub(crate) use tool_argument_integrity::ToolArgumentFailure;
-pub use tool_argument_integrity::{ToolArgumentDiagnostic, ToolArgumentIntegrity};
+pub use tool_argument_integrity::{ArgumentShape, ToolArgumentDiagnostic, ToolArgumentIntegrity};
 
 const MAX_REASONING_EFFORT_NAME_BYTES: usize = 64;
 
