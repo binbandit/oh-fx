@@ -12,7 +12,7 @@ pub enum ToolArgumentIntegrity {
 impl ToolArgumentIntegrity {
     pub fn classify_function_input(serialized: &str) -> Self {
         let integrity = Self::classify_serialized(serialized);
-        if integrity == Self::Valid && !serialized.trim_start_matches(WHITESPACE).starts_with('{') {
+        if integrity == Self::Valid && !starts_object(serialized) {
             return Self::NonObjectJson;
         }
         integrity
@@ -20,10 +20,29 @@ impl ToolArgumentIntegrity {
 
     fn classify_serialized(serialized: &str) -> Self {
         match scan(serialized.as_bytes()) {
-            Ok(Keys::Unique) => Self::Valid,
+            Ok(Keys::Unique(_)) => Self::Valid,
             Ok(Keys::Repeated) | Err(_) => Self::MalformedJson,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArgumentShape {
+    pub depth: usize,
+    pub values: usize,
+}
+
+impl ArgumentShape {
+    pub fn of_function_input(serialized: &str) -> Option<Self> {
+        match scan(serialized.as_bytes()) {
+            Ok(Keys::Unique(shape)) if starts_object(serialized) => Some(shape),
+            _ => None,
+        }
+    }
+}
+
+fn starts_object(serialized: &str) -> bool {
+    serialized.trim_start_matches(WHITESPACE).starts_with('{')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +94,7 @@ enum Stopped {
 }
 
 enum Keys {
-    Unique,
+    Unique(ArgumentShape),
     Repeated,
 }
 
@@ -94,12 +113,16 @@ fn scan(bytes: &[u8]) -> Scanned<Keys> {
         objects: 0,
         keys: HashSet::new(),
         repeated: false,
+        shape: ArgumentShape {
+            depth: 0,
+            values: 0,
+        },
     };
     scanner.document()?;
     Ok(if scanner.repeated {
         Keys::Repeated
     } else {
-        Keys::Unique
+        Keys::Unique(scanner.shape)
     })
 }
 
@@ -110,6 +133,7 @@ struct Scanner<'a> {
     objects: usize,
     keys: HashSet<(usize, Vec<u8>)>,
     repeated: bool,
+    shape: ArgumentShape,
 }
 
 impl Scanner<'_> {
@@ -149,6 +173,8 @@ impl Scanner<'_> {
     }
 
     fn value(&mut self) -> Scanned<bool> {
+        self.shape.values += 1;
+        self.shape.depth = self.shape.depth.max(self.frames.len());
         match self.significant()? {
             b'{' => {
                 self.at += 1;
@@ -445,6 +471,25 @@ mod tests {
             assert_eq!(
                 ToolArgumentIntegrity::classify_function_input(input),
                 ToolArgumentIntegrity::Valid,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn argument_shape_counts_every_value_and_the_deepest_nesting() {
+        let deep = format!("{{\"a\":{}1e400{}}}", "[".repeat(200), "]".repeat(200));
+        for (input, expected) in [
+            ("{}", Some((0, 1))),
+            (r#" {"a":[1,{"b":null}],"c":"x"} "#, Some((3, 6))),
+            (deep.as_str(), Some((201, 202))),
+            ("[{}]", None),
+            (r#"{"a":1,"a":2}"#, None),
+            (r#"{"a":1e400"#, None),
+        ] {
+            assert_eq!(
+                ArgumentShape::of_function_input(input).map(|shape| (shape.depth, shape.values)),
+                expected,
                 "{input}"
             );
         }
