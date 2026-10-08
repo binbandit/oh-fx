@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/core/upgrade/auto_upgrade.zig"
-status = "partial"
-modules = ["crates/ofx-app/src/app_upgrade_runtime/session_upgrader.rs", "crates/ofx-app/src/app_upgrade_runtime/live_release.rs", "crates/ofx-upgrade/src/auto.rs", "crates/oh-fx/src/auto_upgrade.rs"]
-note = "The interactive shell's in-process upgrader, its footer labels, stop-during-install, and the relaunch request Ctrl+G records are ported; the relaunch carries no previous revision, one-shot commands keep the detached run, and the five-minute cadence is a documented difference."
+status = "ported"
+modules = ["crates/ofx-app/src/app_upgrade_runtime.rs", "crates/ofx-app/src/app_upgrade_runtime/session_upgrader.rs", "crates/ofx-app/src/app_upgrade_runtime/live_release.rs", "crates/ofx-upgrade/src/auto.rs", "crates/oh-fx/src/auto_upgrade.rs", "crates/oh-fx/src/upgrade_command.rs"]
+note = "The interactive shell's in-process upgrader, its footer labels, stop-during-install, the relaunch request Ctrl+G records, and the auto_upgrade setting are ported; the release-build check, the cadence, the relaunch without a previous revision, the detached run for one-shot commands, and the embedded-host stop differ, as docs/differences/upgrade.md records."
 
 [[file]]
 upstream = "src/core/upgrade/update_notes.zig"
