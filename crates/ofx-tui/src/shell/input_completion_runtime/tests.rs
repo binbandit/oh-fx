@@ -401,3 +401,32 @@ fn a_question_hides_the_picker_until_it_is_answered() {
     let screen = test.screen();
     assert!(screen.contains("src/main.rs"), "{screen}");
 }
+
+#[test]
+fn a_file_query_typed_in_the_full_transcript_accepts_no_hidden_rows() {
+    for key in [b"\t".as_slice(), b"\r"] {
+        let (mut test, _) = files();
+        press(&mut test, b"\x0f");
+        let screen = press(&mut test, b"@ma");
+        assert!(screen.contains("full detail"), "{screen}");
+        assert!(!screen.contains("src/main.rs"), "{screen}");
+        press(&mut test, key);
+        assert!(!test.shell.composer.text().contains("src/main.rs"));
+        assert!(!format!("{:?}", test.sent()).contains("src/main.rs"));
+        assert!(test.shell.full_transcript.is_some());
+    }
+}
+
+#[test]
+fn file_completion_resumes_once_the_full_transcript_closes() {
+    let (mut test, _) = files();
+    press(&mut test, b"\x0f");
+    press(&mut test, b"look at @ma");
+    press(&mut test, b"\t");
+    assert_eq!(test.shell.composer.text(), "look at @ma");
+    let screen = press(&mut test, b"\x0f");
+    assert!(!screen.contains("full detail"), "{screen}");
+    assert!(screen.contains("src/main.rs"), "{screen}");
+    press(&mut test, b"\t");
+    assert_eq!(test.shell.composer.text(), "look at @src/main.rs ");
+}
