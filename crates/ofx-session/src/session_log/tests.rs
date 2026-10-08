@@ -2,7 +2,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::thread;
 
 use ofx_config::ProviderId;
@@ -14,6 +13,7 @@ use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, InterruptReason,
     InterruptedEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
 };
+use crate::spawn_gate::make_fifo;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -840,13 +840,7 @@ fn unsafe_session_entries_are_refused() {
 
     drop(fixture.start("fifo"));
     fs::remove_file(fixture.events("fifo")).unwrap();
-    assert!(
-        Command::new("mkfifo")
-            .arg(fixture.events("fifo"))
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(make_fifo(&fixture.events("fifo")));
     assert_eq!(
         load_session(&fixture.sessions, "fifo").err(),
         Some(SessionError::SessionPathUnsafe)
