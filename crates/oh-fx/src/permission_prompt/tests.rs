@@ -158,6 +158,29 @@ fn only_a_single_y_approves_and_everything_else_denies() {
         line
     };
     assert_eq!(decision(&mut &line(254, b"\n")[..]), ApprovalDecision::Once);
+    assert_eq!(decision(&mut &line(254, b"")[..]), ApprovalDecision::Once);
     assert_eq!(decision(&mut &line(255, b"\n")[..]), ApprovalDecision::Deny);
-    assert_eq!(decision(&mut &line(255, b"")[..]), ApprovalDecision::Once);
+    assert_eq!(decision(&mut &line(255, b"")[..]), ApprovalDecision::Deny);
+}
+
+#[test]
+fn an_overlong_answer_is_read_to_its_end_and_never_answers_the_next_prompt() {
+    let mut answers = vec![b' '; 257];
+    answers.extend_from_slice(b"y\r\nn\ny\n");
+    let mut input = &answers[..];
+    assert_eq!(
+        [
+            decision(&mut input),
+            decision(&mut input),
+            decision(&mut input),
+            decision(&mut input),
+        ],
+        [
+            ApprovalDecision::Deny,
+            ApprovalDecision::Deny,
+            ApprovalDecision::Once,
+            ApprovalDecision::Deny,
+        ]
+    );
+    assert!(input.is_empty());
 }
