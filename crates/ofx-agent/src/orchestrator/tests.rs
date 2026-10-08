@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use ofx_contract::{
     ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
     CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
-    PreparedCall, ProviderReplay, ReasoningEffort, ReplaySource, RootUserRequests, StreamSink,
-    SubagentStatus, ToolActivity, ToolCallId, ToolChoice, ToolEffect,
+    PreparedCall, ProviderReplay, ReasoningEffort, RecoveryToolState, ReplaySource,
+    RootUserRequests, StreamSink, SubagentStatus, ToolActivity, ToolCallId, ToolChoice, ToolEffect,
 };
 
 use super::*;

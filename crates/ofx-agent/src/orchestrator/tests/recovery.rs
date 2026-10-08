@@ -31,6 +31,16 @@ fn recovered(strategy: RecoveryStrategy) -> RecoveredTurn {
         messages: saved_step(),
         files: Vec::new(),
         outputs: Vec::new(),
+        source: String::new(),
+        source_presented: false,
+        tool_state: match strategy {
+            RecoveryStrategy::RegenerateTool => RecoveryToolState::ProvenUnexecuted,
+            RecoveryStrategy::ContinueAfterTool => RecoveryToolState::Confirmed,
+            RecoveryStrategy::ReconcileTool => RecoveryToolState::Uncertain,
+            RecoveryStrategy::RetryRequest | RecoveryStrategy::ContinueResponse => {
+                RecoveryToolState::None
+            }
+        },
         strategy,
         fast_mode: false,
     }
@@ -216,10 +226,26 @@ fn unavailable() -> Script {
 }
 
 fn checkpoint(steps: &[&str], progress: RecoveryProgress, consumed_attempts: usize) -> Logged {
+    saved_at(
+        progress,
+        consumed_attempts,
+        ("", RecoveryToolState::None),
+        steps,
+    )
+}
+
+fn saved_at(
+    progress: RecoveryProgress,
+    consumed_attempts: usize,
+    (source, tool_state): (&str, RecoveryToolState),
+    steps: &[&str],
+) -> Logged {
     Logged::Recovery {
         user: "go".to_owned(),
         steps: steps.iter().map(|step| (*step).to_owned()).collect(),
         files: Vec::new(),
+        source: source.to_owned(),
+        tool_state,
         progress,
         consumed_attempts,
         fast_mode: false,
@@ -350,7 +376,12 @@ async fn a_restart_saves_its_checkpoint_as_continuing_the_response() {
     let restarting = RecoveryProgress::Waiting(ModelRecoveryAction::ContinuingResponse);
     assert_eq!(
         checkpoints(&entries.lock().unwrap()).first(),
-        Some(&checkpoint(&[], restarting, 1))
+        Some(&saved_at(
+            restarting,
+            1,
+            ("Hel", RecoveryToolState::None),
+            &[]
+        ))
     );
 }
 
@@ -372,7 +403,12 @@ async fn a_regenerated_tool_call_saves_its_checkpoint_as_regenerating_the_tool()
     let regenerating = RecoveryProgress::Waiting(ModelRecoveryAction::RegeneratingTool);
     assert_eq!(
         checkpoints(&entries.lock().unwrap()).first(),
-        Some(&checkpoint(&[], regenerating, 1))
+        Some(&saved_at(
+            regenerating,
+            1,
+            ("", RecoveryToolState::ProvenUnexecuted),
+            &[]
+        ))
     );
 }
 
@@ -498,4 +534,88 @@ async fn checkpoints_and_saved_turns_hold_each_call_in_its_saved_form() {
         panic!("the tool step");
     };
     assert_eq!(tool_calls[0].arguments, r#"sent saved {"in_history":true}"#);
+}
+
+const CONTINUE_NOTE: &str = "The previous response was interrupted. Restart that response from the beginning using the completed tool results above. Do not repeat completed tool actions.";
+
+#[tokio::test(start_paused = true)]
+async fn a_continued_turn_shows_its_saved_reply_and_restarts_it() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        ),
+        text_reply("Done."),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let recovered = RecoveredTurn {
+        source: "Looking at".to_owned(),
+        ..recovered(RecoveryStrategy::ContinueResponse)
+    };
+    let (report, events) = continue_turn(&mut agent, recovered).await;
+    assert_eq!(report.final_text, "Done.");
+    let shown: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::AssistantText { text, .. } => Some(text.clone()),
+            UiEvent::AssistantRestarted { text, .. } => Some(format!("restart {text:?}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "Looking at".to_owned(),
+            format!(
+                "restart {:?}",
+                "\n\n[Response interrupted. Restarting.]\n\n"
+            ),
+            "Done.".to_owned(),
+        ]
+    );
+    for request in provider.requests() {
+        assert_eq!(
+            request.messages.last(),
+            Some(&ChatMessage::user(CONTINUE_NOTE))
+        );
+    }
+    assert_eq!(
+        recoveries(&events)[0].action,
+        Some(ModelRecoveryAction::ContinuingResponse)
+    );
+}
+
+#[tokio::test]
+async fn a_continued_turn_whose_saved_reply_is_already_shown_prints_only_the_restart_notice() {
+    let provider = FakeProvider::new(vec![text_reply("Done.")]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let recovered = RecoveredTurn {
+        source: "Looking at".to_owned(),
+        source_presented: true,
+        ..recovered(RecoveryStrategy::ContinueResponse)
+    };
+    let (report, events) = continue_turn(&mut agent, recovered).await;
+    assert_eq!(report.final_text, "Done.");
+    let shown: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::AssistantText { text, .. } => Some(text.clone()),
+            UiEvent::AssistantRestarted { text, .. } => Some(format!("restart {text:?}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            format!(
+                "restart {:?}",
+                "\n\n[Response interrupted. Restarting.]\n\n"
+            ),
+            "Done.".to_owned(),
+        ]
+    );
+    assert_eq!(
+        provider.requests()[0].messages.last(),
+        Some(&ChatMessage::user(CONTINUE_NOTE))
+    );
 }

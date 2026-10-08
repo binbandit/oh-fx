@@ -4,7 +4,7 @@ use tokio::time::Instant;
 
 use ofx_contract::{
     ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ProviderError,
-    ProviderErrorKind,
+    ProviderErrorKind, RecoveryToolState,
 };
 
 pub(crate) const DEFAULT_MAX_PROVIDER_ATTEMPTS: usize = 10;
@@ -92,6 +92,30 @@ pub(crate) enum ToolEvidence {
     ProvenUnexecuted,
     Confirmed,
     Uncertain,
+}
+
+impl ToolEvidence {
+    pub(crate) const fn restored(state: RecoveryToolState) -> Self {
+        match state {
+            RecoveryToolState::None => Self::None,
+            RecoveryToolState::ProvenUnexecuted => Self::ProvenUnexecuted,
+            RecoveryToolState::Confirmed => Self::Confirmed,
+            RecoveryToolState::Uncertain => Self::Uncertain,
+        }
+    }
+
+    pub(crate) const fn saved(self) -> RecoveryToolState {
+        match self {
+            Self::None => RecoveryToolState::None,
+            Self::ProvenUnexecuted => RecoveryToolState::ProvenUnexecuted,
+            Self::Confirmed => RecoveryToolState::Confirmed,
+            Self::Uncertain => RecoveryToolState::Uncertain,
+        }
+    }
+
+    pub(crate) fn observed(self, latest: Self) -> Self {
+        if latest == Self::None { self } else { latest }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

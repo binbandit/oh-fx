@@ -2066,7 +2066,11 @@ fn pause_a_response(home: &Home, id: &str) {
 }
 
 fn pause_a_response_under(home: &Home, id: &str, credential: &str) {
-    let checkpoint = json!({
+    save_paused(home, id, credential, |_| {});
+}
+
+fn save_paused(home: &Home, id: &str, credential: &str, edit: impl FnOnce(&mut Value)) {
+    let mut checkpoint = json!({
         "version": 2,
         "turn_id": 2,
         "user": {"text": "fix the build", "images": []},
@@ -2093,6 +2097,7 @@ fn pause_a_response_under(home: &Home, id: &str, credential: &str) {
         "consumed_provider_attempts": 1,
         "outstanding_reservation": false
     });
+    edit(&mut checkpoint);
     let seq = home.frames(id).len();
     fs::write(
         home.sessions().join(id).join("recovery.json"),
@@ -2149,6 +2154,53 @@ fn a_resumed_shell_continues_a_paused_response_on_its_own() {
             "assistant",
             "turn_completed"
         ]
+    );
+}
+
+#[test]
+fn a_resumed_shell_restarts_a_paused_reply_without_showing_it_twice() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Build fixed."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    save_paused(&home, &id, CONFIGURED_IDENTITY, |checkpoint| {
+        checkpoint["assistant_source"] = json!("Looking at the build");
+        checkpoint["cause"] = json!("network_interrupted");
+        checkpoint["action"] = json!("continuing_response");
+    });
+
+    let session = home.shell(&["-c"], "session resumed: first question");
+    let screen = wait(&session, "Build fixed.");
+    assert_eq!(
+        screen.matches("Looking at the build").count(),
+        1,
+        "{screen}"
+    );
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "fix the build",
+                "Looking at the build",
+                "continues automatically",
+                "[Response interrupted. Restarting.]",
+                "Build fixed."
+            ]
+        ),
+        "{screen}"
+    );
+    exit(session);
+    let sent = chat(&server.requests()[1]);
+    assert!(
+        sent.last().is_some_and(|(role, content)| role == "user"
+            && content.starts_with("The previous response was interrupted.")),
+        "{sent:?}"
     );
 }
 

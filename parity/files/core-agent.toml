@@ -92,7 +92,7 @@ note = "History, usage and request calibration exist; inline images and kernel c
 upstream = "src/core/agent/runtime/assistant_stream.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/assistant_stream.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Assistant normalization, text deltas, response language staging, the restart of an interrupted response with its notice, and tool-start evidence with streamed tool input counted as progress exist; restoring a checkpoint's saved assistant source is deferred to the next recovery slice; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
+note = "Assistant normalization, text deltas, response language staging, the restart of an interrupted response with its notice, tool-start evidence with streamed tool input counted as progress, and the restored reply of a continued checkpoint, which the interactive session treats as already presented, exist; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
 
 [[file]]
 upstream = "src/core/agent/runtime/checkpoint.zig"
@@ -158,7 +158,7 @@ note = "The recovery policy retries without a turn budget, throttles past the 15
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the continue_response restart with its note, and shell calls kept in their normalized form and projected into each request exist; vision, dynamic tool advertisement and Gateway or compaction recovery checkpoints remain absent, and writing the partial assistant source into a restart's checkpoint is deferred to the next recovery slice."
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the continue_response restart with its note, and shell calls kept in their normalized form and projected into each request exist; vision, dynamic tool advertisement and Gateway or compaction recovery checkpoints remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"

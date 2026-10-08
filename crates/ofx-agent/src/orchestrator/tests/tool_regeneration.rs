@@ -152,6 +152,9 @@ async fn a_continued_turn_derives_its_tool_note_again_from_its_saved_evidence() 
         messages: Vec::new(),
         files: Vec::new(),
         outputs: Vec::new(),
+        source: String::new(),
+        source_presented: false,
+        tool_state: RecoveryToolState::Uncertain,
         strategy: RecoveryStrategy::ReconcileTool,
         fast_mode: false,
     };
@@ -236,4 +239,26 @@ async fn a_regenerated_call_publishes_its_provisional_start_again_and_runs_once(
         2
     );
     assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_continued_turn_takes_its_tool_evidence_from_the_saved_tool_state() {
+    let provider = FakeProvider::new(vec![interrupted(Vec::new()), text_reply("done")]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let recovered = RecoveredTurn {
+        prompt: "fix it".to_owned(),
+        messages: Vec::new(),
+        files: Vec::new(),
+        outputs: Vec::new(),
+        source: String::new(),
+        source_presented: false,
+        tool_state: RecoveryToolState::Uncertain,
+        strategy: RecoveryStrategy::RetryRequest,
+        fast_mode: false,
+    };
+    let report = agent
+        .continue_turn(recovered, &mut |_| {}, &CancellationToken::new())
+        .await;
+    assert_eq!(report.final_text, "done");
+    assert_eq!(notes(&provider), [None, RECONCILE]);
 }

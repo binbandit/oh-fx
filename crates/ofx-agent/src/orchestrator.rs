@@ -62,7 +62,7 @@ use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
     may_run_at_provider, provider_executed,
 };
-use recovery::{Restart, recovery_tool_choice, restarted, retried_strategy};
+use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted, retried_strategy};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -201,6 +201,8 @@ struct Turn {
     reviews: TurnReviews,
     language: TurnLanguage,
     recovery: Option<RecoveryStrategy>,
+    tool_evidence: ToolEvidence,
+    restored: RestoredReply,
 }
 
 struct ProjectInstructions {
@@ -511,7 +513,29 @@ impl Agent {
             reviews: TurnReviews::default(),
             language: self.turn_language(prompt),
             recovery: None,
+            tool_evidence: ToolEvidence::None,
+            restored: RestoredReply::default(),
         }
+    }
+
+    fn restore_recovered(&mut self, turn: &mut Turn, recovered: RecoveredTurn) {
+        turn.earlier_files = EarlierEvidence::recovered(
+            recovered.files,
+            recovered
+                .messages
+                .iter()
+                .filter(|message| matches!(message, ChatMessage::Tool { .. }))
+                .count(),
+        );
+        self.history.extend(recovered.messages);
+        turn.raw_outputs = recovered.outputs;
+        turn.fast_mode = recovered.fast_mode;
+        turn.recovery = Some(recovered.strategy);
+        turn.tool_evidence = ToolEvidence::restored(recovered.tool_state);
+        turn.restored = RestoredReply {
+            source: recovered.source,
+            presented: recovered.source_presented,
+        };
     }
 
     async fn run_prompt(
@@ -543,18 +567,7 @@ impl Agent {
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
-            turn.earlier_files = EarlierEvidence::recovered(
-                recovered.files,
-                recovered
-                    .messages
-                    .iter()
-                    .filter(|message| matches!(message, ChatMessage::Tool { .. }))
-                    .count(),
-            );
-            self.history.extend(recovered.messages);
-            turn.raw_outputs = recovered.outputs;
-            turn.fast_mode = recovered.fast_mode;
-            turn.recovery = Some(recovered.strategy);
+            self.restore_recovered(&mut turn, recovered);
         }
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
         let (outcome, final_text, mut failure, ending) = match result {
@@ -685,6 +698,7 @@ impl Agent {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
                     turn.recovery = None;
+                    turn.tool_evidence = ToolEvidence::None;
                     completion
                 }
                 Err(Stop::Failed {
@@ -697,6 +711,7 @@ impl Agent {
                 Err(Stop::Interrupted { partial }) if self.steers_after_interrupt(cancel) => {
                     self.settle_measurement(measured, None);
                     turn.recovery = None;
+                    turn.tool_evidence = ToolEvidence::None;
                     self.keep_interrupted_reply(&partial);
                     step += 1;
                     continue;
@@ -895,7 +910,7 @@ impl Agent {
         let mut recovery = Recovery::default();
         let mut recovering_from = None;
         let mut pending = None;
-        let mut restart = Restart::new(turn.recovery);
+        let mut restart = Restart::begin(turn, events);
         loop {
             let sent = ModelRequest {
                 messages: restart.messages(request.messages),
@@ -911,7 +926,7 @@ impl Agent {
                 .attempt(turn, &sent, body.take(), &mut pending, events, cancel)
                 .await;
             let consumed = attempt - usize::from(!admitted);
-            let spoke = restart.observe(partial);
+            let spoke = restart.observe(partial, tool, &mut turn.tool_evidence);
             let error = match streamed {
                 Ok(completion) => {
                     if recovering_from.is_some() {
@@ -926,8 +941,7 @@ impl Agent {
             };
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
                 let recovery = recovering_from.map(|cause| (cause, consumed));
-                let partial = restart.into_partial();
-                return Err(self.interruption(turn, recovery, &error, partial, events));
+                return Err(self.interruption(turn, recovery, &error, restart, events));
             }
             let Some(cause) = recovery_cause(error.kind) else {
                 if let Some(status) =
@@ -940,7 +954,9 @@ impl Agent {
                     partial: restart.into_partial(),
                 });
             };
-            let evidence = restart.evidence(tool, cause, &error, &turn.language.stage);
+            let observed = (tool, cause, &error);
+            let evidence =
+                restart.evidence(&mut turn.tool_evidence, observed, &turn.language.stage);
             let decision = recovery.decide(cause, &error, streamed_bytes, evidence);
             let Some(action) = decision.strategy.action() else {
                 events(UiEvent::Recovery {
@@ -964,7 +980,7 @@ impl Agent {
                 restart.resend(self.request_messages(turn));
             }
             let mut status = retry_status(attempt, cause, action, &decision, &error);
-            self.record_wait(turn, cause, action, consumed, restart.partial())?;
+            self.record_wait(turn, cause, action, consumed, &restart)?;
             events(UiEvent::Recovery {
                 turn_id,
                 status: status.clone(),
@@ -973,8 +989,7 @@ impl Agent {
                 biased;
                 () = cancel.cancelled() => {
                     let recovery = Some((cause, consumed));
-                    let partial = restart.into_partial();
-                    return Err(self.interruption(turn, recovery, &error, partial, events));
+                    return Err(self.interruption(turn, recovery, &error, restart, events));
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
@@ -1068,20 +1083,27 @@ impl Agent {
         turn: &Turn,
         recovery: Option<(ModelRecoveryCause, usize)>,
         error: &ProviderError,
-        partial: String,
+        restart: Restart<'_>,
         events: EventSink<'_>,
     ) -> Stop {
         let Some((cause, attempt)) = recovery else {
-            return Stop::Interrupted { partial };
+            return Stop::Interrupted {
+                partial: restart.into_partial(),
+            };
         };
         if !self.recovery_pause.requested() {
             self.discard_recovery();
-            return Stop::Interrupted { partial };
+            return Stop::Interrupted {
+                partial: restart.into_partial(),
+            };
         }
-        if let Err(failure) = self.record_recovery(turn, cause, RecoveryProgress::Paused, attempt) {
+        let source = restart.source(&turn.language.stage);
+        if let Err(failure) =
+            self.record_recovery(turn, cause, RecoveryProgress::Paused, attempt, source)
+        {
             return Stop::Failed {
                 failure: TurnFailure::Persistence(failure),
-                partial,
+                partial: restart.into_partial(),
             };
         }
         events(UiEvent::Recovery {

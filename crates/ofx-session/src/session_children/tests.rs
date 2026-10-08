@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use ofx_config::ProviderId;
 use ofx_contract::{
     HistoryCut, HistoryStep, HistoryTurn, ModelRecoveryCause, ReasoningEffort, RecoveryPoint,
-    RecoveryProgress, StepResult, ToolCall, ToolResultStatus, TurnEnd, TurnId, TurnStop,
+    RecoveryProgress, RecoveryToolState, StepResult, ToolCall, ToolResultStatus, TurnEnd, TurnId,
+    TurnStop,
 };
 
 use crate::session_codec::recovery_checkpoint::RouteCredential;
@@ -326,8 +327,10 @@ fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_fi
             &RecoveryPoint {
                 turn_id: TurnId::new(1),
                 turn: active.clone(),
+                source: "",
                 cause: ModelRecoveryCause::RateLimited,
                 progress: RecoveryProgress::Paused,
+                tool_state: RecoveryToolState::None,
                 model: "openai/gpt-5",
                 requested_fast_mode: false,
                 fast_mode: false,
