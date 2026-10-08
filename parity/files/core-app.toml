@@ -130,9 +130,9 @@ note = "Slash/file completion, history routes and the model and provider column 
 
 [[file]]
 upstream = "src/core/app/input_full_transcript_runtime.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tui/src/shell/full_transcript_runtime.rs"]
-note = "Ctrl+O, encoded toggle, Escape/Ctrl+C close, three-row wheel/arrow scroll, page scroll, redraw, composer editing and pending-open cancellation have a live viewer consumer. Existing approval, question and footer-menu owners retain input by returning to inline mode. Native-clear probes are suspended in the viewer, and source-pinned native mouse selection is retained; full alternate-screen modal handoff and full-page preparation are missing."
+note = "Ctrl+O in each encoding toggles the full transcript, Escape and Ctrl+C close it, arrows and wheel reports scroll three rows, Page Up and Page Down scroll a page, Left, Right and Ctrl+L are inert, and other input cancels a pending open. An approval closes the screen, including one whose review upstream draws on that screen, as docs/differences/shell-transcript.md records."
 
 [[file]]
 upstream = "src/core/app/input_history_runtime.zig"

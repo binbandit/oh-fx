@@ -193,5 +193,3 @@ Port `src/gateway/xai_grok_models.zig` as of #1110 or later with the next OH-9 r
 4. Add the rows under a new `<old>..<new>` heading. Move the sync point to the last merge reviewed, update the date and `parity/UPSTREAM` to its full commit, and reconcile every file-map row against the new tree. The checker requires the documented Sync point to match that pin.
 
 When a deferred area is ported, move its rows to `ported` and update its file-map statuses in the same pull request. Partial implementations must retain concrete missing-behavior notes.
-
-The first OH-22 screen slice wires Ctrl+O to a retained-text viewport in the alternate buffer. Source-derived tests cover draft preservation, scroll keys, pending-open cancellation, committing primary damage before entry, terminal-safe text, live work, resize restoration, decision/menu ownership, native-clear probe isolation, native mouse selection, decoded wheel reports and job-control return to inline mode. The full-screen, input and presentation file rows are partial; expanded durable results and command output, full diffs, metadata, source-ID bookmarks and the asynchronous page worker remain unported.

@@ -158,7 +158,7 @@ note = "No Rust implementation of upstream Geometry, inputPointerPosition, Input
 upstream = "src/ui/full_transcript_screen.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/full_transcript_runtime.rs"]
-note = "A live alternate-buffer viewport reuses retained text and tool rows with terminal-safe wrapping, scrolling, resize and inline restoration. Durable result/command projection, full diff expansion, metadata, source-ID anchors and asynchronous page preparation are missing."
+note = "The alternate-screen viewport draws the retained entries with the inline text and tool rows, terminal-safe wrapping, tail following, scrolling, resize and inline restoration, under upstream's navigation, blank and status rows. Saved result and command output projection, full diff expansion, timestamp metadata, source-ID anchors and asynchronous page preparation are missing."
 
 [[file]]
 upstream = "src/ui/input/escape_parser.zig"
