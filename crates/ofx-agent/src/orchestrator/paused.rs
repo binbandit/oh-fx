@@ -35,7 +35,6 @@ impl Agent {
         restart: &Restart<'_>,
         events: EventSink<'_>,
     ) -> Stop {
-        let partial = restart.partial().to_owned();
         let source = restart.source(&turn.language.stage);
         let recorded = self.record_recovery(
             turn,
@@ -47,7 +46,7 @@ impl Agent {
         if let Err(failure) = recorded {
             return Stop::Failed {
                 failure: TurnFailure::Persistence(failure),
-                partial,
+                partial: restart.partial().to_owned(),
             };
         }
         events(UiEvent::Recovery {
@@ -65,9 +64,8 @@ impl Agent {
                 retry_wait: None,
             },
         });
-        Stop::Failed {
+        Stop::Paused {
             failure: TurnFailure::RecoveryPaused,
-            partial,
         }
     }
 
