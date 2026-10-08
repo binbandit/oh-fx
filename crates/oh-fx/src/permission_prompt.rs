@@ -40,8 +40,8 @@ fn permission_label(request: &ApprovalRequest) -> String {
     if request.file.is_some() {
         return FILE_MUTATION_LABEL.to_owned();
     }
-    match &request.command {
-        Some(CommandRequest::Run { command, .. }) => run_command_label(command),
+    let label = match &request.command {
+        Some(CommandRequest::Run { command, .. }) => return run_command_label(command),
         Some(CommandRequest::Observe | CommandRequest::SendInput { .. }) => {
             format!("{} interact", request.tool_name)
         }
@@ -50,7 +50,8 @@ fn permission_label(request: &ApprovalRequest) -> String {
             Some(label) => format!("{} {}", request.tool_name, label.target),
             None => request.tool_name.clone(),
         },
-    }
+    };
+    encode_terminal_safe(label.as_bytes(), usize::MAX).text
 }
 
 fn run_command_label(command: &str) -> String {

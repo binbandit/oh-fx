@@ -178,6 +178,36 @@ fn a_denied_prompt_reaches_the_model_and_the_turn_goes_on() {
 }
 
 #[test]
+fn a_label_holding_terminal_controls_is_shown_escaped() {
+    let home = Home::new();
+    let outside = home.root.join("outside").to_string_lossy().into_owned();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "grep_files",
+            &json!({"pattern": "\u{1b}[2J\u{1b}[Hspoofed", "path": outside}).to_string(),
+        )),
+        Reply::sse(&chat_text_events(&["Left alone."])),
+    ]);
+    home.configure(&server, "ask");
+    let mut session = home.spawn(&["ask", "search it"]);
+    let screen = wait(&session, "Approve? [y/N]");
+    assert!(
+        screen.contains(&prompt(r"grep_files \x1b[2J\x1b[Hspoofed")),
+        "{screen}"
+    );
+    let output = session.output();
+    assert!(
+        !output.windows(2).any(|pair| pair == b"\x1b["),
+        "{:?}",
+        String::from_utf8_lossy(&output)
+    );
+    session.send(b"n\r");
+    wait(&session, "Left alone.");
+    assert_eq!(finishes(&mut session), 0);
+}
+
+#[test]
 fn json_output_prompts_only_with_prompt_permissions() {
     let home = Home::new();
     let server = FakeServer::start([

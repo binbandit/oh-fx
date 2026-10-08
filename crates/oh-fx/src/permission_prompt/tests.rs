@@ -86,6 +86,27 @@ fn labels_follow_upstreams_permission_label_for_each_kind_of_call() {
 }
 
 #[test]
+fn labels_escape_control_characters_in_tool_names_and_targets() {
+    let spoof = "\x1b[2J\x1b[Hspoofed\nshell.run true";
+    let label = permission_label(&request("grep_files", Some(spoof)));
+    assert!(!label.contains(['\x1b', '\n']), "{label:?}");
+    assert_eq!(
+        label,
+        format!(
+            "grep_files {}",
+            encode_terminal_safe(spoof.as_bytes(), usize::MAX).text
+        )
+    );
+    let named = permission_label(&request("mcp__\x1b]0;title\x07echo", None));
+    assert!(!named.contains(['\x1b', '\x07']), "{named:?}");
+    let interacting = permission_label(&ApprovalRequest {
+        command: Some(CommandRequest::Observe),
+        ..request("\x1b[2Jshell", None)
+    });
+    assert!(!interacting.contains('\x1b'), "{interacting:?}");
+}
+
+#[test]
 fn run_labels_carry_upstreams_risk_and_safer_notes() {
     assert_eq!(
         run("git reset --hard"),
