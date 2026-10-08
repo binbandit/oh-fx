@@ -2932,6 +2932,18 @@ mod tests {
         }
     }
 
+    fn cut_off_sse(events: &[String]) -> Reply {
+        let body: String = events
+            .iter()
+            .flat_map(|event| ["data: ", event.as_str(), "\n\n"])
+            .collect();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len() + 1
+        );
+        Reply::Raw(format!("{head}{body}").into_bytes())
+    }
+
     async fn streamed_ask_from_events(
         calls: &[(&str, &str)],
         fail: bool,
@@ -2950,9 +2962,9 @@ mod tests {
         ];
         let mut replies = Vec::new();
         if retry {
-            let mut abandoned = streamed_read_events(&[("abandoned-read", "{")], true);
-            *abandoned.last_mut().unwrap() = serde_json::json!({"type":"response.failed","response":{"error":{"code":"server_error","message":"retry this request"}}}).to_string();
-            replies.push(Reply::sse(&abandoned));
+            let mut abandoned = streamed_read_events(&[("abandoned-read", "{")], false);
+            abandoned.pop();
+            replies.push(cut_off_sse(&abandoned));
         }
         let tool_name = if events.is_some() {
             "write_file"
