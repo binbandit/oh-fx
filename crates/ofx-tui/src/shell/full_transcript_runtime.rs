@@ -930,10 +930,15 @@ mod tests {
     fn a_reset_committed_as_the_viewer_opens_still_clears_tmux_history() {
         use crate::terminal::TmuxHistory;
         use crate::terminal::fake_tmux::FakeTmux;
+        use crate::terminal::test_pty;
 
         let fake = FakeTmux::new(0, 0);
         let mut test = TestShell::start();
-        test.shell.tmux_history = Some(TmuxHistory::with_program(fake.program(), "%3"));
+        test.shell.tmux_history = Some(TmuxHistory::with_program(
+            fake.program(),
+            "%3",
+            test_pty::WAIT,
+        ));
         test.screen();
         test.shell.renderer.reset_screen();
         test.type_bytes(b"\x0f");
