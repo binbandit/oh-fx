@@ -423,12 +423,12 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
         restored.messages,
         [
             ChatMessage::user("stop"),
-            closed("half\n\nThe previous response ended before completion."),
+            closed(&format!("half\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
             ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("worked"),
             assistant(None, &read),
             tool(&read[0], "ok", ToolResultStatus::Success),
-            closed("The previous response ended before completion."),
+            closed(INTERRUPTED_BEFORE_COMPLETION),
             ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
         ]
     );
