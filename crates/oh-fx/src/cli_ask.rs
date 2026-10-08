@@ -1031,17 +1031,7 @@ impl Presenter {
                 tool_name,
                 description,
                 ..
-            } => match self
-                .started_before_approval
-                .iter()
-                .position(|started| *started == call_id)
-            {
-                Some(index) => {
-                    self.started_before_approval.swap_remove(index);
-                    Ok(())
-                }
-                None => self.tool_started(call_id, &tool_name, &description),
-            },
+            } => self.tool_started_once(call_id, &tool_name, &description),
             UiEvent::ApprovalRequested { request, .. } => self.ask_permission(&request),
             UiEvent::ToolFinished {
                 call_id,
@@ -1170,6 +1160,25 @@ impl Presenter {
             Ok(())
         } else {
             self.write_status(StatusBlock::Progress, &line)
+        }
+    }
+
+    fn tool_started_once(
+        &mut self,
+        call_id: ToolCallId,
+        tool_name: &str,
+        description: &CallDescription,
+    ) -> io::Result<()> {
+        match self
+            .started_before_approval
+            .iter()
+            .position(|started| *started == call_id)
+        {
+            Some(index) => {
+                self.started_before_approval.swap_remove(index);
+                Ok(())
+            }
+            None => self.tool_started(call_id, tool_name, description),
         }
     }
 
