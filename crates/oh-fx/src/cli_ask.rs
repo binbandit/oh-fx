@@ -999,9 +999,7 @@ impl Presenter {
         let written = match event {
             UiEvent::AssistantText { text, .. } => self.assistant_text(&text),
             UiEvent::AssistantRestarted { text, .. } => self.push_restarted(&text),
-            UiEvent::AssistantBoundary { .. } if self.mode == OutputMode::Terminal => {
-                self.push_assistant("\n")
-            }
+            UiEvent::AssistantBoundary { .. } => self.assistant_boundary(),
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
             UiEvent::Recovery { status, .. } => self.recover(status),
             UiEvent::ToolProvisional {
@@ -1043,9 +1041,7 @@ impl Presenter {
                 ..
             } => self.tool_rejected(&call_id, tool_name, &arguments, reason, description),
             UiEvent::ContextNotice { text, .. } => return self.context_notice(&text),
-            UiEvent::SystemNotice { text } => {
-                self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
-            }
+            UiEvent::SystemNotice { text } => self.system_notice(&text),
             UiEvent::TurnFinished { .. } => {
                 self.provisional_calls.clear();
                 Ok(())
@@ -1054,7 +1050,6 @@ impl Presenter {
             | UiEvent::ToolDeferred { .. }
             | UiEvent::SubagentStatus { .. }
             | UiEvent::SteeringApplied { .. }
-            | UiEvent::AssistantBoundary { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
             | UiEvent::ApprovalRequested { .. }
@@ -1104,6 +1099,17 @@ impl Presenter {
     fn assistant_text(&mut self, text: &str) -> io::Result<()> {
         self.begin_response();
         self.push_assistant(text)
+    }
+
+    fn assistant_boundary(&mut self) -> io::Result<()> {
+        if self.mode != OutputMode::Terminal {
+            return Ok(());
+        }
+        self.push_assistant("\n")
+    }
+
+    fn system_notice(&mut self, text: &str) -> io::Result<()> {
+        self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
     }
 
     fn tool_finished(&mut self, call_id: &ToolCallId, record: ToolRecord) -> io::Result<()> {
