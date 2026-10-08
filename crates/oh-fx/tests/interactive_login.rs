@@ -140,8 +140,11 @@ fn hold_and_sign_in(session: &PtySession) -> String {
     session.send(b"/login\r");
     wait(session, "┃ /login");
     session.send(b"codex\r");
-    wait(session, "* provider: Preparing Codex subscription.");
     let screen = wait(session, "Waiting for authorization…");
+    assert!(
+        !screen.contains("Preparing Codex subscription."),
+        "{screen}"
+    );
     let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
     assert!(
         rows.iter().any(|row| row.starts_with("Sign in with Codex")

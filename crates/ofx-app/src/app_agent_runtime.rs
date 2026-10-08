@@ -687,6 +687,7 @@ impl Controller {
                 }
                 UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
+                UiCommand::SignIn { provider } => self.choose_login(&provider).await,
                 UiCommand::ReopenSignIn => self.steer_sign_in(PendingSignIn::reopen),
                 UiCommand::CancelSignIn => self.steer_sign_in(PendingSignIn::cancel),
                 UiCommand::RetryHeldPrompt => self.retry_held_prompt().await,
@@ -1389,6 +1390,7 @@ fn run_deferred(
         }),
         UiCommand::ListModels => return catalog.request(),
         UiCommand::SelectProvider { .. } => return state.provider_busy(),
+        UiCommand::SignIn { provider } => return state.sign_in_busy(&provider),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::StepSetting { setting, delta } => {
@@ -4013,6 +4015,21 @@ mod tests {
             .await;
         assert_eq!(notice_body(shown), [busy]);
         assert_eq!(switched(&mut harness, "other").await, [busy]);
+        for (provider, notice) in [
+            (
+                "codex",
+                "auth|Codex sign-in is unavailable until active and queued work finishes.",
+            ),
+            ("other", busy),
+        ] {
+            harness.send(UiCommand::SignIn {
+                provider: provider.to_owned(),
+            });
+            let shown = harness
+                .until(|event| matches!(event, UiEvent::Notice { .. }))
+                .await;
+            assert_eq!(notice_body(shown), [notice]);
+        }
         assert!(other.requests().is_empty());
     }
 
@@ -5467,6 +5484,61 @@ mod tests {
         let request = codex.requests()[0].json();
         assert_eq!(request["model"], CODEX_MODEL);
         assert!(request.to_string().contains("hello"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_codex_login_rejected_mid_session_signs_in_again_from_the_login_column() {
+        let auth = FakeServer::start([
+            Reply::status(400, r#"{"error":{"code":"refresh_token_expired"}}"#),
+            granted_tokens(),
+        ]);
+        let codex = FakeServer::start([
+            Reply::status(401, r#"{"error":{"message":"token expired"}}"#),
+            codex_text("welcome back"),
+        ]);
+        let catalog = codex_catalog(false, 4);
+        let home = codex_home();
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let endpoints = signing_in_endpoints(&auth, &codex, &catalog);
+        let setup = agent_setup_with(&home, &settings, endpoints).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.submit("hello");
+        let failed = within(harness.until(finished(TurnOutcome::Failed))).await;
+        assert!(failed.iter().any(|event| matches!(
+            event,
+            UiEvent::ApiStatus { text, .. }
+                if text.ends_with("Reconnect Codex through /login to repair this source.")
+        )));
+        assert!(!harness.home.path().join("data/chatgpt-auth.json").exists());
+        assert_eq!(
+            switched(&mut harness, "codex").await,
+            ["provider|Already using Codex subscription."]
+        );
+        harness.send(UiCommand::SignIn {
+            provider: "codex".to_owned(),
+        });
+        let started = within(harness.until(sign_in_started)).await;
+        assert!(notice_body(started).is_empty());
+        let url = sign_in_url(started);
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        let signed_in = within(harness.until(provider_notice)).await;
+        browser.join().unwrap();
+        assert_eq!(
+            notice_body(signed_in),
+            [
+                "provider|Preparing Codex subscription.",
+                &format!("provider|Switched to Codex subscription with {CODEX_MODEL}."),
+            ]
+        );
+        harness.submit("again");
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        let requests = codex.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].header("authorization"),
+            Some(format!("Bearer {SIGNED_IN_TOKEN}").as_str())
+        );
     }
 
     fn codex_message(call: &str, agent: &str, message: &str) -> Reply {

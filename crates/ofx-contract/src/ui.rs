@@ -477,6 +477,9 @@ pub enum UiCommand {
     SelectProvider {
         provider: String,
     },
+    SignIn {
+        provider: String,
+    },
     SelectModel {
         model: String,
         effort: ReasoningEffort,

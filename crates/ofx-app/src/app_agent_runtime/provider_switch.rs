@@ -23,6 +23,7 @@ const SIGN_IN_DENIED: &str = "Codex sign-in was denied. The current credential i
 const SIGN_IN_EXPIRED: &str =
     "Codex sign-in expired. The current credential is unchanged; run /login to try again.";
 const SIGN_IN_FAILED: &str = "Codex sign-in failed. The current credential is unchanged.";
+const SIGN_IN_BUSY: &str = "Codex sign-in is unavailable until active and queued work finishes.";
 
 pub(super) struct PendingSignIn {
     finish: BoxFuture<'static, Result<(), ChatGptError>>,
@@ -52,6 +53,14 @@ impl ControllerState {
         self.notice(NoticeTone::Neutral, PROVIDER_TOPIC, PROVIDER_BUSY);
     }
 
+    pub(crate) fn sign_in_busy(&self, provider: &str) {
+        if ProviderId::parse(provider) == Some(ProviderId::Codex) {
+            self.notice(NoticeTone::Warning, AUTH_TOPIC, SIGN_IN_BUSY);
+        } else {
+            self.provider_busy();
+        }
+    }
+
     pub(crate) fn open_provider_picker(&self, prefix: &str) {
         self.emit(UiEvent::ProviderPicker {
             prefix: prefix.to_owned(),
@@ -75,6 +84,14 @@ impl Controller {
                 .notice(NoticeTone::Neutral, PROVIDER_TOPIC, &body);
         }
         self.switch(target, Intent::Manual).await;
+    }
+
+    pub(super) async fn choose_login(&mut self, name: &str) {
+        if ProviderId::parse(name) == Some(ProviderId::Codex) {
+            self.begin_sign_in().await;
+        } else {
+            self.select_provider(name).await;
+        }
     }
 
     pub(super) fn steer_sign_in(&self, steer: impl FnOnce(&PendingSignIn)) {
