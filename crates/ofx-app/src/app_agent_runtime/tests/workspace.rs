@@ -79,6 +79,7 @@ async fn launched(server: &FakeServer, directories: &[&Path]) -> Harness {
                 endpoints: SubscriptionEndpoints::default(),
                 web_fetch_progress: None,
                 mode: None,
+                permission_prompts: false,
             },
             &CancellationToken::new(),
         )

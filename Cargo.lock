@@ -1041,6 +1041,7 @@ dependencies = [
  "ofx-http",
  "ofx-mcp",
  "ofx-session",
+ "ofx-shell",
  "ofx-testkit",
  "ofx-text",
  "ofx-upgrade",

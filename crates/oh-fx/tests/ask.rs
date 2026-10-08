@@ -1222,10 +1222,6 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
     let home = Home::with_settings(&portkey_settings(&server.base_url()));
     for (args, feature) in [
         (&["ask", "--image", "shot.png", "hi"][..], "ask --image"),
-        (
-            &["ask", "--prompt-permissions", "hi"],
-            "ask --prompt-permissions",
-        ),
         (&["ask", "--sessions-v2", "hi"], "ask --sessions-v2"),
         (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
         (
