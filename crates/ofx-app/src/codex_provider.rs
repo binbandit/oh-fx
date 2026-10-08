@@ -141,11 +141,21 @@ pub(crate) struct CatalogCapabilities {
     credential: CatalogCredential,
     login: Arc<SubscriptionLogin>,
     listed: OnceLock<Vec<CodexModel>>,
+    ready: Notify,
 }
 
 impl CatalogCapabilities {
     pub(crate) fn cached(&self) -> Option<&[CodexModel]> {
         self.listed.get().map(Vec::as_slice)
+    }
+
+    pub(crate) async fn ready(&self) {
+        let ready = self.ready.notified();
+        tokio::pin!(ready);
+        ready.as_mut().enable();
+        if self.listed.get().is_none() {
+            ready.await;
+        }
     }
 
     pub(crate) async fn listed(
@@ -165,7 +175,9 @@ impl CatalogCapabilities {
         )
         .map_err(|_| CatalogFailure::Transport)?;
         let models = catalog.fetch(Some(&self.credential), cancel).await?;
-        Ok(self.listed.get_or_init(|| models))
+        let listed = self.listed.get_or_init(|| models);
+        self.ready.notify_waiters();
+        Ok(listed)
     }
 }
 
@@ -350,6 +362,7 @@ pub(crate) async fn codex_subscription(
         credential: CatalogCredential::new(token.clone(), account_id.clone()),
         login: Arc::clone(&login),
         listed: OnceLock::new(),
+        ready: Notify::new(),
     };
     let access = CodexAccess::new(token, account_id.clone(), refresh_after_ms);
     let credentials = Arc::new(SubscriptionCredentials {

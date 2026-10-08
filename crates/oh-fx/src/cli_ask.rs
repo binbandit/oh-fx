@@ -1068,6 +1068,7 @@ impl Presenter {
             | UiEvent::HeldPromptDropped
             | UiEvent::PermissionModeChanged { .. }
             | UiEvent::StatuslineChanged { .. }
+            | UiEvent::ModelControlsChanged { .. }
             | UiEvent::StatuslineMenuOpened
             | UiEvent::SettingsMenuOpened { .. }
             | UiEvent::SettingsChanged { .. }

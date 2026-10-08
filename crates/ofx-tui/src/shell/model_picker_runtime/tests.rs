@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    CatalogRetry, ModelCatalogSource, ModelOption, SessionScope, SkillMenuFocus, SkillMenuGroup,
-    SkillMenuItem, SkillMenuSource, TurnId, UiEvent,
+    CatalogRetry, ModelCatalogSource, ModelControls, ModelOption, SessionScope, SkillMenuFocus,
+    SkillMenuGroup, SkillMenuItem, SkillMenuSource, TurnId, UiEvent,
 };
 
 use super::*;
@@ -235,6 +235,65 @@ fn arrows_wrap_and_enter_applies_a_model_without_efforts_or_fast_mode_at_once() 
         picks(&test),
         [pick("openai/gpt-y", ReasoningEffort::Auto, None)]
     );
+}
+
+fn status_row(test: &mut TestShell) -> String {
+    test.screen().lines().last().unwrap_or_default().to_owned()
+}
+
+#[test]
+fn the_status_line_shows_the_controller_s_effort_and_fast_mode() {
+    let mut test = TestShell::start();
+    assert_eq!(status_row(&mut test), "auto · model-a");
+    test.deliver(UiEvent::ModelControlsChanged {
+        controls: ModelControls {
+            effort: named("high"),
+            effort_supported: true,
+            fast: true,
+        },
+    });
+    assert_eq!(status_row(&mut test), "auto · model-a · high · ⚡︎");
+    test.deliver(UiEvent::ModelControlsChanged {
+        controls: ModelControls {
+            effort: named("high"),
+            effort_supported: false,
+            fast: false,
+        },
+    });
+    assert_eq!(status_row(&mut test), "auto · model-a");
+}
+
+#[test]
+fn the_status_line_previews_the_pending_model_effort_and_mode() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\r");
+    assert_eq!(status_row(&mut test), "auto · x · ⚡︎");
+    press(&mut test, DOWN);
+    assert_eq!(status_row(&mut test), "auto · x · low · ⚡︎");
+    press(&mut test, b"\r");
+    assert_eq!(status_row(&mut test), "auto · x · low · ⚡︎");
+    press(&mut test, UP);
+    assert_eq!(status_row(&mut test), "auto · x · low");
+    press(&mut test, ESC);
+    test.advance(100);
+    test.settle();
+    assert_eq!(status_row(&mut test), "auto · model-a");
+}
+
+#[test]
+fn the_status_line_marks_a_pending_model_named_fast() {
+    let mut test = TestShell::start();
+    press(&mut test, b"/model\r");
+    listed(
+        &mut test,
+        ModelCatalog::Listed {
+            models: vec![option("zai/glm-5.2-fast", &["low"], false)],
+            source: ModelCatalogSource::ProfileSettings,
+        },
+    );
+    press(&mut test, b"\r");
+    assert_eq!(status_row(&mut test), "auto · glm-5.2-fast · ⚡︎");
 }
 
 #[test]
@@ -793,4 +852,56 @@ fn pasted_blocks_stay_with_the_text_that_holds_them() {
     test.advance(40);
     test.draining(|shell| shell.flush_pending_input().unwrap());
     assert_eq!(test.shell.composer.expanded_text(), kept);
+}
+
+#[test]
+fn partial_effort_queries_preview_the_submitted_selection() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\rhi");
+    assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");
+    press(&mut test, b"\r\r");
+    assert_eq!(
+        picks(&test),
+        [pick("anthropic/claude-x", named("high"), Some(true))]
+    );
+}
+
+#[test]
+fn partial_mode_queries_preview_the_submitted_selection() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\r\rfa");
+    assert_eq!(status_row(&mut test), "auto · x · ⚡︎");
+    press(&mut test, b"\r");
+    assert_eq!(
+        picks(&test),
+        [pick(
+            "anthropic/claude-x",
+            ReasoningEffort::Auto,
+            Some(true)
+        )]
+    );
+}
+
+#[test]
+fn committed_controls_updates_preserve_a_pending_picker_and_appear_on_dismissal() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\rhi");
+    test.deliver(UiEvent::ModelControlsChanged {
+        controls: ModelControls {
+            effort: named("low"),
+            effort_supported: true,
+            fast: false,
+        },
+    });
+    assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");
+    press(&mut test, b"\rfa");
+    assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");
+    press(&mut test, ESC);
+    test.advance(100);
+    test.settle();
+    assert_eq!(status_row(&mut test), "auto · model-a · low");
+    assert!(picks(&test).is_empty());
 }

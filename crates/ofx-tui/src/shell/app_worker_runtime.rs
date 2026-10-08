@@ -210,6 +210,7 @@ impl Shell<'_> {
                 text,
             ))),
             UiEvent::ModelSelected { model } => self.model_selected(model),
+            UiEvent::ModelControlsChanged { controls } => self.options.model_controls = controls,
             UiEvent::SessionTitleChanged { title } => self.session_title_changed(title),
             UiEvent::StatuslineChanged { item, enabled } => self.statusline.set(item, enabled),
             event @ (UiEvent::ModelCatalog { .. }

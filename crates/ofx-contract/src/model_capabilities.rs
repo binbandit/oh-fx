@@ -26,6 +26,10 @@ impl ModelCapabilities {
     }
 }
 
+pub fn intrinsically_fast(model: &str) -> bool {
+    model.ends_with("-fast")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityLookup {
     Resolved(ModelCapabilities),
@@ -72,6 +76,19 @@ mod tests {
             plain.provider_options(Some("low"), true),
             ProviderOptions::default()
         );
+    }
+
+    #[test]
+    fn capabilities_infer_intrinsic_fast_identity_but_not_controls_from_model_ids() {
+        for (id, intrinsic_fast) in [
+            ("openai/gpt-5.6-sol", false),
+            ("anthropic/claude-opus-4.8", false),
+            ("zai/glm-5.2", false),
+            ("zai/glm-5.2-fast", true),
+            ("provider/breakfast", false),
+        ] {
+            assert_eq!(intrinsically_fast(id), intrinsic_fast, "{id}");
+        }
     }
 
     #[test]

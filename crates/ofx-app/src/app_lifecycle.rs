@@ -281,6 +281,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
+        model_controls: session.setup.model_controls(),
         provider: session.setup.provider().label().to_owned(),
         providers: provider_names(session.profile.settings()),
         permission_mode: session.permission_mode,
