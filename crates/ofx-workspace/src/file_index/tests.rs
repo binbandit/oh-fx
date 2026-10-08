@@ -573,6 +573,53 @@ fn a_cached_index_paints_first_and_a_real_scan_replaces_it() {
 }
 
 #[test]
+fn a_scope_change_during_a_load_queues_only_the_latest_scope_with_its_own_cache() {
+    let (_temp, root) = workspace();
+    let primary = root.join("primary");
+    let shared = root.join("shared");
+    write(&primary, "a.txt");
+    write(&shared, "b.txt");
+    let cache = tempfile::tempdir().unwrap();
+    file_index_cache::save(
+        cache.path(),
+        &[primary.as_path(), shared.as_path()],
+        &[file("cached.txt")],
+    )
+    .unwrap();
+    let mut index = FileIndex::new(Some(cache.path().to_owned()));
+    index.ensure_scope(&primary, &[]);
+    index.refresh_scope(&primary, &[root.join("missing")], 1);
+    index.refresh_scope(&primary, &[shared.clone(), primary.clone()], 2);
+    let shared_file = format!("{}/b.txt", shared.display());
+    assert!(index.is_current_candidate_kind(&shared_file, CandidateKind::File));
+    let adopt = |index: &mut FileIndex| {
+        let deadline = Instant::now() + WAIT;
+        while !index.join_if_done() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    adopt(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 0);
+    assert_eq!(paths(&search(&index, "")), ["a.txt"]);
+    adopt(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 2);
+    assert_eq!(paths(&search(&index, "")), ["cached.txt"]);
+    assert!(index.is_loading());
+    wait_until_settled(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 2);
+    assert_eq!(paths(&search(&index, "")), ["a.txt", shared_file.as_str()]);
+    index.refresh();
+    wait_until_settled(&mut index);
+    assert_eq!(paths(&search(&index, "")), ["a.txt", shared_file.as_str()]);
+    index.refresh_scope(&primary, &[], 3);
+    assert!(!index.is_current_candidate_kind(&shared_file, CandidateKind::File));
+    wait_until_settled(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 3);
+    assert_eq!(paths(&search(&index, "")), ["a.txt"]);
+}
+
+#[test]
 fn dropping_the_index_waits_for_a_cache_save_and_stops_later_ones() {
     let (_temp, root) = workspace();
     write(&root, "a.txt");

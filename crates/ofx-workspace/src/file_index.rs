@@ -165,18 +165,23 @@ struct Loader {
     thread: JoinHandle<LoaderOutcome>,
 }
 
+struct PendingScope {
+    roots: Vec<PathBuf>,
+    epoch: u64,
+}
+
 pub struct FileIndex {
     roots: Vec<PathBuf>,
     cache_dir: Option<PathBuf>,
     scope_epoch: u64,
     active: Option<Generation>,
     loader: Option<Loader>,
-    refresh_pending: bool,
+    pending_scope: Option<PendingScope>,
     stop: Arc<AtomicBool>,
     saving: Arc<Mutex<()>>,
     generation: usize,
     initial_failed: bool,
-    cache_attempted: bool,
+    cache_attempted_roots: Option<Vec<PathBuf>>,
 }
 
 impl FileIndex {
@@ -187,12 +192,12 @@ impl FileIndex {
             scope_epoch: 0,
             active: None,
             loader: None,
-            refresh_pending: false,
+            pending_scope: None,
             stop: Arc::new(AtomicBool::new(false)),
             saving: Arc::new(Mutex::new(())),
             generation: 0,
             initial_failed: false,
-            cache_attempted: false,
+            cache_attempted_roots: None,
         }
     }
 
@@ -200,23 +205,32 @@ impl FileIndex {
         if self.current_state() != IndexState::Idle || primary.as_os_str().is_empty() {
             return;
         }
-        self.roots = vec![primary.to_owned()];
-        for root in additional {
-            if !self.roots.contains(root) {
-                self.roots.push(root.clone());
-            }
-        }
+        self.roots = scope_roots(primary, additional);
         self.start_load();
     }
 
     pub fn refresh(&mut self) {
+        let (roots, epoch) = match &self.pending_scope {
+            Some(pending) => (pending.roots.clone(), pending.epoch),
+            None => (self.roots.clone(), self.scope_epoch),
+        };
+        self.refresh_roots(roots, epoch);
+    }
+
+    pub fn refresh_scope(&mut self, primary: &Path, additional: &[PathBuf], epoch: u64) {
+        self.refresh_roots(scope_roots(primary, additional), epoch);
+    }
+
+    fn refresh_roots(&mut self, roots: Vec<PathBuf>, epoch: u64) {
         if self.stop.load(Ordering::SeqCst) {
             return;
         }
         if self.loader.is_some() {
-            self.refresh_pending = true;
+            self.pending_scope = Some(PendingScope { roots, epoch });
             return;
         }
+        self.roots = roots;
+        self.scope_epoch = epoch;
         self.start_load();
     }
 
@@ -263,10 +277,15 @@ impl FileIndex {
                 }
             }
         }
-        if !self.stop.load(Ordering::SeqCst)
-            && (std::mem::take(&mut self.refresh_pending) || adopted_from_cache)
-        {
-            self.start_load();
+        if !self.stop.load(Ordering::SeqCst) {
+            if let Some(pending) = self.pending_scope.take() {
+                self.roots = pending.roots;
+                self.scope_epoch = pending.epoch;
+                self.start_load();
+            }
+            if adopted_from_cache {
+                self.start_load();
+            }
         }
         visible_changed
     }
@@ -344,18 +363,18 @@ impl FileIndex {
     }
 
     pub fn is_current_candidate_kind(&self, path: &str, expected: CandidateKind) -> bool {
-        let Some(primary) = self.roots.first() else {
+        let roots = self
+            .pending_scope
+            .as_ref()
+            .map_or(&self.roots, |pending| &pending.roots);
+        let Some(primary) = roots.first() else {
             return false;
         };
         if !is_terminal_safe(path.as_bytes()) {
             return false;
         }
         let resolved = if path.starts_with('/') {
-            if !self
-                .roots
-                .iter()
-                .any(|root| path_inside(root, Path::new(path)))
-            {
+            if !roots.iter().any(|root| path_inside(root, Path::new(path))) {
                 return false;
             }
             PathBuf::from(path)
@@ -373,7 +392,10 @@ impl FileIndex {
         if self.loader.is_some() || self.stop.load(Ordering::SeqCst) {
             return;
         }
-        let allow_cache = !std::mem::replace(&mut self.cache_attempted, true);
+        let allow_cache = self.cache_attempted_roots.as_ref() != Some(&self.roots);
+        if allow_cache {
+            self.cache_attempted_roots = Some(self.roots.clone());
+        }
         let id = self.generation + 1;
         let done = Arc::new(AtomicBool::new(false));
         let job = LoadJob {
@@ -402,6 +424,16 @@ impl FileIndex {
             }
         }
     }
+}
+
+fn scope_roots(primary: &Path, additional: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = vec![primary.to_owned()];
+    for root in additional {
+        if !roots.contains(root) {
+            roots.push(root.clone());
+        }
+    }
+    roots
 }
 
 impl Drop for FileIndex {

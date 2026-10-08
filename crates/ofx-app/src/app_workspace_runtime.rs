@@ -30,6 +30,10 @@ impl WorkspaceRuntime {
         &self.access
     }
 
+    pub(crate) fn live_roots(&self) -> LiveAdditionalRoots {
+        self.roots.clone()
+    }
+
     pub(crate) fn execute(&self, action: &Action) -> Result<Outcome, Failure> {
         execute(self.paths.as_ref(), &self.access, action)
     }
