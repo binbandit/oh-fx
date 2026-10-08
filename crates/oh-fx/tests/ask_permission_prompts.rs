@@ -178,6 +178,42 @@ fn a_denied_prompt_reaches_the_model_and_the_turn_goes_on() {
 }
 
 #[test]
+fn an_overlong_answer_never_answers_the_next_prompt() {
+    let home = Home::new();
+    let other = home.root.join("outside/other.txt");
+    fs::write(&other, "another secret\n").expect("write the second outside file");
+    let second_read =
+        chat_tool_call_events("call_2", "read_file", &json!({"path": other}).to_string());
+    let server = FakeServer::start([
+        Reply::sse(&home.read_call()),
+        Reply::sse(&second_read),
+        Reply::sse(&chat_text_events(&["Left alone."])),
+    ]);
+    home.configure(&server, "ask");
+    let mut session = home.spawn(&["ask", "read it twice"]);
+    wait(&session, "Approve? [y/N]");
+    let mut overlong = vec![b' '; 257];
+    overlong.extend_from_slice(b"y\r");
+    session.send(&overlong);
+    session
+        .wait_for(WAIT, |screen| screen.matches("Approve? [y/N]").count() == 2)
+        .unwrap_or_else(|screen| panic!("expected a second prompt on screen:\n{screen}"));
+    assert_eq!(server.requests().len(), 2);
+    session.send(b"n\r");
+    wait(&session, "Left alone.");
+    assert_eq!(finishes(&mut session), 0);
+    let requests = server.requests();
+    assert_eq!(
+        tool_messages(&requests[1]),
+        [json!({"role": "tool", "content": DENIED, "tool_call_id": "call_1"})]
+    );
+    assert_eq!(
+        tool_messages(&requests[2])[1],
+        json!({"role": "tool", "content": DENIED, "tool_call_id": "call_2"})
+    );
+}
+
+#[test]
 fn a_label_holding_terminal_controls_is_shown_escaped() {
     let home = Home::new();
     let outside = home.root.join("outside").to_string_lossy().into_owned();
