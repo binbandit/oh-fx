@@ -483,6 +483,22 @@ mod tests {
     }
 
     #[test]
+    fn read_file_spec_matches_the_upstream_golden() {
+        let tool = ReadFile::new(".");
+        let spec = tool.spec();
+        let actual = format!(
+            r#"{{"type":"function","name":{},"description":{},"inputSchema":{}}}"#,
+            serde_json::Value::from(spec.name.as_str()),
+            serde_json::Value::from(spec.description.as_str()),
+            spec.input_schema
+        );
+        assert_eq!(
+            actual.as_bytes(),
+            include_bytes!("../../../../parity/goldens/read_file_tool.json")
+        );
+    }
+
+    #[test]
     fn read_file_decodes_invalid_argument_shapes_as_failures() {
         let cases = [
             ("{", "read_file arguments must be valid JSON"),

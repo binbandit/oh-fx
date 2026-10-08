@@ -3,6 +3,7 @@ use std::path::Path;
 
 mod compaction;
 mod permission_tool;
+mod read_file;
 mod review_policy;
 mod tool_schema;
 
@@ -12,8 +13,16 @@ const GOLDENS: &str = "parity/goldens";
 const SYSTEM_SOURCE: &str = "src/builtins/system_prompt.md";
 const COMPACTION_SOURCE: &str = "src/core/compactor/summarize.zig";
 const CLASSIFIER_SOURCE: &str = "src/core/permissions/auto_classifier.zig";
+const TOOLS_SOURCE: &str = "src/builtins/tools.zig";
 const WRITER_SOURCE: &str = "src/core/tooling/model_tool_schema.zig";
-const AUDITED: &[(&str, &str)] = &[(WRITER_SOURCE, "6e5a3896a53ed14111ba21a181a7cc43b899407b")];
+const TOOL_SPECS_SOURCE: &str = "src/core/tooling/tool_specs.zig";
+const AUDITED: &[(&str, &str)] = &[
+    (WRITER_SOURCE, "6e5a3896a53ed14111ba21a181a7cc43b899407b"),
+    (
+        TOOL_SPECS_SOURCE,
+        "34f8e7b7542a9481d7676e2343f8ca16b76da95e",
+    ),
+];
 
 struct Extractor {
     golden: &'static str,
@@ -41,6 +50,11 @@ const EXTRACTORS: &[Extractor] = &[
         golden: "permission_decision_tool.json",
         sources: &[CLASSIFIER_SOURCE, WRITER_SOURCE],
         extract: permission_tool,
+    },
+    Extractor {
+        golden: "read_file_tool.json",
+        sources: &[TOOLS_SOURCE, WRITER_SOURCE],
+        extract: read_file,
     },
 ];
 
@@ -88,6 +102,11 @@ fn review_policy(sources: &Sources) -> Result<String, String> {
 fn permission_tool(sources: &Sources) -> Result<String, String> {
     let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
     permission_tool::extract(source(sources, CLASSIFIER_SOURCE)?, limit)
+}
+
+fn read_file(sources: &Sources) -> Result<String, String> {
+    let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
+    read_file::extract(source(sources, TOOLS_SOURCE)?, limit)
 }
 
 fn derive(
