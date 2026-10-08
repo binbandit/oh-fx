@@ -6,7 +6,6 @@ fn session(id: &str, title: Option<&str>, history_len: usize, language: &str) ->
         workspace_root: "/work".to_owned(),
         origin_workspace_root: "/origin".to_owned(),
         title: title.map(str::to_owned),
-        preview: title.map(|title| format!("{title}\nmore")),
         created_at_ms: 1_000,
         updated_at_ms: 1_700_000_000_123,
         conversation_language: language.to_owned(),
@@ -53,7 +52,7 @@ fn sessions_list_titles_details_paging_and_skipped_records() {
     );
     assert_eq!(
         snapshot.render(OutputFormat::Json),
-        "{\"kind\":\"sessions\",\"count\":2,\"skipped_invalid\":1,\"has_more\":true,\"next_cursor\":\"v1:1700000000123:def\",\"sessions\":[{\"id\":\"abc\",\"title\":\"Fix \\u001b[31mbug\",\"preview\":\"Fix \\u001b[31mbug\\nmore\",\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":1,\"conversation_language\":\"en-US\"},{\"id\":\"def\",\"title\":\"Untitled session\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":2,\"conversation_language\":\"und-Cyrl\"}]}\n"
+        "{\"kind\":\"sessions\",\"count\":2,\"skipped_invalid\":1,\"has_more\":true,\"next_cursor\":\"v1:1700000000123:def\",\"sessions\":[{\"id\":\"abc\",\"title\":\"Fix \\u001b[31mbug\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":1,\"conversation_language\":\"en-US\"},{\"id\":\"def\",\"title\":\"Untitled session\",\"preview\":null,\"workspace_root\":\"/work\",\"origin_workspace_root\":\"/origin\",\"created_at_ms\":1000,\"updated_at_ms\":1700000000123,\"history_len\":2,\"conversation_language\":\"und-Cyrl\"}]}\n"
     );
 }
 

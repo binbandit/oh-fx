@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use ofx_config::{PrivateDir, ProviderId};
-use ofx_contract::{HistoryCut, HistoryTurn, ReasoningEffort, TurnEnd};
+use ofx_contract::ReasoningEffort;
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
@@ -424,123 +424,6 @@ fn vanished_and_unreadable_sessions_leave_the_catalog_and_count_as_skipped() {
 }
 
 #[test]
-fn cached_rows_keep_and_return_their_first_prompt_preview() {
-    let sessions = Sessions::new();
-    sessions.seed("alpha", 1);
-    let listed = sessions.scan(true);
-    let preview = listed.summaries[0].preview.clone();
-    assert!(preview.is_some());
-    let row = sessions.cached().rows.remove(0);
-    assert_eq!(row.summary.as_ref().unwrap().preview, preview);
-    let mut row = row;
-    row.summary.as_mut().unwrap().preview = Some("cached preview".to_owned());
-    sessions.write_catalog(&[row]);
-    let reused = sessions.scan(true);
-    assert_eq!(
-        reused.summaries[0].preview.as_deref(),
-        Some("cached preview")
-    );
-}
-
-#[test]
-fn rows_saved_before_previews_are_read_again_to_backfill_them() {
-    let sessions = Sessions::new();
-    sessions.seed("alpha", 1);
-    sessions.seed("empty", 0);
-    let preview = sessions.scan(true).summaries[0].preview.clone();
-    assert!(preview.is_some());
-    let rows: Vec<Row> = sessions
-        .cached()
-        .rows
-        .into_iter()
-        .map(|mut row| {
-            row.summary.as_mut().unwrap().preview = None;
-            row
-        })
-        .collect();
-    sessions.write_catalog(&rows);
-    let listed = sessions.scan(true);
-    let alpha = listed
-        .summaries
-        .iter()
-        .find(|summary| summary.id == "alpha")
-        .unwrap();
-    assert_eq!(alpha.preview, preview);
-    let cached = sessions.cached();
-    let row = cached.row("alpha").unwrap();
-    assert_eq!(row.summary.as_ref().unwrap().preview, preview);
-    let empty = cached.row("empty").unwrap();
-    assert_eq!(
-        cached.reuse("empty", &empty.fingerprint),
-        Some(Reuse::Listed(
-            empty.summary.as_ref().unwrap().listed("empty").unwrap()
-        ))
-    );
-}
-
-#[test]
-fn read_only_listing_backfills_old_previews_before_the_first_turn_completes() {
-    let sessions = Sessions::new();
-    sessions.seed("compacted", 0);
-    let prompt = "first prompt\nsecond line";
-    let provider = SavedProvider::new(ProviderId::Gateway, None).unwrap();
-    let active = HistoryTurn {
-        user: prompt,
-        steps: Vec::new(),
-        steering: Vec::new(),
-        files: &[],
-        end: TurnEnd::Replied {
-            text: "",
-            provider_replay: None,
-        },
-    };
-    let mut session = resume_session(&sessions.dir, "compacted", LOCK_DEADLINE).unwrap();
-    session
-        .record_compaction("S", HistoryCut::default(), Some(&active), &provider)
-        .unwrap();
-    drop(session);
-    let original = sessions.scan(true).summaries.remove(0);
-    assert_eq!(original.history_len, 0);
-    assert!(original.has_checkpoint);
-    assert_eq!(original.preview.as_deref(), Some(prompt));
-    let mut row = sessions.cached().rows.remove(0);
-    row.summary.as_mut().unwrap().preview = None;
-    sessions.write_catalog(&[row.clone()]);
-    let catalog_bytes = fs::read(sessions.path(CATALOG_FILE)).unwrap();
-    let metadata = fs::read(sessions.path("compacted/session.json")).unwrap();
-    let events = fs::read(sessions.path("compacted/events.jsonl")).unwrap();
-    let store = crate::SessionStore::open_read_only(sessions.root.path(), "/workspace").unwrap();
-    let cached = store
-        .catalog()
-        .unwrap()
-        .listed_page(crate::ListScope::AllWorkspaces, None, 10);
-    assert_eq!(cached.summaries, [original]);
-    assert_eq!(
-        fs::read(sessions.path(CATALOG_FILE)).unwrap(),
-        catalog_bytes
-    );
-    assert_eq!(
-        sessions.cached().row("compacted").unwrap().fingerprint,
-        row.fingerprint
-    );
-    assert_eq!(
-        fs::read(sessions.path("compacted/session.json")).unwrap(),
-        metadata
-    );
-    assert_eq!(
-        fs::read(sessions.path("compacted/events.jsonl")).unwrap(),
-        events
-    );
-    fs::remove_file(sessions.path(CATALOG_FILE)).unwrap();
-    let uncached = store
-        .catalog()
-        .unwrap()
-        .listed_page(crate::ListScope::AllWorkspaces, None, 10);
-    assert_eq!(cached, uncached);
-    assert!(!sessions.path(CATALOG_FILE).exists());
-}
-
-#[test]
 fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
     let sessions = Sessions::new();
     sessions.seed("alpha", 1);
@@ -556,7 +439,7 @@ fn rows_oh_fx_cannot_list_are_classified_again_and_excluded_rows_stay_hidden() {
             let summary = row.summary.as_mut().unwrap();
             summary.title = Some("Cached title".to_owned());
             match row.id.as_str() {
-                "alpha" => summary.flags |= MANAGED_CHILDREN_FLAG,
+                "alpha" => summary.preview = Some("first prompt".to_owned()),
                 "beta" => summary.flags |= DISPLAY_METADATA_FLAG,
                 "gamma" => summary.workspace_root = None,
                 _ => row.summary = None,

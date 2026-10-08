@@ -123,11 +123,10 @@ fn sessions_are_listed_newest_first_with_their_titles_and_details() {
     assert_eq!(listing["count"], 2);
     let sessions = listing["sessions"].as_array().expect("sessions");
     assert_eq!(sessions[0]["title"], "Write the docs");
-    assert_eq!(sessions[0]["preview"], "Write the docs");
     assert_eq!(sessions[1]["title"], "Fix the parser");
-    assert_eq!(sessions[1]["preview"], "Fix the parser\nsecond line");
     let workspace = home.root.join("workspace").display().to_string();
     for session in sessions {
+        assert_eq!(session["preview"], Value::Null);
         assert_eq!(session["workspace_root"], workspace.as_str());
         assert_eq!(session["origin_workspace_root"], workspace.as_str());
         assert_eq!(session["history_len"], 1);

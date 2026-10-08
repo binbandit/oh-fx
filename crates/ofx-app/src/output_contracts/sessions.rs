@@ -125,7 +125,7 @@ impl SessionListSnapshot<'_> {
                 json!({
                     "id": session.id,
                     "title": session.title.as_deref().unwrap_or(FALLBACK_TITLE),
-                    "preview": session.preview,
+                    "preview": Value::Null,
                     "workspace_root": session.workspace_root,
                     "origin_workspace_root": session.origin_workspace_root,
                     "created_at_ms": session.created_at_ms,

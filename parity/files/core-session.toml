@@ -125,13 +125,13 @@ modules = []
 upstream = "src/core/session/session_discovery.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_discovery.rs"]
-note = "Classification of the layout upstream writes today exists, with the first-prompt preview; schema-v3 and legacy snapshot candidates and the fenced legacy upgrade are not needed for the reason in session_migration's row, and the doctor inspection belongs to oh-fx doctor (OH-41)."
+note = "Classification of the layout upstream writes today exists; schema-v3 and legacy snapshot candidates and the fenced legacy upgrade are not needed for the reason in session_migration's row, and the doctor inspection belongs to oh-fx doctor (OH-41)."
 
 [[file]]
 upstream = "src/core/session/session_display_metadata.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_display_metadata.rs"]
-note = "Display titles and the bounded first-prompt preview exist; the display.json sidecar belongs to the schema-v3 layout and is not needed for the reason in session_migration's row (NEW-G), and the image-only fallback remains."
+note = "Display-title derivation exists; the display.json sidecar belongs to the schema-v3 layout and the bounded first-prompt preview to legacy snapshot summaries, neither of which is needed for the reason in session_migration's row (NEW-G), and the image-only fallback remains."
 
 [[file]]
 upstream = "src/core/session/session_event.zig"

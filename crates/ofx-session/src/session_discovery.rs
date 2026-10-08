@@ -3,7 +3,6 @@ use std::os::unix::fs::MetadataExt;
 use ofx_config::PrivateDir;
 
 use crate::session_children::has_owner_marker;
-use crate::session_display_metadata::prompt_preview;
 use crate::session_error::SessionError;
 use crate::session_event::{ConversationEvent, decode_conversation_frame};
 use crate::session_log::managed_file::{Access, open_managed_file};
@@ -30,13 +29,9 @@ pub(crate) fn classify_session(
     let stat = file.metadata()?;
     let mut history_len: usize = 0;
     let mut has_checkpoint = false;
-    let mut preview = None;
     let mut reader = LineReader::new(&file, 0, stat.len())?;
     while let LineRead::Line(line) = reader.next_line()? {
         match decode_conversation_frame(&line)?.event {
-            ConversationEvent::User(user) if preview.is_none() => {
-                preview = prompt_preview(&user.text);
-            }
             ConversationEvent::ContextCheckpoint(_) => has_checkpoint = true,
             ConversationEvent::TurnCompleted(_) | ConversationEvent::Interrupted(_) => {
                 history_len = history_len
@@ -58,7 +53,6 @@ pub(crate) fn classify_session(
         workspace_root: metadata.workspace_root,
         origin_workspace_root: metadata.origin_workspace_root,
         title: metadata.title,
-        preview,
         created_at_ms: metadata.created_at_ms,
         updated_at_ms,
         conversation_language: metadata.conversation_language,
