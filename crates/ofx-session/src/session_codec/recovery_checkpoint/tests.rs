@@ -30,6 +30,7 @@ fn checkpoint() -> RecoveryCheckpoint {
                     stored_output_bytes: 12,
                     truncated: false,
                     process: None,
+                    permission_feedback: Vec::new(),
                 }],
             }],
             files: vec![FileEvidence {
@@ -273,10 +274,6 @@ fn checkpoints_upstream_rejects_or_oh_fx_cannot_hold_are_invalid() {
         base.replace("\"provider_result\":null", "\"provider_result\":\"r\""),
         base.replace("\"provider_native\":false", "\"provider_native\":true"),
         base.replace("\"review_feedback\":false", "\"review_feedback\":true"),
-        base.replace(
-            "\"permission_feedback\":[]",
-            "\"permission_feedback\":[\"no\"]",
-        ),
         base.replace(
             "\"command_output_replay\":null",
             "\"command_output_replay\":{\"kind\":\"unavailable\"}",
@@ -770,4 +767,132 @@ fn a_commands_process_presentation_is_written_and_read_in_upstreams_checkpoint_f
             "{invalid}"
         );
     }
+}
+
+const FEEDBACK: [&str; 2] = ["read it after writing", "then run the tests"];
+
+#[test]
+fn approval_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
+    let calls = read_step_calls();
+    let mut point = recovery_point(&calls, "fn main() {}");
+    point.turn.steps[0].tool_results[0].permission_feedback = FEEDBACK.to_vec();
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: Some(RouteCredential::chatgpt_subscription("acct_1")),
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        files: vec![FileEvidence {
+            path: "a.rs".to_owned(),
+            new_path: None,
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "read_file".to_owned(),
+            action: FileEvidenceAction::Read,
+            status: ToolResultStatus::Success,
+            model_view_covers_full_file: true,
+            stale: false,
+        }],
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(12, &source).unwrap().unwrap();
+    let expected = upstream_checkpoint()
+        .replace(
+            "\"cause\":\"response_interrupted\",\"action\":\"continuing_response\"",
+            "\"cause\":\"rate_limited\",\"action\":\"retrying_request\"",
+        )
+        .replace(IDENTITY, ACCOUNT_IDENTITY)
+        .replace(
+            "\"permission_feedback\":[]",
+            "\"permission_feedback\":[\"read it after writing\",\"then run the tests\"]",
+        );
+    assert_eq!(
+        String::from_utf8(written.clone()).unwrap(),
+        String::from_utf8(file_with(&expected, 12)).unwrap()
+    );
+    let read = decode_recovery_file(&written, 12).unwrap().unwrap();
+    assert_eq!(
+        read.interrupted_turn().steps[0].tool_results[0].permission_feedback,
+        FEEDBACK
+    );
+    let durable = upstream_checkpoint().replace(
+        "\"permission_feedback\":[]",
+        "\"permission_feedback\":[\"read it after writing\",{\"encoding\":\"base64\",\"data\":\"dGhlbiBydW4gdGhlIHRlc3Rz\"}]",
+    );
+    assert_eq!(
+        decoded(&durable).execution.tool_steps[0].tool_results[0].permission_feedback,
+        FEEDBACK
+    );
+    for invalid in [
+        ":[1]",
+        ":\"no\"",
+        ":null",
+        ":[{\"encoding\":\"base64\",\"data\":\"/w==\"}]",
+    ] {
+        let text = upstream_checkpoint().replace(
+            "\"permission_feedback\":[]",
+            &format!("\"permission_feedback\"{invalid}"),
+        );
+        assert_eq!(
+            decode_recovery_file(&file_with(&text, 1), 1),
+            Err(SessionError::InvalidRecoveryCheckpoint),
+            "{invalid}"
+        );
+    }
+    let missing = upstream_checkpoint().replace(",\"permission_feedback\":[]", "");
+    assert_eq!(
+        decode_recovery_file(&file_with(&missing, 1), 1),
+        Err(SessionError::InvalidRecoveryCheckpoint)
+    );
+}
+
+#[test]
+fn a_continuation_gives_approval_feedback_after_every_result_of_its_step() {
+    let mut saved = checkpoint();
+    let step = &mut saved.execution.tool_steps[0];
+    step.tool_calls
+        .push(ToolCall::new("call_2", "read_file", "{\"path\":\"b.rs\"}"));
+    let mut second = step.tool_results[0].clone();
+    second.tool_call_id = "call_2".to_owned();
+    second.output = "fn b() {}".to_owned();
+    second.permission_feedback = vec![FEEDBACK[1].to_owned(), String::new()];
+    step.tool_results[0].permission_feedback = vec![FEEDBACK[0].to_owned()];
+    step.tool_results.push(second);
+    let calls = step.tool_calls.clone();
+    assert_eq!(
+        saved.transcript().entries,
+        [
+            HistoryEntry::User("fix the build".to_owned()),
+            HistoryEntry::Assistant("Reading.".to_owned()),
+            HistoryEntry::User(FEEDBACK[0].to_owned()),
+            HistoryEntry::User(FEEDBACK[1].to_owned()),
+            HistoryEntry::User("also tests".to_owned()),
+            HistoryEntry::Assistant("Looking at".to_owned()),
+        ]
+    );
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let tool = |id: &str, content: &str| ChatMessage::Tool {
+        call_id: ToolCallId::new(id),
+        tool_name: "read_file".to_owned(),
+        content: content.to_owned(),
+        status: ToolResultStatus::Success,
+    };
+    assert_eq!(
+        saved.into_continuation(&codex, "gpt-5.4", false).messages,
+        [
+            ChatMessage::Assistant {
+                content: Some("Reading.".to_owned()),
+                tool_calls: calls,
+                provider_replay: None,
+            },
+            tool("call_1", "fn main() {}"),
+            tool("call_2", "fn b() {}"),
+            ChatMessage::permission_feedback(ToolCallId::new("call_1"), FEEDBACK[0]),
+            ChatMessage::permission_feedback(ToolCallId::new("call_2"), FEEDBACK[1]),
+            ChatMessage::permission_feedback(ToolCallId::new("call_2"), ""),
+            ChatMessage::restored_steering("also tests"),
+        ]
+    );
 }
