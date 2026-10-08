@@ -77,6 +77,15 @@ enum ConfigLayer {
     Project,
 }
 
+impl ConfigLayer {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiagnosticCause {
     MalformedSettings,
@@ -148,45 +157,52 @@ impl ConfigDiagnostic {
             key: Some(ADDITIONAL_DIRECTORIES_KEY.to_owned()),
         }
     }
+
+    pub fn doctor_detail(&self) -> String {
+        format!(
+            "{} config diagnostic: {}{}",
+            self.layer.label(),
+            self.cause.label(),
+            DiagnosticMetadata(self)
+        )
+    }
 }
 
 impl fmt::Display for ConfigDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let layer = match self.layer {
-            ConfigLayer::User => "user",
-            ConfigLayer::Project => "project",
-        };
-        write!(formatter, "config {layer}: {}", self.cause.label())?;
-        if let Some(key) = &self.key {
-            write!(formatter, "; key={key}")?;
-        }
-        match self.cause {
-            DiagnosticCause::RetiredSkillMatchFuzzy => formatter.write_str(
-                "; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
-            )?,
-            DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR)?,
-            DiagnosticCause::InvalidAdditionalDirectories => write!(
-                formatter,
-                "; additional_directories must be an array of at most {MAX_ADDITIONAL_DIRECTORIES} unique absolute directory paths for the current primary workspace"
-            )?,
-            DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
-                formatter,
-                "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
-            )?,
-            _ => {}
-        }
-        Ok(())
+        write!(
+            formatter,
+            "config {}: {}{}",
+            self.layer.label(),
+            self.cause.label(),
+            DiagnosticMetadata(self)
+        )
     }
 }
 
-impl ConfigDiagnostic {
-    pub fn doctor_detail(&self) -> String {
-        let rendered = self.to_string();
-        let (layer, detail) = rendered
-            .strip_prefix("config ")
-            .and_then(|rest| rest.split_once(": "))
-            .unwrap_or(("", &rendered));
-        format!("{layer} config diagnostic: {detail}")
+struct DiagnosticMetadata<'a>(&'a ConfigDiagnostic);
+
+impl fmt::Display for DiagnosticMetadata<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(diagnostic) = self;
+        if let Some(key) = &diagnostic.key {
+            write!(formatter, "; key={key}")?;
+        }
+        match diagnostic.cause {
+            DiagnosticCause::RetiredSkillMatchFuzzy => formatter.write_str(
+                "; remove skill_match_fuzzy; skills now load only through explicit invocation or the skill tool",
+            ),
+            DiagnosticCause::InvalidContextLimits => formatter.write_str(CONTEXT_LIMITS_REPAIR),
+            DiagnosticCause::InvalidAdditionalDirectories => write!(
+                formatter,
+                "; additional_directories must be an array of at most {MAX_ADDITIONAL_DIRECTORIES} unique absolute directory paths for the current primary workspace"
+            ),
+            DiagnosticCause::InvalidSkillSymlinkAuthorities => write!(
+                formatter,
+                "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
+            ),
+            _ => Ok(()),
+        }
     }
 }
 
