@@ -118,6 +118,7 @@ struct SavedToolResult {
     stored_output_bytes: u64,
     truncated: bool,
     process: Option<CommandProcessPresentation>,
+    permission_feedback: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +178,19 @@ impl RecoveryCheckpoint {
             if let Some(text) = step.assistant.as_ref().filter(|text| !text.is_empty()) {
                 entries.push(HistoryEntry::Assistant(text.clone()));
             }
+            for call in &step.tool_calls {
+                let answered = step
+                    .tool_results
+                    .iter()
+                    .find(|result| result.tool_call_id == call.id.as_str());
+                let feedback = answered.map_or(&[][..], |result| &result.permission_feedback);
+                entries.extend(
+                    feedback
+                        .iter()
+                        .filter(|text| !text.is_empty())
+                        .map(|text| HistoryEntry::User(text.clone())),
+                );
+            }
         }
         for entry in steering {
             push_steering(&mut entries, entry);
@@ -216,7 +230,11 @@ impl SavedToolStep {
                     status: result.status,
                     model_view_covers_full_file: false,
                     process: result.process,
-                    permission_feedback: Vec::new(),
+                    permission_feedback: result
+                        .permission_feedback
+                        .iter()
+                        .map(String::as_str)
+                        .collect(),
                 })
                 .collect(),
         }
@@ -436,11 +454,11 @@ fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {
         process: fields.present_or_null("command_process_presentation", |value| {
             process_presentation::checkpoint::read(value).map(Some)
         })?,
+        permission_feedback: list(fields.required("permission_feedback")?, durable_text)?,
     };
     fixed::<False>(&mut fields, "provider_native")?;
     fixed::<False>(&mut fields, "review_feedback")?;
     fields.signed("created_at_ms")?;
-    fixed::<NoItems>(&mut fields, "permission_feedback")?;
     for presentation in [
         "committed_file_presentation",
         "command_output_replay",

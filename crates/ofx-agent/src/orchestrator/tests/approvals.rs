@@ -1,6 +1,6 @@
 use ofx_contract::{
     ApprovalAnswer, ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalScope, GatedAction,
-    ProposedFileChange, RequestId, SessionGrant,
+    ProposedFileChange, RecoveryProgress, RequestId, SessionGrant,
 };
 
 use super::turn_log::{Logged, MemoryLog, logged};
@@ -305,6 +305,71 @@ async fn feedback_is_saved_with_the_result_it_follows() {
     );
     assert!(
         steps[0].contains(r#"call-2=WorkspaceOnly:Success""#),
+        "{steps:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn feedback_is_kept_in_the_checkpoint_of_a_paused_turn() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"access":"outside","serial":true}"#)]),
+        Script::Fail(
+            Vec::new(),
+            failure(ProviderErrorKind::ConnectivityLost, "ConnectionFailed"),
+        ),
+    ]);
+    let approvals = Approvals::default();
+    let (log, entries) = MemoryLog::shared();
+    let shared: Arc<FakeProvider> = Arc::clone(&provider);
+    let mut agent = logged(
+        Agent::new(
+            shared,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            Arc::new(RememberingGate::default()),
+            config(),
+        )
+        .with_approvals(approvals.clone()),
+        log,
+    );
+    let pause = agent.recovery_pause();
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    agent
+        .run_turn(
+            "go",
+            &mut |event| match &event {
+                UiEvent::ApprovalRequested { request, .. } => {
+                    assert!(approvals.resolve(
+                        request.id,
+                        ApprovalAnswer {
+                            decision: ApprovalDecision::Once,
+                            feedback: Some("then read the tests".to_owned()),
+                        }
+                    ));
+                }
+                UiEvent::Recovery { status, .. } if status.retry_wait.is_some() => {
+                    pause.request();
+                    trigger.cancel();
+                }
+                _ => {}
+            },
+            &cancel,
+        )
+        .await;
+    let entries = entries.lock().unwrap();
+    let Some(Logged::Recovery {
+        steps,
+        progress: RecoveryProgress::Paused,
+        ..
+    }) = entries.last()
+    else {
+        panic!("{entries:?}");
+    };
+    assert!(
+        steps[0].contains(
+            r#"call-1=Within(\"/approved/1\"):Success feedback=[\"then read the tests\"]"#
+        ),
         "{steps:?}"
     );
 }

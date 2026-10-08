@@ -1229,6 +1229,105 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
     );
 }
 
+const FEEDBACK: &str = "run it from the workspace root";
+
+fn feedback_follows_its_result(messages: &[ChatMessage]) -> bool {
+    messages.windows(2).any(|pair| {
+        matches!(&pair[0], ChatMessage::Tool { call_id, .. } if call_id.as_str() == "c2")
+            && pair[1] == ChatMessage::permission_feedback(ToolCallId::new("c2"), FEEDBACK)
+    })
+}
+
+#[test]
+fn a_paused_turn_keeps_its_approval_feedback_when_committed() {
+    for reopened in [false, true] {
+        let fixture = Fixture::new();
+        fixture.start(&finished_turn());
+        let provider = metadata().preferences.provider;
+        let calls = vec![ToolCall::new("c2", "shell", "{\"command\":\"ls\"}")];
+        let turn = HistoryTurn {
+            user: "fix the build",
+            steps: vec![HistoryStep {
+                assistant: "",
+                provider_replay: None,
+                tool_calls: &calls,
+                tool_results: vec![StepResult {
+                    call_id: "c2",
+                    tool_name: "shell",
+                    output: "out",
+                    output_bytes: 3,
+                    status: ToolResultStatus::Success,
+                    process: None,
+                    model_view_covers_full_file: false,
+                    permission_feedback: vec![FEEDBACK],
+                }],
+            }],
+            steering: Vec::new(),
+            files: &[],
+            end: replied(""),
+        };
+        let mut session = fixture.resume().unwrap();
+        session
+            .record_compaction(
+                "<summary>before</summary>",
+                HistoryCut {
+                    turns: 1,
+                    tool_steps: 0,
+                    steering: 0,
+                },
+                Some(&HistoryTurn {
+                    steps: Vec::new(),
+                    ..turn.clone()
+                }),
+                &provider,
+            )
+            .unwrap();
+        let point = RecoveryPoint {
+            turn_id: TurnId::new(2),
+            turn,
+            source: "",
+            cause: ModelRecoveryCause::ConnectivityLost,
+            progress: RecoveryProgress::Paused,
+            tool_state: RecoveryToolState::None,
+            model: "openai/gpt-5",
+            requested_fast_mode: false,
+            fast_mode: false,
+            attempt_limit: 10,
+            consumed_attempts: 1,
+        };
+        session
+            .record_recovery(&point, &provider, RouteCredential::configured())
+            .unwrap();
+        if reopened {
+            drop(session);
+            session = fixture.resume().unwrap();
+            assert_eq!(
+                session.recovery_transcript().unwrap().entries,
+                [
+                    HistoryEntry::User("fix the build".to_owned()),
+                    HistoryEntry::User(FEEDBACK.to_owned()),
+                ]
+            );
+        }
+        session.settle_open_recovery().unwrap();
+        assert!(!session.holds_recovery());
+        let log = fixture.log();
+        assert!(
+            log.iter().any(|line| line.contains("\"tool_result\":{")
+                && line.contains(&format!("\"permission_feedback\":[\"{FEEDBACK}\"]"))),
+            "{log:#?}"
+        );
+        assert!(feedback_follows_its_result(
+            &session.restored_history().unwrap().messages
+        ));
+        drop(session);
+        let mut resumed = fixture.resume().unwrap();
+        assert!(feedback_follows_its_result(
+            &resumed.restored_history().unwrap().messages
+        ));
+    }
+}
+
 #[test]
 fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() {
     let fixture = Fixture::new();
