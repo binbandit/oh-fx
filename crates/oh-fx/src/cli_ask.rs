@@ -17,7 +17,7 @@ use ofx_app::{
     open_store, recovered_turn,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
-use ofx_cli::{AskArgs, AskError, AskOutput, LaunchModifiers, read_stdin_prompt};
+use ofx_cli::{AskArgs, AskError, AskLayout, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{
     ConnectionError, ContextLimitName, ProfilePaths, SelectionError, Settings,
     save_yolo_acknowledged,
@@ -256,6 +256,16 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
     if let Some(feature) = unavailable_feature(args, modifiers) {
         return unavailable(&feature, args.output.json);
     }
+    run_prompt(args, &prompt, modifiers)
+}
+
+pub(crate) fn unavailable_launch(modifiers: &LaunchModifiers) -> Option<&'static str> {
+    unsupported_launch_modifier(modifiers)
+        .or_else(|| first_requested([(modifiers.selects_sessions_v2(), "--sessions-v2")]))
+        .or_else(sessions_v2_variable)
+}
+
+pub(crate) fn run_prompt(args: &AskArgs, prompt: &str, modifiers: &LaunchModifiers) -> ExitCode {
     if prompt.is_empty() && !args.session.continue_recovery {
         return Failure::code("InvalidConversationEvent").report(args.output.json);
     }
@@ -266,7 +276,7 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
     match runtime {
         Ok(runtime) => runtime.block_on(ask(
             args,
-            &prompt,
+            prompt,
             modifiers,
             SubscriptionEndpoints::default(),
         )),
@@ -887,7 +897,7 @@ fn output_mode(output: AskOutput) -> OutputMode {
         OutputMode::Json
     } else if output.quiet {
         OutputMode::Quiet
-    } else if io::stdout().is_terminal() {
+    } else if output.layout == AskLayout::FollowsStdout && io::stdout().is_terminal() {
         OutputMode::Terminal
     } else {
         OutputMode::Raw

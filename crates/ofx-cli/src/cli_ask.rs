@@ -28,11 +28,19 @@ pub enum StdinPrompt {
     ReadFailed,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AskLayout {
+    #[default]
+    FollowsStdout,
+    Raw,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AskOutput {
     pub json: bool,
     pub quiet: bool,
     pub no_color: bool,
+    pub layout: AskLayout,
 }
 
 #[derive(Debug, Default)]
@@ -199,6 +207,28 @@ fn trim_prompt_bytes(bytes: &[u8]) -> &[u8] {
 fn model_safe_text(bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?;
     (!text.contains('\0')).then(|| text.to_owned())
+}
+
+pub(crate) fn drafting_ask(prompt: String, auto: bool) -> AskArgs {
+    AskArgs {
+        prompt: AskPrompt::Text(prompt),
+        permissions: AskPermissions {
+            mode: auto.then_some(PermissionMode::Auto),
+            prompt: false,
+        },
+        model: None,
+        effort: None,
+        fast: None,
+        system_prompt: None,
+        output: AskOutput {
+            layout: AskLayout::Raw,
+            ..AskOutput::default()
+        },
+        session: AskSession::default(),
+        images: false,
+        timeout_ms: None,
+        json_errors: false,
+    }
 }
 
 pub(crate) fn parse_ask(args: Vec<OsString>) -> Result<AskArgs, AskError> {
