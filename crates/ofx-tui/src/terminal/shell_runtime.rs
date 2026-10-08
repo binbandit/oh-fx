@@ -231,7 +231,7 @@ impl Terminal {
     }
 
     pub(crate) fn query_cursor_position(&mut self) -> Result<CursorPosition, TerminalError> {
-        self.write_all(CURSOR_POSITION_QUERY.as_bytes())?;
+        self.write_unrecorded(CURSOR_POSITION_QUERY.as_bytes())?;
         let reply = self.read_reply(CURSOR_PROBE_TIMEOUT, PROBE_REPLY_LIMIT, |bytes| {
             find_position_span(bytes).map(|(span, _)| span)
         })?;
@@ -241,7 +241,7 @@ impl Terminal {
     }
 
     pub(crate) fn query_background(&mut self) -> Option<TerminalBackground> {
-        self.write_all(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
+        self.write_unrecorded(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
             .ok()?;
         let unclaimed = self.typeahead.len();
         let fenced = self.read_reply(
@@ -275,19 +275,19 @@ impl Terminal {
     }
 
     pub(crate) fn enable_theme_notifications(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_NOTIFICATION_ENABLE_SEQUENCE.as_bytes())
+        self.write_unrecorded(THEME_NOTIFICATION_ENABLE_SEQUENCE.as_bytes())
     }
 
     pub(crate) fn request_theme_color_scheme(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_COLOR_SCHEME_QUERY.as_bytes())
+        self.write_unrecorded(THEME_COLOR_SCHEME_QUERY.as_bytes())
     }
 
     pub(crate) fn request_theme_response_fence(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_RESPONSE_FENCE_QUERY.as_bytes())
+        self.write_unrecorded(THEME_RESPONSE_FENCE_QUERY.as_bytes())
     }
 
     pub(crate) fn request_theme_background(&self) -> Result<(), TerminalError> {
-        self.write_all(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
+        self.write_unrecorded(THEME_BACKGROUND_QUERY_WITH_FENCE.as_bytes())
     }
 
     pub(crate) fn poll_input(
@@ -321,14 +321,22 @@ impl Terminal {
     }
 
     pub(crate) fn write_all(&self, bytes: &[u8]) -> Result<(), TerminalError> {
-        let abort = self.write_abort.as_ref().map(AsFd::as_fd);
-        let (accepted, written) = write_fully(self.output.as_fd(), bytes, abort, None);
+        let (accepted, written) = self.write_through(bytes);
         if let Some(recorder) = &self.recorder
             && accepted > 0
         {
             recorder.stdout(&bytes[..accepted]);
         }
         written.map_err(TerminalError::from)
+    }
+
+    pub(crate) fn write_unrecorded(&self, bytes: &[u8]) -> Result<(), TerminalError> {
+        self.write_through(bytes).1.map_err(TerminalError::from)
+    }
+
+    fn write_through(&self, bytes: &[u8]) -> (usize, std::io::Result<()>) {
+        let abort = self.write_abort.as_ref().map(AsFd::as_fd);
+        write_fully(self.output.as_fd(), bytes, abort, None)
     }
 
     pub(crate) fn write_all_unless_full(&self, bytes: &[u8]) -> Result<bool, TerminalError> {
@@ -340,7 +348,7 @@ impl Terminal {
                 Err(errno) => return Err(errno.into()),
             }
         };
-        self.write_all(&bytes[written..])?;
+        self.write_unrecorded(&bytes[written..])?;
         Ok(true)
     }
 
@@ -765,6 +773,40 @@ mod tests {
             test_pty::terminal(pty).capabilities(),
         )
         .unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct Taped(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+    impl TerminalRecorder for Taped {
+        fn stdout(&self, bytes: &[u8]) {
+            self.0.borrow_mut().extend_from_slice(bytes);
+        }
+
+        fn stdin(&self, _: &[u8]) {}
+
+        fn resize(&self, _: u16, _: u16) {}
+
+        fn stop(&self) {}
+    }
+
+    #[test]
+    fn terminal_queries_and_the_tmux_clear_stay_off_the_tape() {
+        let pty = test_pty::open();
+        let mut terminal = test_pty::terminal(&pty);
+        let taped = Taped::default();
+        terminal.record_with(Box::new(taped.clone()));
+        terminal.enable_theme_notifications().unwrap();
+        terminal.request_theme_color_scheme().unwrap();
+        terminal.request_theme_response_fence().unwrap();
+        terminal.request_theme_background().unwrap();
+        assert!(terminal.write_all_unless_full(b"probe").unwrap());
+        let fake = crate::terminal::fake_tmux::FakeTmux::new(0, 0);
+        crate::terminal::TmuxHistory::with_program(fake.program(), "%1").clear(&terminal);
+        terminal.write_all(b"frame").unwrap();
+        let written = test_pty::read_written(&pty);
+        assert!(written.ends_with(b"probe\x1b[0m\x1b[2J\x1b[3J\x1b[Hframe"));
+        assert_eq!(*taped.0.borrow(), b"frame");
     }
 
     #[test]
