@@ -518,6 +518,26 @@ impl Agent {
         }
     }
 
+    fn restore_recovered(&mut self, turn: &mut Turn, recovered: RecoveredTurn) {
+        turn.earlier_files = EarlierEvidence::recovered(
+            recovered.files,
+            recovered
+                .messages
+                .iter()
+                .filter(|message| matches!(message, ChatMessage::Tool { .. }))
+                .count(),
+        );
+        self.history.extend(recovered.messages);
+        turn.raw_outputs = recovered.outputs;
+        turn.fast_mode = recovered.fast_mode;
+        turn.recovery = Some(recovered.strategy);
+        turn.tool_evidence = ToolEvidence::restored(recovered.tool_state);
+        turn.restored = RestoredReply {
+            source: recovered.source,
+            presented: recovered.source_presented,
+        };
+    }
+
     async fn run_prompt(
         &mut self,
         prompt: &str,
@@ -547,23 +567,7 @@ impl Agent {
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
-            turn.earlier_files = EarlierEvidence::recovered(
-                recovered.files,
-                recovered
-                    .messages
-                    .iter()
-                    .filter(|message| matches!(message, ChatMessage::Tool { .. }))
-                    .count(),
-            );
-            self.history.extend(recovered.messages);
-            turn.raw_outputs = recovered.outputs;
-            turn.fast_mode = recovered.fast_mode;
-            turn.recovery = Some(recovered.strategy);
-            turn.tool_evidence = ToolEvidence::restored(recovered.tool_state);
-            turn.restored = RestoredReply {
-                source: recovered.source,
-                presented: recovered.source_presented,
-            };
+            self.restore_recovered(&mut turn, recovered);
         }
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
         let (outcome, final_text, mut failure, ending) = match result {
