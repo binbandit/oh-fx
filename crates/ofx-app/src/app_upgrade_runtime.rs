@@ -33,9 +33,9 @@ pub(crate) struct InteractiveUpgrade {
 }
 
 impl InteractiveUpgrade {
-    pub(crate) fn start(events: UiEventSender, launch: Vec<OsString>) -> Self {
+    pub(crate) fn start(events: UiEventSender, launch: Vec<OsString>, enabled: bool) -> Self {
         Self {
-            upgrader: start_session_upgrader(events),
+            upgrader: start_session_upgrader(events, enabled),
             relaunch: Relaunch::carrying(launch),
         }
     }
@@ -56,8 +56,8 @@ impl InteractiveUpgrade {
     }
 }
 
-fn start_session_upgrader(events: UiEventSender) -> Option<SessionUpgrader> {
-    if !ofx_upgrade::auto_upgrade_allowed() {
+fn start_session_upgrader(events: UiEventSender, enabled: bool) -> Option<SessionUpgrader> {
+    if !enabled || !ofx_upgrade::auto_upgrade_allowed() {
         return None;
     }
     let paths = ProfilePaths::from_environment()?;

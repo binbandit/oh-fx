@@ -271,7 +271,11 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         sender.send(UiEvent::Notice { notice });
     }
     let lifecycle = Herdr::from_env().map(Arc::new);
-    let upgrade = InteractiveUpgrade::start(sender.clone(), session.relaunch_args);
+    let upgrade = InteractiveUpgrade::start(
+        sender.clone(),
+        session.relaunch_args,
+        session.profile.settings().auto_upgrade_enabled(),
+    );
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),

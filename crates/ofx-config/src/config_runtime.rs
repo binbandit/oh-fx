@@ -257,6 +257,8 @@ pub enum LayerError {
     InvalidPermissionRuleTool,
     #[error("InvalidSessionTitlesType")]
     InvalidSessionTitlesType,
+    #[error("InvalidAutoUpgradeType")]
+    InvalidAutoUpgradeType,
     #[error("InvalidThemeType")]
     InvalidThemeType,
 }
@@ -316,6 +318,7 @@ struct Layer {
     statusline_workspace: Option<bool>,
     permission_rules: Option<Vec<PermissionRule>>,
     session_titles: Option<bool>,
+    auto_upgrade: Option<bool>,
     theme: Option<String>,
 }
 
@@ -618,6 +621,13 @@ impl Settings {
         self.workspace
             .session_titles
             .or(self.global.session_titles)
+            .unwrap_or(true)
+    }
+
+    pub fn auto_upgrade_enabled(&self) -> bool {
+        self.workspace
+            .auto_upgrade
+            .or(self.global.auto_upgrade)
             .unwrap_or(true)
     }
 
@@ -1079,6 +1089,7 @@ fn parse_layer(object: &Map<String, Value>, scope: LayerScope) -> Result<ParsedL
         "session_titles",
         LayerError::InvalidSessionTitlesType,
     )?;
+    layer.auto_upgrade = parse_switch(object, "auto_upgrade", LayerError::InvalidAutoUpgradeType)?;
     layer.theme = match object.get("theme") {
         None => None,
         Some(Value::String(theme)) => (!theme.is_empty()).then(|| theme.clone()),
@@ -1736,6 +1747,10 @@ mod tests {
                 r#"{"session_titles":"off"}"#,
                 DiagnosticCause::MalformedSettings,
             ),
+            (
+                r#"{"auto_upgrade":"off"}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
             (r#"{"theme":5}"#, DiagnosticCause::MalformedSettings),
             (r#"{"model":" bad"}"#, DiagnosticCause::InvalidModelId),
         ] {
@@ -1960,6 +1975,27 @@ mod tests {
         assert_eq!(
             project.diagnostics()[0].to_string(),
             "config project: ignored_project_user_only_setting; key=session_titles"
+        );
+    }
+
+    #[test]
+    fn auto_upgrade_follows_workspace_overrides_and_default_on() {
+        assert!(fixture_settings("{}").auto_upgrade_enabled());
+        let off = fixture_settings(r#"{"auto_upgrade":false}"#);
+        assert!(off.diagnostics().is_empty());
+        assert!(!off.auto_upgrade_enabled());
+        let overridden = fixture(None, None);
+        let workspace = serde_json::to_string(&overridden.workspace.to_string_lossy()).unwrap();
+        let json = format!(
+            r#"{{"auto_upgrade":false,"workspaces":{{{workspace}:{{"auto_upgrade":true}}}}}}"#
+        );
+        fs::write(overridden.paths.config.join(SETTINGS_FILE), json).unwrap();
+        assert!(load(&overridden).unwrap().auto_upgrade_enabled());
+        let project = load(&fixture(None, Some(r#"{"auto_upgrade":false}"#))).unwrap();
+        assert!(project.auto_upgrade_enabled());
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=auto_upgrade"
         );
     }
 
