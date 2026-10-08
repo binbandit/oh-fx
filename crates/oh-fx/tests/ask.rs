@@ -694,6 +694,34 @@ fn a_restart_that_showed_nothing_keeps_the_commentary_before_it() {
 }
 
 #[test]
+fn a_prefill_rejection_after_a_tool_result_is_asked_again_with_a_continuation() {
+    let rejection = json!({"error": {"message": "AI_APICallError: This model does not support assistant message prefill. The conversation must end with a user message."}});
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call-1",
+            "read_file",
+            r#"{"path":"notes.txt"}"#,
+        )),
+        Reply::status(400, rejection.to_string()),
+        Reply::sse(&chat_text_events(&["Read it."])),
+    ]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("notes.txt"), "notes\n").unwrap();
+    let output = home.ask(
+        &["ask", "--no-save", "Please read the notes."],
+        &[("PORTKEY_API_KEY", PORTKEY_KEY)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).ends_with("Read it."), "{}", stdout(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let messages = requests[2].json()["messages"].as_array().unwrap().clone();
+    let last = messages.last().unwrap();
+    assert_eq!(last["role"], "user");
+    assert_eq!(last["content"], "Continue from the preceding tool result.");
+}
+
+#[test]
 fn sign_in_redirects_are_not_followed_and_explain_the_base_url() {
     let identity_provider = FakeServer::start([]);
     let location = format!("{}/authorize", identity_provider.base_url());

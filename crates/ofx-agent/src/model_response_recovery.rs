@@ -269,6 +269,10 @@ impl Recovery {
         self.pacing = decision.next_pacing;
         decision
     }
+
+    pub(crate) fn reset_pacing(&mut self) {
+        self.pacing = RetryPacing::Idle;
+    }
 }
 
 pub(crate) fn failed_in_stream(cause: ModelRecoveryCause, error: &ProviderError) -> bool {

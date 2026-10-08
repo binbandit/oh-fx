@@ -205,6 +205,7 @@ struct Turn {
     recovery: Option<RecoveryStrategy>,
     recovery_cause: Option<ModelRecoveryCause>,
     tool_evidence: ToolEvidence,
+    continuation: Option<&'static str>,
     restored: RestoredReply,
 }
 
@@ -528,6 +529,7 @@ impl Agent {
             recovery: None,
             recovery_cause: None,
             tool_evidence: ToolEvidence::None,
+            continuation: None,
             restored: RestoredReply::default(),
         }
     }
@@ -709,6 +711,8 @@ impl Agent {
                 .complete(turn, request, body, events, &step_cancel)
                 .await
                 .map_err(|stop| turn.language.filter_stop(stop));
+            self.history
+                .extend(turn.continuation.take().map(ChatMessage::user));
             let completion = match outcome {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
@@ -927,10 +931,10 @@ impl Agent {
         let mut recovery = Recovery::default();
         let mut recovering_from = None;
         let mut pending = None;
-        let mut restart = Restart::begin(turn, events);
+        let mut restart = Restart::begin(turn, request.messages, events);
         loop {
             let sent = ModelRequest {
-                messages: restart.messages(request.messages),
+                messages: restart.messages(),
                 ..request
             };
             let Attempt {
@@ -959,15 +963,17 @@ impl Agent {
             let observed = (tool, cause, &error);
             self.reconcile_broken(turn, observed, (attempt, consumed), &restart, events)?;
             let Some(cause) = cause else {
+                if self.asks_again(turn, (&error, tool, attempt), &mut restart) {
+                    recovery.reset_pacing();
+                    attempt += 1;
+                    continue;
+                }
                 if let Some(status) =
                     stopped_status(recovering_from, attempt, consumed, &error, spoke)
                 {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                return Err(Stop::Failed {
-                    failure: TurnFailure::Provider(error),
-                    partial: restart.into_partial(),
-                });
+                return Err(restart.failed(error));
             };
             let observed = (tool, cause, &error);
             let evidence =
@@ -979,10 +985,7 @@ impl Agent {
                     status: stalled_status(cause, consumed, &error, &decision),
                 });
                 self.discard_recovery();
-                return Err(Stop::Failed {
-                    failure: TurnFailure::Provider(error),
-                    partial: restart.into_partial(),
-                });
+                return Err(restart.failed(error));
             };
             if restart.replay_safe(cause, tool, &turn.language.stage) {
                 turn.fast_mode = false;
