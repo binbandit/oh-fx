@@ -31,7 +31,10 @@ impl ModelSource {
     pub(crate) async fn ready(&self) {
         match self {
             Self::Connection(_) | Self::Unavailable => std::future::pending().await,
-            Self::Codex(catalog) => catalog.ready().await,
+            Self::Codex(login) => match login.current() {
+                Some(subscription) => subscription.capabilities.ready().await,
+                None => std::future::pending().await,
+            },
         }
     }
 
@@ -179,6 +182,14 @@ mod tests {
             }],
             source: ModelCatalogSource::Subscription,
         }
+    }
+
+    #[tokio::test]
+    async fn a_signed_out_codex_catalog_never_becomes_ready() {
+        let source = ModelSource::Codex(Arc::default());
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(50), source.ready()).await;
+        assert!(waited.is_err());
     }
 
     #[test]
