@@ -266,7 +266,7 @@ note = "Streaming text/reasoning, tool starts and streamed tool input, provider 
 upstream = "src/core/agent/tool_preparation.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Built-in call preparation and panic containment exist; dynamic host tool and image-specific preparation are absent."
+note = "Built-in call preparation, the argument validation of advertised MCP calls before approval, and panic containment exist; dynamic host tool availability and image-specific preparation are absent."
 
 [[file]]
 upstream = "src/core/agent/worker_runtime.zig"

@@ -115,8 +115,8 @@ note = "Every tool of a connected server is advertised with its selected schema;
 [[file]]
 upstream = "src/core/tooling/tool_mcp_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/mcp_runtime.rs"]
-note = "The runtime publishes its tools as a dynamic tool source the agent reads before each step; availability checks for selected capabilities are missing."
+modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
+note = "The runtime publishes its tools as a dynamic tool source the agent reads before each step, and an advertised tool's arguments are validated when its call is prepared, before approval; availability checks for selected capabilities are missing."
 
 [[file]]
 upstream = "src/core/tooling/tool_presentation.zig"
