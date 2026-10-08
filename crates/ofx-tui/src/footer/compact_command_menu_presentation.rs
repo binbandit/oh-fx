@@ -4,6 +4,12 @@ use ofx_text::{prefix_by_width, visible_width};
 use crate::row_text::{Row, single_line_ellipsized};
 use crate::theme::Theme;
 
+mod workspace;
+
+pub(crate) use workspace::{
+    workspace_desired_row_count, workspace_menu_hint_row, workspace_menu_rows,
+};
+
 const TITLE: &str = "Status line";
 const TITLE_ROWS: usize = 2;
 const COLUMN_GAP: usize = 4;

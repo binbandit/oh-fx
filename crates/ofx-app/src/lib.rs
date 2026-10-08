@@ -9,6 +9,7 @@ mod app_session_runtime;
 mod app_steering_runtime;
 mod app_subagent_runtime;
 mod app_upgrade_runtime;
+mod app_workspace_runtime;
 mod approval_queue;
 mod codex_provider;
 mod context;
@@ -28,6 +29,7 @@ mod skill_mention_runtime;
 mod skills;
 mod tool_set;
 mod user_settings;
+mod workspace_commands;
 
 pub use app_bootstrap_runtime::{
     AgentSetup, ConnectError, CredentialSource, Launch, Profile, ProfileError, user_agent,

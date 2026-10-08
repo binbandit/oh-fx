@@ -71,7 +71,7 @@ fn answer(args: &WorkspaceArgs) -> Result<String, Failure> {
             Ok(snapshot(&primary, &access, Some(&mutation), args.format))
         }
         Outcome::Indeterminate(reconciliation) => Err((
-            indeterminate_message(reconciliation),
+            indeterminate_message(&reconciliation),
             INDETERMINATE_CODE.to_owned(),
         )),
     }
@@ -105,12 +105,12 @@ fn snapshot(
     .render(format)
 }
 
-fn indeterminate_message(reconciliation: Reconciliation) -> &'static str {
+fn indeterminate_message(reconciliation: &Reconciliation) -> &'static str {
     match reconciliation {
-        Reconciliation::Intended => {
+        Reconciliation::Intended(_) => {
             "settings durability is uncertain; reloaded settings match the requested update"
         }
-        Reconciliation::Previous => {
+        Reconciliation::Previous(_) => {
             "settings durability is uncertain; reloaded settings match the previous state, so the update was not applied"
         }
         Reconciliation::Unconfirmed => {

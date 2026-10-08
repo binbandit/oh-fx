@@ -31,6 +31,8 @@ mod steering_runtime;
 #[cfg(test)]
 mod test_shell;
 mod upgrade_shortcut;
+pub(crate) mod workspace_menu;
+mod workspace_menu_runtime;
 
 use std::collections::VecDeque;
 use std::mem;
@@ -64,6 +66,7 @@ use session_picker_runtime::SessionPicker;
 use settings_menu_runtime::SettingsMenu;
 use skills_menu::SkillsMenu;
 use statusline_menu_runtime::StatuslineMenu;
+use workspace_menu::WorkspaceMenuState;
 
 use crate::composer::{Composer, ComposerStash};
 use crate::footer::help_menu_presentation::HELP_MENU_HINTS;
@@ -254,6 +257,7 @@ pub(crate) struct Shell<'a> {
     skills_menu: Option<SkillsMenu>,
     help_menu: Option<HelpMenu>,
     statusline_menu: Option<StatuslineMenu>,
+    workspace_menu: Option<WorkspaceMenuState>,
     settings_menu: Option<SettingsMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     kept_recovery: Option<RecoveryStatus>,
@@ -471,6 +475,7 @@ impl<'a> Shell<'a> {
             skills_menu: None,
             help_menu: None,
             statusline_menu: None,
+            workspace_menu: None,
             settings_menu: None,
             skill_catalog,
             kept_recovery: None,
@@ -762,9 +767,14 @@ impl<'a> Shell<'a> {
         Ok(())
     }
 
+    fn compact_menu_open(&self) -> bool {
+        self.statusline_menu.is_some() || self.workspace_menu.is_some()
+    }
+
     fn menu_band_and_hint(&self) -> (Option<Vec<Row>>, Row, bool) {
         if let Some((band, hint)) = self
             .statusline_menu_band()
+            .or_else(|| self.workspace_menu_band())
             .or_else(|| self.settings_menu_band())
         {
             return (Some(band), hint, false);
@@ -775,10 +785,11 @@ impl<'a> Shell<'a> {
     }
 
     fn composer_frame_view(&mut self, banner_rows: usize) -> ComposerView {
+        let menu_open = self.compact_menu_open();
         match (&mut self.approval, &self.question) {
             (Some(prompt), _) => prompt.view(&self.theme, self.layout, banner_rows),
             (None, Some(prompt)) => prompt.composer_view(&self.theme, self.layout.cols),
-            (None, None) if self.statusline_menu.is_some() => ComposerView::hidden(),
+            (None, None) if menu_open => ComposerView::hidden(),
             (None, None) => composer_view(
                 &self.composer,
                 self.layout.cols,

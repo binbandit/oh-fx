@@ -53,7 +53,7 @@ impl Shell<'_> {
         if action == Some(Action::ToggleFullTranscript) {
             if self.full_transcript.is_some() {
                 self.close_full_transcript()?;
-            } else if self.statusline_menu.is_some() {
+            } else if self.compact_menu_open() {
                 return Ok(false);
             } else {
                 self.open_full_transcript();

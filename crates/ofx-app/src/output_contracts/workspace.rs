@@ -28,10 +28,20 @@ impl WorkspaceSnapshot<'_> {
         }
     }
 
+    pub fn render_interactive_body(&self) -> String {
+        let mut body = self.lines("");
+        body.pop();
+        body
+    }
+
     fn render_text(&self) -> String {
+        self.lines("[workspace] ")
+    }
+
+    fn lines(&self, prefix: &str) -> String {
         let primary = self.primary_directory.to_string_lossy();
         let mut out = format!(
-            "[workspace] primary={}\n[workspace] saved_suppressed={} limit={MAX_ADDITIONAL_DIRECTORIES}\n",
+            "{prefix}primary={}\n{prefix}saved_suppressed={} limit={MAX_ADDITIONAL_DIRECTORIES}\n",
             safe(&primary),
             self.saved_suppressed
         );
@@ -42,21 +52,21 @@ impl WorkspaceSnapshot<'_> {
                 .map_or_else(String::new, |path| format!(" {}", safe(path)));
             let _ = writeln!(
                 out,
-                "[workspace] {}{path} saved_changed={} runtime_changed={} launch_flag_can_restore={}",
+                "{prefix}{}{path} saved_changed={} runtime_changed={} launch_flag_can_restore={}",
                 mutation.action,
                 mutation.saved_changed,
                 mutation.runtime_changed,
                 mutation.launch_flag_can_restore
             );
             if mutation.launch_flag_can_restore {
-                let _ = writeln!(out, "[workspace] {RESTORE_WARNING}");
+                let _ = writeln!(out, "{prefix}{RESTORE_WARNING}");
             }
         }
         if self.additional_directories.is_empty() {
-            out.push_str("[workspace] additional directories: (none)\n");
+            let _ = writeln!(out, "{prefix}additional directories: (none)");
             return out;
         }
-        out.push_str("[workspace] additional directories:\n");
+        let _ = writeln!(out, "{prefix}additional directories:");
         for entry in self.additional_directories {
             let _ = writeln!(
                 out,

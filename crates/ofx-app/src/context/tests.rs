@@ -2,6 +2,8 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, SystemTime};
 
+use ofx_contract::LiveAdditionalRoots;
+
 use super::*;
 
 fn write_file(root: &Path, relative: &str, contents: &[u8]) {
@@ -417,6 +419,16 @@ async fn host_runtime_context_names_its_additional_directories() {
     let messages = context.runtime_context().await;
     assert!(messages[1].ends_with("instructions.\n- /srv/shared\n"));
     assert_eq!(messages[2], ASK_MODE_CONTEXT);
+}
+
+#[tokio::test]
+async fn host_runtime_context_names_the_additional_directories_installed_before_each_request() {
+    let roots = LiveAdditionalRoots::default();
+    let context = HostRuntimeContext::new(PathBuf::from("/tmp"), PermissionMode::Ask, false)
+        .with_additional_roots(roots.clone());
+    assert_eq!(context.runtime_context().await[1], ASK_MODE_CONTEXT);
+    roots.set(vec![PathBuf::from("/srv/docs")]);
+    assert!(context.runtime_context().await[1].ends_with("instructions.\n- /srv/docs\n"));
 }
 
 #[tokio::test]

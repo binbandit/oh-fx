@@ -43,8 +43,8 @@ note = "Inline approval copy and the file approval rows (the Review change heade
 [[file]]
 upstream = "src/ui/footer/compact_command_menu_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/compact_command_menu_presentation.rs"]
-note = "The status line menu's title, aligned on/off rows, short-terminal window and row count exist; the usage menu waits on the durable usage ledger and the workspace menu on additional workspace directories (`--add-dir`)."
+modules = ["crates/ofx-tui/src/footer/compact_command_menu_presentation.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation/workspace.rs"]
+note = "The status line menu's title, aligned on/off rows, short-terminal window and row count, and the workspace menu's pinned summary, directory and action rows, short-terminal window, info column and hints exist; the usage menu waits on the durable usage ledger."
 
 [[file]]
 upstream = "src/ui/footer/help_menu_presentation.zig"

@@ -12,6 +12,7 @@ use crate::types::{
     CommandProcessPresentation, FileChangeStats, PermissionMode, QuestionBatchEntry,
     ReasoningEffort, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, TurnSummary, Usage,
 };
+use crate::workspace_menu::WorkspaceMenu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TurnOutcome {
@@ -391,6 +392,9 @@ pub enum UiEvent {
         enabled: bool,
     },
     StatuslineMenuOpened,
+    WorkspaceMenuOpened {
+        menu: WorkspaceMenu,
+    },
     SettingsMenuOpened {
         snapshot: SettingsSnapshot,
     },

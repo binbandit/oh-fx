@@ -121,13 +121,13 @@ note = "Simple Unicode case folding and ASCII comparison behavior match the tran
 upstream = "src/core/workspace/workspace_access.zig"
 status = "partial"
 modules = ["crates/ofx-workspace/src/pathing.rs", "crates/ofx-workspace/src/workspace_access.rs"]
-note = "Saved and launch additional directories resolve, merge and activate as upstream does, with the saved source spellings and the staged add, remove and clear that the workspace command commits; the availability refresh arrives with /workspace."
+note = "Saved and launch additional directories resolve, merge, activate and refresh their availability as upstream does, with the saved source spellings and the staged add, remove and clear that workspace changes commit; the AccessScope view is not ported, since the permission gate, file changes and the runtime context read the active roots through one shared handle."
 
 [[file]]
 upstream = "src/core/workspace/workspace_commands.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-workspace/src/workspace_commands.rs"]
-note = "Add, remove and clear commit to settings with upstream's patch, effective capacity, launch flag warning and indeterminate-commit reconciliation; the failure phase and the reconciled access that /workspace reports arrive with it."
+note = "Add, remove and clear commit to settings with upstream's patch, effective capacity, launch flag warning, failure phase and indeterminate-commit reconciliation carrying the reconciled access."
 
 [[file]]
 upstream = "src/core/workspace/workspace_files.zig"
@@ -137,6 +137,6 @@ note = "Bounded git/fallback file and directory discovery, sorting and path filt
 
 [[file]]
 upstream = "src/core/workspace/workspace_menu.zig"
-status = "todo"
-modules = []
-note = "The additional-root workspace menu waits on additional workspace directories (`--add-dir`), which it lists and edits."
+status = "ported"
+modules = ["crates/ofx-tui/src/shell/workspace_menu.rs"]
+note = "The menu's action and row counts, wrapping movement, and selected action and row match upstream, offering removal only for saved directories."

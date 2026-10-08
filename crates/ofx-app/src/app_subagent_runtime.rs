@@ -8,9 +8,9 @@ use ofx_agent::{
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
-    ActiveMode, ApprovalRequest, CapabilityResolver, DynamicTools, LivePermissionMode,
-    ModelProvider, ReasoningEffort, ReviewTransport, RootUserRequests, SubagentProvider, Tool,
-    TurnId,
+    ActiveMode, ApprovalRequest, CapabilityResolver, DynamicTools, LiveAdditionalRoots,
+    LivePermissionMode, ModelProvider, ReasoningEffort, ReviewTransport, RootUserRequests,
+    SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{
@@ -42,7 +42,7 @@ pub(crate) struct ChildFactory {
     pub(crate) skills: Arc<HostSkills>,
     pub(crate) mcp: Option<Arc<dyn DynamicTools>>,
     pub(crate) workspace_root: PathBuf,
-    pub(crate) additional_roots: Vec<PathBuf>,
+    pub(crate) additional_roots: LiveAdditionalRoots,
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) parent: Mutex<AgentConfig>,
     pub(crate) mode: Option<ActiveMode>,

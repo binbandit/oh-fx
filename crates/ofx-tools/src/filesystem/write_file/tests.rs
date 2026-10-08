@@ -5,8 +5,9 @@ use std::sync::OnceLock;
 
 use ofx_contract::{
     ActionLabel, Admission, ApplicableTarget, CallDescription, Concurrency, FileChange,
-    FileChangeStats, FileMutation, FileMutationState, PathAccess, PermissionGate, PermissionMode,
-    TargetKind, ToolCallId, ToolContext, ToolEffect, ToolResultStatus, ToolStatusDetail,
+    FileChangeStats, FileMutation, FileMutationState, LiveAdditionalRoots, PathAccess,
+    PermissionGate, PermissionMode, TargetKind, ToolCallId, ToolContext, ToolEffect,
+    ToolResultStatus, ToolStatusDetail,
 };
 use ofx_permissions::PermissionPolicy;
 use ofx_workspace::{MAX_PATH_BYTES, UndoResult};
@@ -341,6 +342,36 @@ fn files_in_an_additional_directory_are_read_before_the_write_is_admitted() {
     assert_eq!(
         elsewhere.mutation.map(|mutation| mutation.state),
         Some(FileMutationState::Unread)
+    );
+}
+
+#[test]
+fn an_additional_directory_installed_after_the_tool_is_built_is_read_before_admission() {
+    let workspace = Fixture::new();
+    let shared = workspace.root.join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    let existing = shared.join("notes.txt");
+    fs::write(&existing, "old\n").unwrap();
+    let roots = LiveAdditionalRoots::default();
+    let tool = workspace.tool().with_additional_roots(roots.clone());
+    let unread = run(
+        &tool,
+        &arguments(&existing, "old\n"),
+        PathAccess::WorkspaceOnly,
+    );
+    assert_eq!(
+        unread.mutation.map(|mutation| mutation.state),
+        Some(FileMutationState::Unread)
+    );
+    roots.set(vec![shared.clone()]);
+    let unchanged = run(
+        &tool,
+        &arguments(&existing, "old\n"),
+        PathAccess::Within(shared.clone()),
+    );
+    assert_eq!(
+        unchanged.mutation.map(|mutation| mutation.state),
+        Some(FileMutationState::Unchanged)
     );
 }
 

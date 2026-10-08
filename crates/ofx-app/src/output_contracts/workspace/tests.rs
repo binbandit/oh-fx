@@ -89,6 +89,31 @@ fn the_snapshot_renders_each_source_and_warns_when_a_launch_flag_can_restore_acc
 }
 
 #[test]
+fn the_interactive_body_drops_the_prefix_and_the_last_newline() {
+    let entries = [
+        directory("/tmp/shared\u{1b}[2J", true, false, true),
+        directory("/tmp/run-only", false, true, false),
+    ];
+    let restorable = mutation("/tmp/removed", true);
+    let mut snapshot = WorkspaceSnapshot {
+        primary_directory: Path::new("/tmp/project"),
+        saved_suppressed: false,
+        additional_directories: &entries,
+        mutation: Some(&restorable),
+    };
+    assert_eq!(
+        snapshot.render_interactive_body(),
+        "primary=/tmp/project\nsaved_suppressed=false limit=16\nremove /tmp/removed saved_changed=false runtime_changed=true launch_flag_can_restore=true\nwarning: repeating --add-dir can restore removed access on the next launch\nadditional directories:\n - /tmp/shared\\x1b[2J saved=true command_line=false available=true active=true\n - /tmp/run-only saved=false command_line=true available=false active=false"
+    );
+    snapshot.mutation = None;
+    snapshot.additional_directories = &[];
+    assert_eq!(
+        snapshot.render_interactive_body(),
+        "primary=/tmp/project\nsaved_suppressed=false limit=16\nadditional directories: (none)"
+    );
+}
+
+#[test]
 fn error_codes_map_to_upstreams_messages() {
     assert_eq!(
         workspace_error_message("TooManyDirectories"),

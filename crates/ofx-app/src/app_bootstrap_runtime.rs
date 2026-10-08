@@ -19,9 +19,9 @@ use ofx_config::{
 };
 use ofx_contract::{
     ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools,
-    LivePermissionMode, ModelControls, ModelProvider, PermissionMode, QuestionAsker,
-    ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias,
-    parse_tool_args_object, provider_search_description,
+    LiveAdditionalRoots, LivePermissionMode, ModelControls, ModelProvider, PermissionMode,
+    QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool,
+    is_provider_search_alias, parse_tool_args_object, provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -40,6 +40,7 @@ use crate::app_agent_runtime::Emit;
 use crate::app_mcp_runtime::{McpHost, McpSources};
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
+use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
     CodexUnavailable, DetachedRefreshes, SubscriptionEndpoints, SubscriptionLogin,
@@ -163,6 +164,7 @@ pub struct AgentSetup {
     workspace_root: PathBuf,
     permissions: Arc<PermissionPolicy>,
     preferences: Option<ProfilePaths>,
+    workspace: WorkspaceRuntime,
     yolo_acknowledged: bool,
     approvals: Option<Arc<ApprovalQueue>>,
     change_tracker: Option<ChangeTracker>,
@@ -328,6 +330,7 @@ impl Profile {
             launch.fast_mode,
         );
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
+        let additional_roots = LiveAdditionalRoots::from(self.additional_roots());
         let change_tracker = interactive.then(ChangeTracker::default);
         let (questions, question_requests) = interactive.then(Questions::new).unzip();
         let tools = tool_set::ask_tools(
@@ -343,10 +346,11 @@ impl Profile {
                     .map(|questions| Arc::new(questions) as Arc<dyn QuestionAsker>),
                 web_fetch_progress: launch.web_fetch_progress,
                 change_tracker: change_tracker.as_ref(),
-                additional_roots: self.additional_roots(),
+                additional_roots: additional_roots.clone(),
             },
         );
-        let permissions = self.reviewed_policy(&permission_mode, &route.reviewer);
+        let permissions =
+            self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
         let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
         let children = ChildFactory {
@@ -359,7 +363,7 @@ impl Profile {
             skills: Arc::clone(&skills),
             mcp: ParentCatalog::shared(mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>)),
             workspace_root: self.workspace_root.clone(),
-            additional_roots: self.additional_roots(),
+            additional_roots: additional_roots.clone(),
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
             mode: launch.mode,
@@ -379,10 +383,11 @@ impl Profile {
             tools,
             delegation: Delegation::new(children),
             mcp,
-            context: self.runtime_context(&permission_mode, interactive),
+            context: self.runtime_context(&permission_mode, interactive, additional_roots.clone()),
             permissions,
             permission_mode,
             preferences: self.paths.clone(),
+            workspace: self.workspace_runtime(additional_roots),
             yolo_acknowledged: self.settings.yolo_acknowledged(),
             workspace_root: self.workspace_root.clone(),
             approvals,
@@ -400,10 +405,19 @@ impl Profile {
         })
     }
 
+    fn workspace_runtime(&self, additional_roots: LiveAdditionalRoots) -> WorkspaceRuntime {
+        WorkspaceRuntime::new(
+            self.access.clone(),
+            additional_roots,
+            self.paths.clone().filter(|_| self.home.is_some()),
+        )
+    }
+
     fn runtime_context(
         &self,
         permission_mode: &LivePermissionMode,
         interactive: bool,
+        additional_roots: LiveAdditionalRoots,
     ) -> Arc<HostRuntimeContext> {
         Arc::new(
             HostRuntimeContext::new(
@@ -411,7 +425,7 @@ impl Profile {
                 permission_mode.clone(),
                 interactive,
             )
-            .with_additional_roots(self.additional_roots()),
+            .with_additional_roots(additional_roots),
         )
     }
 
@@ -454,10 +468,11 @@ impl Profile {
         &self,
         permission_mode: &LivePermissionMode,
         reviewer: &Arc<dyn ReviewTransport>,
+        additional_roots: LiveAdditionalRoots,
     ) -> Arc<PermissionPolicy> {
         Arc::new(
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
-                .with_additional_roots(self.additional_roots())
+                .with_additional_roots(additional_roots)
                 .with_reviewer(Reviewer::new(Arc::clone(reviewer), DEFAULT_REVIEW_TIMEOUT)),
         )
     }
@@ -841,6 +856,14 @@ impl AgentSetup {
 
     pub(crate) fn preferences(&self) -> Option<&ProfilePaths> {
         self.preferences.as_ref()
+    }
+
+    pub(crate) fn workspace(&self) -> &WorkspaceRuntime {
+        &self.workspace
+    }
+
+    pub(crate) fn workspace_mut(&mut self) -> &mut WorkspaceRuntime {
+        &mut self.workspace
     }
 
     pub(crate) fn mcp_host(&self, emit: Emit) -> Option<McpHost> {
