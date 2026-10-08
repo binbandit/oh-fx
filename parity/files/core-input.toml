@@ -80,7 +80,7 @@ note = "Text editing and keyboard selection exist; upstream pointer-selection be
 upstream = "src/core/input/file_completion_state.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/composer/file_completion_state.rs"]
-note = "Staged rows, presented receipts and index revisions exist; upstream workspace scope_epoch invalidation is absent."
+note = "Staged rows, presented receipts and index revisions carrying the workspace scope epoch exist, so a scope change restages the rows; opening a new episode on a scope change is absent."
 
 [[file]]
 upstream = "src/core/input/file_picker_path.zig"

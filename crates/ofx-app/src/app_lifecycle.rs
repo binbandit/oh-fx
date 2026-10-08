@@ -301,6 +301,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         prompt_history,
         file_mentions: Some(Box::new(WorkspaceFileMentions::start(
             session.profile.workspace_root(),
+            session.setup.workspace().live_roots(),
             session.profile.cache_dir(),
         ))),
         skill_catalog: Some(Box::new(SkillMentions::new(session.setup.skills().clone()))),

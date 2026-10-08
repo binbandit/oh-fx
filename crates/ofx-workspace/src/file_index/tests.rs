@@ -357,7 +357,7 @@ fn write(root: &Path, relative: &str) {
 }
 
 fn discovered(root: &Path) -> Vec<(String, CandidateKind)> {
-    discovery::discover_scope(root, &AtomicBool::new(false))
+    discovery::discover_scope(&[root.to_owned()], &AtomicBool::new(false))
         .unwrap()
         .into_iter()
         .map(|candidate| (candidate.path, candidate.kind))
@@ -431,7 +431,7 @@ fn a_repository_git_cannot_read_fails_instead_of_walking() {
     write(&root, "src/main.rs");
     fs::write(root.join(".git"), "not a gitdir\n").unwrap();
     assert_eq!(
-        discovery::discover_scope(&root, &AtomicBool::new(false)),
+        discovery::discover_scope(std::slice::from_ref(&root), &AtomicBool::new(false)),
         Err(discovery::DiscoveryError::Failed)
     );
 }
@@ -462,13 +462,70 @@ fn plain_directories_are_walked_without_git_metadata_or_ignored_names() {
         ]
     );
     assert_eq!(
-        discovery::discover_scope(&root.join("missing"), &AtomicBool::new(false)),
+        discovery::discover_scope(&[root.join("missing")], &AtomicBool::new(false)),
         Err(discovery::DiscoveryError::Failed)
     );
     assert_eq!(
-        discovery::discover_scope(&root, &AtomicBool::new(true)),
+        discovery::discover_scope(std::slice::from_ref(&root), &AtomicBool::new(true)),
         Err(discovery::DiscoveryError::Canceled)
     );
+}
+
+#[test]
+fn additional_roots_follow_the_workspace_with_absolute_paths_and_no_duplicates() {
+    let (_temp, root) = workspace();
+    let shared = root.join("shared");
+    let primary = root.join("primary");
+    write(&primary, "a.txt");
+    write(&primary, "nested/inner.txt");
+    write(&shared, "b.txt");
+    let roots = [
+        primary.clone(),
+        root.join("missing"),
+        shared.clone(),
+        primary.join("nested"),
+    ];
+    let listed: Vec<(String, CandidateKind)> =
+        discovery::discover_scope(&roots, &AtomicBool::new(false))
+            .unwrap()
+            .into_iter()
+            .map(|candidate| (candidate.path, candidate.kind))
+            .collect();
+    assert_eq!(
+        listed,
+        [
+            ("a.txt".to_owned(), CandidateKind::File),
+            ("nested".to_owned(), CandidateKind::Directory),
+            ("nested/inner.txt".to_owned(), CandidateKind::File),
+            (format!("{}/b.txt", shared.display()), CandidateKind::File),
+        ]
+    );
+    assert_eq!(
+        discovery::discover_scope(
+            &[root.join("missing"), shared.clone()],
+            &AtomicBool::new(false)
+        )
+        .unwrap()
+        .len(),
+        1
+    );
+}
+
+#[test]
+fn the_index_covers_its_additional_roots() {
+    let (_temp, root) = workspace();
+    let primary = root.join("primary");
+    let shared = root.join("shared");
+    write(&primary, "a.txt");
+    write(&shared, "b.txt");
+    let mut index = FileIndex::new(None);
+    index.ensure_scope(&primary, &[shared.clone(), primary.clone(), shared.clone()]);
+    wait_until_settled(&mut index);
+    let shared_file = format!("{}/b.txt", shared.display());
+    assert_eq!(paths(&search(&index, "")), ["a.txt", shared_file.as_str()]);
+    assert!(index.is_current_candidate_kind(&shared_file, CandidateKind::File));
+    assert!(index.is_current_candidate_kind("a.txt", CandidateKind::File));
+    assert!(!index.is_current_candidate_kind("b.txt", CandidateKind::File));
 }
 
 #[test]
@@ -476,7 +533,7 @@ fn the_index_loads_in_the_background_and_refreshes_from_disk() {
     let (_temp, root) = workspace();
     write(&root, "first.txt");
     let mut index = FileIndex::new(None);
-    index.ensure_scope(&root);
+    index.ensure_scope(&root, &[]);
     assert_eq!(index.current_state(), IndexState::Loading);
     wait_until_settled(&mut index);
     assert_eq!(index.current_state(), IndexState::Ready);
@@ -499,7 +556,7 @@ fn a_cached_index_paints_first_and_a_real_scan_replaces_it() {
     write(&root, "real.txt");
     file_index_cache::save(cache.path(), &[root.as_path()], &[file("cached.txt")]).unwrap();
     let mut index = FileIndex::new(Some(cache.path().to_owned()));
-    index.ensure_scope(&root);
+    index.ensure_scope(&root, &[]);
     let deadline = Instant::now() + WAIT;
     while !index.join_if_done() {
         assert!(Instant::now() < deadline);
@@ -516,6 +573,53 @@ fn a_cached_index_paints_first_and_a_real_scan_replaces_it() {
 }
 
 #[test]
+fn a_scope_change_during_a_load_queues_only_the_latest_scope_with_its_own_cache() {
+    let (_temp, root) = workspace();
+    let primary = root.join("primary");
+    let shared = root.join("shared");
+    write(&primary, "a.txt");
+    write(&shared, "b.txt");
+    let cache = tempfile::tempdir().unwrap();
+    file_index_cache::save(
+        cache.path(),
+        &[primary.as_path(), shared.as_path()],
+        &[file("cached.txt")],
+    )
+    .unwrap();
+    let mut index = FileIndex::new(Some(cache.path().to_owned()));
+    index.ensure_scope(&primary, &[]);
+    index.refresh_scope(&primary, &[root.join("missing")], 1);
+    index.refresh_scope(&primary, &[shared.clone(), primary.clone()], 2);
+    let shared_file = format!("{}/b.txt", shared.display());
+    assert!(index.is_current_candidate_kind(&shared_file, CandidateKind::File));
+    let adopt = |index: &mut FileIndex| {
+        let deadline = Instant::now() + WAIT;
+        while !index.join_if_done() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    adopt(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 0);
+    assert_eq!(paths(&search(&index, "")), ["a.txt"]);
+    adopt(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 2);
+    assert_eq!(paths(&search(&index, "")), ["cached.txt"]);
+    assert!(index.is_loading());
+    wait_until_settled(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 2);
+    assert_eq!(paths(&search(&index, "")), ["a.txt", shared_file.as_str()]);
+    index.refresh();
+    wait_until_settled(&mut index);
+    assert_eq!(paths(&search(&index, "")), ["a.txt", shared_file.as_str()]);
+    index.refresh_scope(&primary, &[], 3);
+    assert!(!index.is_current_candidate_kind(&shared_file, CandidateKind::File));
+    wait_until_settled(&mut index);
+    assert_eq!(index.readable_revision().scope_epoch, 3);
+    assert_eq!(paths(&search(&index, "")), ["a.txt"]);
+}
+
+#[test]
 fn dropping_the_index_waits_for_a_cache_save_and_stops_later_ones() {
     let (_temp, root) = workspace();
     write(&root, "a.txt");
@@ -523,7 +627,7 @@ fn dropping_the_index_waits_for_a_cache_save_and_stops_later_ones() {
     let mut index = FileIndex::new(Some(cache.path().to_owned()));
     let saving = Arc::clone(&index.saving);
     let held = saving.lock().unwrap();
-    index.ensure_scope(&root);
+    index.ensure_scope(&root, &[]);
     let done = Arc::clone(&index.loader.as_ref().unwrap().done);
     let dropper = thread::spawn(move || drop(index));
     thread::sleep(Duration::from_millis(50));
@@ -542,7 +646,7 @@ fn dropping_the_index_waits_for_a_cache_save_and_stops_later_ones() {
 fn a_missing_root_fails_the_first_load() {
     let (_temp, root) = workspace();
     let mut index = FileIndex::new(None);
-    index.ensure_scope(&root.join("missing"));
+    index.ensure_scope(&root.join("missing"), &[]);
     wait_until_settled(&mut index);
     assert_eq!(index.current_state(), IndexState::Failed);
     assert_eq!(index.readable_revision().state, IndexState::Failed);
