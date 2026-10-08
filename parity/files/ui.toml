@@ -364,9 +364,9 @@ note = "Fenced background queries, deferred bytes and timeout handling exist; up
 
 [[file]]
 upstream = "src/ui/terminal/theme_protocol.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tui/src/terminal/theme_protocol.rs"]
-note = "OSC 11, primary device attributes and true-color handling exist; COLORFGBG background parsing rejects upstream decimal digit separators such as 1_5 and accepts +15, which upstream rejects."
+note = "OSC 11, primary device attributes, true-color handling and COLORFGBG parsing exist; the OSC 11 colour components and the COLORFGBG background are read with Zig's unsigned integer rules, so digit separators such as f_f and 1_5 count and a sign does not."
 
 [[file]]
 upstream = "src/ui/terminal/wasm_terminal.zig"
