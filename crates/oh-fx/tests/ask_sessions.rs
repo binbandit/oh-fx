@@ -852,10 +852,15 @@ const CONFIGURED_IDENTITY: &str =
     "40122b758656199048961e6e8369383c25ebcdeddced75b64ad736e527014da8";
 const CONTINUE_AFTER_TOOL: &str =
     "Continue from the confirmed tool result above without repeating the tool.";
+const CONTINUE_RESPONSE: &str = "The previous response was interrupted. Restart that response from the beginning using the completed tool results above. Do not repeat completed tool actions.";
 
 fn save_checkpoint(home: &Home, id: &str, credential: &str) {
+    save_checkpoint_with(home, id, credential, |_| {});
+}
+
+fn save_checkpoint_with(home: &Home, id: &str, credential: &str, change: impl Fn(&mut Value)) {
     let provider = home.metadata(id)["provider"].clone();
-    let checkpoint = json!({
+    let mut checkpoint = json!({
         "version": 2,
         "turn_id": 7,
         "user": {"text": "fix the build", "images": []},
@@ -895,6 +900,7 @@ fn save_checkpoint(home: &Home, id: &str, credential: &str) {
         "consumed_provider_attempts": 1,
         "outstanding_reservation": false
     });
+    change(&mut checkpoint);
     let seq = home.frames(id).len();
     fs::write(
         home.sessions().join(id).join("recovery.json"),
@@ -979,6 +985,37 @@ fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_process()
     assert_eq!(
         restored["command_process_presentation"],
         json!({"exit_code": 3})
+    );
+}
+
+#[test]
+fn continue_recovery_shows_the_saved_partial_reply_and_restarts_it() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["continued"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    save_checkpoint_with(&home, &id, CONFIGURED_IDENTITY, |checkpoint| {
+        checkpoint["assistant_source"] = json!("Looking at");
+        checkpoint["cause"] = json!("network_interrupted");
+        checkpoint["action"] = json!("continuing_response");
+        checkpoint["tool_state"] = json!("none");
+    });
+    let output = home.ask(&["ask", "--resume-id", &id, "--continue-recovery"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Looking at\n\n[Response interrupted. Restarting.]\n\ncontinued"
+    );
+    let sent = conversation(&server.requests()[1]);
+    assert_eq!(
+        texts(&sent).last().map(String::as_str),
+        Some(format!("user: {CONTINUE_RESPONSE}").as_str())
     );
 }
 

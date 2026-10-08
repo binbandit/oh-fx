@@ -8,6 +8,8 @@ fn checkpoint(progress: RecoveryProgress, consumed_attempts: usize) -> Logged {
         user: "go".to_owned(),
         steps: Vec::new(),
         files: Vec::new(),
+        source: String::new(),
+        tool_state: RecoveryToolState::None,
         progress,
         consumed_attempts,
         fast_mode: false,
@@ -146,7 +148,16 @@ async fn a_paused_turn_leaves_the_history_with_the_text_its_retried_request_stre
                 *entries.lock().unwrap(),
                 [
                     checkpoint(RecoveryProgress::Waiting(CONNECTIVITY), 1),
-                    checkpoint(RecoveryProgress::Paused, 2),
+                    Logged::Recovery {
+                        user: "go".to_owned(),
+                        steps: Vec::new(),
+                        files: Vec::new(),
+                        source: "Half an answer".to_owned(),
+                        tool_state: RecoveryToolState::None,
+                        progress: RecoveryProgress::Paused,
+                        consumed_attempts: 2,
+                        fast_mode: false,
+                    },
                 ]
             );
         }
@@ -173,4 +184,52 @@ async fn a_pause_outside_a_recovery_interrupts_the_turn() {
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
     let report = run(&mut agent, "go").await.0;
     assert_eq!(report.outcome, TurnOutcome::Completed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_paused_restart_saves_the_interrupted_reply_and_tool_state() {
+    let provider = FakeProvider::new(vec![Script::Fail(
+        vec![
+            StreamEvent::TextDelta {
+                text: "Hel".to_owned(),
+            },
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call-1"),
+                tool_name: "echo".to_owned(),
+            },
+        ],
+        failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+    )]);
+    let (log, entries) = MemoryLog::shared();
+    let shared: Arc<FakeProvider> = Arc::clone(&provider);
+    let mut agent = logged(new_agent(shared, vec![echo_tool()]), log);
+    let retrying = |event: &UiEvent| matches!(event, UiEvent::Recovery { status, .. } if status.retry_wait.is_some());
+    pause_on(&mut agent, "go", retrying).await;
+    let paused = entries
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            matches!(
+                entry,
+                Logged::Recovery {
+                    progress: RecoveryProgress::Paused,
+                    ..
+                }
+            )
+        })
+        .cloned();
+    assert_eq!(
+        paused,
+        Some(Logged::Recovery {
+            user: "go".to_owned(),
+            steps: Vec::new(),
+            files: Vec::new(),
+            source: "Hel".to_owned(),
+            tool_state: RecoveryToolState::ProvenUnexecuted,
+            progress: RecoveryProgress::Paused,
+            consumed_attempts: 1,
+            fast_mode: false,
+        })
+    );
 }

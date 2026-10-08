@@ -31,6 +31,9 @@ impl RecoveryCheckpoint {
             outputs,
             files: self.execution.files.into_iter().map(Into::into).collect(),
             prompt: self.user,
+            source: self.assistant_source,
+            source_presented: false,
+            tool_state: self.tool_state,
             strategy: self.strategy,
             fast_mode: if unchanged {
                 self.route.fast_mode
