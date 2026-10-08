@@ -48,8 +48,34 @@ test "automatic review model-facing tool contract stays byte exact" {
 }
 "#
 );
+const TOOLS: &str = r#"const read_file_description =
+    "Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.";
+
+pub const read_file = ToolSpec{
+    .name = "read_file",
+    .description = read_file_description,
+    .model_schema = .{
+        .name = "read_file",
+        .description = read_file_description,
+        .input_schema = .{
+            .properties = &.{
+                .{ .name = "path", .json_type = .string, .description = "File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy." },
+                .{ .name = "start_line", .json_type = .integer, .description = "Optional 1-based first line to return. Defaults to 1." },
+                .{ .name = "line_count", .json_type = .integer, .description = "Optional positive number of lines to return. Defaults to the normal read cap and is bounded." },
+            },
+            .required = &.{"path"},
+        },
+    },
+    .executor_kind = .read_file,
+};
+"#;
 const WRITER: &str = "pub const description_max_bytes: usize = 1024;\n";
+const AUDITED_ONLY: &[(&str, &str)] = &[(
+    TOOL_SPECS_SOURCE,
+    "pub fn toolGatewaySchemaJson() void {}\n",
+)];
 const PERMISSION_TOOL: &str = r#"[{"type":"function","name":"permission_decision","description":"Return bounded safety advice for one exact fx action.","inputSchema":{"type":"object","properties":{"decision":{"type":"string","enum":["clear","caution"],"description":"Clear this exact action, or return a safety caution."},"rationale":{"type":"string","description":"Optional brief reason without secrets or raw file contents."}},"additionalProperties":false,"required":["decision"]}}]"#;
+const READ_FILE_TOOL: &str = r#"{"type":"function","name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}"#;
 const SOURCES: &[(&str, &str)] = &[
     (SYSTEM_SOURCE, "system\n"),
     (
@@ -58,6 +84,7 @@ const SOURCES: &[(&str, &str)] = &[
     ),
     (CLASSIFIER_SOURCE, CLASSIFIER),
     (WRITER_SOURCE, WRITER),
+    (TOOLS_SOURCE, TOOLS),
 ];
 const GOLDENS: &[(&str, &str)] = &[
     ("system_prompt.md", "system\n"),
@@ -67,6 +94,7 @@ const GOLDENS: &[(&str, &str)] = &[
         "<review>\n{{REVIEW_DATA}}\n</review>\n",
     ),
     ("permission_decision_tool.json", PERMISSION_TOOL),
+    ("read_file_tool.json", READ_FILE_TOOL),
 ];
 
 fn setup_git(directory: &Path, args: &[&str]) -> String {
@@ -97,7 +125,7 @@ struct Fixture {
     root: PathBuf,
     upstream: PathBuf,
     pin: String,
-    writer_blob: String,
+    audited: Vec<(&'static str, String)>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -106,7 +134,7 @@ impl Fixture {
         let root = base.join("root");
         let upstream = base.join("upstream");
         std::fs::create_dir_all(root.join("parity/goldens")).unwrap();
-        for (path, content) in SOURCES {
+        for (path, content) in SOURCES.iter().chain(AUDITED_ONLY) {
             let path = upstream.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();
@@ -114,21 +142,28 @@ impl Fixture {
         setup_git(&upstream, &["init", "-q"]);
         let pin = commit(&upstream);
         std::fs::write(root.join("parity/UPSTREAM"), &pin).unwrap();
-        let writer_blob = setup_git(&upstream, &["rev-parse", &format!("{pin}:{WRITER_SOURCE}")])
-            .trim()
-            .to_owned();
+        let audited = AUDITED
+            .iter()
+            .map(|(path, _)| {
+                let blob = setup_git(&upstream, &["rev-parse", &format!("{pin}:{path}")]);
+                (*path, blob.trim().to_owned())
+            })
+            .collect();
         let fixture = Self {
             _directory: directory,
             root,
             upstream,
             pin,
-            writer_blob,
+            audited,
         };
         fixture.write_goldens("previous fixture");
         fixture
     }
-    fn audited(&self) -> [(&str, &str); 1] {
-        [(WRITER_SOURCE, &self.writer_blob)]
+    fn audited(&self) -> Vec<(&str, &str)> {
+        self.audited
+            .iter()
+            .map(|(path, blob)| (*path, blob.as_str()))
+            .collect()
     }
     fn destination(&self, name: &str) -> PathBuf {
         self.root.join("parity/goldens").join(name)
@@ -452,12 +487,39 @@ fn permission_tool_extraction_matches_upstreams_artifact_and_rejects_changed_gra
 }
 
 #[test]
-fn a_changed_audited_writer_stops_every_golden() {
-    let fixture = Fixture::new();
-    std::fs::write(fixture.upstream.join(WRITER_SOURCE), WRITER.repeat(2)).unwrap();
-    let pin = commit(&fixture.upstream);
-    std::fs::write(fixture.root.join("parity/UPSTREAM"), pin).unwrap();
-    assert!(regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
-    assert!(check(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
-    fixture.assert_previous();
+fn read_file_extraction_matches_the_writer_and_rejects_changed_grammar() {
+    assert_eq!(read_file::extract(TOOLS, 1024).unwrap(), READ_FILE_TOOL);
+    for source in [
+        String::new(),
+        format!("{TOOLS}\n{TOOLS}"),
+        TOOLS.replace(".json_type = .integer", ".json_type = .boolean"),
+        TOOLS.replace(
+            ".required = &.{\"path\"}",
+            ".additional_properties = false, .required = &.{\"path\"}",
+        ),
+        TOOLS.replace(
+            ".description = read_file_description",
+            ".description = unknown_description",
+        ),
+        TOOLS.replace(r#".name = "read_file","#, r#".name = "read\file","#),
+        TOOLS.replacen(r#".name = "read_file","#, r#".name = "read_files","#, 1),
+        TOOLS.replace(".name = \"start_line\"", ".name = \"path\""),
+        TOOLS.replace(".required = &.{\"path\"}", ".required = &.{\"offset\"}"),
+    ] {
+        assert!(read_file::extract(&source, 1024).is_err());
+    }
+    assert!(read_file::extract(TOOLS, 600).is_err());
+}
+
+#[test]
+fn a_changed_audited_source_stops_every_golden() {
+    for (path, _) in AUDITED {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.upstream.join(path), "changed audited source").unwrap();
+        let pin = commit(&fixture.upstream);
+        std::fs::write(fixture.root.join("parity/UPSTREAM"), pin).unwrap();
+        assert!(regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
+        assert!(check(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
+        fixture.assert_previous();
+    }
 }

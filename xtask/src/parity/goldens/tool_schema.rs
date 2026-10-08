@@ -64,7 +64,7 @@ pub(super) fn properties(
     limit: usize,
 ) -> Result<(String, BTreeSet<String>), String> {
     let property = Regex::new(
-        r#"^\s*\.\{\s*\.name = ("[^"\n]*"),\s*\.json_type = \.string,\s*(?:\.shape = &\.\{ \.enum_values = ([a-z_]+)\[0\.\.\] \},\s*)?\.description = ("[^"\n]*"),\s*\},"#,
+        r#"^\s*\.\{\s*\.name = ("[^"\n]*"),\s*\.json_type = \.(string|integer),\s*(?:\.shape = &\.\{ \.enum_values = ([a-z_]+)\[0\.\.\] \},\s*)?\.description = ("[^"\n]*"),?\s*\},"#,
     )
     .map_err(|error| error.to_string())?;
     let mut rest = source;
@@ -78,7 +78,7 @@ pub(super) fn properties(
         if !names.insert(name.to_owned()) {
             return Err("duplicate property name".to_owned());
         }
-        let shape = match captures.get(2) {
+        let shape = match captures.get(3) {
             Some(declaration) => {
                 let values = enums
                     .iter()
@@ -89,12 +89,13 @@ pub(super) fn properties(
             }
             None => String::new(),
         };
-        let description = string(&captures[3], limit)?;
+        let description = string(&captures[4], limit)?;
         if description == r#""""# {
             return Err("an empty description needs a writer audit".to_owned());
         }
         json.push(format!(
-            r#"{name}:{{"type":"string"{shape},"description":{description}}}"#
+            r#"{name}:{{"type":"{}"{shape},"description":{description}}}"#,
+            &captures[2]
         ));
         rest = &rest[captures[0].len()..];
     }
