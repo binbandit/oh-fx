@@ -2,6 +2,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 use super::*;
+use crate::spawn_gate::hold_off_spawns;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -394,6 +395,7 @@ fn compaction_caps_the_record_count_when_records_are_small() {
 
 #[test]
 fn a_held_lock_fails_the_append_as_busy() {
+    let _no_spawns = hold_off_spawns();
     let fixture = Fixture::new();
     let mut store = fixture.store();
     store.append(1, "/tmp/workspace", "first").unwrap();

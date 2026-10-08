@@ -22,6 +22,8 @@ mod session_store;
 mod session_store_paths;
 mod session_summary_codec;
 mod session_title_generation;
+#[cfg(test)]
+mod spawn_gate;
 mod turn_summary;
 
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};

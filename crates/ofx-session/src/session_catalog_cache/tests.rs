@@ -1,7 +1,6 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
-use std::process::Command;
 
 use ofx_config::{PrivateDir, ProviderId};
 use ofx_contract::ReasoningEffort;
@@ -14,6 +13,7 @@ use super::*;
 use crate::session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
 use crate::session_log::{LOCK_DEADLINE, resume_session, start_session};
+use crate::spawn_gate::make_fifo;
 
 struct Sessions {
     root: tempfile::TempDir,
@@ -246,13 +246,7 @@ fn a_catalog_that_is_not_a_private_single_regular_file_is_ignored() {
     symlink(sessions.path("elsewhere"), &path).unwrap();
     assert!(!sessions.cached().present);
     fs::remove_file(&path).unwrap();
-    assert!(
-        Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(make_fifo(&path));
     assert!(!sessions.cached().present);
 }
 

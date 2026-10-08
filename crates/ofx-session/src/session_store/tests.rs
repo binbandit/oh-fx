@@ -1,7 +1,6 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 use ofx_config::ProviderId;
@@ -13,6 +12,7 @@ use crate::session_event::{
     AssistantEvent, ContextCheckpointEvent, ConversationEvent, TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::{SessionDisposal, start_session};
+use crate::spawn_gate::{hold_off_spawns, make_fifo};
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -361,6 +361,7 @@ fn latest_resume_reports_a_busy_session_instead_of_skipping_it() {
 
 #[test]
 fn opening_without_waiting_reports_a_held_session_busy_at_once_and_moves_nothing() {
+    let _no_spawns = hold_off_spawns();
     let fixture = Fixture::new();
     fixture.seed("held", "/w", 1, 10);
     let store = fixture.store("/w");
@@ -411,13 +412,7 @@ fn a_fifo_never_blocks_listing_or_latest_resume() {
         fixture.seed("fifo", "/w", 1, 20);
         let path = fixture.session_dir("fifo").join(file);
         fs::remove_file(&path).unwrap();
-        assert!(
-            Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(make_fifo(&path));
         let store = fixture.store("/w");
         let page = store
             .catalog()
