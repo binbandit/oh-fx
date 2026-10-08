@@ -271,6 +271,8 @@ pub(crate) struct Shell<'a> {
     clipboard: ClipboardRuntime,
     signals: SignalPipe,
     clock: Instant,
+    #[cfg(test)]
+    held_now: Option<Instant>,
     pending_resize: Option<PendingResize>,
     output: String,
     footer_row: usize,
@@ -486,6 +488,8 @@ impl<'a> Shell<'a> {
             clipboard: ClipboardRuntime::new(clipboard),
             signals: setup.signals,
             clock: Instant::now(),
+            #[cfg(test)]
+            held_now: None,
             pending_resize: None,
             output: String::new(),
             footer_row: 0,
@@ -504,7 +508,11 @@ impl<'a> Shell<'a> {
     }
 
     fn now_ms(&self) -> i64 {
-        i64::try_from(self.clock.elapsed().as_millis()).unwrap_or(i64::MAX)
+        #[cfg(test)]
+        let now = self.held_now.unwrap_or_else(Instant::now);
+        #[cfg(not(test))]
+        let now = Instant::now();
+        i64::try_from(now.saturating_duration_since(self.clock).as_millis()).unwrap_or(i64::MAX)
     }
 
     fn send(&mut self, command: UiCommand) {
@@ -1155,7 +1163,11 @@ mod tests {
     fn a_reset_inside_tmux_clears_the_pane_and_its_history_before_the_frame() {
         let fake = FakeTmux::new(0, 0);
         let mut test = test_shell::TestShell::start();
-        test.shell.tmux_history = Some(TmuxHistory::with_program(fake.program(), "%3"));
+        test.shell.tmux_history = Some(TmuxHistory::with_program(
+            fake.program(),
+            "%3",
+            test_pty::WAIT,
+        ));
         test.screen();
         test.type_bytes(b"x");
         test.step();
