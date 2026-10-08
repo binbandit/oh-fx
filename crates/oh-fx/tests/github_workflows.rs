@@ -9,6 +9,7 @@ const KEY: (&str, &str) = ("PORTKEY_API_KEY", "pk-test-0123456789");
 const NULL_SNAPSHOT: &str = "Git snapshot\nBranch: unavailable\n\nStatus:\nunavailable\n\nRecent commits:\nunavailable\n\nStaged diff stat:\nnone\n\nUnstaged diff stat:\nnone\n";
 const ISSUE_CLOSING: &str = "If you need more context, inspect relevant files, errors, or logs. Return only: a plain-text title line without Markdown, a blank line, then a GitHub-flavored Markdown body with sections '## Summary', '## Steps to Reproduce', '## Expected', and '## Actual'. Do not create the issue with gh or publish anything unless I explicitly ask you to.";
 const PULL_REQUEST_OPENING: &str = "Draft a GitHub pull request for the current branch. Reply in the same natural language as the current session. ";
+const ADDITIONAL_DIRECTORIES_CONTEXT: &str = "Runtime context: the following additional directories are access-authorized for this run. Relative paths still resolve from the primary workspace. These directories do not contribute AGENTS.md or other project instructions.\n";
 
 struct Home {
     _directory: tempfile::TempDir,
@@ -198,4 +199,22 @@ fn launch_modifiers_the_drafts_cannot_honor_yet_fail_before_any_request() {
         );
     }
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn an_added_directory_reaches_the_draft_as_it_reaches_ask() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
+    let home = Home::new(&server);
+    let shared = home.root.join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    let output = home.run(&["--add-dir", shared.to_str().unwrap(), "issue"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let granted = format!("{ADDITIONAL_DIRECTORIES_CONTEXT}- {}\n", shared.display());
+    assert!(
+        messages(&server.requests()[0])
+            .iter()
+            .any(|message| message["role"] == "system" && message["content"] == granted.as_str()),
+        "{:?}",
+        messages(&server.requests()[0])
+    );
 }
