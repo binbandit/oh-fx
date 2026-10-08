@@ -5,6 +5,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ofx_contract::{INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
 use ofx_testkit::{
     FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
 };
@@ -324,4 +325,36 @@ fn a_cancelled_turn_saves_the_steering_it_took_after_a_tool_result_once() {
         ]
     );
     fs::write(home.workspace.join("release-two"), "go").expect("release the second step");
+}
+
+#[test]
+fn a_live_cancelled_reply_closes_before_the_next_plain_prompt() {
+    let held =
+        Reply::held_sse(&chat_text_events(&["Half of the reply.\nStill reading.\n", "never"])[..2]);
+    let server = FakeServer::start([held, Reply::sse(&chat_text_events(&["The next answer."]))]);
+    let home = Home::new(&server.base_url(), "auto");
+    let mut session = home.shell("model-a");
+    session.send(b"first question\r");
+    wait(&session, "Half of the reply.");
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
+    session.send(b"what happened?\r");
+    wait(&session, "The next answer.");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let messages = requests[1].json()["messages"].as_array().unwrap().clone();
+    let first = messages
+        .iter()
+        .position(|message| message["content"] == "first question")
+        .unwrap();
+    assert_eq!(messages[first + 1]["role"], "assistant");
+    assert_eq!(
+        messages[first + 1]["content"],
+        format!("Half of the reply.\nStill reading.\n\n\n{INTERRUPTED_BEFORE_COMPLETION}")
+    );
+    assert_eq!(messages[first + 2]["role"], "user");
+    assert_eq!(messages[first + 2]["content"], INTERRUPTED_TURN_CONTEXT);
+    assert_eq!(messages[first + 3]["content"], "what happened?");
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).is_some());
 }
