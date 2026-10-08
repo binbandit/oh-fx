@@ -31,6 +31,7 @@ pub enum IndexState {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexRevision {
+    pub scope_epoch: u64,
     pub generation: usize,
     pub count: usize,
     pub state: IndexState,
@@ -38,6 +39,7 @@ pub struct IndexRevision {
 
 impl IndexRevision {
     pub(crate) const READY: Self = Self {
+        scope_epoch: 0,
         generation: 0,
         count: 0,
         state: IndexState::Ready,
@@ -487,8 +489,8 @@ mod tests {
         state.reconcile(query_at(input, 4).as_ref(), true);
         let source = IndexRevision {
             generation: 1,
-            count: 0,
             state: IndexState::Ready,
+            ..IndexRevision::default()
         };
         state.stage(source, Status::Empty, Vec::new());
         let (mut index, mut window) = (0, 0);

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use ofx_contract::LiveAdditionalRoots;
 use ofx_tui::{
     DirectoryLister, FileMatch, FileMentionSource, IndexRevision, IndexState, MentionKind,
 };
@@ -14,16 +15,43 @@ use ofx_workspace::{
 pub(crate) struct WorkspaceFileMentions {
     index: FileIndex,
     workspace_root: PathBuf,
+    roots: LiveAdditionalRoots,
+    indexed_roots: Arc<[PathBuf]>,
+    scope_epoch: u64,
 }
 
 impl WorkspaceFileMentions {
-    pub(crate) fn start(workspace_root: &Path, cache_dir: Option<&Path>) -> Self {
+    pub(crate) fn start(
+        workspace_root: &Path,
+        roots: LiveAdditionalRoots,
+        cache_dir: Option<&Path>,
+    ) -> Self {
+        let indexed_roots = roots.get();
         let mut index = FileIndex::new(cache_dir.map(Path::to_owned));
-        index.ensure_scope(workspace_root);
+        index.ensure_scope(workspace_root, &indexed_roots);
         Self {
             index,
             workspace_root: workspace_root.to_owned(),
+            roots,
+            indexed_roots,
+            scope_epoch: 0,
         }
+    }
+
+    fn scope_is_installed(&self) -> bool {
+        Arc::ptr_eq(&self.roots.get(), &self.indexed_roots)
+    }
+
+    fn follow_scope(&mut self) -> bool {
+        let roots = self.roots.get();
+        if Arc::ptr_eq(&roots, &self.indexed_roots) {
+            return false;
+        }
+        self.indexed_roots = roots;
+        self.scope_epoch = self.scope_epoch.wrapping_add(1);
+        self.index
+            .refresh_scope(&self.workspace_root, &self.indexed_roots, self.scope_epoch);
+        true
     }
 }
 
@@ -31,6 +59,7 @@ impl FileMentionSource for WorkspaceFileMentions {
     fn revision(&self) -> IndexRevision {
         let revision = self.index.readable_revision();
         IndexRevision {
+            scope_epoch: self.scope_epoch,
             generation: revision.generation,
             count: revision.count,
             state: index_state(revision.state),
@@ -38,13 +67,17 @@ impl FileMentionSource for WorkspaceFileMentions {
     }
 
     fn search(&self, revision: IndexRevision, query: &str, limit: usize) -> Option<Vec<FileMatch>> {
-        if query_mode(query) != QueryMode::WorkspaceIndex {
+        let current = self.index.readable_revision();
+        if query_mode(query) != QueryMode::WorkspaceIndex
+            || revision.scope_epoch != self.scope_epoch
+            || current.scope_epoch != self.scope_epoch
+        {
             return None;
         }
         let readable = ReadableRevision {
             generation: revision.generation,
             count: revision.count,
-            ..self.index.readable_revision()
+            ..current
         };
         self.index
             .search_at_revision(readable, query, limit)
@@ -53,11 +86,14 @@ impl FileMentionSource for WorkspaceFileMentions {
     }
 
     fn refresh(&mut self) {
-        self.index.refresh();
+        if !self.follow_scope() {
+            self.index.refresh();
+        }
     }
 
     fn poll(&mut self) -> bool {
-        self.index.join_if_done()
+        let followed = self.follow_scope();
+        self.index.join_if_done() || followed
     }
 
     fn is_loading(&self) -> bool {
@@ -69,6 +105,9 @@ impl FileMentionSource for WorkspaceFileMentions {
     }
 
     fn is_current(&self, query: &str, path: &str, kind: MentionKind) -> bool {
+        if !self.scope_is_installed() {
+            return false;
+        }
         let kind = candidate_kind(kind);
         match query_mode(query) {
             QueryMode::WorkspaceIndex => self.index.is_current_candidate_kind(path, kind),
