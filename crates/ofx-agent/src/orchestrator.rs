@@ -2365,10 +2365,6 @@ async fn run_group<'c>(
         }
     }
     group.for_each(discard);
-    let dispatched = dispatched
-        .into_iter()
-        .map(|(call, dispatched, feedback)| (call, dispatched.start(cancel), feedback))
-        .collect();
     SettledGroup {
         outcomes: {
             drop(statuses);
@@ -2385,6 +2381,10 @@ async fn settle_group<'c>(
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Vec<Settled<'c>> {
+    let dispatched: Vec<_> = dispatched
+        .into_iter()
+        .map(|(call, dispatched, feedback)| (call, dispatched.start(cancel), feedback))
+        .collect();
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched, feedback) in dispatched {
