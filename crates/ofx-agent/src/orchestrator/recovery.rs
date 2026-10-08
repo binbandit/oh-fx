@@ -5,6 +5,7 @@ use ofx_contract::{
     ChatMessage, ModelRecoveryCause, ProviderError, RecoveryStrategy, ToolChoice, TurnId, UiEvent,
 };
 
+use super::{EventSink, Turn};
 use crate::assistant_stream::LanguageStage;
 use crate::model_response_recovery::{Output, Strategy, ToolEvidence, failed_in_stream};
 
@@ -56,41 +57,62 @@ pub(super) struct Restart<'a> {
     interrupted: String,
     latest: String,
     messages: Option<Cow<'a, [ChatMessage]>>,
-    tool: ToolEvidence,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct RestoredReply {
+    pub(super) source: String,
+    pub(super) presented: bool,
 }
 
 impl<'a> Restart<'a> {
-    pub(super) fn new(saved: Option<RecoveryStrategy>) -> Self {
+    pub(super) fn begin(turn: &mut Turn, events: EventSink<'_>) -> Self {
+        let RestoredReply {
+            mut source,
+            presented,
+        } = mem::take(&mut turn.restored);
+        if !source.is_empty() {
+            if !presented && let Some(text) = turn.language.stage.admit(source.clone()) {
+                events(UiEvent::AssistantText {
+                    turn_id: turn.id,
+                    text,
+                });
+            }
+            if !presented && turn.language.stage.holds_candidate() {
+                source.clear();
+            } else {
+                events(restarted(turn.id));
+            }
+            turn.language.stage.restart();
+        }
         Self {
-            interrupted: String::new(),
+            interrupted: source,
             latest: String::new(),
             messages: None,
-            tool: match saved {
-                Some(RecoveryStrategy::RegenerateTool) => ToolEvidence::ProvenUnexecuted,
-                Some(RecoveryStrategy::ContinueAfterTool) => ToolEvidence::Confirmed,
-                Some(RecoveryStrategy::ReconcileTool) => ToolEvidence::Uncertain,
-                _ => ToolEvidence::None,
-            },
         }
     }
 
-    pub(super) fn evidence(
+    pub(super) fn observe(
         &mut self,
+        partial: String,
         observed: ToolEvidence,
-        cause: ModelRecoveryCause,
-        error: &ProviderError,
+        evidence: &mut ToolEvidence,
+    ) -> bool {
+        *evidence = evidence.observed(observed);
+        self.latest = partial;
+        !self.latest.is_empty()
+    }
+
+    pub(super) fn evidence(
+        &self,
+        held: &mut ToolEvidence,
+        (observed, cause, error): (ToolEvidence, ModelRecoveryCause, &ProviderError),
         stage: &LanguageStage,
     ) -> (Output, ToolEvidence) {
-        let observed = match observed {
-            ToolEvidence::ProvenUnexecuted if failed_in_stream(cause, error) => {
-                ToolEvidence::Uncertain
-            }
-            observed => observed,
-        };
-        if observed != ToolEvidence::None {
-            self.tool = observed;
+        if observed == ToolEvidence::ProvenUnexecuted && failed_in_stream(cause, error) {
+            *held = ToolEvidence::Uncertain;
         }
-        (self.output(stage), self.tool)
+        (self.output(stage), *held)
     }
 
     pub(super) fn replay_safe(
@@ -104,11 +126,6 @@ impl<'a> Restart<'a> {
             && observed == ToolEvidence::None
     }
 
-    pub(super) fn observe(&mut self, partial: String) -> bool {
-        self.latest = partial;
-        !self.latest.is_empty()
-    }
-
     fn output(&self, stage: &LanguageStage) -> Output {
         if self.source(stage).is_empty() {
             Output::None
@@ -117,7 +134,7 @@ impl<'a> Restart<'a> {
         }
     }
 
-    fn source(&self, stage: &LanguageStage) -> &str {
+    pub(super) fn source(&self, stage: &LanguageStage) -> &str {
         match stage.interruption_source(&self.latest) {
             "" => &self.interrupted,
             checked => checked,

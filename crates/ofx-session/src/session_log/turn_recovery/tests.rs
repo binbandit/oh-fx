@@ -5,8 +5,8 @@ use ofx_config::ProviderId;
 use ofx_contract::{
     ChatMessage, HistoryCut, HistoryEntry, HistoryStep, HistoryTurn, ModelRecoveryCause,
     ProviderReplay, ReasoningEffort, RecoveredTurn, RecoveryPoint, RecoveryProgress,
-    RecoveryStrategy, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall, ToolCallId,
-    ToolResultStatus, TurnEnd, TurnId,
+    RecoveryStrategy, RecoveryToolState, ReplaySource, StepResult, ToolArgumentIntegrity, ToolCall,
+    ToolCallId, ToolResultStatus, TurnEnd, TurnId,
 };
 
 use super::*;
@@ -906,8 +906,10 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                 provider_replay: None,
             },
         },
+        source: "",
         cause: ModelRecoveryCause::ProviderUnavailable,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
@@ -970,8 +972,10 @@ fn a_checkpoint_written_during_a_continued_turn_keeps_the_recovered_replay_bindi
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn: continued_history(&continued, replied("")),
+        source: "",
         cause: ModelRecoveryCause::RateLimited,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "claude",
         requested_fast_mode: false,
         fast_mode: false,
@@ -1078,8 +1082,10 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
             files: &files,
             end: replied(""),
         },
+        source: "",
         cause: ModelRecoveryCause::ProviderUnavailable,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
@@ -1170,8 +1176,10 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn,
+        source: "",
         cause: ModelRecoveryCause::ConnectivityLost,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
@@ -1249,8 +1257,10 @@ fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() 
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn: continued_history(&continued, replied("")),
+        source: "",
         cause: ModelRecoveryCause::ConnectivityLost,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
@@ -1315,8 +1325,10 @@ fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn,
+        source: "",
         cause: ModelRecoveryCause::ConnectivityLost,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
