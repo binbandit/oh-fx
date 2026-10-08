@@ -1176,8 +1176,10 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn,
+        source: "",
         cause: ModelRecoveryCause::ConnectivityLost,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
@@ -1255,8 +1257,10 @@ fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() 
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn: continued_history(&continued, replied("")),
+        source: "",
         cause: ModelRecoveryCause::ConnectivityLost,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
@@ -1321,8 +1325,10 @@ fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn,
+        source: "",
         cause: ModelRecoveryCause::ConnectivityLost,
         progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
