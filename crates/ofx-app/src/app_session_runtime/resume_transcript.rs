@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem;
 
 use ofx_contract::{
     CallDescription, HistoryEntry, Notice, NoticeTone, SavedToolCall, ToolCallId, ToolResultStatus,
@@ -67,7 +68,13 @@ impl TurnReplay<'_, '_> {
                     self.running.insert(call.call_id, running);
                     self.shown.push(None);
                 }
-                ConversationEvent::ToolResult(result) => self.finish(result),
+                ConversationEvent::ToolResult(mut result) => {
+                    let feedback = mem::take(&mut result.permission_feedback);
+                    self.finish(result);
+                    for text in feedback.into_iter().filter(|text| !text.is_empty()) {
+                        self.show(HistoryEntry::User(text));
+                    }
+                }
                 ConversationEvent::User(user) => self.show(HistoryEntry::User(user.text)),
                 ConversationEvent::Steering(steering) if !steering.text.is_empty() => {
                     self.show(HistoryEntry::User(steering.text));

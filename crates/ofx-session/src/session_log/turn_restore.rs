@@ -236,15 +236,24 @@ fn push_execution(
             tool_calls: step.calls.into_iter().map(tool_call).collect(),
             provider_replay: step.replay.map(SavedReplay::into_provider_replay),
         });
+        let mut feedback = Vec::new();
         for result in step.results {
             let content = result_body(&result, dir);
+            let call_id = ToolCallId::new(result.call_id);
+            feedback.extend(
+                result
+                    .permission_feedback
+                    .into_iter()
+                    .map(|text| ChatMessage::permission_feedback(call_id.clone(), text)),
+            );
             messages.push(ChatMessage::Tool {
-                call_id: ToolCallId::new(result.call_id),
+                call_id,
                 tool_name: result.tool_name,
                 content,
                 status: result.status,
             });
         }
+        messages.extend(feedback);
     }
     if !files.is_empty() {
         let files: Vec<_> = files.into_iter().map(Into::into).collect();

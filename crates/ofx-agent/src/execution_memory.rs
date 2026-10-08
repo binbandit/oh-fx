@@ -18,12 +18,13 @@ pub(crate) fn steering_text(content: &str) -> Option<&str> {
         .strip_suffix(STEERING_CLOSE)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolResult<'a> {
     pub(crate) call_id: &'a str,
     pub(crate) tool_name: &'a str,
     pub(crate) output: &'a str,
     pub(crate) failed: bool,
+    pub(crate) feedback: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,25 +159,19 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
                     tool_name,
                     output: content,
                     failed: *status == ToolResultStatus::Failure,
+                    feedback: Vec::new(),
                 };
-                match steps.last_mut() {
-                    Some(step) if !step.calls.is_empty() => {
-                        step.results.push(result);
-                        step.end = index + 1;
-                    }
-                    _ => steps.push(ToolStep {
-                        notes: mem::take(&mut notes),
-                        assistant: "",
-                        replay: None,
-                        calls: &[],
-                        results: vec![result],
-                        end: index + 1,
-                    }),
-                }
+                push_result(&mut steps, &mut notes, result, index + 1);
             }
             ChatMessage::User {
                 content,
+                feedback_for: Some(call_id),
+                ..
+            } => attach_feedback(&mut steps, call_id.as_str(), content, index + 1),
+            ChatMessage::User {
+                content,
                 restored_steering,
+                feedback_for: None,
             } => {
                 let steering = if *restored_steering {
                     Some(content.as_str())
@@ -216,6 +211,40 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
         reply,
         reply_replay,
         start,
+    }
+}
+
+fn push_result<'a>(
+    steps: &mut Vec<ToolStep<'a>>,
+    notes: &mut Vec<Note<'a>>,
+    result: ToolResult<'a>,
+    end: usize,
+) {
+    match steps.last_mut() {
+        Some(step) if !step.calls.is_empty() => {
+            step.results.push(result);
+            step.end = end;
+        }
+        _ => steps.push(ToolStep {
+            notes: mem::take(notes),
+            assistant: "",
+            replay: None,
+            calls: &[],
+            results: vec![result],
+            end,
+        }),
+    }
+}
+
+fn attach_feedback<'a>(steps: &mut [ToolStep<'a>], call_id: &str, text: &'a str, end: usize) {
+    if let Some(step) = steps.last_mut()
+        && let Some(result) = step
+            .results
+            .iter_mut()
+            .find(|result| result.call_id == call_id)
+    {
+        result.feedback.push(text);
+        step.end = end;
     }
 }
 
@@ -288,6 +317,7 @@ pub(crate) fn logged_steps<'a>(
                             ToolResultStatus::Success
                         },
                         model_view_covers_full_file: raw.is_some_and(|raw| raw.whole_file),
+                        permission_feedback: result.feedback.clone(),
                     }
                 })
                 .collect(),

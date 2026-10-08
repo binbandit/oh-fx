@@ -212,7 +212,7 @@ impl Encoder<'_> {
         self.flag(result.provider_native);
         self.flag(false);
         self.signed(result.created_at_ms);
-        self.empty();
+        self.texts(&result.permission_feedback)?;
         for _ in 0..3 {
             self.absent();
         }
@@ -236,6 +236,11 @@ impl Encoder<'_> {
             Some(CommandProcessPresentation::TimedOut) => self.byte(2),
             Some(CommandProcessPresentation::OutputCaptureFailed) => self.byte(3),
         }
+    }
+
+    fn texts(&mut self, values: &[String]) -> Option<()> {
+        self.int(u64::from(u32::try_from(values.len()).ok()?));
+        values.iter().try_for_each(|value| self.text(value))
     }
 
     fn files(&mut self, files: &[FileEvidence]) -> Option<()> {
@@ -446,7 +451,7 @@ impl<'a> Decoder<'a> {
             provider_native: self.flag()?,
             review_feedback: self.fixed::<False>()?,
             created_at_ms: self.signed()?,
-            permission_feedback: self.no_items()?,
+            permission_feedback: self.texts()?,
             committed_file_presentation: self.fixed::<Null>()?,
             command_replay_ref: self.fixed::<Null>()?,
             command_replay_bytes: self.fixed::<Null>()?,
@@ -466,6 +471,11 @@ impl<'a> Decoder<'a> {
             turn_summary: self.optional(Self::summary).ok()?,
             cancellation_origin: self.fixed::<TurnOrigin>()?,
         })
+    }
+
+    fn texts(&mut self) -> Option<Vec<String>> {
+        let count = self.length()?;
+        (0..count).map(|_| self.text()).collect()
     }
 
     fn files(&mut self) -> Option<Vec<FileEvidence>> {

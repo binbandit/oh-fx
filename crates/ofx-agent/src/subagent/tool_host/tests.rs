@@ -831,7 +831,10 @@ async fn feedback_given_with_a_childs_approval_reaches_the_parents_transcript() 
     let seen = harness.provider.seen();
     assert_eq!(
         seen[1].messages.last(),
-        Some(&ChatMessage::user("then summarize it"))
+        Some(&ChatMessage::permission_feedback(
+            ToolCallId::new("probe-1"),
+            "then summarize it"
+        ))
     );
 }
 
