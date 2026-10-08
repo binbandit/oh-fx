@@ -1,7 +1,7 @@
 [[file]]
 upstream = "src/core/github/git_context.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-github/src/git_context.rs"]
 
 [[file]]
 upstream = "src/core/github/github_publish.zig"
@@ -10,5 +10,5 @@ modules = []
 
 [[file]]
 upstream = "src/core/github/github_workflows.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-github/src/github_workflows.rs"]
