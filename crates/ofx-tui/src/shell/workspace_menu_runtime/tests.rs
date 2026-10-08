@@ -140,3 +140,20 @@ fn a_prepared_command_opens_no_picker_over_the_composer() {
         assert_eq!(test.shell.composer.text(), prepared);
     }
 }
+
+#[test]
+fn the_menu_keeps_ctrl_o_and_a_provider_offer_out_of_the_hidden_composer() {
+    let mut test = opened();
+    press(&mut test, b"\x0f");
+    assert!(!test.written().contains("\x1b[?1049h"));
+    assert!(test.shell.full_transcript.is_none());
+    assert!(test.shell.workspace_menu.is_some());
+    test.deliver(UiEvent::ProviderPicker {
+        prefix: "/provider ".to_owned(),
+        providers: vec!["codex".to_owned(), "portkey".to_owned()],
+    });
+    assert!(test.shell.workspace_menu.is_some());
+    assert!(test.shell.composer.is_empty());
+    assert!(!test.screen().contains("portkey"));
+    assert!(test.sent().is_empty());
+}
