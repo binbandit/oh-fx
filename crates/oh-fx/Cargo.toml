@@ -18,6 +18,7 @@ ofx-gateway.workspace = true
 ofx-http.workspace = true
 ofx-mcp.workspace = true
 ofx-session.workspace = true
+ofx-shell.workspace = true
 ofx-text.workspace = true
 ofx-upgrade.workspace = true
 ofx-vt.workspace = true

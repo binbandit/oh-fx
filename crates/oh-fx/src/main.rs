@@ -7,6 +7,7 @@ mod doctor_command;
 mod help;
 mod login_command;
 mod models_command;
+mod permission_prompt;
 mod permissions_command;
 mod provider_activation;
 mod provider_command;

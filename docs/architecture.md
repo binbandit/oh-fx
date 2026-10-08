@@ -24,7 +24,7 @@ The shipping target is the native terminal binary. Upstream WASM, Node-API addon
 | 0 | `ofx-text` | Display width, graphemes, terminal-safe text, token estimates, lexical relevance, language scripts | `core/shared/*` text utilities |
 | 1 | `ofx-config` | XDG profile paths, private profile storage, settings layers, provider ids, context limits, custom provider connections | `core/config`, `shared/profile_paths`, durable paths in `shared/io` |
 | 1 | `ofx-http` | HTTP client, TLS trust, proxy, SSE decoding | `shared/http_pool`, `gateway/sse` |
-| 1 | `ofx-shell` | Shell command lexing, classification, and effects | `core/shell_command` |
+| 1 | `ofx-shell` | Shell command lexing, classification, effects, and risk notes | `core/shell_command`, `core/tooling/command_policy` |
 | 1 | `ofx-markdown` | Streaming markdown, syntax highlighting, diffs | `agent/presentation`, `core/output` |
 | 1 | `ofx-vt` | Terminal screen model used by the renderer and tests | `core/terminal/engine` |
 | 1 | `ofx-jsonrpc` | JSON-RPC framing shared by MCP and ACP | `acp/jsonrpc`, MCP framing |
