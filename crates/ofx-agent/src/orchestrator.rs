@@ -268,6 +268,7 @@ pub struct Agent {
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
     approvals: Option<Approvals>,
+    reviews_fall_back_to_approval: bool,
     config: AgentConfig,
     capability_resolver: Option<Arc<dyn CapabilityResolver>>,
     capabilities: Option<KnownCapabilities>,
@@ -314,6 +315,7 @@ impl Agent {
             context,
             permissions,
             approvals: None,
+            reviews_fall_back_to_approval: false,
             config,
             capability_resolver: None,
             capabilities: None,
@@ -346,6 +348,14 @@ impl Agent {
     #[must_use]
     pub fn with_approvals(mut self, approvals: Approvals) -> Self {
         self.approvals = Some(approvals);
+        self.reviews_fall_back_to_approval = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_prompts(mut self, approvals: Approvals) -> Self {
+        self.approvals = Some(approvals);
+        self.reviews_fall_back_to_approval = false;
         self
     }
 
@@ -1290,6 +1300,7 @@ impl Agent {
             let gate = Gate {
                 permissions: &*self.permissions,
                 approvals: self.approvals.as_ref(),
+                reviews_fall_back_to_approval: self.reviews_fall_back_to_approval,
             };
             let mut reviewing = Reviewing {
                 model: &self.config.model,
@@ -1915,7 +1926,24 @@ impl Prepared {
 enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput, bool),
+    Admitted(Box<dyn PreparedCall>, ToolContext),
     Running(JoinHandle<ToolOutput>),
+    Unstarted,
+}
+
+impl Dispatched {
+    fn start(self, cancel: &CancellationToken) -> Self {
+        match self {
+            Self::Admitted(prepared, _) if cancel.is_cancelled() => {
+                discard(prepared);
+                Self::Unstarted
+            }
+            Self::Admitted(prepared, context) => {
+                Self::Running(tokio::spawn(async move { prepared.execute(context).await }))
+            }
+            other => other,
+        }
+    }
 }
 
 struct Settled<'c> {
@@ -1936,6 +1964,7 @@ struct SettledGroup<'c> {
 struct Gate<'a> {
     permissions: &'a dyn PermissionGate,
     approvals: Option<&'a Approvals>,
+    reviews_fall_back_to_approval: bool,
 }
 
 struct Reviewing<'a> {
@@ -2059,7 +2088,7 @@ async fn judge(
                     &call.name,
                     ReviewHold::Caution(&advice),
                 )),
-                _ if gate.approvals.is_some() => {
+                _ if gate.approvals.is_some() && gate.reviews_fall_back_to_approval => {
                     return ask_approval(gate, turn_id, &judged, events, cancel).await;
                 }
                 ReviewVerdict::EvidenceIncomplete => Verdict::Held(tool_review_held_json(
@@ -2313,8 +2342,7 @@ async fn run_group<'c>(
                         let delegation = delegates.then_some(&statuses);
                         let context =
                             reviewing.tool_context(turn_id, call, delegation, path_access, cancel);
-                        let task = tokio::spawn(async move { prepared.execute(context).await });
-                        dispatched.push((call, Dispatched::Running(task), feedback));
+                        dispatched.push((call, Dispatched::Admitted(prepared, context), feedback));
                         continue;
                     }
                     Verdict::Held(output) => (output, true),
@@ -2353,6 +2381,10 @@ async fn settle_group<'c>(
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Vec<Settled<'c>> {
+    let dispatched: Vec<_> = dispatched
+        .into_iter()
+        .map(|(call, dispatched, feedback)| (call, dispatched.start(cancel), feedback))
+        .collect();
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched, feedback) in dispatched {
@@ -2378,6 +2410,15 @@ async fn settle_group<'c>(
                 }
                 events(tool_finished(turn_id, call, output.as_ref()));
                 (output, true, true, false)
+            }
+            Dispatched::Admitted(prepared, _) => {
+                discard(prepared);
+                events(tool_finished(turn_id, call, None));
+                (None, true, false, false)
+            }
+            Dispatched::Unstarted => {
+                events(tool_finished(turn_id, call, None));
+                (None, true, false, false)
             }
         };
         if let Some(text) = &feedback {
