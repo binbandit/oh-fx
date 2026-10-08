@@ -66,7 +66,8 @@ pub use subagent::{
     valid_instructions,
 };
 pub use tool_args::{
-    ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_object,
+    ToolArgValue, ToolArgs, ToolArgsError, parse_json_value, parse_tool_args_nested,
+    parse_tool_args_object,
 };
 pub use tool_dispatch::{
     ActionLabel, CallDescription, CallPresentation, Concurrency, DynamicTools, PreparedCall,
