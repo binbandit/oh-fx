@@ -107,6 +107,10 @@ The `slack` command (`slack install`, `slack status`, and `slack refresh`) preda
 | Local directory installation | `ported` | `ofx-skills`, `ofx-app` | `/skills add` and `/skills install` copy skill directories and assets, filter by directory or metadata name, safely replace managed destinations, and refresh the catalog after installation. Filesystem safety differences are recorded in [differences/skills-shell.md](differences/skills-shell.md). |
 | Remote sources and CLI installation | `defer:skill-install` | future installer slices | Repository cloning, install-command and URL normalization, and the top-level CLI command remain pending. |
 
+## Feedback command
+
+`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and bounded launcher wait difference recorded in [differences/slash-commands.md](differences/slash-commands.md). The trace ring, `/trace`, trace emissions and interactive tracing remain deferred; this slice does not complete OH-11 or its compactor trace rows.
+
 ## Deferred areas
 
 Port each area from the latest upstream. These notes list what changed in the range above, so the port can be checked against it.
