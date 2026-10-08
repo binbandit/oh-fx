@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    ActionLabel, ApprovalScope, CallDescription, CommandProfile, Concurrency, FileMutation,
-    FileMutationState, PathAccess, RequestId, ToolActivity, ToolCallId, ToolEffect,
+    ActionLabel, ApprovalOrigin, ApprovalScope, CallDescription, CommandProfile, Concurrency,
+    FileMutation, FileMutationState, PathAccess, RequestId, ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -32,6 +32,8 @@ fn request(tool_name: &str, target: Option<&str>) -> ApprovalRequest {
         },
         command: None,
         file: None,
+        change: None,
+        origin: ApprovalOrigin::ActiveSession,
     }
 }
 
@@ -49,6 +51,7 @@ fn run(command: &str) -> String {
         profile: CommandProfile::User,
         shell: None,
         terminal: false,
+        reload: false,
     }))
 }
 
