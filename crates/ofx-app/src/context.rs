@@ -254,7 +254,7 @@ fn format_utc_date(seconds: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-fn civil_from_unix_days(days_since_epoch: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_unix_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;

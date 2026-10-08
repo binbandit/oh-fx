@@ -10,6 +10,7 @@ mod permissions_command;
 mod provider_activation;
 mod provider_command;
 mod question_call_record;
+mod sessions_command;
 mod shell_call_record;
 mod status_command;
 mod upgrade_command;
@@ -92,6 +93,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Ask(args) => cli_ask::run(&args, &modifiers),
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
             Command::Doctor(format) => doctor_command::run(format, &modifiers),
+            Command::Sessions(args) => sessions_command::run(&args, &modifiers),
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),
             Command::Models(format) => models_command::run(format),
@@ -130,7 +132,7 @@ fn report_error(error: &CliError) -> ExitCode {
     fail(&report.stdout, failure)
 }
 
-fn unavailable_command(command: &Command) -> ExitCode {
+pub(crate) fn unavailable_command(command: &Command) -> ExitCode {
     auto_upgrade::announce_and_schedule();
     not_available(command)
 }
