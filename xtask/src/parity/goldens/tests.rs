@@ -17,7 +17,7 @@ const GOLDENS: &[(&str, &str)] = &[
     ("system_prompt.md", "system\n"),
     ("compaction_system_prompt.txt", "notes"),
     (
-        "review-policy/review_policy.xml",
+        "review_policy.xml",
         "<review>\n{{REVIEW_DATA}}\n</review>\n",
     ),
 ];
