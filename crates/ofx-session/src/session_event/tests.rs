@@ -360,7 +360,6 @@ fn turn_summaries_take_upstream_defaults_and_reject_what_upstream_rejects() {
         "[]",
         "1",
         "{\"turn_duration_ms\":-1}",
-        "{\"turn_duration_ms\":\"1\"}",
         "{\"started_at_ms\":1,\"elapsed\":2}",
         "{\"token_progress\":{\"input_exact\":1}}",
         "{\"token_progress\":{\"cached_tokens\":1}}",
@@ -372,6 +371,34 @@ fn turn_summaries_take_upstream_defaults_and_reject_what_upstream_rejects() {
             ))),
             Err(SessionError::InvalidConversationFrame),
             "{summary}"
+        );
+    }
+}
+
+#[test]
+fn frame_values_are_read_only_in_the_forms_upstream_writes() {
+    let accepted = [
+        summary_frame("{\"turn_completed\":{}}"),
+        summary_frame("{\"steering\":{\"text\":\"x\"}}"),
+        summary_frame(
+            "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"provenance\":\"provider_executed\"}}",
+        ),
+    ];
+    for frame in &accepted {
+        assert!(decode(frame).is_ok(), "{frame}");
+    }
+    let refused = [
+        accepted[0].replace("\"seq\":4", "\"seq\":\"4\""),
+        accepted[0].replace("{}", "{\"turn_summary\":{\"turn_duration_ms\":\"1\"}}"),
+        accepted[0].replace("{}", "{\"turn_summary\":{\"turn_duration_ms\":1.0}}"),
+        accepted[1].replace("\"x\"", "[120]"),
+        accepted[2].replace("\"provider_executed\"", "1"),
+    ];
+    for frame in refused {
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
         );
     }
 }
@@ -437,7 +464,6 @@ fn provider_fields_reject_what_upstream_rejects() {
     for (event, field) in [
         (call, "\"provenance\":\"remote\""),
         (call, "\"provenance\":null"),
-        (call, "\"provenance\":1"),
         (call, "\"provider_result\":1"),
         (call, "\"provider_result\":{}"),
         (result, "\"provider_native\":null"),
