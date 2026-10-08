@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use crate::cli_surface::{OutputFormat, Report, command_failure_json, requests_json};
+use crate::cli_surface::{Report, command_failure_json, requests_json};
 use crate::command_specs::TopLevelKind;
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
@@ -54,48 +54,54 @@ impl ReplayError {
     }
 }
 
-pub(crate) fn parse_replay(args: Vec<OsString>) -> Result<OutputFormat, ReplayError> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplayArgs {
+    pub path: OsString,
+    pub frames: bool,
+    pub json: bool,
+    pub golden: Option<OsString>,
+    pub frames_dir: Option<OsString>,
+}
+
+pub(crate) fn parse_replay(args: Vec<OsString>) -> Result<ReplayArgs, ReplayError> {
     let json_requested = requests_json(&args);
     let error = |kind| ReplayError {
         kind,
         json: json_requested,
     };
-    let mut path = false;
-    let mut json = false;
+    let mut parsed = ReplayArgs::default();
+    let mut path = None;
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         if arg == "--frames" {
-            continue;
-        }
-        if arg == "--json" {
-            json = true;
+            parsed.frames = true;
+        } else if arg == "--json" {
+            parsed.json = true;
         } else if arg == "--golden" {
-            rest.next()
-                .ok_or_else(|| error(ReplayArgsError::MissingGoldenPath))?;
+            parsed.golden = Some(
+                rest.next()
+                    .ok_or_else(|| error(ReplayArgsError::MissingGoldenPath))?,
+            );
         } else if arg == "--frames-dir" {
-            rest.next()
-                .ok_or_else(|| error(ReplayArgsError::MissingFramesDirPath))?;
+            parsed.frames_dir = Some(
+                rest.next()
+                    .ok_or_else(|| error(ReplayArgsError::MissingFramesDirPath))?,
+            );
         } else if arg.as_encoded_bytes().starts_with(b"--") {
             return Err(error(ReplayArgsError::UnknownFlag));
-        } else if std::mem::replace(&mut path, true) {
+        } else if path.replace(arg).is_some() {
             return Err(error(ReplayArgsError::TooManyArgs));
         }
     }
-    if !path {
-        return Err(error(ReplayArgsError::MissingTapePath));
-    }
-    Ok(if json {
-        OutputFormat::Json
-    } else {
-        OutputFormat::Text
-    })
+    parsed.path = path.ok_or_else(|| error(ReplayArgsError::MissingTapePath))?;
+    Ok(parsed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> Result<OutputFormat, ReplayError> {
+    fn parse(args: &[&str]) -> Result<ReplayArgs, ReplayError> {
         parse_replay(args.iter().map(OsString::from).collect())
     }
 
@@ -110,7 +116,10 @@ mod tests {
             kind(&["--frames", "--json"]),
             ReplayArgsError::MissingTapePath
         );
-        assert_eq!(parse(&["tape.fxtape"]).unwrap(), OutputFormat::Text);
+        let parsed = parse(&["tape.fxtape"]).unwrap();
+        assert_eq!(parsed.path, "tape.fxtape");
+        assert!(!parsed.frames && !parsed.json);
+        assert_eq!((parsed.golden, parsed.frames_dir), (None, None));
     }
 
     #[test]
@@ -124,11 +133,19 @@ mod tests {
             "--frames-dir",
             "frames-out",
         ]);
-        assert_eq!(parsed.unwrap(), OutputFormat::Json);
         assert_eq!(
-            parse(&["t.fxtape", "--golden", "--json"]).unwrap(),
-            OutputFormat::Text
+            parsed.unwrap(),
+            ReplayArgs {
+                path: "t.fxtape".into(),
+                frames: true,
+                json: true,
+                golden: Some("out.txt".into()),
+                frames_dir: Some("frames-out".into()),
+            }
         );
+        let golden_json = parse(&["t.fxtape", "--golden", "--json"]).unwrap();
+        assert!(!golden_json.json);
+        assert_eq!(golden_json.golden, Some("--json".into()));
     }
 
     #[test]
