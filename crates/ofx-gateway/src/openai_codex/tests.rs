@@ -12,7 +12,7 @@ use crate::test_sources::Paced;
 struct Chunks(VecDeque<Vec<u8>>);
 
 #[tokio::test]
-async fn an_incomplete_stream_keeps_its_emitted_tool_start() {
+async fn an_incomplete_stream_keeps_its_emitted_tool_start_and_input() {
     let sse = concat!(
         "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}\n\n",
         "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\"}\n\n",
@@ -31,10 +31,15 @@ async fn an_incomplete_stream_keeps_its_emitted_tool_start() {
     assert!(result.is_err());
     assert_eq!(
         events,
-        vec![StreamEvent::ToolCallStarted {
-            call_id: ToolCallId::new("call_1"),
-            tool_name: "read_file".to_owned(),
-        }]
+        vec![
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call_1"),
+                tool_name: "read_file".to_owned(),
+            },
+            StreamEvent::ToolInputDelta {
+                text: "{".to_owned(),
+            },
+        ]
     );
 }
 

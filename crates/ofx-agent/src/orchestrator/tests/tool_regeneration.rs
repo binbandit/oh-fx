@@ -170,3 +170,70 @@ async fn a_continued_turn_derives_its_tool_note_again_from_its_saved_evidence() 
         [ToolChoice::None, ToolChoice::Auto, ToolChoice::None]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_provisional_start_cut_off_before_it_ran_is_regenerated_without_preparing_the_call() {
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let provider = FakeProvider::new(vec![
+        interrupted(vec![streamed_start("abandoned", "echo"), input("{")]),
+        text_reply("recovered"),
+    ]);
+    let mut agent = new_agent(
+        Arc::clone(&provider),
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::clone(&preparations),
+        )],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.final_text, "recovered");
+    assert_eq!(notes(&provider), [None, REGENERATE]);
+    assert_eq!(provider.requests()[1].tool_choice, ToolChoice::Auto);
+    assert_eq!(preparations.load(Ordering::SeqCst), 0);
+    assert!(finished(&events).is_empty());
+    let provisional = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::ToolProvisional { call_id, .. } if call_id.as_str() == "abandoned"))
+        .unwrap();
+    let regenerating = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::Recovery { status, .. } if status.action == Some(ModelRecoveryAction::RegeneratingTool)))
+        .unwrap();
+    assert!(provisional < regenerating);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_regenerated_call_publishes_its_provisional_start_again_and_runs_once() {
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let provider = FakeProvider::new(vec![
+        interrupted(vec![streamed_start("call-1", "echo"), input("{")]),
+        Script::Reply(
+            vec![streamed_start("call-1", "echo")],
+            completion(
+                None,
+                vec![echo_call("call-1", r#"{"text":"one"}"#)],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(
+        Arc::clone(&provider),
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::clone(&preparations),
+        )],
+    );
+    let (report, events) = run(&mut agent, "read").await;
+    assert_eq!(report.final_text, "done");
+    assert_eq!(notes(&provider), [None, REGENERATE, None]);
+    assert_eq!(preparations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+}

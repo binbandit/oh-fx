@@ -423,8 +423,13 @@ async fn failed_withheld_prose_retries_after_a_provisional_start() {
     );
     let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
-    assert_eq!(provider.requests().len(), 2);
-    assert_eq!(provider.requests()[1], provider.requests()[0]);
+    let requests = provider.requests();
+    let [first, retried] = &requests[..] else {
+        panic!("expected one retry: {requests:?}");
+    };
+    assert_eq!(retried.messages[..first.messages.len()], first.messages[..]);
+    assert_eq!(retried.messages.len(), first.messages.len() + 1);
+    assert_eq!(retried.tool_choice, ToolChoice::None);
     assert_eq!(streamed(&events), [ENGLISH_REPLY]);
     assert!(finished(&events).is_empty());
     assert!(

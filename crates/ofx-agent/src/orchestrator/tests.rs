@@ -3195,40 +3195,6 @@ async fn known_streamed_starts_end_visible_text_before_provisional() {
     assert_eq!(assistant_text(&events), "Reading");
 }
 
-#[tokio::test(start_paused = true)]
-async fn failed_local_streamed_starts_retry_without_executing_the_call() {
-    let preparations = Arc::new(AtomicUsize::new(0));
-    let provider = FakeProvider::new(vec![
-        Script::Fail(
-            vec![streamed_start("abandoned", "echo")],
-            failure(ProviderErrorKind::Unavailable, "Unavailable"),
-        ),
-        text_reply("recovered"),
-    ]);
-    let mut agent = new_agent(
-        Arc::clone(&provider),
-        vec![stream_start_tool(
-            ToolActivity::Read,
-            Arc::clone(&preparations),
-        )],
-    );
-    let (report, events) = run(&mut agent, "read").await;
-    assert_eq!(report.outcome, TurnOutcome::Completed);
-    assert_eq!(provider.requests().len(), 2);
-    assert_eq!(provider.requests()[1], provider.requests()[0]);
-    assert_eq!(preparations.load(Ordering::SeqCst), 0);
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, UiEvent::Recovery { .. }))
-    );
-}
-
 #[tokio::test]
 async fn unknown_starts_preserve_text_and_known_ineligible_starts_end_it_once() {
     for (tool_name, expected_boundaries) in [("missing", 0), ("echo", 1)] {

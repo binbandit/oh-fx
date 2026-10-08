@@ -39,7 +39,7 @@ fn an_added_tool_emits_its_start_before_arguments_are_complete() {
 }
 
 #[test]
-fn tool_starts_preserve_interleaved_event_order_without_argument_progress() {
+fn tool_starts_and_argument_chunks_keep_their_interleaved_order() {
     let mut reducer = Reducer::new(LIMITS);
     let second = json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{"}}).to_string();
     for (event, expected) in [(START.to_owned(), "call_1"), (second, "call_2")] {
@@ -52,7 +52,10 @@ fn tool_starts_preserve_interleaved_event_order_without_argument_progress() {
     let delta = r#"{"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"path\":\"next.txt\"}"}"#;
     let (result, deltas) = reducer.apply(delta.as_bytes(), false);
     assert!(!result.unwrap());
-    assert!(deltas.is_empty());
+    assert_eq!(
+        deltas,
+        [Delta::ToolInput("\"path\":\"next.txt\"}".to_owned())]
+    );
 }
 
 #[test]

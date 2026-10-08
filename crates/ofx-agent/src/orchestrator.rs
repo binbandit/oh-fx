@@ -1012,7 +1012,6 @@ impl Agent {
                 }
             }
             StreamEvent::ToolCallStarted { call_id, tool_name } => {
-                self.enter_tool_phase();
                 if may_run_at_provider(&tool_name, &self.tool_specs, &self.provider_executed) {
                     tool = ToolEvidence::Uncertain;
                 } else if tool == ToolEvidence::None {
