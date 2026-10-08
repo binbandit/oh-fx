@@ -844,7 +844,6 @@ dependencies = [
  "ofx-text",
  "reqwest",
  "rustix",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror",

@@ -650,6 +650,39 @@ done
     }
 
     #[tokio::test]
+    async fn tool_arguments_reach_the_server_as_written_unless_nested_too_deep() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let arguments = r#"{"z":1e3,"id":12345678901234567890123,"big":1e400}"#;
+        let output = call(&runtime, "mcp_fixture_alpha", arguments).await;
+        assert_eq!(
+            output.status,
+            ToolResultStatus::Success,
+            "{}",
+            output.content
+        );
+        let deep = format!("{{\"x\":{}0{}}}", "[".repeat(200), "]".repeat(200));
+        let refused = call(&runtime, "mcp_fixture_alpha", &deep).await;
+        assert_eq!(refused.status, ToolResultStatus::Failure);
+        assert!(
+            refused.content.contains("InstanceLimitExceeded"),
+            "{}",
+            refused.content
+        );
+        let calls = std::fs::read_to_string(state.path().join("calls")).unwrap();
+        let sent: Vec<&str> = calls.lines().collect();
+        assert_eq!(sent.len(), 1, "{calls}");
+        assert!(
+            sent[0].ends_with(&format!(
+                "\"method\":\"tools/call\",\"params\":{{\"name\":\"alpha\",\"arguments\":{arguments}}}}}"
+            )),
+            "{calls}"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
     async fn a_tool_list_change_republishes_the_server_tools() {
         let state = tempfile::tempdir().unwrap();
         let runtime = runtime(vec![config("fixture", SERVER, state.path())]);

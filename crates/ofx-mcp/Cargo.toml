@@ -15,7 +15,6 @@ ofx-jsonrpc.workspace = true
 ofx-text.workspace = true
 reqwest.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
