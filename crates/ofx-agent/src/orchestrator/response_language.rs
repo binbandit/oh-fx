@@ -88,10 +88,15 @@ impl Agent {
             .correction_attempted
             .then_some(RESPONSE_LANGUAGE_CORRECTION_CONTROL);
         let mut messages = self.request_history();
-        if note.is_some() || correction.is_some() {
-            messages
-                .to_mut()
-                .extend(note.into_iter().chain(correction).map(ChatMessage::user));
+        let mut notes = turn
+            .continuation
+            .into_iter()
+            .chain(note)
+            .chain(correction)
+            .map(ChatMessage::user)
+            .peekable();
+        if notes.peek().is_some() {
+            messages.to_mut().extend(notes);
         }
         messages
     }
