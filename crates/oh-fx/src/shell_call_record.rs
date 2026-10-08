@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 const SHELL_TOOL: &str = "shell";
 const MAX_ERROR_CODE_BYTES: usize = 64;
 const REVIEW_HOLD: &str = "tool_review_held";
+const PERMISSION_DENIAL: &str = "tool_permission_denied";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CallError {
@@ -27,7 +28,7 @@ pub(crate) fn failed_call(
     if tool_name != SHELL_TOOL {
         return None;
     }
-    if is_review_hold(content) {
+    if is_unexecuted_by_permission(content) {
         return rejected_call(tool_name, arguments);
     }
     let error = match command_result {
@@ -84,12 +85,14 @@ fn shell_action(arguments: &str) -> Option<&'static str> {
     }
 }
 
-fn is_review_hold(content: &str) -> bool {
+fn is_unexecuted_by_permission(content: &str) -> bool {
     object(content).is_some_and(|root| {
-        root.get("error")
-            .and_then(|failure| failure.get("type"))
-            .and_then(Value::as_str)
-            == Some(REVIEW_HOLD)
+        matches!(
+            root.get("error")
+                .and_then(|failure| failure.get("type"))
+                .and_then(Value::as_str),
+            Some(REVIEW_HOLD | PERMISSION_DENIAL)
+        )
     })
 }
 
@@ -184,6 +187,21 @@ mod tests {
             ("{", None),
         ] {
             assert_eq!(shell_action(arguments), action, "{arguments}");
+        }
+    }
+
+    #[test]
+    fn denied_and_held_shell_calls_are_recorded_as_rejected() {
+        let arguments = r#"{"request":{"action":"run","command":"rm -rf build"}}"#;
+        for content in [
+            ofx_contract::tool_permission_denied_json("shell"),
+            r#"{"error":{"type":"tool_review_held","tool_name":"shell"}}"#.to_owned(),
+        ] {
+            assert_eq!(
+                failed_call("shell", arguments, &content, None),
+                Some(failure(Some("run"), "rejected", "rejected")),
+                "{content}"
+            );
         }
     }
 

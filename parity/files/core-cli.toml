@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/cli/cli_ask.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/cli_ask.rs", "crates/oh-fx/src/cli_ask.rs"]
-note = "Argument parsing, ask runtime, --continue-recovery, additional directories and the per-mode response restart notice with the JSON preview discard exist; styled terminal ask presentation, image inputs and session-v2 ask persistence are absent."
+note = "Argument parsing, ask runtime, --continue-recovery, additional directories, the stderr permission prompt and the per-mode response restart notice with the JSON preview discard exist; styled terminal ask presentation, image inputs and session-v2 ask persistence are absent."
 
 [[file]]
 upstream = "src/core/cli/cli_replay.zig"

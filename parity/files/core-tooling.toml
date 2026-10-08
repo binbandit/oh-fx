@@ -18,9 +18,9 @@ note = "Output sanitization and shell snapshots exist; cross-stream canonical fo
 
 [[file]]
 upstream = "src/core/tooling/command_policy.zig"
-status = "todo"
-modules = []
-note = "Destructive effect annotations, risk notes and safer command alternatives are unimplemented."
+status = "partial"
+modules = ["crates/ofx-shell/src/command_policy.rs"]
+note = "Destructive effects, risk notes and safer command alternatives are implemented; semantic exit-code annotations are absent."
 
 [[file]]
 upstream = "src/core/tooling/command_result_mapping.zig"
@@ -121,8 +121,8 @@ note = "The runtime publishes its tools as a dynamic tool source the agent reads
 [[file]]
 upstream = "src/core/tooling/tool_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-tools/src/shell/presentation.rs"]
-note = "Filesystem/shell/subagent plain labels, subagent failure labels and provider-search alias labels with their query and domain filters exist; dynamic tool labels and complete completed-result presentation are absent."
+modules = ["crates/ofx-contract/src/tool_presentation.rs", "crates/ofx-tools/src/shell/presentation.rs", "crates/oh-fx/src/permission_prompt.rs"]
+note = "Filesystem/shell/subagent plain labels, permission labels with command risk notes, subagent failure labels and provider-search alias labels with their query and domain filters exist; dynamic tool labels and complete completed-result presentation are absent."
 
 [[file]]
 upstream = "src/core/tooling/tool_projection.zig"
