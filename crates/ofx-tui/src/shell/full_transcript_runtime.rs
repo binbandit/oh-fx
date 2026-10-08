@@ -846,6 +846,37 @@ mod tests {
     }
 
     #[test]
+    fn an_open_statusline_menu_keeps_ctrl_o_and_one_opened_later_waits_behind_the_viewer() {
+        use ofx_contract::UiEvent;
+
+        let mut test = TestShell::start();
+        test.deliver(UiEvent::StatuslineMenuOpened);
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        assert!(!test.written().contains("\x1b[?1049h"));
+        assert!(test.shell.statusline_menu.is_some());
+        test.type_bytes(b"\x1b");
+        test.step();
+        test.advance(40);
+        test.settle();
+        assert!(test.shell.statusline_menu.is_none());
+        test.type_bytes(b"\x0f");
+        test.step();
+        assert!(test.written().contains("\x1b[?1049h"));
+        test.deliver(UiEvent::StatuslineMenuOpened);
+        assert!(test.screen().contains("full detail"));
+        assert!(test.shell.full_transcript.is_some());
+        test.type_bytes(b"\x1b");
+        test.step();
+        test.advance(40);
+        test.settle();
+        assert!(test.written().contains("\x1b[?1049l"));
+        assert!(test.shell.statusline_menu.is_some());
+        assert!(test.sent().is_empty());
+    }
+
+    #[test]
     fn typing_cancels_a_pending_open_without_losing_the_draft() {
         let mut test = TestShell::start();
         test.screen();
