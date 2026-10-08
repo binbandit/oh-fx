@@ -93,7 +93,7 @@ struct ResultWire<'a> {
     provider_native: False,
     review_feedback: False,
     created_at_ms: i64,
-    permission_feedback: NoItems,
+    permission_feedback: &'a [&'a str],
     committed_file_presentation: Null,
     command_output_replay: Null,
     #[serde(with = "process_presentation::checkpoint")]
@@ -222,7 +222,7 @@ fn step_wire<'a>(
                     provider_native: False,
                     review_feedback: False,
                     created_at_ms: source.created_at_ms,
-                    permission_feedback: NoItems,
+                    permission_feedback: &result.permission_feedback,
                     committed_file_presentation: Null,
                     command_output_replay: Null,
                     command_process_presentation: result.process,

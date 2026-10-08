@@ -79,6 +79,7 @@ fn messages(
             tool_calls: answered,
             provider_replay,
         });
+        let mut feedback = Vec::new();
         for result in tool_results {
             let call_id = ToolCallId::new(result.tool_call_id);
             outputs.push(RecordedOutput {
@@ -87,6 +88,12 @@ fn messages(
                 whole_file: false,
                 process: result.process,
             });
+            feedback.extend(
+                result
+                    .permission_feedback
+                    .into_iter()
+                    .map(|text| ChatMessage::permission_feedback(call_id.clone(), text)),
+            );
             messages.push(ChatMessage::Tool {
                 call_id,
                 tool_name: result.tool_name,
@@ -94,6 +101,7 @@ fn messages(
                 status: result.status,
             });
         }
+        messages.extend(feedback);
     }
     for entry in steering {
         push_steering(&mut messages, entry);
