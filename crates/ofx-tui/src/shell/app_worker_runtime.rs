@@ -99,6 +99,23 @@ pub fn ui_channel() -> io::Result<(UiEventSender, UiEventReceiver)> {
     ))
 }
 
+#[derive(Clone, Copy)]
+enum Streamed {
+    Shown,
+    Counted,
+    Unchanged,
+}
+
+impl Streamed {
+    fn counted(changed: bool) -> Self {
+        if changed {
+            Self::Counted
+        } else {
+            Self::Unchanged
+        }
+    }
+}
+
 impl Shell<'_> {
     pub(super) fn drain_ui_events(&mut self) {
         self.events.drain_wake();
@@ -115,20 +132,46 @@ impl Shell<'_> {
     }
 
     fn handle_ui_event(&mut self, delivery: Delivery) {
-        self.mark_dirty();
-        match delivery.event {
-            UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
-            event @ (UiEvent::AssistantText { .. }
-            | UiEvent::AssistantRestarted { .. }
-            | UiEvent::Operational { .. }) => self.turn_text(event),
+        let Delivery { event, file } = delivery;
+        match event {
+            UiEvent::AssistantText { turn_id, text } => {
+                if self.is_visible_turn(turn_id) {
+                    let streamed = self.assistant_text(&text);
+                    self.note_streamed(streamed);
+                }
+            }
             UiEvent::ReasoningText { turn_id, text } => {
                 if let Some(turn) = self.visible_turn(turn_id) {
+                    let before = turn.tokens.progress();
                     turn.tokens.consume_reasoning(&text);
+                    let streamed = Streamed::counted(turn.tokens.progress() != before);
+                    self.note_streamed(streamed);
                 }
+            }
+            event => {
+                self.mark_dirty();
+                self.handle_presented_event(event, file);
+            }
+        }
+    }
+
+    fn note_streamed(&mut self, streamed: Streamed) {
+        match streamed {
+            Streamed::Counted if self.frame.activity_visible => self.frame.tokens_due = true,
+            Streamed::Shown | Streamed::Counted => self.mark_dirty(),
+            Streamed::Unchanged => {}
+        }
+    }
+
+    fn handle_presented_event(&mut self, event: UiEvent, file: Option<Box<FileApproval>>) {
+        match event {
+            UiEvent::TurnStarted { turn_id } => self.turn_started(turn_id),
+            event @ (UiEvent::AssistantRestarted { .. } | UiEvent::Operational { .. }) => {
+                self.turn_text(event);
             }
             UiEvent::ApprovalRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
-                self.approval_requested(turn_id, *request, delivery.file);
+                self.approval_requested(turn_id, *request, file);
             }
             UiEvent::QuestionRequested { turn_id, request } => {
                 self.end_assistant_step(turn_id);
@@ -145,7 +188,9 @@ impl Shell<'_> {
                 prompt,
                 text,
             } => self.steering_applied(turn_id, prompt, text),
-            UiEvent::ContextNotice { .. } => {}
+            UiEvent::ContextNotice { .. }
+            | UiEvent::AssistantText { .. }
+            | UiEvent::ReasoningText { .. } => {}
             UiEvent::Recovery { turn_id, status } => self.recovery_reported(turn_id, status),
             UiEvent::UsageReported {
                 turn_id,
@@ -216,9 +261,6 @@ impl Shell<'_> {
 
     fn turn_text(&mut self, event: UiEvent) {
         match event {
-            UiEvent::AssistantText { turn_id, text } if self.is_visible_turn(turn_id) => {
-                self.assistant_text(&text);
-            }
             UiEvent::AssistantRestarted { turn_id, text } if self.is_visible_turn(turn_id) => {
                 self.restart_assistant(&text);
             }
@@ -524,13 +566,20 @@ impl Shell<'_> {
         }
     }
 
-    fn assistant_text(&mut self, text: &str) {
+    fn assistant_text(&mut self, text: &str) -> Streamed {
         let Some(turn) = &mut self.turn else {
-            return;
+            return Streamed::Unchanged;
         };
+        let phase_changed = turn.phase != TurnPhase::Generating;
         turn.phase = TurnPhase::Generating;
+        let before = turn.tokens.progress();
         turn.tokens.consume_content(text);
-        self.present_assistant(text);
+        let counted = turn.tokens.progress() != before;
+        if self.present_assistant(text) || phase_changed {
+            Streamed::Shown
+        } else {
+            Streamed::counted(counted)
+        }
     }
 
     fn restart_assistant(&mut self, text: &str) {
@@ -547,12 +596,12 @@ impl Shell<'_> {
         self.present_assistant(notice);
     }
 
-    fn present_assistant(&mut self, text: &str) {
+    fn present_assistant(&mut self, text: &str) -> bool {
         let Some(turn) = &mut self.turn else {
-            return;
+            return false;
         };
         let Some(text) = turn.leading_whitespace.release(text) else {
-            return;
+            return false;
         };
         let trailing = text.len() - text.trim_end_matches('\n').len();
         turn.step_break = if trailing == text.len() {
@@ -563,7 +612,9 @@ impl Shell<'_> {
         };
         let mut events = Vec::new();
         turn.markdown.push(&text, &mut events);
+        let shown = !events.is_empty();
         self.transcript.append_assistant(events, &self.theme);
+        shown
     }
 
     fn end_assistant_step(&mut self, turn_id: TurnId) {
@@ -767,8 +818,9 @@ mod tool_rows;
 mod tests {
     use ofx_contract::{
         ActionLabel, CallDescription, CompactionActivity, CompactionEnd, Concurrency, HistoryEntry,
-        Notice, NoticeTone, ToolActivity, ToolCallId, ToolEffect, ToolResultStatus, TurnId,
-        TurnOutcome, UiCommand, UiEvent,
+        Notice, NoticeTone, QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId,
+        ToolActivity, ToolCallId, ToolEffect, ToolResultStatus, TurnId, TurnOutcome, UiCommand,
+        UiEvent, Usage,
     };
 
     use super::super::Opening;
@@ -821,6 +873,115 @@ mod tests {
             ),
             "{screen}"
         );
+    }
+
+    fn streaming() -> TestShell {
+        let mut test = TestShell::start();
+        test.submit("go");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        test.screen();
+        test
+    }
+
+    fn reasoning(text: &str) -> UiEvent {
+        UiEvent::ReasoningText {
+            turn_id: TurnId::new(1),
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn token_counts_alone_redraw_at_most_every_50_ms() {
+        let mut test = streaming();
+        let drawn = test.shell.frame.drawn_ms;
+        for _ in 0..20 {
+            test.deliver(reasoning(&"think ".repeat(20)));
+        }
+        assert!(!test.shell.frame_due(drawn + 49));
+        assert!(test.shell.frame_due(drawn + 50));
+        test.advance(50);
+        let written = test.written();
+        assert_eq!(written.matches('↓').count(), 1, "{written:?}");
+        test.deliver(reasoning(" "));
+        let drawn = test.shell.frame.drawn_ms;
+        assert!(!test.shell.frame_due(drawn));
+        assert_eq!(test.shell.token_redraw_ms(), None);
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: "partial".to_owned(),
+        });
+        let written = test.written();
+        assert!(written.contains("Generating"), "{written:?}");
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: " words".repeat(20),
+        });
+        let drawn = test.shell.frame.drawn_ms;
+        assert!(!test.shell.frame_due(drawn + 49));
+        assert!(test.shell.frame_due(drawn + 50));
+        test.deliver(UiEvent::AssistantText {
+            turn_id: TurnId::new(1),
+            text: " done\n\nnext\n".to_owned(),
+        });
+        assert!(test.written().contains("done"));
+        test.deliver(UiEvent::UsageReported {
+            turn_id: TurnId::new(1),
+            usage: Usage {
+                input_tokens: Some(10),
+                output_tokens: Some(999),
+            },
+            context_window: None,
+        });
+        assert!(test.written().contains("↓999"));
+    }
+
+    #[test]
+    fn token_counts_draw_at_once_while_no_activity_row_is_on_screen() {
+        let mut test = streaming();
+        test.deliver(UiEvent::QuestionRequested {
+            turn_id: TurnId::new(1),
+            request: QuestionRequest {
+                id: RequestId::new(2),
+                entries: vec![QuestionBatchEntry {
+                    question: "Continue?".to_owned(),
+                    options: vec![QuestionOption {
+                        label: "Yes".to_owned(),
+                        description: None,
+                    }],
+                }],
+            },
+        });
+        test.screen();
+        let drawn = test.shell.frame.drawn_ms;
+        assert!(!test.shell.frame_due(drawn));
+        test.deliver(reasoning(&"think ".repeat(20)));
+        assert!(test.shell.frame_due(drawn));
+        assert_eq!(test.shell.token_redraw_ms(), None);
+    }
+
+    #[test]
+    fn blocked_frames_keep_token_updates_without_an_overdue_deadline() {
+        let mut test = streaming();
+        let now_ms = test.shell.now_ms();
+        test.shell.handle_resize_signal(now_ms);
+        test.deliver(reasoning(&"think ".repeat(20)));
+        assert!(test.written().is_empty());
+        test.advance(50);
+        assert!(test.written().is_empty());
+        let mid_resize_ms = now_ms + 50;
+        assert!(
+            test.shell
+                .next_deadline_ms(mid_resize_ms)
+                .is_some_and(|due_ms| due_ms > mid_resize_ms)
+        );
+        test.advance(50);
+        test.draining(|shell| {
+            let now_ms = shell.now_ms();
+            shell.apply_pending_resize(now_ms);
+        });
+        assert!(test.written().contains('↓'));
     }
 
     fn compaction(activity: CompactionActivity) -> UiEvent {

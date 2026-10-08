@@ -108,7 +108,7 @@ note = "Ctrl+G's busy checks, readiness, resume-handoff validation and executabl
 upstream = "src/core/app/app_worker_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/app_worker_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
-note = "Worker event delivery, authoritative tool rows, compaction persistence and the route recovery status with its countdown refresh and the response restart notice exist; provisional lifecycle reconciliation, recovery transcript records, table/code semantic events and complete child-event propagation remain absent."
+note = "Worker event delivery, authoritative tool rows, compaction persistence, token-only updates held for 50 ms after a frame that drew the activity row and drawn at once otherwise, and the route recovery status with its countdown refresh and the response restart notice exist; provisional lifecycle reconciliation, recovery transcript records, table/code semantic events and complete child-event propagation remain absent."
 
 [[file]]
 upstream = "src/core/app/app_workspace_runtime.zig"
