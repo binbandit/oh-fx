@@ -6,6 +6,7 @@ const CLEAR_IN_FRAME: &str = "\x1b[?2026h\x1b[?25l\x1b[0m\x1b[2J\x1b[3J\x1b[H";
 
 fn probing() -> TestShell {
     let mut test = TestShell::start();
+    test.hold_clock();
     test.shell.input.start_native_clear_probe();
     test.shell.input_notice("earlier output");
     test.screen();

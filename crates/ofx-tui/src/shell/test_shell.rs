@@ -3,7 +3,7 @@ use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ofx_contract::{PermissionMode, UiCommand, UiEvent};
 use ofx_testkit::PtyPair;
@@ -181,6 +181,10 @@ impl TestShell {
         let output = std::mem::take(&mut self.output);
         self.screen.process(&output);
         String::from_utf8_lossy(&output).into_owned()
+    }
+
+    pub(super) fn hold_clock(&mut self) {
+        self.shell.held_now = Some(Instant::now());
     }
 
     pub(super) fn advance(&mut self, millis: u64) {
