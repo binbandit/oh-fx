@@ -682,7 +682,10 @@ fn web_fetch_progress(mode: OutputMode) -> Option<WebFetchProgress> {
 }
 
 fn write_stderr(text: &str) -> io::Result<()> {
-    let mut stderr = io::stderr().lock();
+    write_stderr_to(&mut io::stderr().lock(), text)
+}
+
+fn write_stderr_to(stderr: &mut dyn Write, text: &str) -> io::Result<()> {
     stderr.write_all(text.as_bytes())?;
     stderr.flush()
 }
@@ -911,6 +914,7 @@ struct Presenter {
     permission_mode: PermissionMode,
     source: CredentialSource,
     stdout: Box<dyn Write + Send>,
+    stderr: Box<dyn Write + Send>,
     output: String,
     response: ResponseOutput,
     has_output: bool,
@@ -921,6 +925,7 @@ struct Presenter {
     steps: u64,
     tool_calls: Vec<ToolRecord>,
     settling_progress: Vec<(ToolCallId, String)>,
+    provisional_calls: Vec<ToolCallId>,
     recovery: Option<RouteRecoveryStatus>,
     saving: bool,
     write_error: Option<&'static str>,
@@ -948,6 +953,7 @@ impl Presenter {
             permission_mode,
             source,
             stdout: Box::new(io::stdout()),
+            stderr: Box::new(io::stderr()),
             output: String::new(),
             response: ResponseOutput::default(),
             has_output: false,
@@ -958,6 +964,7 @@ impl Presenter {
             steps: 0,
             tool_calls: Vec::new(),
             settling_progress: Vec::new(),
+            provisional_calls: Vec::new(),
             recovery: None,
             saving: false,
             write_error: None,
@@ -976,14 +983,6 @@ impl Presenter {
         self
     }
 
-    fn recovery_reported(&mut self, status: RouteRecoveryStatus) -> io::Result<()> {
-        let notices = self.recovery_notices(&status);
-        self.recovery = Some(status);
-        notices
-            .iter()
-            .try_for_each(|line| self.write_status(StatusBlock::Notice, line))
-    }
-
     fn recovery_notices(&self, status: &RouteRecoveryStatus) -> Vec<String> {
         let terminal = status.is_terminal();
         if self.mode == OutputMode::Quiet && !terminal {
@@ -998,13 +997,17 @@ impl Presenter {
 
     fn handle(&mut self, event: UiEvent) -> bool {
         let written = match event {
-            UiEvent::AssistantText { text, .. } => {
-                self.begin_response();
-                self.push_assistant(&text)
-            }
+            UiEvent::AssistantText { text, .. } => self.assistant_text(&text),
             UiEvent::AssistantRestarted { text, .. } => self.push_restarted(&text),
+            UiEvent::AssistantBoundary { .. } => self.assistant_boundary(),
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
-            UiEvent::Recovery { status, .. } => self.recovery_reported(status),
+            UiEvent::Recovery { status, .. } => self.recover(status),
+            UiEvent::ToolProvisional {
+                call_id,
+                tool_name,
+                action_label,
+                ..
+            } => self.tool_provisional(call_id, &tool_name, &action_label),
             UiEvent::ToolStarted {
                 call_id,
                 tool_name,
@@ -1019,32 +1022,29 @@ impl Presenter {
                 content,
                 command_result,
                 ..
-            } => {
-                self.tool_calls.push(ToolRecord::finished(
+            } => self.tool_finished(
+                &call_id,
+                ToolRecord::finished(
                     tool_name,
                     &arguments,
                     status,
                     &content,
                     command_result.as_deref(),
-                ));
-                match self.take_settling_progress(&call_id) {
-                    Some(line) => self.write_status(StatusBlock::Progress, &line),
-                    None => Ok(()),
-                }
-                .and_then(|()| self.finish_command_output(&call_id))
-            }
+                ),
+            ),
             UiEvent::ToolRejected {
+                call_id,
                 tool_name,
                 arguments,
                 reason,
                 description,
                 ..
-            } => self.tool_rejected(tool_name, &arguments, reason, description),
-            UiEvent::ContextNotice { text, .. } => {
-                return self.context_notice(&text);
-            }
-            UiEvent::SystemNotice { text } => {
-                self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
+            } => self.tool_rejected(&call_id, tool_name, &arguments, reason, description),
+            UiEvent::ContextNotice { text, .. } => return self.context_notice(&text),
+            UiEvent::SystemNotice { text } => self.system_notice(&text),
+            UiEvent::TurnFinished { .. } => {
+                self.provisional_calls.clear();
+                Ok(())
             }
             UiEvent::TurnStarted { .. }
             | UiEvent::ToolDeferred { .. }
@@ -1052,7 +1052,6 @@ impl Presenter {
             | UiEvent::SteeringApplied { .. }
             | UiEvent::ReasoningText { .. }
             | UiEvent::UsageReported { .. }
-            | UiEvent::TurnFinished { .. }
             | UiEvent::ApprovalRequested { .. }
             | UiEvent::ApprovalFeedback { .. }
             | UiEvent::QuestionRequested { .. }
@@ -1097,12 +1096,38 @@ impl Presenter {
         }
     }
 
+    fn assistant_text(&mut self, text: &str) -> io::Result<()> {
+        self.begin_response();
+        self.push_assistant(text)
+    }
+
+    fn assistant_boundary(&mut self) -> io::Result<()> {
+        if self.mode != OutputMode::Terminal {
+            return Ok(());
+        }
+        self.push_assistant("\n")
+    }
+
+    fn system_notice(&mut self, text: &str) -> io::Result<()> {
+        self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
+    }
+
+    fn tool_finished(&mut self, call_id: &ToolCallId, record: ToolRecord) -> io::Result<()> {
+        self.tool_calls.push(record);
+        match self.take_settling_progress(call_id) {
+            Some(line) => self.write_status(StatusBlock::Progress, &line),
+            None => Ok(()),
+        }
+        .and_then(|()| self.finish_command_output(call_id))
+    }
+
     fn tool_started(
         &mut self,
         call_id: ToolCallId,
         tool_name: &str,
         description: &CallDescription,
     ) -> io::Result<()> {
+        self.take_provisional_call(&call_id);
         self.start_step();
         if description.activity == ToolActivity::Command {
             self.command_calls.push(call_id.clone());
@@ -1121,12 +1146,15 @@ impl Presenter {
 
     fn tool_rejected(
         &mut self,
+        call_id: &ToolCallId,
         tool_name: String,
         arguments: &str,
         reason: ToolRejection,
         description: Option<CallDescription>,
     ) -> io::Result<()> {
-        self.start_step();
+        if !self.take_provisional_call(call_id) {
+            self.start_step();
+        }
         let title = match reason {
             ToolRejection::Unsupported => Some(format_unknown_action(&tool_name)),
             _ => description.map(|description| description.title),
@@ -1148,6 +1176,38 @@ impl Presenter {
         })
     }
 
+    fn tool_provisional(
+        &mut self,
+        call_id: ToolCallId,
+        tool_name: &str,
+        action_label: &str,
+    ) -> io::Result<()> {
+        if !self.provisional_calls.contains(&call_id) {
+            self.provisional_calls.push(call_id);
+        }
+        if self.mode != OutputMode::Terminal && tool_name == WEB_FETCH_TOOL {
+            return Ok(());
+        }
+        let action = encode_terminal_safe(action_label.as_bytes(), usize::MAX).text;
+        if self.mode == OutputMode::Terminal {
+            self.write_status(StatusBlock::Progress, &format!("● {action}\n"))
+        } else {
+            let _ = self.write_status(StatusBlock::Progress, &format!("● {action}\x1b[0m\n"));
+            Ok(())
+        }
+    }
+
+    fn recover(&mut self, status: RouteRecoveryStatus) -> io::Result<()> {
+        if status.kind == ofx_contract::RouteRecoveryKind::AutoRetry {
+            self.provisional_calls.clear();
+        }
+        let notices = self.recovery_notices(&status);
+        self.recovery = Some(status);
+        notices
+            .iter()
+            .try_for_each(|line| self.write_status(StatusBlock::Notice, line))
+    }
+
     fn context_notice(&mut self, notice: &str) -> bool {
         if self.mode == OutputMode::Terminal
             || self.claimed_notices.iter().any(|seen| seen == notice)
@@ -1155,7 +1215,7 @@ impl Presenter {
             return true;
         }
         self.claimed_notices.push(notice.to_owned());
-        match write_stderr(&format!("[notice] {notice}\n")) {
+        match write_stderr_to(&mut *self.stderr, &format!("[notice] {notice}\n")) {
             Ok(()) => true,
             Err(error) => {
                 self.write_error.get_or_insert(write_error_name(&error));
@@ -1251,6 +1311,18 @@ impl Presenter {
         }
     }
 
+    fn take_provisional_call(&mut self, call_id: &ToolCallId) -> bool {
+        let Some(index) = self
+            .provisional_calls
+            .iter()
+            .position(|pending| pending == call_id)
+        else {
+            return false;
+        };
+        self.provisional_calls.swap_remove(index);
+        true
+    }
+
     fn start_step(&mut self) {
         self.steps += 1;
         self.response.started = false;
@@ -1292,7 +1364,7 @@ impl Presenter {
 
     fn write_status(&mut self, block: StatusBlock, line: &str) -> io::Result<()> {
         if self.mode != OutputMode::Terminal {
-            return write_stderr(line);
+            return write_stderr_to(&mut *self.stderr, line);
         }
         self.held_blank_text.clear();
         if self.open_status_block == Some(block) {
@@ -2061,6 +2133,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provisional_retry_clear_preserves_terminal_recovery_notices_and_save_state() {
+        let stopped = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::TerminalProviderError,
+            failed_attempt: 2,
+            succeeded_attempt: 0,
+            attempt_limit: 10,
+            cause: Some(ModelRecoveryCause::ProviderUnavailable),
+            action: None,
+            required_action: ModelRecoveryRequiredAction::None,
+            delay_seconds: 0,
+            diagnostic: Some(ModelFailureDiagnostic::new("ConnectionFailed")),
+            retry_wait: None,
+        };
+        let retry = RouteRecoveryStatus {
+            kind: RouteRecoveryKind::AutoRetry,
+            action: Some(ModelRecoveryAction::RetryingRequest),
+            ..stopped.clone()
+        };
+        for mode in [OutputMode::Quiet, OutputMode::Json, OutputMode::Terminal] {
+            for saving in [false, true] {
+                let screen = Screen::default();
+                let mut presenter = json_presenter().saving(saving);
+                presenter.mode = mode;
+                if mode == OutputMode::Terminal {
+                    presenter.stdout = Box::new(screen.clone());
+                } else {
+                    presenter.stderr = Box::new(screen.clone());
+                }
+                present(&mut presenter, [provisional("abandoned")]);
+                assert!(presenter.handle(UiEvent::Recovery {
+                    turn_id: TurnId::new(1),
+                    status: retry.clone(),
+                }));
+                assert!(presenter.provisional_calls.is_empty());
+                if mode == OutputMode::Quiet {
+                    assert!(!screen.text().contains("retrying request"));
+                }
+                present(
+                    &mut presenter,
+                    [rejected(
+                        "abandoned",
+                        "read_file",
+                        "{",
+                        ToolRejection::MalformedArguments,
+                        None,
+                    )],
+                );
+                assert_eq!(presenter.steps, 1);
+                assert!(presenter.handle(UiEvent::Recovery {
+                    turn_id: TurnId::new(1),
+                    status: stopped.clone(),
+                }));
+                let notice = "[notice] ⚠ Provider unavailable · ConnectionFailed · stopped after 2 attempts\n";
+                let expected = if saving {
+                    notice.to_owned()
+                } else {
+                    format!(
+                        "{notice}[notice] This run was started with --no-save, so its recovery context cannot be resumed after exit.\n"
+                    )
+                };
+                assert!(
+                    screen.text().ends_with(&expected),
+                    "mode={mode:?}, saving={saving}: {:?}",
+                    screen.text()
+                );
+                assert_eq!(presenter.recovery, Some(stopped.clone()));
+            }
+        }
+    }
+
     fn json_presenter() -> Presenter {
         Presenter::new(
             AskOutput {
@@ -2356,6 +2499,717 @@ mod tests {
             screen.text(),
             "Hel\n\n[Response interrupted. Restarting.]\n\nHello."
         );
+    }
+
+    fn provisional(call_id: &str) -> UiEvent {
+        UiEvent::ToolProvisional {
+            turn_id: TurnId::new(1),
+            call_id: ToolCallId::new(call_id),
+            tool_name: "read_file".to_owned(),
+            action_label: "Reading".to_owned(),
+        }
+    }
+
+    #[test]
+    fn provisional_reads_publish_before_arguments_complete_without_counting_a_step() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(&mut presenter, [provisional("call-1")]);
+        assert_eq!(screen.text(), "● Reading\n");
+        assert_eq!(presenter.steps, 0);
+        assert!(presenter.tool_calls.is_empty());
+        present(
+            &mut presenter,
+            [
+                started("call-1", "Reading a.txt", ToolEffect::ReadOnly),
+                finished("call-1"),
+            ],
+        );
+        assert_eq!(screen.text(), "● Reading\nReading a.txt\n");
+        assert_eq!(presenter.steps, 1);
+        assert_eq!(presenter.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn provisional_progress_goes_to_stderr_in_every_machine_output_mode() {
+        for mode in [OutputMode::Raw, OutputMode::Quiet, OutputMode::Json] {
+            let mut presenter = json_presenter();
+            presenter.mode = mode;
+            let stderr = Screen::default();
+            let stdout = Screen::default();
+            presenter.stderr = Box::new(stderr.clone());
+            presenter.stdout = Box::new(stdout.clone());
+            present(&mut presenter, [provisional("call-1")]);
+            assert_eq!(stderr.text(), "● Reading\x1b[0m\n", "{mode:?}");
+            assert_eq!(stdout.text(), "", "{mode:?}");
+            assert_eq!(presenter.output, "", "{mode:?}");
+            assert_eq!(presenter.steps, 0);
+        }
+    }
+
+    #[test]
+    fn provisional_web_fetch_progress_is_hidden_in_machine_output_modes() {
+        for mode in [
+            OutputMode::Raw,
+            OutputMode::Quiet,
+            OutputMode::Json,
+            OutputMode::Terminal,
+        ] {
+            let mut presenter = json_presenter();
+            presenter.mode = mode;
+            let stderr = Screen::default();
+            let stdout = Screen::default();
+            presenter.stderr = Box::new(stderr.clone());
+            presenter.stdout = Box::new(stdout.clone());
+            present(
+                &mut presenter,
+                [UiEvent::ToolProvisional {
+                    turn_id: TurnId::new(1),
+                    call_id: ToolCallId::new("fetch"),
+                    tool_name: "web_fetch".to_owned(),
+                    action_label: "Fetching".to_owned(),
+                }],
+            );
+            assert_eq!(stderr.text(), "", "{mode:?}");
+            assert_eq!(
+                stdout.text(),
+                if mode == OutputMode::Terminal {
+                    "● Fetching\n"
+                } else {
+                    ""
+                },
+                "{mode:?}"
+            );
+            assert_eq!(presenter.steps, 0);
+            assert_eq!(presenter.provisional_calls, [ToolCallId::new("fetch")]);
+        }
+    }
+
+    #[test]
+    fn rejected_provisional_reads_do_not_count_as_executed_steps() {
+        let mut presenter = json_presenter();
+        presenter.stderr = Box::new(Screen::default());
+        present(
+            &mut presenter,
+            [
+                provisional("call-1"),
+                rejected(
+                    "call-1",
+                    "read_file",
+                    "{",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+            ],
+        );
+        assert_eq!(presenter.steps, 0);
+        assert_eq!(
+            serde_json::to_string(&presenter.tool_calls).unwrap(),
+            r#"[{"name":"read_file","status":"error"}]"#
+        );
+    }
+
+    #[test]
+    fn parallel_provisional_reads_reconcile_by_identity() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                provisional("call-1"),
+                provisional("call-2"),
+                started("call-2", "Reading b.txt", ToolEffect::ReadOnly),
+                finished("call-2"),
+                rejected(
+                    "call-1",
+                    "read_file",
+                    "{",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+                rejected(
+                    "call-3",
+                    "read_file",
+                    "{",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+            ],
+        );
+        assert_eq!(presenter.steps, 2);
+        assert_eq!(screen.text(), "● Reading\n● Reading\nReading b.txt\n");
+    }
+
+    #[test]
+    fn failed_turns_clear_unfinished_provisional_reads() {
+        let (mut presenter, screen) = terminal_presenter();
+        present(
+            &mut presenter,
+            [
+                provisional("call-1"),
+                UiEvent::TurnFinished {
+                    turn_id: TurnId::new(1),
+                    outcome: TurnOutcome::Failed,
+                },
+                rejected(
+                    "call-1",
+                    "read_file",
+                    "{",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+            ],
+        );
+        assert_eq!(presenter.steps, 1);
+        assert_eq!(screen.text(), "● Reading\n");
+    }
+
+    #[test]
+    fn retries_clear_abandoned_provisional_ids_before_the_next_attempt() {
+        let mut presenter = json_presenter();
+        let stderr = Screen::default();
+        presenter.stderr = Box::new(stderr.clone());
+        let retry = UiEvent::Recovery {
+            turn_id: TurnId::new(1),
+            status: RouteRecoveryStatus {
+                kind: RouteRecoveryKind::AutoRetry,
+                failed_attempt: 1,
+                succeeded_attempt: 0,
+                attempt_limit: 10,
+                cause: Some(ModelRecoveryCause::ProviderUnavailable),
+                action: Some(ModelRecoveryAction::RetryingRequest),
+                required_action: ModelRecoveryRequiredAction::None,
+                delay_seconds: 0,
+                diagnostic: None,
+                retry_wait: None,
+            },
+        };
+        present(&mut presenter, [provisional("abandoned"), retry]);
+        present(
+            &mut presenter,
+            [rejected(
+                "abandoned",
+                "read_file",
+                "{",
+                ToolRejection::MalformedArguments,
+                None,
+            )],
+        );
+        assert_eq!(presenter.steps, 1);
+        present(&mut presenter, [provisional("abandoned")]);
+        assert_eq!(stderr.text().matches("● Reading\x1b[0m\n").count(), 2);
+    }
+
+    #[test]
+    fn recovered_requests_keep_the_current_provisional_read_for_rejection() {
+        let mut presenter = json_presenter();
+        presenter.stderr = Box::new(Screen::default());
+        present(
+            &mut presenter,
+            [
+                provisional("current"),
+                UiEvent::Recovery {
+                    turn_id: TurnId::new(1),
+                    status: RouteRecoveryStatus {
+                        kind: RouteRecoveryKind::AutoRecovered,
+                        failed_attempt: 0,
+                        succeeded_attempt: 2,
+                        attempt_limit: 10,
+                        cause: None,
+                        action: None,
+                        required_action: ModelRecoveryRequiredAction::None,
+                        delay_seconds: 0,
+                        diagnostic: None,
+                        retry_wait: None,
+                    },
+                },
+                rejected(
+                    "current",
+                    "read_file",
+                    "{",
+                    ToolRejection::MalformedArguments,
+                    None,
+                ),
+            ],
+        );
+        assert_eq!(presenter.steps, 0);
+        assert_eq!(presenter.tool_calls.len(), 1);
+    }
+
+    struct StreamedReadFixture {
+        spec: ofx_contract::ToolSpec,
+        root: PathBuf,
+        executions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ofx_contract::Tool for StreamedReadFixture {
+        fn spec(&self) -> &ofx_contract::ToolSpec {
+            &self.spec
+        }
+
+        fn provisional_presentation(&self) -> Option<ofx_contract::CallPresentation> {
+            if self.spec.name == "write_file" {
+                return None;
+            }
+            Some(ofx_contract::CallPresentation {
+                activity: ToolActivity::Read,
+                action_label: "Reading",
+                completed_label: "Read",
+                label_argument: "path",
+                label_default: "file",
+            })
+        }
+
+        fn prepare(
+            &self,
+            arguments: &str,
+        ) -> Result<Box<dyn ofx_contract::PreparedCall>, ofx_contract::ToolOutput> {
+            let args: Value = serde_json::from_str(arguments).unwrap();
+            let path = args["path"]
+                .as_str()
+                .ok_or_else(|| ofx_contract::ToolOutput::failure("missing path"))?;
+            Ok(Box::new(StreamedReadCall {
+                path: self.root.join(path),
+                title: format!("Reading {path}"),
+                executions: Arc::clone(&self.executions),
+            }))
+        }
+    }
+
+    struct StreamedReadCall {
+        path: PathBuf,
+        title: String,
+        executions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ofx_contract::PreparedCall for StreamedReadCall {
+        fn describe(&self) -> CallDescription {
+            CallDescription {
+                title: self.title.clone(),
+                label: None,
+                activity: ToolActivity::Read,
+                effect: ToolEffect::ReadOnly,
+                concurrency: Concurrency::Parallel,
+            }
+        }
+
+        fn execute(
+            self: Box<Self>,
+            _context: ofx_contract::ToolContext,
+        ) -> ofx_contract::BoxFuture<'static, ofx_contract::ToolOutput> {
+            Box::pin(async move {
+                self.executions.fetch_add(1, Ordering::SeqCst);
+                ofx_contract::ToolOutput::success(fs::read_to_string(&self.path).unwrap())
+            })
+        }
+    }
+
+    struct StreamedAskContext;
+
+    impl ofx_agent::RuntimeContext for StreamedAskContext {
+        fn runtime_context(&self) -> ofx_contract::BoxFuture<'_, Vec<String>> {
+            Box::pin(async { Vec::new() })
+        }
+    }
+
+    impl ofx_contract::PermissionGate for StreamedAskContext {
+        fn admit(&self, _call: &ofx_contract::ToolCall) -> ofx_contract::Admission {
+            ofx_contract::Admission::Allowed(ofx_contract::PathAccess::WorkspaceOnly)
+        }
+
+        fn applicable_target(
+            &self,
+            _call: &ofx_contract::ToolCall,
+        ) -> Option<ofx_contract::ApplicableTarget> {
+            None
+        }
+
+        fn forget_approvals(&self) {}
+    }
+
+    impl ofx_gateway::CodexCredentials for StreamedAskContext {
+        fn refresh<'a>(
+            &'a self,
+            _mode: ofx_gateway::CodexRefresh,
+            _account_id: &'a str,
+            _cancel: &'a CancellationToken,
+        ) -> ofx_contract::BoxFuture<'a, Option<ofx_gateway::CodexAccess>> {
+            Box::pin(async { None })
+        }
+    }
+
+    fn streamed_read_events(calls: &[(&str, &str)], fail: bool) -> Vec<String> {
+        let mut events = Vec::new();
+        for (index, (id, arguments)) in calls.iter().enumerate() {
+            events.push(serde_json::json!({"type":"response.output_item.added","output_index":index,"item":{"type":"function_call","call_id":id,"name":"read_file"}}).to_string());
+            events.push(serde_json::json!({"type":"response.function_call_arguments.delta","output_index":index,"delta":arguments}).to_string());
+        }
+        events.push(if fail {
+            serde_json::json!({"type":"response.failed","response":{"error":{"code":"invalid_request","message":"failed midway"}}}).to_string()
+        } else {
+            serde_json::json!({"type":"response.completed","response":{"status":"completed"}}).to_string()
+        });
+        events
+    }
+
+    async fn streamed_ask(
+        calls: &[(&str, &str)],
+        fail: bool,
+    ) -> (Presenter, Screen, TurnReport, usize) {
+        streamed_ask_with_retry(calls, fail, false).await
+    }
+
+    async fn streamed_ask_with_retry(
+        calls: &[(&str, &str)],
+        fail: bool,
+        retry: bool,
+    ) -> (Presenter, Screen, TurnReport, usize) {
+        let (presenter, stderr, _, report, executions) =
+            streamed_ask_in_mode(calls, fail, retry, false, OutputMode::Json).await;
+        (presenter, stderr, report, executions)
+    }
+
+    fn streamed_read_with_prose(calls: &[(&str, &str)], fail: bool, prose: bool) -> Vec<String> {
+        let mut initial = streamed_read_events(calls, fail);
+        if prose {
+            for event in &mut initial {
+                let mut parsed: Value = serde_json::from_str(event).unwrap();
+                if let Some(index) = parsed.get("output_index").and_then(Value::as_u64) {
+                    parsed["output_index"] = Value::from(index + 1);
+                    *event = parsed.to_string();
+                }
+            }
+            initial.insert(
+                0,
+                r#"{"type":"response.output_text.delta","delta":"I will read it."}"#.to_owned(),
+            );
+        }
+        initial
+    }
+
+    async fn streamed_ask_in_mode(
+        calls: &[(&str, &str)],
+        fail: bool,
+        retry: bool,
+        prose: bool,
+        mode: OutputMode,
+    ) -> (Presenter, Screen, Screen, TurnReport, usize) {
+        streamed_ask_from_events(calls, fail, retry, prose, mode, None).await
+    }
+
+    fn verify_streamed_event(
+        presenter: &mut Presenter,
+        event: UiEvent,
+        screens: (&Screen, &Screen),
+        executions: &std::sync::atomic::AtomicUsize,
+        flags: (bool, bool),
+        mode: OutputMode,
+    ) {
+        let (stdout, stderr) = screens;
+        let (retry, prose) = flags;
+        let provisional = matches!(event, UiEvent::ToolProvisional { .. });
+        let rejected = matches!(event, UiEvent::ToolRejected { .. });
+        assert!(presenter.handle(event));
+        if retry && rejected {
+            assert!(
+                !presenter
+                    .provisional_calls
+                    .contains(&ToolCallId::new("abandoned-read"))
+            );
+        }
+        if provisional {
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+            if mode == OutputMode::Terminal {
+                assert!(stdout.text().ends_with("● Reading\n"));
+            } else {
+                assert!(stderr.text().ends_with("● Reading\x1b[0m\n"));
+            }
+            if prose && mode == OutputMode::Json {
+                assert_eq!(presenter.output, "I will read it.");
+            }
+            if prose && mode == OutputMode::Raw {
+                assert_eq!(stdout.text(), "I will read it.");
+            }
+        }
+    }
+
+    async fn streamed_ask_from_events(
+        calls: &[(&str, &str)],
+        fail: bool,
+        retry: bool,
+        prose: bool,
+        mode: OutputMode,
+        events: Option<Vec<String>>,
+    ) -> (Presenter, Screen, Screen, TurnReport, usize) {
+        let root = tempfile::tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        fs::write(canonical.join("a.txt"), "alpha").unwrap();
+        fs::write(canonical.join("b.txt"), "beta").unwrap();
+        let final_events = [
+            r#"{"type":"response.output_text.delta","delta":"Finished."}"#,
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        ];
+        let mut replies = Vec::new();
+        if retry {
+            let mut abandoned = streamed_read_events(&[("abandoned-read", "{")], true);
+            *abandoned.last_mut().unwrap() = serde_json::json!({"type":"response.failed","response":{"error":{"code":"server_error","message":"retry this request"}}}).to_string();
+            replies.push(Reply::sse(&abandoned));
+        }
+        let tool_name = if events.is_some() {
+            "write_file"
+        } else {
+            "read_file"
+        };
+        let initial = events.unwrap_or_else(|| streamed_read_with_prose(calls, fail, prose));
+        replies.extend([Reply::sse(&initial), Reply::sse(&final_events)]);
+        let server = FakeServer::start(replies);
+        let provider = ofx_gateway::CodexProvider::new(
+            ofx_gateway::CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+            Arc::new(StreamedAskContext),
+            "oh-fx/test",
+            CodexEndpoints {
+                responses: format!("{}/responses", server.base_url()),
+            },
+        )
+        .unwrap();
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool = StreamedReadFixture {
+            spec: ofx_contract::ToolSpec {
+                name: tool_name.to_owned(),
+                description: "Read a test file".to_owned(),
+                input_schema: r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#.into(),
+            },
+            root: canonical,
+            executions: Arc::clone(&executions),
+        };
+        let mut agent = Agent::new(
+            Arc::new(provider),
+            vec![Arc::new(tool)],
+            Arc::new(StreamedAskContext),
+            Arc::new(StreamedAskContext),
+            ofx_agent::AgentConfig {
+                model: "gpt-test".to_owned(),
+                system_prompt: String::new(),
+                max_output_tokens: None,
+                step_limit: 3,
+                reasoning_effort: None,
+                fast_mode: false,
+                auto_compact_percent: ofx_contract::AutoCompactPercent::new(80).unwrap(),
+            },
+        );
+        let mut presenter = json_presenter();
+        presenter.mode = mode;
+        let stderr = Screen::default();
+        let stdout = Screen::default();
+        presenter.stderr = Box::new(stderr.clone());
+        presenter.stdout = Box::new(stdout.clone());
+        let report = agent
+            .run_turn(
+                "Read the files",
+                &mut |event| {
+                    verify_streamed_event(
+                        &mut presenter,
+                        event,
+                        (&stdout, &stderr),
+                        &executions,
+                        (retry, prose),
+                        mode,
+                    );
+                },
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(
+            server.requests().len(),
+            if fail { 1 } else { 2 } + usize::from(retry),
+            "{report:?}"
+        );
+        (
+            presenter,
+            stderr,
+            stdout,
+            report,
+            executions.load(Ordering::SeqCst),
+        )
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_read_reaches_the_ask_presenter_before_execution() {
+        let (presenter, stderr, report, executions) =
+            streamed_ask(&[("read", r#"{"path":"a.txt"}"#)], false).await;
+        assert_eq!(report.outcome, TurnOutcome::Completed);
+        assert_eq!(executions, 1);
+        assert_eq!(presenter.steps, 1);
+        assert_eq!(stderr.text(), "● Reading\x1b[0m\nReading a.txt\n");
+        assert_eq!(presenter.output, "Finished.");
+        assert_eq!(
+            serde_json::to_string(&presenter.tool_calls).unwrap(),
+            r#"[{"name":"read_file","status":"success"}]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_rejected_read_keeps_progress_without_execution() {
+        let (presenter, stderr, report, executions) = streamed_ask(&[("read", "{")], false).await;
+        assert_eq!(report.outcome, TurnOutcome::Completed);
+        assert_eq!(executions, 0);
+        assert_eq!(presenter.steps, 0);
+        assert_eq!(stderr.text(), "● Reading\x1b[0m\n");
+        assert_eq!(presenter.output, "Finished.");
+        assert_eq!(
+            serde_json::to_string(&presenter.tool_calls).unwrap(),
+            r#"[{"name":"read_file","status":"error"}]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_parallel_reads_have_independent_progress_and_steps() {
+        let (presenter, stderr, report, executions) = streamed_ask(
+            &[
+                ("read-a", r#"{"path":"a.txt"}"#),
+                ("read-b", r#"{"path":"b.txt"}"#),
+            ],
+            false,
+        )
+        .await;
+        assert_eq!(report.outcome, TurnOutcome::Completed);
+        assert_eq!(executions, 2);
+        assert_eq!(presenter.steps, 2);
+        assert_eq!(
+            stderr.text(),
+            "● Reading\x1b[0m\n● Reading\x1b[0m\nReading a.txt\nReading b.txt\n"
+        );
+        assert_eq!(presenter.tool_calls.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_partial_failure_leaves_visible_progress_and_clears_pending_calls() {
+        let (presenter, stderr, report, executions) = streamed_ask(&[("read", "{")], true).await;
+        assert_eq!(report.outcome, TurnOutcome::Failed);
+        assert_eq!(executions, 0);
+        assert_eq!(presenter.steps, 0);
+        assert_eq!(stderr.text(), "● Reading\x1b[0m\n");
+        assert!(presenter.tool_calls.is_empty());
+        assert!(presenter.provisional_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_retried_rejection_does_not_count_a_provisional_step() {
+        let (presenter, stderr, report, executions) =
+            streamed_ask_with_retry(&[("read", "{")], false, true).await;
+        assert_eq!(report.outcome, TurnOutcome::Completed);
+        assert_eq!(executions, 0);
+        assert_eq!(presenter.steps, 0);
+        assert!(presenter.provisional_calls.is_empty());
+        assert_eq!(stderr.text().matches("● Reading\x1b[0m\n").count(), 2);
+        assert_eq!(presenter.output, "Finished.");
+        assert_eq!(
+            serde_json::to_string(&presenter.tool_calls).unwrap(),
+            r#"[{"name":"read_file","status":"error"}]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_boundaries_preserve_machine_assistant_source() {
+        for mode in [OutputMode::Raw, OutputMode::Json] {
+            for (arguments, expected, executions) in [
+                (r#"{"path":"a.txt"}"#, "I will read it.\n\nFinished.", 1),
+                ("{", "I will read it.Finished.", 0),
+            ] {
+                let (presenter, _, stdout, report, seen) =
+                    streamed_ask_in_mode(&[("read", arguments)], false, false, true, mode).await;
+                assert_eq!(report.outcome, TurnOutcome::Completed);
+                assert_eq!(seen, executions);
+                assert_eq!(
+                    if mode == OutputMode::Json {
+                        presenter.output
+                    } else {
+                        stdout.text()
+                    },
+                    expected,
+                    "{mode:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_codex_boundaries_keep_terminal_progress_apart_from_prose() {
+        let (_, stderr, stdout, report, executions) = streamed_ask_in_mode(
+            &[("read", r#"{"path":"a.txt"}"#)],
+            false,
+            false,
+            true,
+            OutputMode::Terminal,
+        )
+        .await;
+        assert_eq!(report.outcome, TurnOutcome::Completed);
+        assert_eq!(executions, 1);
+        assert_eq!(stderr.text(), "");
+        assert_eq!(
+            stdout.text(),
+            "I will read it.\n\n● Reading\nReading a.txt\n\nFinished."
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_ineligible_tool_starts_separate_adjacent_terminal_prose() {
+        let events = [
+            r#"{"type":"response.output_text.delta","delta":"Let me write."}"#,
+            r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"write","name":"write_file"}}"#,
+            r#"{"type":"response.output_text.delta","delta":"More."}"#,
+            r#"{"type":"response.failed","response":{"error":{"code":"invalid_request","message":"failed midway"}}}"#,
+        ];
+        let (_, stderr, stdout, report, executions) = streamed_ask_from_events(
+            &[],
+            true,
+            false,
+            false,
+            OutputMode::Terminal,
+            Some(events.into_iter().map(str::to_owned).collect()),
+        )
+        .await;
+        assert_eq!(report.outcome, TurnOutcome::Failed);
+        assert_eq!(executions, 0);
+        assert_eq!(stderr.text(), "");
+        assert_eq!(stdout.text(), "Let me write.\nMore.");
+    }
+
+    struct FailedWriter;
+
+    impl Write for FailedWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    #[test]
+    fn terminal_provisional_progress_uses_plain_bytes() {
+        let (mut presenter, stdout) = terminal_presenter();
+        present(&mut presenter, [provisional("read")]);
+        assert_eq!(stdout.text(), "● Reading\n");
+    }
+
+    #[test]
+    fn provisional_stderr_write_failures_do_not_stop_machine_output() {
+        for mode in [OutputMode::Raw, OutputMode::Json, OutputMode::Quiet] {
+            let mut presenter = json_presenter();
+            presenter.mode = mode;
+            presenter.stderr = Box::new(FailedWriter);
+            assert!(presenter.handle(provisional("read")));
+            assert!(presenter.write_error.is_none());
+            assert_eq!(presenter.provisional_calls, [ToolCallId::new("read")]);
+        }
+    }
+
+    #[test]
+    fn provisional_terminal_write_failures_still_stop_output() {
+        let (mut presenter, _) = terminal_presenter();
+        presenter.stdout = Box::new(FailedWriter);
+        assert!(!presenter.handle(provisional("read")));
+        assert_eq!(presenter.write_error, Some("Unexpected"));
     }
 
     #[test]
