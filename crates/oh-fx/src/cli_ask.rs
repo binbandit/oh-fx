@@ -1093,14 +1093,11 @@ impl Presenter {
             | UiEvent::RecoveryContinuing { .. }
             | UiEvent::ExitRequested => Ok(()),
         };
-        match written {
-            Ok(()) => true,
-            Err(error) => {
-                self.write_error
-                    .get_or_insert(crate::write_error_name(&error));
-                false
-            }
+        if let Err(error) = &written {
+            self.write_error
+                .get_or_insert(crate::write_error_name(error));
         }
+        written.is_ok()
     }
 
     fn assistant_text(&mut self, text: &str) -> io::Result<()> {
