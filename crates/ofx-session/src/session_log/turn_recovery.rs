@@ -178,7 +178,7 @@ pub(crate) fn clear_recovery(dir: &PrivateDir) {
     let _ = dir.remove(RECOVERY_ASKED_FILE);
 }
 
-fn read_checkpoint(
+pub(crate) fn read_checkpoint(
     dir: &PrivateDir,
     conversation_seq: u64,
 ) -> Result<Option<RecoveryCheckpoint>, SessionError> {
