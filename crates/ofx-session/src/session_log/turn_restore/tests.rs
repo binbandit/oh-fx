@@ -110,6 +110,7 @@ fn result<'a>(call: &'a ToolCall, output: &'a str, status: ToolResultStatus) -> 
         status,
         model_view_covers_full_file: false,
         process: None,
+        permission_feedback: Vec::new(),
     }
 }
 
@@ -259,6 +260,58 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
                 tool_calls: Vec::new(),
                 provider_replay: Some(codex),
             },
+        ]
+    );
+}
+
+#[test]
+fn approval_feedback_is_saved_on_its_result_and_follows_every_result_of_its_step() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start();
+    let calls = [call("call-1", "read_file"), call("call-2", "shell")];
+    let turn = HistoryTurn {
+        user: "inspect",
+        steps: vec![step(
+            "",
+            &calls,
+            vec![
+                StepResult {
+                    permission_feedback: vec!["then read the tests"],
+                    ..result(&calls[0], "contents", ToolResultStatus::Success)
+                },
+                StepResult {
+                    permission_feedback: vec!["use the copy", "and stop"],
+                    ..result(&calls[1], "denied", ToolResultStatus::Failure)
+                },
+            ],
+        )],
+        steering: Vec::new(),
+        files: &[],
+        end: replied("done"),
+    };
+    session.record_turn(&turn, &gateway()).unwrap();
+    drop(session);
+
+    let frames = fixture.frames();
+    assert_eq!(
+        frames[3]["event"]["tool_result"]["permission_feedback"],
+        serde_json::json!(["then read the tests"])
+    );
+    assert_eq!(
+        frames[4]["event"]["tool_result"]["permission_feedback"],
+        serde_json::json!(["use the copy", "and stop"])
+    );
+    assert_eq!(
+        fixture.resumed().messages,
+        [
+            ChatMessage::user("inspect"),
+            assistant(None, &calls),
+            tool(&calls[0], "contents", ToolResultStatus::Success),
+            tool(&calls[1], "denied", ToolResultStatus::Failure),
+            ChatMessage::permission_feedback(calls[0].id.clone(), "then read the tests"),
+            ChatMessage::permission_feedback(calls[1].id.clone(), "use the copy"),
+            ChatMessage::permission_feedback(calls[1].id.clone(), "and stop"),
+            assistant(Some("done"), &[]),
         ]
     );
 }

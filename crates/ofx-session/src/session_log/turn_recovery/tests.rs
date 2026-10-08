@@ -493,6 +493,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
                 status: ToolResultStatus::Success,
                 model_view_covers_full_file: false,
                 process: None,
+                permission_feedback: Vec::new(),
             }],
         }],
         steering: Vec::new(),
@@ -540,6 +541,7 @@ fn continued_turn<'a>(
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
                     process: None,
+                    permission_feedback: Vec::new(),
                 }],
             })
             .collect(),
@@ -851,6 +853,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
                 status: *status,
                 model_view_covers_full_file: false,
                 process: None,
+                permission_feedback: Vec::new(),
             });
             messages.next();
         }
@@ -893,6 +896,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
                     process: None,
+                    permission_feedback: Vec::new(),
                 }],
             }],
             steering: Vec::new(),
@@ -1066,6 +1070,7 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
                     output_bytes: 4,
                     status: ToolResultStatus::Success,
                     process: None,
+                    permission_feedback: Vec::new(),
                     model_view_covers_full_file: true,
                 }],
             }],
@@ -1135,6 +1140,7 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
                 status: ToolResultStatus::Success,
                 process: None,
                 model_view_covers_full_file: false,
+                permission_feedback: Vec::new(),
             }],
         }],
         steering: Vec::new(),

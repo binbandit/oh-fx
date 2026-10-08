@@ -7,7 +7,7 @@ use crate::types::{
     ProviderReplay, ToolCall, ToolResultStatus,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepResult<'a> {
     pub call_id: &'a str,
     pub tool_name: &'a str,
@@ -16,6 +16,7 @@ pub struct StepResult<'a> {
     pub status: ToolResultStatus,
     pub model_view_covers_full_file: bool,
     pub process: Option<CommandProcessPresentation>,
+    pub permission_feedback: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

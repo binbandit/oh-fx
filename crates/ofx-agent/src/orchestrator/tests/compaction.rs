@@ -1,4 +1,6 @@
-use ofx_contract::{CompactionActivity, CompactionEnd, HistoryCut};
+use ofx_contract::{
+    ApprovalAnswer, ApprovalDecision, CompactionActivity, CompactionEnd, HistoryCut,
+};
 
 use super::*;
 use crate::compactor::CompactionError;
@@ -188,6 +190,62 @@ async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work()
     let checkpoint = user_text(&requests[7].messages[0]);
     assert!(checkpoint.contains("Assistant 1, in between:\nEchoed the notes.\n"));
     assert!(checkpoint.contains("Tools:\n  T1 echo notes.md (25 bytes): echoed notes.md\n"));
+    assert_eq!(user_text(&requests[7].messages[1]), "question 1");
+}
+
+#[tokio::test]
+async fn manual_compaction_keeps_approval_feedback_in_the_notes_on_its_step() {
+    let mut scripts = vec![
+        tool_reply(&[("call-1", r#"{"value":"outside"}"#)]),
+        text_reply("Read the notes."),
+    ];
+    scripts.extend(chat_replies(4));
+    scripts.push(text_reply(
+        "Turn 1\nIn between: Echoed the notes; the user asked to read the tests next.\nT1: echoed outside",
+    ));
+    scripts.push(text_reply("done"));
+    let provider = FakeProvider::new(scripts);
+    let approvals = Approvals::default();
+    let mut agent =
+        new_agent(Arc::clone(&provider), vec![echo_tool()]).with_approvals(approvals.clone());
+    let report = agent
+        .run_turn(
+            "read the notes",
+            &mut |event| {
+                if let UiEvent::ApprovalRequested { request, .. } = &event {
+                    assert!(approvals.resolve(
+                        request.id,
+                        ApprovalAnswer {
+                            decision: ApprovalDecision::Once,
+                            feedback: Some("read the tests next".to_owned()),
+                        }
+                    ));
+                }
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    chat(&mut agent, 4).await;
+
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let requests = provider.requests();
+    let asked = user_text(&requests[6].messages[0]);
+    assert!(
+        asked.contains("[From oh-fx, not the user]\nPermission feedback: read the tests next\n"),
+        "{asked}"
+    );
+
+    run(&mut agent, "and now?").await;
+    let requests = provider.requests();
+    let checkpoint = user_text(&requests[7].messages[0]);
+    assert!(
+        checkpoint.contains("the user asked to read the tests next"),
+        "{checkpoint}"
+    );
     assert_eq!(user_text(&requests[7].messages[1]), "question 1");
 }
 
