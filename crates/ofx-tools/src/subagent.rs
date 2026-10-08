@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use ofx_contract::{
-    BoxFuture, CallDescription, Concurrency, PreparedCall, SubagentActionState, SubagentProvider,
-    SubagentRequest, SubagentRequestError, SubagentRequestInput, SubagentResult, Tool,
-    ToolActivity, ToolArgsError, ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall, SubagentActionState,
+    SubagentProvider, SubagentRequest, SubagentRequestError, SubagentRequestInput, SubagentResult,
+    Tool, ToolActivity, ToolArgsError, ToolContext, ToolEffect, ToolOutput, ToolSpec,
     format_subagent_plain_action, parse_tool_args_object,
 };
 use serde_json::{Map, Value};
@@ -43,6 +43,16 @@ impl SubagentTool {
 impl Tool for SubagentTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+
+    fn provisional_presentation(&self) -> Option<CallPresentation> {
+        Some(CallPresentation {
+            activity: ToolActivity::Subagent,
+            action_label: "Managing",
+            completed_label: "Managed",
+            label_argument: "",
+            label_default: "",
+        })
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {

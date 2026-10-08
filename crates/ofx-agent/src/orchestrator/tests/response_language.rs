@@ -355,3 +355,90 @@ async fn english_steering_keeps_the_expectation() {
     assert_eq!(provider.requests().len(), 3);
     assert_eq!(count_text(&provider.requests()[2], CORRECTION), 1);
 }
+
+#[tokio::test]
+async fn provisional_starts_do_not_flush_withheld_language_or_add_display_boundaries() {
+    let provider = FakeProvider::new(vec![
+        Script::Reply(
+            vec![
+                StreamEvent::TextDelta {
+                    text: CHINESE_REPLY.to_owned(),
+                },
+                streamed_start("call-1", "echo"),
+            ],
+            completion(
+                Some(CHINESE_REPLY),
+                vec![echo_call("call-1", r#"{"text":"read"}"#)],
+                FinishReason::ToolCalls,
+            ),
+        ),
+        text_reply(ENGLISH_REPLY),
+    ]);
+    let mut agent = new_agent(
+        provider,
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let provisional = events
+        .iter()
+        .position(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+        .unwrap();
+    assert!(!events[..provisional].iter().any(|event| matches!(
+        event,
+        UiEvent::AssistantText { .. } | UiEvent::AssistantBoundary { .. }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, UiEvent::AssistantBoundary { .. }))
+    );
+    assert_eq!(streamed(&events), [ENGLISH_REPLY]);
+    assert_eq!(finished(&events), [("call-1", ToolResultStatus::Success)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_withheld_prose_retries_after_a_provisional_start() {
+    let provider = FakeProvider::new(vec![
+        Script::Fail(
+            vec![
+                StreamEvent::TextDelta {
+                    text: CHINESE_REPLY.to_owned(),
+                },
+                streamed_start("call-1", "echo"),
+            ],
+            failure(ProviderErrorKind::Unavailable, "Unavailable"),
+        ),
+        text_reply(ENGLISH_REPLY),
+    ]);
+    let mut agent = new_agent(
+        Arc::clone(&provider),
+        vec![stream_start_tool(
+            ToolActivity::Read,
+            Arc::new(AtomicUsize::new(0)),
+        )],
+    );
+    let (report, events) = run(&mut agent, ENGLISH_PROMPT).await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    let [first, retried] = &requests[..] else {
+        panic!("expected one retry: {requests:?}");
+    };
+    assert_eq!(retried.messages[..first.messages.len()], first.messages[..]);
+    assert_eq!(retried.messages.len(), first.messages.len() + 1);
+    assert_eq!(retried.tool_choice, ToolChoice::None);
+    assert_eq!(streamed(&events), [ENGLISH_REPLY]);
+    assert!(finished(&events).is_empty());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::ToolProvisional { .. }))
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        UiEvent::AssistantBoundary { .. } | UiEvent::AssistantRestarted { .. }
+    )));
+}
