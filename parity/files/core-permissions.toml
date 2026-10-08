@@ -49,7 +49,7 @@ note = "Permission traits and ordinary tool admission exist; saved configured ru
 [[file]]
 upstream = "src/core/permissions/permission_prompter.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/approvals.rs", "crates/ofx-tui/src/shell/approval_runtime.rs"]
+modules = ["crates/ofx-agent/src/approvals.rs", "crates/ofx-tui/src/shell/approval_runtime.rs", "crates/oh-fx/src/permission_prompt.rs"]
 note = "Approval request/response prompting exists; amendment feedback and complete permission explanation projections are absent."
 
 [[file]]
