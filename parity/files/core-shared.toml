@@ -104,7 +104,7 @@ note = "Native XDG profile/config/data/cache paths exist; dedicated deferred-pro
 upstream = "src/core/shared/self_exe.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/command_runner.rs", "crates/ofx-upgrade/src/upgrade.rs"]
-note = "Rust current_exe supplies supervisor/upgrade paths; live-inode reexecution and replaced-binary peer identity fallback are absent."
+note = "pathForReexec is the supervisor's /proc/self/exe re-execution and currentExecutablePath's Linux ` (deleted)` handling is installed_executable, both with upstream's tests; pathForPeerReexec arrives with native terminal sessions (OH-19), its only caller."
 
 [[file]]
 upstream = "src/core/shared/sort_utils.zig"

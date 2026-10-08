@@ -198,15 +198,22 @@ async fn fetch(
 
 pub fn installed_executable() -> Result<PathBuf, UpgradeError> {
     let path = env::current_exe().map_err(|_| UpgradeError::SelfExeNotFound)?;
-    let path = match path
+    on_disk_path(path)
+        .canonicalize()
+        .map_err(|_| UpgradeError::SelfExeNotFound)
+}
+
+fn on_disk_path(path: PathBuf) -> PathBuf {
+    if !cfg!(target_os = "linux") {
+        return path;
+    }
+    match path
         .to_str()
         .and_then(|text| text.strip_suffix(DELETED_SUFFIX))
     {
-        Some(live_path) => PathBuf::from(live_path),
+        Some(on_disk) => PathBuf::from(on_disk),
         None => path,
-    };
-    path.canonicalize()
-        .map_err(|_| UpgradeError::SelfExeNotFound)
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +409,29 @@ mod tests {
         assert_eq!(
             fs::read(&installation.executable).unwrap(),
             archive::version_script("0.1.0-dev.9")
+        );
+    }
+
+    #[test]
+    fn a_replaced_binary_resolves_to_its_on_disk_path_on_linux() {
+        let replaced = PathBuf::from("/opt/oh-fx/bin/oh-fx (deleted)");
+        let expected = if cfg!(target_os = "linux") {
+            PathBuf::from("/opt/oh-fx/bin/oh-fx")
+        } else {
+            replaced.clone()
+        };
+        assert_eq!(on_disk_path(replaced), expected);
+        assert_eq!(
+            on_disk_path(PathBuf::from("/opt/oh-fx/bin/oh-fx")),
+            PathBuf::from("/opt/oh-fx/bin/oh-fx")
+        );
+    }
+
+    #[test]
+    fn the_installed_executable_is_the_running_binary_on_disk() {
+        assert_eq!(
+            installed_executable().unwrap(),
+            env::current_exe().unwrap().canonicalize().unwrap()
         );
     }
 
