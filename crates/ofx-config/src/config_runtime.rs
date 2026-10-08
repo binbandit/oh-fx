@@ -105,6 +105,19 @@ impl DiagnosticCause {
         }
     }
 
+    const fn rejects_layer(self) -> bool {
+        match self {
+            Self::MalformedSettings
+            | Self::SettingsTooLarge
+            | Self::DurablePathUnsafe
+            | Self::InvalidModelId
+            | Self::RetiredSkillMatchFuzzy
+            | Self::InvalidContextLimits
+            | Self::InvalidSkillSymlinkAuthorities => true,
+            Self::InvalidAdditionalDirectories | Self::IgnoredProjectUserOnlySetting => false,
+        }
+    }
+
     const fn label(self) -> &'static str {
         match self {
             Self::MalformedSettings => "malformed_settings",
@@ -446,9 +459,9 @@ impl Settings {
     }
 
     fn layer_rejected(&self, layer: ConfigLayer) -> bool {
-        self.diagnostics.iter().any(|diagnostic| {
-            diagnostic.layer == layer && diagnostic.cause.resolution_failure().is_some()
-        })
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.layer == layer && diagnostic.cause.rejects_layer())
     }
 
     pub fn workspace_entry(&self) -> Option<&Map<String, Value>> {
@@ -2826,6 +2839,7 @@ mod tests {
         assert!(settings.additional_directories().is_empty());
         assert!(settings.additional_directories_rejected());
         assert_eq!(rendered(&settings), [ADDITIONAL_DIRECTORIES_DIAGNOSTIC]);
+        assert!(!settings.user_layer_rejected());
     }
 
     #[test]
