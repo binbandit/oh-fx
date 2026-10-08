@@ -78,7 +78,11 @@ impl SessionListSnapshot<'_> {
                 if let Some(label) = language_label(&session.conversation_language) {
                     let _ = write!(out, " | {}", safe(label));
                 }
-                let _ = writeln!(out, " | updated {}", utc_timestamp(session.updated_at_ms));
+                let _ = write!(out, " | updated {}", utc_timestamp(session.updated_at_ms));
+                if let Some(marker) = session.source.marker() {
+                    let _ = write!(out, " | {marker}");
+                }
+                out.push('\n');
             }
         }
         if self.has_more {
@@ -122,7 +126,7 @@ impl SessionListSnapshot<'_> {
             .sessions
             .iter()
             .map(|session| {
-                json!({
+                let mut row = json!({
                     "id": session.id,
                     "title": session.title.as_deref().unwrap_or(FALLBACK_TITLE),
                     "preview": Value::Null,
@@ -132,7 +136,12 @@ impl SessionListSnapshot<'_> {
                     "updated_at_ms": session.updated_at_ms,
                     "history_len": session.history_len,
                     "conversation_language": session.conversation_language,
-                })
+                });
+                if let (Some(marker), Some(fields)) = (session.source.marker(), row.as_object_mut())
+                {
+                    fields.insert("source".to_owned(), json!(marker));
+                }
+                row
             })
             .collect();
         object.insert("sessions".to_owned(), json!(sessions));

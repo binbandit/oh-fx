@@ -1,7 +1,9 @@
+use std::fmt::Write as _;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, UNIX_EPOCH};
 
 use ofx_testkit::{FakeServer, Reply, chat_text_events};
 use serde_json::{Value, json};
@@ -259,6 +261,115 @@ fn unreadable_sessions_are_counted_and_reported() {
         home.sessions(&["--json"]),
         "{\"kind\":\"sessions\",\"count\":0,\"skipped_invalid\":2,\"sessions\":[]}\n"
     );
+}
+
+fn private(path: &Path, mode: u32) {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("set permissions");
+}
+
+fn save_in_fx(home: &Home, id: &str, workspace: &str, title: &str, prompts: &[&str]) {
+    let fx = home.root.join(".fx");
+    let session = fx.join("sessions").join(id);
+    fs::create_dir_all(&session).expect("create an fx session");
+    for directory in [&fx, &fx.join("sessions"), &session] {
+        private(directory, 0o700);
+    }
+    let workspace = home.root.join(workspace).display().to_string();
+    let manifest = format!(
+        "{{\"schema_version\":4,\"id\":\"{id}\",\"origin_workspace_root\":\"{workspace}\",\"workspace_root\":\"{workspace}\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false,\"title\":\"{title}\",\"subagent_child\":false}}"
+    );
+    let mut events = String::new();
+    for (turn, prompt) in (0_u64..).zip(prompts) {
+        for (offset, event) in [
+            (1, format!("{{\"user\":{{\"text\":\"{prompt}\",\"images\":[],\"work_id\":null}}}}")),
+            (2, "{\"assistant\":{\"text\":\"done\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned()),
+            (3, "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}".to_owned()),
+        ] {
+            let _ = writeln!(
+                events,
+                "{{\"schema_version\":3,\"seq\":{},\"timestamp_ms\":2,\"event\":{event}}}",
+                turn * 3 + offset
+            );
+        }
+    }
+    for (name, bytes) in [
+        ("session.json", manifest),
+        ("events.jsonl", events),
+        ("session.lock", String::new()),
+    ] {
+        fs::write(session.join(name), bytes).expect("write an fx session file");
+        private(&session.join(name), 0o600);
+    }
+    fs::File::options()
+        .write(true)
+        .open(session.join("events.jsonl"))
+        .and_then(|log| log.set_modified(UNIX_EPOCH + Duration::from_secs(100)))
+        .expect("date the fx log");
+}
+
+fn fx_tree(home: &Home) -> Vec<(PathBuf, u64, i64, i64, u32)> {
+    let mut entries = Vec::new();
+    let mut pending = vec![home.root.join(".fx")];
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path).expect("stat the fx tree");
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&path).expect("read the fx tree") {
+                pending.push(entry.expect("an fx entry").path());
+            }
+        }
+        entries.push((
+            path,
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.mode(),
+        ));
+    }
+    entries.sort();
+    entries
+}
+
+#[test]
+fn sessions_fx_saved_are_listed_with_its_marker_and_left_untouched() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "kept here");
+    save_in_fx(&home, "fx-here", "workspace", "From fx", &["one", "two"]);
+    save_in_fx(
+        &home,
+        "fx-there",
+        "elsewhere",
+        "Elsewhere in fx",
+        &["three"],
+    );
+    let before = fx_tree(&home);
+
+    let stdout = home.sessions(&[]);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 5, "{stdout}");
+    assert_eq!(lines[0], "[sessions] 2 saved");
+    assert_eq!(lines[1], " - kept here");
+    assert!(!lines[2].ends_with(" | fx"), "{stdout}");
+    assert_eq!(lines[3], " - From fx");
+    assert_eq!(
+        lines[4],
+        "   id=fx-here | 2 turns | English | updated 1970-01-01 00:01:40.000 UTC | fx"
+    );
+
+    let listing = home.listed(&["--all"]);
+    assert_eq!(listing["count"], 3);
+    let sessions = listing["sessions"].as_array().expect("sessions");
+    assert_eq!(sessions[0]["title"], "kept here");
+    assert_eq!(sessions[0].get("source"), None);
+    for (session, id) in sessions[1..].iter().zip(["fx-there", "fx-here"]) {
+        assert_eq!(session["id"], id);
+        assert_eq!(session["source"], "fx");
+    }
+    assert_eq!(
+        sessions[1]["workspace_root"],
+        home.root.join("elsewhere").display().to_string().as_str()
+    );
+    assert_eq!(fx_tree(&home), before);
 }
 
 #[test]

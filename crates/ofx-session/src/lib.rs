@@ -1,4 +1,5 @@
 mod fixed_field;
+mod fx_sessions;
 mod history_snapshot;
 mod json_fields;
 mod process_presentation;
@@ -26,6 +27,7 @@ mod session_title_generation;
 mod spawn_gate;
 mod turn_summary;
 
+pub use fx_sessions::FxSessions;
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 pub use session_children::ChildSessions;
@@ -46,5 +48,5 @@ pub use session_log::{
     WritableSession,
 };
 pub use session_store::{ListScope, ResumeTarget, SessionCatalog, SessionStore};
-pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSummary};
+pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource, SessionSummary};
 pub use session_title_generation::{TitleGate, TitleRequest, generate_title, prompt_excerpt};
