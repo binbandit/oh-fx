@@ -306,28 +306,6 @@ impl Profile {
         self.prepare(launch, true, cancel).await
     }
 
-    fn instructions(&self, overrides: &[ContextLimitOverride]) -> Instructions {
-        let mut limits = self.settings.context_limits();
-        limits.apply_command_line(overrides);
-        let skills = Arc::new(HostSkills::load(
-            &self.workspace_root,
-            self.home.as_deref(),
-            self.paths.as_ref(),
-            &self.settings,
-            &limits,
-        ));
-        let mut project = self.project_context(&limits);
-        let context_notices = project
-            .as_mut()
-            .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
-            .unwrap_or_default();
-        Instructions {
-            skills,
-            project,
-            context_notices,
-        }
-    }
-
     async fn prepare(
         &self,
         launch: Launch<'_>,
