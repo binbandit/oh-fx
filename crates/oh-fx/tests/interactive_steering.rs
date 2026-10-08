@@ -5,6 +5,7 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ofx_contract::{INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
 use ofx_testkit::{
     FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
 };
@@ -349,13 +350,10 @@ fn a_live_cancelled_reply_closes_before_the_next_plain_prompt() {
     assert_eq!(messages[first + 1]["role"], "assistant");
     assert_eq!(
         messages[first + 1]["content"],
-        "Half of the reply.\nStill reading.\n\n\nThe previous response ended before completion."
+        format!("Half of the reply.\nStill reading.\n\n\n{INTERRUPTED_BEFORE_COMPLETION}")
     );
     assert_eq!(messages[first + 2]["role"], "user");
-    assert_eq!(
-        messages[first + 2]["content"],
-        "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>"
-    );
+    assert_eq!(messages[first + 2]["content"], INTERRUPTED_TURN_CONTEXT);
     assert_eq!(messages[first + 3]["content"], "what happened?");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).is_some());

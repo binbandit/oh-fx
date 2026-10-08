@@ -7,6 +7,9 @@ use crate::types::{
     ProviderReplay, ToolCall, ToolResultStatus,
 };
 
+pub const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
+pub const INTERRUPTED_TURN_CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepResult<'a> {
     pub call_id: &'a str,

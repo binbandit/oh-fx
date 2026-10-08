@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use ofx_contract::{INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
+
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 use crate::execution_memory::{history_turn, steering_message};
@@ -268,8 +270,8 @@ async fn an_explicit_cancel_stops_the_turn_and_leaves_the_steer_for_a_continuati
         provider.requests()[2].messages,
         [
             ChatMessage::user("go"),
-            assistant(&format!("partial\n\n{}", interrupted_closure::CLOSURE)),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            assistant(&format!("partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("keep going"),
             assistant("Kept going."),
             ChatMessage::user("third"),
@@ -632,11 +634,8 @@ async fn a_continuation_omits_only_the_latest_interrupted_turns_closure() {
         provider.requests()[2].messages,
         [
             ChatMessage::user("older"),
-            assistant(&format!(
-                "older partial\n\n{}",
-                interrupted_closure::CLOSURE
-            )),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            assistant(&format!("older partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("active"),
             assistant("active partial"),
             ChatMessage::user(steering_message("continue")),
@@ -648,17 +647,13 @@ async fn a_continuation_omits_only_the_latest_interrupted_turns_closure() {
         provider.requests()[3].messages,
         [
             ChatMessage::user("older"),
-            assistant(&format!(
-                "older partial\n\n{}",
-                interrupted_closure::CLOSURE
-            )),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            assistant(&format!("older partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("active"),
             assistant(&format!(
-                "active partial\n\n{}",
-                interrupted_closure::CLOSURE
+                "active partial\n\n{INTERRUPTED_BEFORE_COMPLETION}"
             )),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("continue"),
             assistant("continued"),
             ChatMessage::user("ordinary"),
@@ -697,11 +692,8 @@ async fn successive_interrupted_continuations_close_only_the_older_boundary() {
         provider.requests()[2].messages,
         [
             ChatMessage::user("first"),
-            assistant(&format!(
-                "first partial\n\n{}",
-                interrupted_closure::CLOSURE
-            )),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            assistant(&format!("first partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("continue once"),
             assistant("second partial"),
             ChatMessage::user(steering_message("continue twice")),
@@ -713,17 +705,13 @@ async fn successive_interrupted_continuations_close_only_the_older_boundary() {
         provider.requests()[3].messages,
         [
             ChatMessage::user("first"),
-            assistant(&format!(
-                "first partial\n\n{}",
-                interrupted_closure::CLOSURE
-            )),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            assistant(&format!("first partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("continue once"),
             assistant(&format!(
-                "second partial\n\n{}",
-                interrupted_closure::CLOSURE
+                "second partial\n\n{INTERRUPTED_BEFORE_COMPLETION}"
             )),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("continue twice"),
             assistant("continued"),
             ChatMessage::user("ordinary"),
@@ -768,8 +756,8 @@ async fn a_discarded_continuation_preserves_the_original_pending_closure() {
         provider.requests()[2].messages,
         [
             ChatMessage::user("first"),
-            assistant(&format!("partial\n\n{}", interrupted_closure::CLOSURE)),
-            ChatMessage::user(interrupted_closure::CONTEXT),
+            assistant(&format!("partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("ordinary"),
         ]
     );
@@ -817,11 +805,11 @@ async fn manual_compaction_closes_the_original_turn_after_a_continuation() {
         panic!("a summary request follows the continuation");
     };
     assert!(
-        summary_request.contains(&format!("partial\n\n{}", interrupted_closure::CLOSURE)),
+        summary_request.contains(&format!("partial\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
         "{summary_request}"
     );
     assert!(
-        summary_request.contains(interrupted_closure::CONTEXT),
+        summary_request.contains(INTERRUPTED_TURN_CONTEXT),
         "{summary_request}"
     );
     assert_eq!(

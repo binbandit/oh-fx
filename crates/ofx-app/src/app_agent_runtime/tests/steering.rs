@@ -1,3 +1,5 @@
+use ofx_contract::INTERRUPTED_TURN_CONTEXT;
+
 use super::*;
 
 const WRAPPER: &str = "<user_steering>\nApply this live user update to the current task.";
@@ -191,11 +193,7 @@ async fn a_prompt_submitted_after_a_cancel_runs_next_as_its_own_turn() {
     let body = server.requests()[1].json();
     assert_eq!(
         user_texts(&body),
-        [
-            "slow",
-            "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>",
-            "next",
-        ]
+        ["slow", INTERRUPTED_TURN_CONTEXT, "next",]
     );
 }
 

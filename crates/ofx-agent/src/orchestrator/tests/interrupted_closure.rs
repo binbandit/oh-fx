@@ -1,7 +1,6 @@
-use super::*;
+use ofx_contract::{INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
 
-pub(super) const CLOSURE: &str = "The previous response ended before completion.";
-pub(super) const CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
+use super::*;
 
 fn assistant(text: &str) -> ChatMessage {
     ChatMessage::Assistant {
@@ -41,9 +40,9 @@ async fn live_cancelled_turns_close_once_before_an_ordinary_follow_up() {
         assert_eq!(report.outcome, TurnOutcome::Interrupted);
         run(&mut agent, "next").await;
         let closed = if partial.is_empty() {
-            CLOSURE.to_owned()
+            INTERRUPTED_BEFORE_COMPLETION.to_owned()
         } else {
-            format!("{partial}\n\n{CLOSURE}")
+            format!("{partial}\n\n{INTERRUPTED_BEFORE_COMPLETION}")
         };
         let requests = provider.requests();
         let next = requests.last().unwrap();
@@ -52,7 +51,7 @@ async fn live_cancelled_turns_close_once_before_an_ordinary_follow_up() {
             [
                 ChatMessage::user("first"),
                 assistant(&closed),
-                ChatMessage::user(CONTEXT),
+                ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
                 ChatMessage::user("next")
             ]
         );
@@ -63,7 +62,7 @@ async fn live_cancelled_turns_close_once_before_an_ordinary_follow_up() {
             third
                 .messages
                 .iter()
-                .filter(|message| **message == ChatMessage::user(CONTEXT))
+                .filter(|message| **message == ChatMessage::user(INTERRUPTED_TURN_CONTEXT))
                 .count(),
             1
         );
@@ -89,8 +88,8 @@ async fn a_failed_partial_reply_closes_before_the_next_request() {
         provider.requests()[1].messages,
         [
             ChatMessage::user("first"),
-            assistant(&format!("half\n\n{CLOSURE}")),
-            ChatMessage::user(CONTEXT),
+            assistant(&format!("half\n\n{INTERRUPTED_BEFORE_COMPLETION}")),
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("next")
         ]
     );

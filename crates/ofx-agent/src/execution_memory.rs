@@ -2,15 +2,13 @@ use std::mem;
 use std::ops::Range;
 
 use ofx_contract::{
-    ChatMessage, HistorySteering, HistoryStep, ProviderReplay, RecordedOutput, StepResult,
-    ToolCall, ToolCallId, ToolResultStatus,
+    ChatMessage, HistorySteering, HistoryStep, INTERRUPTED_BEFORE_COMPLETION,
+    INTERRUPTED_TURN_CONTEXT, ProviderReplay, RecordedOutput, StepResult, ToolCall, ToolCallId,
+    ToolResultStatus,
 };
 
 const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
 const STEERING_CLOSE: &str = "\n</user_steering>";
-
-const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
-const INTERRUPTED_TURN_CONTEXT: &str = "<turn_aborted>\nThe previous turn ended before completion. Any tools or commands may have partially executed. Do not continue this request unless the user explicitly asks to continue.\n</turn_aborted>";
 
 pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, range: Range<usize>) -> usize {
     let Some(messages) = history.get_mut(range.clone()) else {
