@@ -8,6 +8,7 @@ pub enum ToolArgValue {
     Integer(i64),
     Bool(bool),
     Array(Vec<ToolArgValue>),
+    Object(ToolArgs),
     Other,
 }
 
@@ -60,36 +61,108 @@ pub fn parse_json_value(text: &str) -> Option<Value> {
 }
 
 pub fn parse_tool_args_object(args_json: &str) -> Result<ToolArgs, ToolArgsError> {
+    parse(
+        args_json,
+        Retention {
+            objects: 1,
+            arrays: 2,
+        },
+    )
+}
+
+pub fn parse_tool_args_nested(args_json: &str, levels: usize) -> Result<ToolArgs, ToolArgsError> {
+    parse(
+        args_json,
+        Retention {
+            objects: levels.max(1),
+            arrays: levels,
+        },
+    )
+}
+
+fn parse(args_json: &str, retention: Retention) -> Result<ToolArgs, ToolArgsError> {
     let mut scanner = Scanner {
         bytes: args_json.as_bytes(),
         at: 0,
     };
-    match scanner.document() {
-        Some(Document::Object(arguments)) => Ok(arguments),
-        Some(Document::Other) => Err(ToolArgsError::NotObject),
+    match scanner.document(retention) {
+        Some(ToolArgValue::Object(arguments)) => Ok(arguments),
+        Some(_) => Err(ToolArgsError::NotObject),
         None => Err(ToolArgsError::InvalidJson),
     }
 }
 
-enum Document {
-    Object(ToolArgs),
-    Other,
+#[derive(Clone, Copy)]
+struct Retention {
+    objects: usize,
+    arrays: usize,
+}
+
+impl Retention {
+    fn frame(self, container: Container, depth: usize) -> Frame {
+        match container {
+            Container::Array => Frame::Array((depth < self.arrays).then(Vec::new)),
+            Container::Object => Frame::Object(Members {
+                keys: HashSet::new(),
+                kept: (depth < self.objects).then(ToolArgs::default),
+                key: None,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Container {
+    Array,
+    Object,
 }
 
 enum Token {
     Value(ToolArgValue),
-    Open(Frame),
+    Open(Container),
 }
 
 enum Frame {
     Array(Option<Vec<ToolArgValue>>),
-    Object(HashSet<String>),
+    Object(Members),
+}
+
+struct Members {
+    keys: HashSet<String>,
+    kept: Option<ToolArgs>,
+    key: Option<String>,
 }
 
 impl Frame {
+    fn close(&self) -> u8 {
+        match self {
+            Frame::Array(_) => b']',
+            Frame::Object(_) => b'}',
+        }
+    }
+
+    fn keep(&mut self, value: ToolArgValue) {
+        match self {
+            Frame::Array(Some(items)) => items.push(value),
+            Frame::Object(Members {
+                kept: Some(kept),
+                key,
+                ..
+            }) => {
+                if let Some(key) = key.take() {
+                    kept.fields.push((key, value));
+                }
+            }
+            Frame::Array(None) | Frame::Object(_) => {}
+        }
+    }
+
     fn closed(self) -> ToolArgValue {
         match self {
             Frame::Array(Some(items)) => ToolArgValue::Array(items),
+            Frame::Object(Members {
+                kept: Some(kept), ..
+            }) => ToolArgValue::Object(kept),
             Frame::Array(None) | Frame::Object(_) => ToolArgValue::Other,
         }
     }
@@ -101,65 +174,36 @@ struct Scanner<'a> {
 }
 
 impl Scanner<'_> {
-    fn document(&mut self) -> Option<Document> {
+    fn document(&mut self, retention: Retention) -> Option<ToolArgValue> {
         let mut frames: Vec<Frame> = Vec::new();
-        let mut root: Option<ToolArgs> = None;
-        let mut root_key = None;
         'values: loop {
             let mut value = match self.token()? {
                 Token::Value(value) => value,
-                Token::Open(mut frame) => {
-                    match &mut frame {
-                        Frame::Object(_) if frames.is_empty() => root = Some(ToolArgs::default()),
-                        Frame::Array(items) if root.is_some() && frames.len() == 1 => {
-                            *items = Some(Vec::new());
-                        }
-                        _ => {}
-                    }
+                Token::Open(container) => {
+                    let mut frame = retention.frame(container, frames.len());
                     self.skip_whitespace();
-                    let close = match frame {
-                        Frame::Array(_) => b']',
-                        Frame::Object(_) => b'}',
-                    };
-                    if self.eat(close) {
+                    if self.eat(frame.close()) {
                         frame.closed()
                     } else {
-                        frames.push(frame);
-                        let depth = frames.len();
-                        if let Some(Frame::Object(keys)) = frames.last_mut() {
-                            let key = self.member_key(keys)?;
-                            if depth == 1 {
-                                root_key = Some(key);
-                            }
+                        if let Frame::Object(members) = &mut frame {
+                            members.key = Some(self.member_key(&mut members.keys)?);
                         }
+                        frames.push(frame);
                         continue;
                     }
                 }
             };
             loop {
-                let depth = frames.len();
                 let Some(frame) = frames.last_mut() else {
                     self.skip_whitespace();
-                    return (self.at == self.bytes.len())
-                        .then(|| root.map_or(Document::Other, Document::Object));
+                    return (self.at == self.bytes.len()).then_some(value);
                 };
-                match frame {
-                    Frame::Array(Some(items)) => items.push(value),
-                    Frame::Object(_) if depth == 1 => {
-                        if let (Some(root), Some(key)) = (root.as_mut(), root_key.take()) {
-                            root.fields.push((key, value));
-                        }
-                    }
-                    Frame::Array(None) | Frame::Object(_) => {}
-                }
+                frame.keep(value);
                 self.skip_whitespace();
                 match (frame, self.next()?) {
                     (Frame::Array(_), b',') => continue 'values,
-                    (Frame::Object(keys), b',') => {
-                        let key = self.member_key(keys)?;
-                        if depth == 1 {
-                            root_key = Some(key);
-                        }
+                    (Frame::Object(members), b',') => {
+                        members.key = Some(self.member_key(&mut members.keys)?);
                         continue 'values;
                     }
                     (Frame::Array(_), b']') | (Frame::Object(_), b'}') => {
@@ -174,8 +218,8 @@ impl Scanner<'_> {
     fn token(&mut self) -> Option<Token> {
         self.skip_whitespace();
         let value = match self.next()? {
-            b'{' => return Some(Token::Open(Frame::Object(HashSet::new()))),
-            b'[' => return Some(Token::Open(Frame::Array(None))),
+            b'{' => return Some(Token::Open(Container::Object)),
+            b'[' => return Some(Token::Open(Container::Array)),
             b'"' => ToolArgValue::String(self.string()?),
             b't' => self.literal(b"rue", ToolArgValue::Bool(true))?,
             b'f' => self.literal(b"alse", ToolArgValue::Bool(false))?,
@@ -501,6 +545,81 @@ mod tests {
             args.get("deep"),
             Some(&ToolArgValue::Array(vec![ToolArgValue::Other]))
         );
+    }
+
+    fn object(fields: &[(&str, ToolArgValue)]) -> ToolArgValue {
+        ToolArgValue::Object(ToolArgs {
+            fields: fields
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn nested_parses_keep_arrays_and_objects_above_the_requested_level() {
+        let args_json = r#"{"a":[{"b":[{"c":"d"}],"n":1e400}],"o":{"p":{"q":1}},"s":"t"}"#;
+        let args = parse_tool_args_nested(args_json, 3).unwrap();
+        assert_eq!(
+            args.get("a"),
+            Some(&ToolArgValue::Array(vec![object(&[
+                ("b", ToolArgValue::Other),
+                ("n", ToolArgValue::Other),
+            ])]))
+        );
+        assert_eq!(
+            args.get("o"),
+            Some(&object(&[(
+                "p",
+                object(&[("q", ToolArgValue::Integer(1))])
+            )]))
+        );
+        assert_eq!(args.optional_string("s"), Some("t"));
+        let args = parse_tool_args_nested(args_json, 4).unwrap();
+        assert_eq!(
+            args.get("a"),
+            Some(&ToolArgValue::Array(vec![object(&[
+                ("b", ToolArgValue::Array(vec![ToolArgValue::Other])),
+                ("n", ToolArgValue::Other),
+            ])]))
+        );
+        assert_eq!(
+            parse_tool_args_nested(args_json, 0).unwrap().get("a"),
+            Some(&ToolArgValue::Other)
+        );
+        assert_eq!(parse_tool_args_nested("{}", 5), Ok(ToolArgs::default()));
+    }
+
+    #[test]
+    fn nested_parses_accept_and_reject_what_object_parses_do() {
+        let depth = 100_000;
+        let deep = format!(
+            r#"{{"path":"a","deep":{}{}}}"#,
+            "[".repeat(depth),
+            "]".repeat(depth)
+        );
+        let args = parse_tool_args_nested(&deep, 5).unwrap();
+        assert_eq!(args.optional_string("path"), Some("a"));
+        for args_json in [
+            "not-json",
+            "{} x",
+            r#"{"a":1,"a":2}"#,
+            r#"{"list":[[{"a":{"b":1},"a":2}]]}"#,
+            r#"{"a":"\ud800"}"#,
+        ] {
+            assert_eq!(
+                parse_tool_args_nested(args_json, 5),
+                Err(ToolArgsError::InvalidJson),
+                "{args_json}"
+            );
+        }
+        for args_json in ["[]", "[{}]", "5", "null"] {
+            assert_eq!(
+                parse_tool_args_nested(args_json, 5),
+                Err(ToolArgsError::NotObject),
+                "{args_json}"
+            );
+        }
     }
 
     #[test]
