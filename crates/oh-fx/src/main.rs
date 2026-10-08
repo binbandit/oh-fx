@@ -1,6 +1,7 @@
 mod ask_session;
 mod auto_upgrade;
 mod cli_ask;
+mod cli_replay;
 mod command_echo;
 mod doctor_command;
 mod help;
@@ -21,6 +22,7 @@ mod workspace_command;
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::os::fd::BorrowedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
 
@@ -103,6 +105,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Status(format) => status_command::run(format),
             Command::Usage(format) => usage_command::run(format),
             Command::Workspace(args) => workspace_command::run(&args),
+            Command::Replay(args) => cli_replay::run(&args),
             other => unavailable_command(&other),
         },
     }
@@ -203,6 +206,21 @@ pub(crate) fn write_stdout(text: &str) -> io::Result<()> {
     stdout.flush()
 }
 
+pub(crate) fn write_error_name(error: &io::Error) -> &'static str {
+    match Errno::from_io_error(error) {
+        Some(Errno::PIPE) => "BrokenPipe",
+        Some(Errno::NOSPC) => "NoSpaceLeft",
+        Some(Errno::BADF) => "NotOpenForWriting",
+        Some(Errno::DQUOT) => "DiskQuota",
+        Some(Errno::FBIG) => "FileTooBig",
+        Some(Errno::IO) => "InputOutput",
+        Some(Errno::PERM) => "PermissionDenied",
+        Some(Errno::AGAIN) => "WouldBlock",
+        Some(Errno::BUSY) => "DeviceBusy",
+        _ => "Unexpected",
+    }
+}
+
 pub(crate) fn write_failed() -> ExitCode {
     let _ = io::stderr().write_all(b"oh-fx: WriteFailed\n");
     ExitCode::FAILURE
@@ -220,10 +238,9 @@ const fn version_line() -> [u8; ofx_upgrade::VERSION.len() + 1] {
     line
 }
 
-fn write_stdout_unbuffered(mut bytes: &[u8]) -> io::Result<()> {
-    let stdout = rustix::stdio::stdout();
+pub(crate) fn write_unbuffered(stream: BorrowedFd<'_>, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
-        match rustix::io::write(stdout, bytes) {
+        match rustix::io::write(stream, bytes) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(count) => bytes = &bytes[count..],
             Err(Errno::INTR) => {}
@@ -235,7 +252,11 @@ fn write_stdout_unbuffered(mut bytes: &[u8]) -> io::Result<()> {
 }
 
 pub(crate) fn print(bytes: &[u8], failure: WriteFailure) -> ExitCode {
-    written(write_stdout_unbuffered(bytes), failure, ExitCode::SUCCESS)
+    written(
+        write_unbuffered(rustix::stdio::stdout(), bytes),
+        failure,
+        ExitCode::SUCCESS,
+    )
 }
 
 pub(crate) fn fail(text: &str, failure: WriteFailure) -> ExitCode {
