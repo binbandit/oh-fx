@@ -1,17 +1,18 @@
-use ofx_contract::{Notice, NoticeTone};
 use ofx_markdown::Event;
 
 use super::Shell;
-use super::upgrade_shortcut::requests_upgrade;
 use crate::input::{Action, InputEvent, MouseWheel, ShortcutAction};
 use crate::render_engine::frame_layout::LiveLayout;
 use crate::render_engine::frame_sink::{Frame, FrameSink, LiveRegionRenderer};
 use crate::render_engine::transcript_blocks::{
     Entry, render_assistant_event, trailing_blank_lines,
 };
-use crate::row_text::Row;
+use crate::row_text::{Paint, Row, single_line_ellipsized};
 use crate::terminal::{Layout, TerminalError};
 use crate::theme::Theme;
+
+const NAVIGATION: &str = "full detail · ctrl+o close · pgup/pgdn scroll · esc close";
+const WHEEL_ROWS: usize = 3;
 
 pub(super) struct Screen {
     renderer: LiveRegionRenderer,
@@ -29,27 +30,9 @@ impl Shell<'_> {
         &mut self,
         event: &InputEvent,
     ) -> Result<bool, TerminalError> {
-        if self.full_transcript_input_blocked() {
+        if self.full_transcript_yields() {
             self.close_full_transcript()?;
             return Ok(false);
-        }
-        let toggles = matches!(event, InputEvent::Action(decoded) if decoded.action == Action::ToggleFullTranscript);
-        if self
-            .full_transcript
-            .as_ref()
-            .is_some_and(|screen| !screen.entered)
-            && !toggles
-        {
-            self.full_transcript = None;
-            return Ok(false);
-        }
-        if self.full_transcript.is_some() && requests_upgrade(event) {
-            self.push_entry(Entry::Notice(Notice::new(
-                NoticeTone::Neutral,
-                "upgrade",
-                "close the transcript view before upgrading",
-            )));
-            return Ok(true);
         }
         let action = match event {
             InputEvent::Raw(raw) if matches!(raw.byte, 3 | 12) => {
@@ -58,9 +41,20 @@ impl Shell<'_> {
             InputEvent::Action(decoded) => Some(decoded.action),
             _ => None,
         };
+        if self
+            .full_transcript
+            .as_ref()
+            .is_some_and(|screen| !screen.entered)
+            && action != Some(Action::ToggleFullTranscript)
+        {
+            self.full_transcript = None;
+            return Ok(false);
+        }
         if action == Some(Action::ToggleFullTranscript) {
             if self.full_transcript.is_some() {
                 self.close_full_transcript()?;
+            } else if self.statusline_menu.is_some() {
+                return Ok(false);
             } else {
                 self.open_full_transcript();
             }
@@ -77,17 +71,20 @@ impl Shell<'_> {
                 self.close_full_transcript()?;
                 return Ok(true);
             }
-            Some(Action::CursorLeft | Action::CursorRight) => return Ok(true),
-            Some(Action::CursorUp | Action::MouseWheel(MouseWheel::Up)) => (MouseWheel::Up, 3),
+            Some(
+                Action::CursorLeft
+                | Action::CursorRight
+                | Action::RemappedByte(12)
+                | Action::ComposerShortcut(ShortcutAction::Redraw),
+            ) => return Ok(true),
+            Some(Action::CursorUp | Action::MouseWheel(MouseWheel::Up)) => {
+                (MouseWheel::Up, WHEEL_ROWS)
+            }
             Some(Action::CursorDown | Action::MouseWheel(MouseWheel::Down)) => {
-                (MouseWheel::Down, 3)
+                (MouseWheel::Down, WHEEL_ROWS)
             }
             Some(Action::PageUp) => (MouseWheel::Up, usize::from(self.layout.content_bottom)),
             Some(Action::PageDown) => (MouseWheel::Down, usize::from(self.layout.content_bottom)),
-            Some(Action::RemappedByte(12) | Action::ComposerShortcut(ShortcutAction::Redraw)) => {
-                screen.renderer.reset_screen();
-                return Ok(true);
-            }
             _ => return Ok(false),
         };
         screen.follow_tail = false;
@@ -96,6 +93,10 @@ impl Shell<'_> {
             MouseWheel::Down => screen.offset.saturating_add(rows),
         };
         Ok(true)
+    }
+
+    pub(super) fn full_transcript_open(&self) -> bool {
+        self.full_transcript.is_some()
     }
 
     fn open_full_transcript(&mut self) {
@@ -143,24 +144,20 @@ impl Shell<'_> {
     }
 
     pub(super) fn settle_full_transcript_owner(&mut self) -> Result<(), TerminalError> {
-        if self.full_transcript_input_blocked() {
+        if self.full_transcript_yields() {
             self.close_full_transcript()?;
         }
         Ok(())
     }
 
-    fn full_transcript_input_blocked(&self) -> bool {
+    fn full_transcript_yields(&self) -> bool {
         self.approval.is_some()
             || self.question.is_some()
-            || self.statusline_menu.is_some()
             || self.settings_menu.is_some()
-            || self.skills_menu_visible()
             || self.help_menu.is_some()
+            || self.skills_menu_visible()
             || self.model_menu.is_some()
-            || self.model_query().is_some()
-            || self.model_draft.is_some()
             || self.picker_active()
-            || self.has_file_query()
     }
 
     pub(super) fn present_full_transcript_frame(
@@ -168,6 +165,14 @@ impl Shell<'_> {
         appended: &[Row],
         live: &LiveLayout,
     ) -> bool {
+        if self.full_transcript.is_none() {
+            return false;
+        }
+        let footer = [
+            navigation_row(&self.theme, usize::from(self.layout.cols)),
+            Row::new(),
+            self.hint_row(None).0,
+        ];
         let Some(screen) = &mut self.full_transcript else {
             return false;
         };
@@ -195,7 +200,6 @@ impl Shell<'_> {
             screen.renderer.reset_screen();
             screen.render_layout = self.layout;
         }
-        let footer = &live.rows[live.footer_row.min(live.rows.len())..];
         let visible = usize::from(self.layout.rows).saturating_sub(footer.len() + 1);
         let entries = self.transcript.full_entries();
         let total = projection_rows(entries, usize::from(self.layout.cols), &self.theme).count();
@@ -211,20 +215,29 @@ impl Shell<'_> {
             .take(visible)
             .collect::<Vec<_>>();
         rows.resize_with(visible + 1, Row::new);
-        let cursor = live
-            .cursor
-            .map(|(row, column)| (visible + 1 + row.saturating_sub(live.footer_row), column));
-        rows.extend_from_slice(footer);
+        rows.extend(footer);
         screen.renderer.present(
             &Frame {
                 appended: &[],
                 live: &rows,
-                cursor,
+                cursor: None,
             },
             &mut self.output,
         );
         true
     }
+}
+
+fn navigation_row(theme: &Theme, cols: usize) -> Row {
+    let mut row = Row::styled("┃", theme.user_card_marker);
+    if cols > 1 {
+        row.push(" ", Paint::PLAIN);
+        row.push(
+            &single_line_ellipsized(NAVIGATION, cols - 2),
+            theme.statusline,
+        );
+    }
+    row
 }
 
 fn projection_rows<'a>(
@@ -259,7 +272,7 @@ mod tests {
     use crate::terminal::TAGGED_CURSOR_QUERY;
 
     #[test]
-    fn typing_with_native_clear_probing_keeps_the_retained_transcript() {
+    fn typing_in_the_viewer_sends_no_native_clear_probe_until_it_closes() {
         let mut test = TestShell::start();
         test.shell.input.start_native_clear_probe();
         test.shell.transcript.push(Entry::UserTurn {
@@ -269,24 +282,10 @@ mod tests {
         test.type_bytes(b"\x0f");
         test.step();
         test.screen();
-        let row = test
-            .shell
-            .full_transcript
-            .as_ref()
-            .unwrap()
-            .renderer
-            .cursor_row()
-            .unwrap();
-        assert_ne!(Some(row), test.shell.renderer.cursor_row());
         test.type_bytes(b"x");
         test.step();
-        let written = test.written();
-        if written.contains(TAGGED_CURSOR_QUERY) {
-            test.type_bytes(format!("\x1b[{row};1R\x1b[{row};2R").as_bytes());
-            test.step();
-        }
+        assert!(!test.written().contains(TAGGED_CURSOR_QUERY));
         assert!(test.screen().contains("retained before probing"));
-        assert!(!written.contains(TAGGED_CURSOR_QUERY));
         assert_eq!(test.shell.composer.text(), "x");
         test.type_bytes(b"\x0f");
         test.step();
@@ -397,15 +396,65 @@ mod tests {
         }
     }
 
+    fn retained_prompts(test: &mut TestShell) {
+        for index in 0..40 {
+            test.shell.transcript.push(Entry::UserTurn {
+                text: format!("retained-{index:02}"),
+            });
+        }
+        test.screen();
+    }
+
+    fn viewer_offset(test: &TestShell) -> usize {
+        test.shell.full_transcript.as_ref().unwrap().offset
+    }
+
     #[test]
-    fn inline_model_columns_keep_navigation_before_and_after_viewer_entry() {
+    fn the_viewer_hides_the_provider_column_and_its_arrows_scroll_the_transcript() {
+        use ofx_contract::UiCommand;
+
+        for viewer_first in [false, true] {
+            let mut test = TestShell::start();
+            retained_prompts(&mut test);
+            if viewer_first {
+                test.type_bytes(b"\x0f");
+                test.step();
+                test.screen();
+            }
+            test.type_bytes(b"/provider ");
+            test.step();
+            if !viewer_first {
+                assert!(test.screen().contains("portkey"));
+                test.type_bytes(b"\x0f");
+                test.step();
+            }
+            let screen = test.screen();
+            assert!(screen.contains("full detail"), "{screen}");
+            assert!(!screen.contains("portkey"), "{screen}");
+            let tail = viewer_offset(&test);
+            test.type_bytes(b"\x1b[A");
+            test.step();
+            test.screen();
+            assert_eq!(viewer_offset(&test), tail - 3);
+            test.type_bytes(b"\r");
+            test.step();
+            assert!(matches!(
+                test.sent().last(),
+                Some(UiCommand::SelectProvider { provider }) if provider == "codex"
+            ));
+            assert!(test.shell.full_transcript.is_some());
+        }
+    }
+
+    #[test]
+    fn the_viewer_hides_the_model_column_and_its_arrows_scroll_the_transcript() {
         use ofx_contract::{
             ModelCapabilities, ModelCatalog, ModelCatalogSource, ModelOption, UiCommand, UiEvent,
         };
 
         for viewer_first in [false, true] {
             let mut test = TestShell::start();
-            test.screen();
+            retained_prompts(&mut test);
             if viewer_first {
                 test.type_bytes(b"\x0f");
                 test.step();
@@ -427,20 +476,83 @@ mod tests {
                     source: ModelCatalogSource::ProfileSettings,
                 },
             });
-            test.screen();
             if !viewer_first {
+                assert!(test.screen().contains("model-second"));
                 test.type_bytes(b"\x0f");
                 test.step();
-                test.screen();
             }
-            test.type_bytes(b"\x1b[B\r");
+            let screen = test.screen();
+            assert!(!screen.contains("model-second"), "{screen}");
+            let tail = viewer_offset(&test);
+            test.type_bytes(b"\x1b[A");
+            test.step();
+            test.screen();
+            assert_eq!(viewer_offset(&test), tail - 3);
+            test.type_bytes(b"\r");
             test.step();
             assert!(matches!(
                 test.sent().last(),
-                Some(UiCommand::SelectModel { model, .. }) if model == "model-second"
+                Some(UiCommand::SelectModel { model, .. }) if model == "model-first"
             ));
-            assert!(test.shell.full_transcript.is_none());
+            assert!(test.shell.full_transcript.is_some());
         }
+    }
+
+    #[test]
+    fn the_viewer_footer_shows_navigation_a_blank_row_and_the_status_line() {
+        let mut test = TestShell::start();
+        test.type_bytes(b"unfinished draft");
+        test.step();
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        let screen = test.screen();
+        let rows = screen.lines().collect::<Vec<_>>();
+        let hint = test.shell.hint_row(None).0.text();
+        assert_eq!(rows.len(), usize::from(test.shell.layout.rows), "{screen}");
+        assert_eq!(
+            rows[rows.len() - 3],
+            "┃ full detail · ctrl+o close · pgup/pgdn scroll · esc close"
+        );
+        assert_eq!(rows[rows.len() - 2], "");
+        assert_eq!(rows[rows.len() - 1], hint.trim_end());
+        assert!(!screen.contains("unfinished draft"), "{screen}");
+        assert!(test.cursor_hidden());
+        assert_eq!(test.shell.composer.text(), "unfinished draft");
+    }
+
+    #[test]
+    fn the_viewer_navigation_row_is_ellipsized_to_the_terminal_width() {
+        let row = super::navigation_row(&crate::theme::Theme::builtin(false, true, true), 20);
+        assert_eq!(row.text(), "┃ full detail · ctr…");
+    }
+
+    #[test]
+    fn redraw_model_and_upgrade_shortcuts_stay_inert_in_the_viewer() {
+        let mut test = TestShell::start();
+        test.type_bytes(b"draft");
+        test.step();
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        test.screen();
+        test.type_bytes(b"\x0c");
+        test.step();
+        assert!(!test.written().contains("\x1b[2J"));
+        test.type_bytes(b"\x10");
+        test.step();
+        assert!(test.shell.model_menu.is_none());
+        assert!(test.shell.model_draft.is_none());
+        test.type_bytes(b"\x07");
+        test.step();
+        let screen = test.screen();
+        assert!(
+            screen.contains("close the transcript view before upgrading"),
+            "{screen}"
+        );
+        assert!(test.shell.full_transcript.is_some());
+        assert_eq!(test.shell.composer.text(), "draft");
+        assert!(test.sent().is_empty());
     }
 
     #[test]
@@ -456,7 +568,7 @@ mod tests {
         test.step();
         assert!(test.written().contains("\x1b[?1049h"));
         assert!(test.screen().contains("A retained prompt"));
-        assert!(test.screen().contains("unfinished draft"));
+        assert!(!test.screen().contains("unfinished draft"));
         test.type_bytes(b"\x0f");
         test.step();
         assert!(test.written().contains("\x1b[?1049l"));

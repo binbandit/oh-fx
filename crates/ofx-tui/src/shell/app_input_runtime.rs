@@ -139,6 +139,7 @@ impl Shell<'_> {
             self.gestures.disarm_escape_interrupt();
         }
         if let Some(delta) = picker_control_delta(byte)
+            && !self.full_transcript_open()
             && self.move_footer_menu(delta)
         {
             return Ok(());
