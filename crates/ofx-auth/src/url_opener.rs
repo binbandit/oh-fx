@@ -1,5 +1,9 @@
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
+
+const LAUNCHER_WAIT: Duration = Duration::from_secs(2);
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Platform {
@@ -35,21 +39,45 @@ pub fn browser_allowed() -> bool {
 }
 
 pub fn open_url(url: &str) -> bool {
-    let Some(launcher) = Platform::current().launcher() else {
+    let Some(mut child) = spawn_url(url) else {
         return false;
     };
-    let child = Command::new(launcher)
+    thread::spawn(move || child.wait());
+    true
+}
+
+pub fn open_url_bounded(url: &str) -> bool {
+    let Some(child) = spawn_url(url) else {
+        return false;
+    };
+    wait_for_launcher(child, LAUNCHER_WAIT)
+}
+
+fn spawn_url(url: &str) -> Option<Child> {
+    let launcher = Platform::current().launcher()?;
+    Command::new(launcher)
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
-    match child {
-        Ok(mut child) => {
-            thread::spawn(move || child.wait());
-            true
+        .spawn()
+        .ok()
+}
+
+fn wait_for_launcher(mut child: Child, limit: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < limit => {
+                thread::sleep(POLL_INTERVAL.min(limit.saturating_sub(started.elapsed())));
+            }
+            result => {
+                let opened = result.is_ok();
+                thread::spawn(move || child.wait());
+                return opened;
+            }
         }
-        Err(_) => false,
     }
 }
 

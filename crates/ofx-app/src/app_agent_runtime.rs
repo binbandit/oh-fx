@@ -234,6 +234,10 @@ impl ControllerState {
         (self.emit)(event);
     }
 
+    pub(crate) fn feedback(&self) {
+        crate::feedback_command::start_feedback(&self.emit);
+    }
+
     pub(crate) fn compaction(&self, activity: CompactionActivity) {
         self.emit(UiEvent::CompactionActivity { activity });
     }

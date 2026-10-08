@@ -1,4 +1,5 @@
 [[file]]
 upstream = "src/core/feedback/runtime.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-app/src/feedback_command.rs"]
+note = "Feedback URL uses the oh-fx issue form as recorded in architecture.md."
