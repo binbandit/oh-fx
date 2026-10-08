@@ -459,6 +459,12 @@ impl Settings {
         &self.additional_directories
     }
 
+    pub fn additional_directories_rejected(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.cause == DiagnosticCause::InvalidAdditionalDirectories)
+    }
+
     pub fn reject_additional_directories(&mut self) {
         self.additional_directories.clear();
         self.diagnostics.insert(
@@ -2771,6 +2777,7 @@ mod tests {
             r#"{"additional_directories":["/srv/shared","/srv/docs"],"max_agent_steps":17}"#,
         );
         assert!(settings.diagnostics().is_empty());
+        assert!(!settings.additional_directories_rejected());
         assert_eq!(
             settings.additional_directories(),
             ["/srv/shared", "/srv/docs"]
@@ -2801,6 +2808,7 @@ mod tests {
                 &format!(r#"{{"additional_directories":{value},"max_agent_steps":17}}"#),
             );
             assert!(settings.additional_directories().is_empty(), "{value}");
+            assert!(settings.additional_directories_rejected(), "{value}");
             assert_eq!(
                 rendered(&settings),
                 [ADDITIONAL_DIRECTORIES_DIAGNOSTIC],
@@ -2816,6 +2824,7 @@ mod tests {
     fn a_top_level_additional_directories_key_is_always_diagnosed() {
         let settings = fixture_settings(r#"{"additional_directories":["/srv/shared"]}"#);
         assert!(settings.additional_directories().is_empty());
+        assert!(settings.additional_directories_rejected());
         assert_eq!(rendered(&settings), [ADDITIONAL_DIRECTORIES_DIAGNOSTIC]);
     }
 
@@ -2828,8 +2837,10 @@ mod tests {
             r#"{"additional_directories":["/srv/shared"],"context_limits":[]}"#,
         );
         assert_eq!(settings.additional_directories(), ["/srv/shared"]);
+        assert!(!settings.additional_directories_rejected());
         settings.reject_additional_directories();
         assert!(settings.additional_directories().is_empty());
+        assert!(settings.additional_directories_rejected());
         assert_eq!(
             rendered(&settings),
             [
