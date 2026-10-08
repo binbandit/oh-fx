@@ -589,20 +589,24 @@ impl Controller {
         }
     }
 
+    fn next_runnable_prompt(&mut self) -> Option<QueuedPrompt> {
+        if self.installation.is_some() || self.state.login_missing() {
+            return None;
+        }
+        let prompt = self.state.worker.take_next()?;
+        if prompt.recovered().is_none() {
+            let settled = self
+                .persistence
+                .as_mut()
+                .and_then(|persistence| persistence.settle_open_recovery(&mut self.agent));
+            self.session_notice(settled);
+        }
+        Some(prompt)
+    }
+
     async fn serve(&mut self, commands: &mut UnboundedReceiver<UiCommand>) {
         loop {
-            let held = self.state.setup.login() == Login::Missing;
-            if self.installation.is_none()
-                && !held
-                && let Some(prompt) = self.state.worker.take_next()
-            {
-                if prompt.recovered().is_none() {
-                    let settled = self
-                        .persistence
-                        .as_mut()
-                        .and_then(|persistence| persistence.settle_open_recovery(&mut self.agent));
-                    self.session_notice(settled);
-                }
+            if let Some(prompt) = self.next_runnable_prompt() {
                 if !self.run_turn(&prompt, commands).await {
                     return;
                 }
