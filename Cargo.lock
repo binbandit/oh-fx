@@ -2092,6 +2092,7 @@ dependencies = [
  "ra-ap-rustc_lexer",
  "regex",
  "serde",
+ "sha2",
  "tempfile",
  "toml",
  "unicode-ident",

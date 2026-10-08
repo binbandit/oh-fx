@@ -2,16 +2,62 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+const CLASSIFIER: &str = concat!(
+    "const review_policy_template =\n    \\\\<review>\n    \\\\{{REVIEW_DATA}}\n    \\\\</review>\n    \\\\\n;\n",
+    r#"pub const tool_name = "permission_decision";
+const decision_values = [_][]const u8{ "clear", "caution" };
+const schema_required = [_][]const u8{"decision"};
+const schema_properties = [_]model_tool_schema.Property{
+    .{
+        .name = "decision",
+        .json_type = .string,
+        .shape = &.{ .enum_values = decision_values[0..] },
+        .description = "Clear this exact action, or return a safety caution.",
+    },
+    .{
+        .name = "rationale",
+        .json_type = .string,
+        .description = "Optional brief reason without secrets or raw file contents.",
+    },
+};
+pub const function_schema: model_tool_schema.FunctionSchema = .{
+    .name = tool_name,
+    .description = "Return bounded safety advice for one exact fx action.",
+    .input_schema = .{
+        .properties = schema_properties[0..],
+        .required = schema_required[0..],
+        .additional_properties = false,
+    },
+};
+fn toolsJsonAlloc(alloc: std.mem.Allocator) ![]u8 {
+    const schema_json = try model_tool_schema.builtinFunctionSchemaJsonAlloc(alloc, function_schema);
+    defer alloc.free(schema_json);
+    return std.fmt.allocPrint(alloc, "[{s}]", .{schema_json});
+}
+test "automatic review model-facing tool contract stays byte exact" {
+    const tools_json = try toolsJsonAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(tools_json);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(tools_json, &digest, .{});
+    const actual_hex = std.fmt.bytesToHex(digest, .lower);
+    try std.testing.expectEqualStrings(
+        "5029829df4ea080a7c21701c0185b777d21fd42d1b79a7a957605e508f73fe03",
+        &actual_hex,
+    );
+}
+"#
+);
+const WRITER: &str = "pub const description_max_bytes: usize = 1024;\n";
+const PERMISSION_TOOL: &str = r#"[{"type":"function","name":"permission_decision","description":"Return bounded safety advice for one exact fx action.","inputSchema":{"type":"object","properties":{"decision":{"type":"string","enum":["clear","caution"],"description":"Clear this exact action, or return a safety caution."},"rationale":{"type":"string","description":"Optional brief reason without secrets or raw file contents."}},"additionalProperties":false,"required":["decision"]}}]"#;
 const SOURCES: &[(&str, &str)] = &[
-    ("src/builtins/system_prompt.md", "system\n"),
+    (SYSTEM_SOURCE, "system\n"),
     (
-        "src/core/compactor/summarize.zig",
+        COMPACTION_SOURCE,
         "pub const system_prompt =\n    \"notes\";\n",
     ),
-    (
-        "src/core/permissions/auto_classifier.zig",
-        "const review_policy_template =\n    \\\\<review>\n    \\\\{{REVIEW_DATA}}\n    \\\\</review>\n    \\\\\n;\n",
-    ),
+    (CLASSIFIER_SOURCE, CLASSIFIER),
+    (WRITER_SOURCE, WRITER),
 ];
 const GOLDENS: &[(&str, &str)] = &[
     ("system_prompt.md", "system\n"),
@@ -20,6 +66,7 @@ const GOLDENS: &[(&str, &str)] = &[
         "review_policy.xml",
         "<review>\n{{REVIEW_DATA}}\n</review>\n",
     ),
+    ("permission_decision_tool.json", PERMISSION_TOOL),
 ];
 
 fn setup_git(directory: &Path, args: &[&str]) -> String {
@@ -50,6 +97,7 @@ struct Fixture {
     root: PathBuf,
     upstream: PathBuf,
     pin: String,
+    writer_blob: String,
 }
 impl Fixture {
     fn new() -> Self {
@@ -66,14 +114,21 @@ impl Fixture {
         setup_git(&upstream, &["init", "-q"]);
         let pin = commit(&upstream);
         std::fs::write(root.join("parity/UPSTREAM"), &pin).unwrap();
+        let writer_blob = setup_git(&upstream, &["rev-parse", &format!("{pin}:{WRITER_SOURCE}")])
+            .trim()
+            .to_owned();
         let fixture = Self {
             _directory: directory,
             root,
             upstream,
             pin,
+            writer_blob,
         };
         fixture.write_goldens("previous fixture");
         fixture
+    }
+    fn audited(&self) -> [(&str, &str); 1] {
+        [(WRITER_SOURCE, &self.writer_blob)]
     }
     fn destination(&self, name: &str) -> PathBuf {
         self.root.join("parity/goldens").join(name)
@@ -106,28 +161,28 @@ fn shared_regeneration_uses_pinned_objects_and_all_extractors() {
     for (path, _) in SOURCES {
         std::fs::write(fixture.upstream.join(path), "dirty working file").unwrap();
     }
-    regenerate(&fixture.root, &fixture.upstream).unwrap();
+    regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).unwrap();
     for (name, expected) in GOLDENS {
         assert_eq!(
             std::fs::read(fixture.destination(name)).unwrap(),
             expected.as_bytes()
         );
     }
-    check(&fixture.root, &fixture.upstream).unwrap();
+    check(&fixture.root, &fixture.upstream, &fixture.audited()).unwrap();
 }
 #[test]
 fn check_rejects_stale_missing_and_changed_pin_without_writes() {
     let fixture = Fixture::new();
-    assert!(check(&fixture.root, &fixture.upstream).is_err());
+    assert!(check(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
     fixture.assert_previous();
     std::fs::remove_dir_all(fixture.root.join("parity/goldens")).unwrap();
-    assert!(check(&fixture.root, &fixture.upstream).is_err());
+    assert!(check(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
     assert!(!fixture.root.join("parity/goldens").exists());
-    regenerate(&fixture.root, &fixture.upstream).unwrap();
+    regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).unwrap();
     std::fs::write(fixture.upstream.join(SOURCES[0].0), "new pin content").unwrap();
     let pin = commit(&fixture.upstream);
     std::fs::write(fixture.root.join("parity/UPSTREAM"), pin).unwrap();
-    assert!(check(&fixture.root, &fixture.upstream).is_err());
+    assert!(check(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
     assert_eq!(
         std::fs::read(fixture.destination(GOLDENS[0].0)).unwrap(),
         GOLDENS[0].1.as_bytes()
@@ -142,13 +197,13 @@ fn invalid_commit_or_late_extraction_preserves_every_fixture() {
         setup_git(&fixture.upstream, &["rev-parse", "HEAD^{tree}"]),
     ] {
         std::fs::write(fixture.root.join("parity/UPSTREAM"), pin).unwrap();
-        assert!(regenerate(&fixture.root, &fixture.upstream).is_err());
+        assert!(regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
         fixture.assert_previous();
     }
     std::fs::write(fixture.upstream.join(SOURCES[2].0), "unsupported policy").unwrap();
     let pin = commit(&fixture.upstream);
     std::fs::write(fixture.root.join("parity/UPSTREAM"), pin).unwrap();
-    assert!(regenerate(&fixture.root, &fixture.upstream).is_err());
+    assert!(regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
     fixture.assert_previous();
 }
 #[test]
@@ -225,9 +280,9 @@ fn missing_promisor_sources_never_contact_remote_or_mutate_objects_or_fixtures()
         let before = object_files(&fixture.upstream.join(".git/objects"));
         for checking in [false, true] {
             let result = if checking {
-                check(&fixture.root, &fixture.upstream)
+                check(&fixture.root, &fixture.upstream, &fixture.audited())
             } else {
-                regenerate(&fixture.root, &fixture.upstream)
+                regenerate(&fixture.root, &fixture.upstream, &fixture.audited())
             };
             assert!(!marker.exists(), "contacted remote for {missing}");
             assert!(result.is_err(), "accepted missing {missing}");
@@ -240,7 +295,7 @@ fn missing_promisor_sources_never_contact_remote_or_mutate_objects_or_fixtures()
 #[test]
 fn check_preserves_matching_fixture_metadata_and_objects() {
     let fixture = Fixture::new();
-    regenerate(&fixture.root, &fixture.upstream).unwrap();
+    regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).unwrap();
     let files = object_files(&fixture.root.join("parity/goldens"));
     let objects = object_files(&fixture.upstream.join(".git/objects"));
     let modified: Vec<_> = GOLDENS
@@ -252,7 +307,7 @@ fn check_preserves_matching_fixture_metadata_and_objects() {
                 .unwrap()
         })
         .collect();
-    check(&fixture.root, &fixture.upstream).unwrap();
+    check(&fixture.root, &fixture.upstream, &fixture.audited()).unwrap();
     assert_eq!(object_files(&fixture.root.join("parity/goldens")), files);
     assert_eq!(
         object_files(&fixture.upstream.join(".git/objects")),
@@ -367,4 +422,42 @@ fn leaf_extractors_retain_strict_prompt_grammar() {
     }
     assert!(run(&["--unknown"]).is_err());
     assert!(run(&["--check", "--check"]).is_err());
+}
+
+#[test]
+fn permission_tool_extraction_matches_upstreams_artifact_and_rejects_changed_grammar() {
+    assert_eq!(
+        permission_tool::extract(CLASSIFIER, 1024).unwrap(),
+        PERMISSION_TOOL
+    );
+    for source in [
+        String::new(),
+        format!("{CLASSIFIER}\n{CLASSIFIER}"),
+        CLASSIFIER.replace(".json_type = .string", ".json_type = .boolean"),
+        CLASSIFIER.replace(
+            ".additional_properties = false",
+            ".additional_properties = true",
+        ),
+        CLASSIFIER.replace("permission_decision", "changed_decision"),
+        CLASSIFIER.replace(
+            ".required = schema_required[0..]",
+            ".unknown = schema_required[0..]",
+        ),
+        CLASSIFIER.replace("u8{\"decision\"}", "u8{\"verdict\"}"),
+        CLASSIFIER.replace("decision_values[0..]", "other_values[0..]"),
+    ] {
+        assert!(permission_tool::extract(&source, 1024).is_err());
+    }
+    assert!(permission_tool::extract(CLASSIFIER, 40).is_err());
+}
+
+#[test]
+fn a_changed_audited_writer_stops_every_golden() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.upstream.join(WRITER_SOURCE), WRITER.repeat(2)).unwrap();
+    let pin = commit(&fixture.upstream);
+    std::fs::write(fixture.root.join("parity/UPSTREAM"), pin).unwrap();
+    assert!(regenerate(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
+    assert!(check(&fixture.root, &fixture.upstream, &fixture.audited()).is_err());
+    fixture.assert_previous();
 }
