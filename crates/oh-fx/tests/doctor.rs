@@ -241,6 +241,26 @@ fn configuration_and_mcp_problems_become_checks() {
         ),
         "{stdout}"
     );
+    assert!(stdout.contains("\n[doctor] model=\n"), "{stdout}");
+}
+
+#[test]
+fn invalid_additional_directories_leave_the_user_settings_loaded() {
+    let home = Home::new();
+    let mut settings = local_settings("http://127.0.0.1:9/v1");
+    settings["additional_directories"] = json!(["/tmp"]);
+    home.write_settings(&settings);
+    let stdout = home.doctor(&[], &[("LOCAL_KEY", "secret")]);
+    assert!(
+        stdout.contains("\n[ok] config: loaded config from ~/.config/oh-fx/settings.json\n[warn] config: user config diagnostic: invalid_additional_directories; key=additional_directories; additional_directories must be an array of at most 16 unique absolute directory paths for the current primary workspace\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "\n[ok] startup: resolved model=model-a, permission_mode=auto, agent_step_limit=0\n"
+        ),
+        "{stdout}"
+    );
 }
 
 #[test]
