@@ -27,11 +27,14 @@ const SIGN_IN_BUSY: &str = "Codex sign-in is unavailable until active and queued
 
 pub(super) struct PendingSignIn {
     finish: BoxFuture<'static, Result<(), ChatGptError>>,
+}
+
+pub(super) struct SignInControl {
     cancel: CancellationToken,
     url: String,
 }
 
-impl PendingSignIn {
+impl SignInControl {
     pub(super) fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -51,6 +54,12 @@ pub(super) async fn signed_in(slot: &mut Option<PendingSignIn>) -> Result<(), Ch
 impl ControllerState {
     pub(crate) fn provider_busy(&self) {
         self.notice(NoticeTone::Neutral, PROVIDER_TOPIC, PROVIDER_BUSY);
+    }
+
+    pub(super) fn steer_sign_in(&self, steer: impl FnOnce(&SignInControl)) {
+        if let Some(control) = &self.sign_in {
+            steer(control);
+        }
     }
 
     pub(crate) fn sign_in_busy(&self, provider: &str) {
@@ -94,14 +103,13 @@ impl Controller {
         }
     }
 
-    pub(super) fn steer_sign_in(&self, steer: impl FnOnce(&PendingSignIn)) {
-        if let Some(pending) = &self.sign_in {
-            steer(pending);
-        }
+    pub(super) fn signing_in(&self) -> bool {
+        self.sign_in.is_some()
     }
 
     pub(super) async fn finish_sign_in(&mut self, result: Result<(), ChatGptError>) {
         self.sign_in = None;
+        self.state.sign_in = None;
         self.state.emit(UiEvent::SignInEnded);
         match result {
             Ok(()) => {
@@ -109,10 +117,13 @@ impl Controller {
                     .then(|| self.state.model.clone());
                 self.switch(ProviderId::Codex, Intent::AfterSignIn(current.as_deref()))
                     .await;
+                if self.state.setup.provider() != ProviderId::Codex {
+                    self.drop_waiting_prompts();
+                }
             }
-            Err(ChatGptError::Cancelled) => self.drop_held_prompts(),
+            Err(ChatGptError::Cancelled) => self.drop_waiting_prompts(),
             Err(error) => {
-                self.drop_held_prompts();
+                self.drop_waiting_prompts();
                 self.state.emit(UiEvent::Notice {
                     notice: sign_in_notice(error),
                 });
@@ -121,7 +132,13 @@ impl Controller {
     }
 
     pub(super) fn drop_held_prompts(&mut self) {
-        if self.state.setup.login() == Login::Missing && self.state.worker.has_waiting_prompts() {
+        if self.state.setup.login() == Login::Missing {
+            self.drop_waiting_prompts();
+        }
+    }
+
+    fn drop_waiting_prompts(&mut self) {
+        if self.state.worker.has_waiting_prompts() {
             self.state.worker.clear();
             self.state.emit(UiEvent::HeldPromptDropped);
         }
@@ -211,10 +228,9 @@ impl Controller {
         }
         let cancel = CancellationToken::new();
         let stop = cancel.clone();
+        self.state.sign_in = Some(SignInControl { cancel, url });
         self.sign_in = Some(PendingSignIn {
             finish: Box::pin(async move { sign_in.finish(&stop).await }),
-            cancel,
-            url,
         });
     }
 

@@ -47,7 +47,7 @@ use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
 
 mod provider_switch;
-use provider_switch::{PendingSignIn, signed_in};
+use provider_switch::{PendingSignIn, SignInControl, signed_in};
 mod sign_out;
 
 pub(crate) type Emit = Arc<dyn Fn(UiEvent) + Send + Sync>;
@@ -80,6 +80,7 @@ pub(crate) struct ControllerState {
     mcp: Option<McpHost>,
     menu_settings: MenuSettings,
     shown_controls: ModelControls,
+    sign_in: Option<SignInControl>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,8 +312,11 @@ impl ControllerState {
     }
 
     fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
-        if self.setup.login() == Login::Missing {
+        let signed_out = self.setup.login() == Login::Missing;
+        if signed_out {
             self.refuse_signed_out();
+        }
+        if signed_out || self.sign_in.is_some() {
             self.emit(UiEvent::PromptHeld);
         }
         let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
@@ -551,6 +555,7 @@ impl Controller {
             context_to_compact: false,
             mcp,
             shown_controls: setup_controls,
+            sign_in: None,
         };
         if let Some(approvals) = state.setup.approvals() {
             approvals.attach(Arc::clone(&state.emit));
@@ -642,7 +647,7 @@ impl Controller {
     }
 
     fn next_runnable_prompt(&mut self) -> Option<QueuedPrompt> {
-        if self.installation.is_some() || self.state.login_missing() {
+        if self.installation.is_some() || self.state.login_missing() || self.signing_in() {
             return None;
         }
         let prompt = self.state.worker.take_next()?;
@@ -688,8 +693,8 @@ impl Controller {
                 UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
                 UiCommand::SignIn { provider } => self.choose_login(&provider).await,
-                UiCommand::ReopenSignIn => self.steer_sign_in(PendingSignIn::reopen),
-                UiCommand::CancelSignIn => self.steer_sign_in(PendingSignIn::cancel),
+                UiCommand::ReopenSignIn => self.state.steer_sign_in(SignInControl::reopen),
+                UiCommand::CancelSignIn => self.state.steer_sign_in(SignInControl::cancel),
                 UiCommand::RetryHeldPrompt => self.retry_held_prompt().await,
                 UiCommand::DropHeldPrompt => self.drop_held_prompts(),
                 UiCommand::SelectModel {
@@ -1391,6 +1396,8 @@ fn run_deferred(
         UiCommand::ListModels => return catalog.request(),
         UiCommand::SelectProvider { .. } => return state.provider_busy(),
         UiCommand::SignIn { provider } => return state.sign_in_busy(&provider),
+        UiCommand::ReopenSignIn => return state.steer_sign_in(SignInControl::reopen),
+        UiCommand::CancelSignIn => return state.steer_sign_in(SignInControl::cancel),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::StepSetting { setting, delta } => {
@@ -1407,8 +1414,6 @@ fn run_deferred(
         | UiCommand::ResumeSession { .. }
         | UiCommand::CloseSessionPicker => return refuse_session_command(state, command),
         UiCommand::Submit { .. }
-        | UiCommand::ReopenSignIn
-        | UiCommand::CancelSignIn
         | UiCommand::RetryHeldPrompt
         | UiCommand::DropHeldPrompt
         | UiCommand::Cancel { .. }
@@ -5458,6 +5463,80 @@ mod tests {
         assert!(!harness.home.path().join("data/chatgpt-auth.json").exists());
         assert_eq!(saved_settings(&harness)["provider"], "local");
         assert!(auth.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_sent_before_the_sign_in_screen_waits_behind_it_and_is_dropped_on_cancel() {
+        let auth = FakeServer::start([]);
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let local = FakeServer::start([Reply::held_sse(&chat_text_events(&["partial\n"])[..2])]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("local", &local, &other);
+        let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
+        harness.send(select_provider("codex"));
+        harness.submit("hello");
+        within(harness.until(sign_in_started)).await;
+        let held = within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+        assert!(notice_body(held).is_empty());
+        harness.send(UiCommand::CancelSignIn);
+        let dropped = within(harness.until(|event| *event == UiEvent::HeldPromptDropped)).await;
+        assert!(dropped.contains(&UiEvent::SignInEnded));
+        assert!(
+            !dropped
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnStarted { .. }))
+        );
+        assert!(local.requests().is_empty());
+        assert_eq!(saved_settings(&harness)["provider"], "local");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_sent_before_the_sign_in_screen_runs_on_codex_once_signed_in() {
+        let auth = FakeServer::start([granted_tokens()]);
+        let codex = FakeServer::start([codex_text("signed in")]);
+        let catalog = codex_catalog(false, 2);
+        let local = FakeServer::start([]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("local", &local, &other);
+        let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
+        harness.send(select_provider("codex"));
+        harness.submit("hello");
+        let started = within(harness.until(sign_in_started)).await;
+        let url = sign_in_url(started);
+        within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        within(harness.until(finished(TurnOutcome::Completed))).await;
+        browser.join().unwrap();
+        assert!(local.requests().is_empty());
+        let request = codex.requests()[0].json();
+        assert_eq!(request["model"], CODEX_MODEL);
+        assert!(request.to_string().contains("hello"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_cancelled_during_typed_ahead_compaction_ends_once_it_stops() {
+        let auth = FakeServer::start([]);
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let local = tool_work_then_chat(held_summary(), &[]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("local", &local, &other);
+        let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.send(select_provider("codex"));
+        harness.command("/compact");
+        within(harness.until(sign_in_started)).await;
+        summary_requested(&local).await;
+        harness.send(UiCommand::CancelSignIn);
+        harness.send(UiCommand::CancelCompaction);
+        let ended = within(harness.until(|event| *event == UiEvent::SignInEnded)).await;
+        assert_eq!(
+            activities(ended).last(),
+            Some(&CompactionActivity::Ended(CompactionEnd::Cancelled))
+        );
+        assert!(auth.requests().is_empty());
+        assert_eq!(saved_settings(&harness)["provider"], "local");
     }
 
     #[tokio::test]
