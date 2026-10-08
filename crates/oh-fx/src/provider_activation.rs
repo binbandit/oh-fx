@@ -26,7 +26,7 @@ impl Profile {
         Self {
             paths: ProfilePaths::from_environment(),
             workspace: env::current_dir().and_then(fs::canonicalize),
-            endpoints: SubscriptionEndpoints::default(),
+            endpoints: SubscriptionEndpoints::from_environment(),
             lookup: |name| env::var(name).ok(),
         }
     }

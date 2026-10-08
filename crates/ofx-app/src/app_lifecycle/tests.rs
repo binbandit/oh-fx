@@ -243,6 +243,7 @@ fn run_a_codex_session(home: &Path) -> ! {
                 web_fetch_progress: None,
                 mode: None,
                 permission_prompts: false,
+                open_browser: false,
             },
             &CancellationToken::new(),
         ))
@@ -507,6 +508,7 @@ fn run_a_local_install_session(home: &Path) -> ! {
                 endpoints: SubscriptionEndpoints::default(),
                 web_fetch_progress: None,
                 permission_prompts: false,
+                open_browser: false,
             },
             &CancellationToken::new(),
         ))

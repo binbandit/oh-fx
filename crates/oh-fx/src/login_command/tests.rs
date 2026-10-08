@@ -239,6 +239,7 @@ async fn saved_codex_request() {
                 web_fetch_progress: None,
                 permission_prompts: false,
                 mode: None,
+                open_browser: false,
                 endpoints: ofx_app::SubscriptionEndpoints {
                     chatgpt: ofx_auth::ChatGptEndpoints {
                         issuer: auth.base_url(),

@@ -224,6 +224,8 @@ impl Shell<'_> {
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
+            UiEvent::SignInStarted { url } => self.sign_in_started(url),
+            UiEvent::SignInEnded => self.sign_in = None,
             UiEvent::LoginChanged { missing } => self.options.login_missing = missing,
             UiEvent::PromptHeld => self.prompt_held(),
             UiEvent::HeldPromptDropped => self.held_prompt_dropped(),

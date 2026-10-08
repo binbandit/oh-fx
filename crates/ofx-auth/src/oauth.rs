@@ -189,6 +189,34 @@ pub(crate) fn optional_positive_integer(
         .transpose()
 }
 
+pub(crate) fn is_loopback_http_url(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "http"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && !value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        && value
+            .split_once("://")
+            .and_then(|(_, tail)| tail.split(['/', '?', '#']).next())
+            .is_some_and(|authority| {
+                !authority.contains('@')
+                    && authority.rsplit_once(':').is_some_and(|(_, port)| {
+                        !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+}
+
+pub fn loopback_override(variable: &str) -> Option<String> {
+    std::env::var(variable)
+        .ok()
+        .filter(|value| is_loopback_http_url(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

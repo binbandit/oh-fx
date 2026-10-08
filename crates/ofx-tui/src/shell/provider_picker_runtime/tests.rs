@@ -78,6 +78,32 @@ fn typing_the_command_opens_the_provider_column_under_its_argument() {
 }
 
 #[test]
+fn the_login_column_signs_in_where_the_provider_and_setup_columns_switch() {
+    for (typed, sent) in [
+        (&b"/Login cod\r"[..], "SignIn codex"),
+        (b"/login portkey\r", "SignIn portkey"),
+        (b"/provider cod\r", "SelectProvider codex"),
+        (b"/setup cod\r", "SelectProvider codex"),
+    ] {
+        let mut test = TestShell::start();
+        press(&mut test, typed);
+        let commands: Vec<String> = test
+            .sent()
+            .into_iter()
+            .filter_map(|command| match command {
+                UiCommand::SignIn { provider } => Some(format!("SignIn {provider}")),
+                UiCommand::SelectProvider { provider } => {
+                    Some(format!("SelectProvider {provider}"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commands, [sent], "{typed:?}");
+        assert_eq!(test.shell.composer.text(), "");
+    }
+}
+
+#[test]
 fn tab_completes_the_highlighted_provider_and_keeps_the_typed_command() {
     let mut test = TestShell::start();
     press(&mut test, b" /SETUP ");

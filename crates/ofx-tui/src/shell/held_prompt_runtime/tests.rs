@@ -1,5 +1,6 @@
-use ofx_contract::{Notice, NoticeTone, TurnId, UiCommand, UiEvent};
+use ofx_contract::{Notice, NoticeTone, TurnId, TurnOutcome, UiCommand, UiEvent};
 
+use crate::shell::SubmissionState;
 use crate::shell::test_shell::TestShell;
 
 const SIGNED_OUT: &str = "Codex needs a subscription login. Run /login, open Connections, then choose Codex subscription.";
@@ -63,6 +64,117 @@ fn ctrl_c_drops_a_held_prompt_and_keeps_the_draft() {
     assert!(test.screen().contains("press ctrl+c again to exit"));
     press(&mut test, b"\r");
     assert_eq!(submitted(&test), ["fix the tests", "draft"]);
+}
+
+fn typed_ahead_of_a_sign_in(test: &mut TestShell) {
+    press(test, b"/login cod\r");
+    press(test, b"first\r");
+    press(test, b"second\r");
+    assert_eq!(submitted(test), ["first", "second"]);
+    test.deliver(UiEvent::SignInStarted {
+        url: "https://auth.example/oauth/authorize?state=s".to_owned(),
+    });
+    test.deliver(UiEvent::PromptHeld);
+    test.deliver(UiEvent::PromptHeld);
+}
+
+fn states(test: &TestShell) -> Vec<(String, SubmissionState, Option<TurnId>)> {
+    test.shell
+        .outstanding
+        .iter()
+        .map(|submission| {
+            (
+                submission.prompt.clone(),
+                submission.state,
+                submission.turn_id,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn every_prompt_typed_ahead_of_a_sign_in_is_dropped_with_it() {
+    for cancelled in [true, false] {
+        let mut test = TestShell::start();
+        typed_ahead_of_a_sign_in(&mut test);
+        assert_eq!(
+            states(&test),
+            [
+                ("first".to_owned(), SubmissionState::Held, None),
+                ("second".to_owned(), SubmissionState::Held, None),
+            ]
+        );
+        if cancelled {
+            press(&mut test, b"\x1b[27u");
+            assert_eq!(test.sent().last(), Some(&UiCommand::CancelSignIn));
+        }
+        test.deliver(UiEvent::SignInEnded);
+        if !cancelled {
+            test.deliver(UiEvent::Notice {
+                notice: Notice::new(
+                    NoticeTone::Error,
+                    "auth",
+                    "Codex sign-in failed. The current credential is unchanged.",
+                ),
+            });
+        }
+        test.deliver(UiEvent::HeldPromptDropped);
+        assert!(test.shell.outstanding.is_empty(), "{:?}", states(&test));
+        assert!(test.shell.turn.is_none());
+        test.submit("next");
+        test.deliver(UiEvent::TurnStarted {
+            turn_id: TurnId::new(1),
+        });
+        assert_eq!(
+            states(&test),
+            [(
+                "next".to_owned(),
+                SubmissionState::Active,
+                Some(TurnId::new(1))
+            )]
+        );
+    }
+}
+
+#[test]
+fn prompts_typed_ahead_of_a_sign_in_start_in_order_once_it_switches() {
+    let mut test = TestShell::start();
+    typed_ahead_of_a_sign_in(&mut test);
+    test.deliver(UiEvent::SignInEnded);
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    assert_eq!(
+        states(&test),
+        [
+            (
+                "first".to_owned(),
+                SubmissionState::Active,
+                Some(TurnId::new(1))
+            ),
+            ("second".to_owned(), SubmissionState::Held, None),
+        ]
+    );
+    test.deliver(UiEvent::TurnFinished {
+        turn_id: TurnId::new(1),
+        outcome: TurnOutcome::Completed,
+    });
+    assert_eq!(
+        states(&test),
+        [("second".to_owned(), SubmissionState::Held, None)]
+    );
+    assert!(test.shell.turn.is_none());
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(2),
+    });
+    assert_eq!(
+        states(&test),
+        [(
+            "second".to_owned(),
+            SubmissionState::Active,
+            Some(TurnId::new(2))
+        )]
+    );
 }
 
 #[test]

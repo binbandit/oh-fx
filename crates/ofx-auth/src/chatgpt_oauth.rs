@@ -141,6 +141,23 @@ pub struct ChatGptEndpoints {
     pub callback_ports: Vec<u16>,
 }
 
+const ISSUER_OVERRIDE: &str = "OH_FX_E2E_CHATGPT_ISSUER_URL";
+const TOKEN_OVERRIDE: &str = "OH_FX_E2E_CHATGPT_TOKEN_URL";
+
+impl ChatGptEndpoints {
+    pub fn from_environment() -> Self {
+        let mut endpoints = Self::default();
+        if let Some(issuer) = oauth::loopback_override(ISSUER_OVERRIDE) {
+            endpoints.issuer = issuer;
+            endpoints.callback_ports = vec![0];
+        }
+        if let Some(token_url) = oauth::loopback_override(TOKEN_OVERRIDE) {
+            endpoints.token_url = token_url;
+        }
+        endpoints
+    }
+}
+
 impl Default for ChatGptEndpoints {
     fn default() -> Self {
         Self {
@@ -171,12 +188,7 @@ impl ChatGptOAuth {
         })
     }
 
-    pub async fn run_login(
-        &self,
-        output: &mut (dyn Write + Send),
-        open_browser: bool,
-        cancel: &CancellationToken,
-    ) -> Result<(), ChatGptError> {
+    pub async fn start_sign_in(&self) -> Result<ChatGptSignIn, ChatGptError> {
         self.store.require_sign_in_storage()?;
         let listener = CallbackListener::bind(&self.endpoints.callback_ports)
             .await
@@ -187,33 +199,40 @@ impl ChatGptOAuth {
         let redirect_uri = callback_redirect_uri(listener.port());
         let code_verifier = random_url_safe_secret()?;
         let state = random_url_safe_secret()?;
-        let authorization_url = build_browser_authorization_url(
+        let url = build_browser_authorization_url(
             &self.endpoints.issuer,
             &redirect_uri,
             &pkce_challenge(code_verifier.expose()),
             state.expose(),
         );
+        Ok(ChatGptSignIn {
+            oauth: self.clone(),
+            listener,
+            redirect_uri,
+            code_verifier,
+            state,
+            url,
+        })
+    }
+
+    pub async fn run_login(
+        &self,
+        output: &mut (dyn Write + Send),
+        open_browser: bool,
+        cancel: &CancellationToken,
+    ) -> Result<(), ChatGptError> {
+        let sign_in = self.start_sign_in().await?;
+        let url = sign_in.authorization_url();
         write!(
             output,
-            "Open this URL to sign in with Codex:\n{authorization_url}\n\nWaiting for browser authorization...\n"
+            "Open this URL to sign in with Codex:\n{url}\n\nWaiting for browser authorization...\n"
         )
         .and_then(|()| output.flush())
         .map_err(|_| ChatGptError::WriteFailed)?;
         if open_browser {
-            url_opener::open_url(&authorization_url);
+            url_opener::open_url(url);
         }
-        let login = BrowserLogin {
-            listener: &listener,
-            redirect_uri: &redirect_uri,
-            code_verifier: &code_verifier,
-            state,
-        };
-        tokio::time::timeout(
-            BROWSER_LOGIN_TIMEOUT,
-            self.finish_browser_login(login, cancel),
-        )
-        .await
-        .map_err(|_| ChatGptError::LoginTimedOut)?
+        sign_in.finish(cancel).await
     }
 
     pub async fn logout(&self) -> Result<DeleteOutcome, ChatGptError> {
@@ -388,6 +407,36 @@ impl ChatGptOAuth {
             });
         }
         parse_refresh_token_response(&response.body)
+    }
+}
+
+pub struct ChatGptSignIn {
+    oauth: ChatGptOAuth,
+    listener: CallbackListener,
+    redirect_uri: String,
+    code_verifier: Secret,
+    state: Secret,
+    url: String,
+}
+
+impl ChatGptSignIn {
+    pub fn authorization_url(&self) -> &str {
+        &self.url
+    }
+
+    pub async fn finish(self, cancel: &CancellationToken) -> Result<(), ChatGptError> {
+        let login = BrowserLogin {
+            listener: &self.listener,
+            redirect_uri: &self.redirect_uri,
+            code_verifier: &self.code_verifier,
+            state: self.state.clone(),
+        };
+        tokio::time::timeout(
+            BROWSER_LOGIN_TIMEOUT,
+            self.oauth.finish_browser_login(login, cancel),
+        )
+        .await
+        .map_err(|_| ChatGptError::LoginTimedOut)?
     }
 }
 

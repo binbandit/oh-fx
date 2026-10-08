@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
+use crate::model_cache_runtime::ModelSource;
 use crate::tool_set::{self, ToolHooks};
 
 const SAVED_TOKEN: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
@@ -437,18 +438,16 @@ async fn a_subscription_signed_out_sends_nothing_with_its_login() {
         ..subscription_endpoints(&auth, &codex)
     };
     let subscription = fixture.subscription(endpoints).await.expect("subscription");
-    let login = Arc::clone(&subscription.login);
-    let provider = SubscriptionProvider::new(subscription.provider, Arc::clone(&login));
+    let login = Arc::new(CodexLogin::default());
+    login.sign_in(Arc::new(subscription));
+    let provider = SubscriptionProvider::new(Arc::clone(&login));
     let mut agent = fixture.agent_on(Arc::new(provider), agent_config(MODEL, None, false));
     login.sign_out();
     let (report, _) = run(&mut agent, "Hello").await;
     assert_eq!(report.outcome, TurnOutcome::Failed, "{report:?}");
-    assert!(
-        subscription
-            .capabilities
-            .listed(&CancellationToken::new())
-            .await
-            .is_err()
+    assert_eq!(
+        ModelSource::Codex(Arc::clone(&login)).catalog().await,
+        ofx_contract::ModelCatalog::Failed { retry: None }
     );
     assert!(codex.requests().is_empty());
     assert!(catalog.requests().is_empty());

@@ -278,7 +278,7 @@ pub(crate) fn run_prompt(args: &AskArgs, prompt: &str, modifiers: &LaunchModifie
             args,
             prompt,
             modifiers,
-            SubscriptionEndpoints::default(),
+            SubscriptionEndpoints::from_environment(),
         )),
         Err(_) => Failure::code("RuntimeUnavailable").report(args.output.json),
     }
@@ -502,6 +502,7 @@ async fn prepare_agent(
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
         mode: Some(default_mode()),
         permission_prompts: permission_prompts_allowed(args),
+        open_browser: false,
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending
@@ -1074,6 +1075,8 @@ impl Presenter {
             | UiEvent::ModelCatalog { .. }
             | UiEvent::ProviderPicker { .. }
             | UiEvent::ProviderSelected { .. }
+            | UiEvent::SignInStarted { .. }
+            | UiEvent::SignInEnded
             | UiEvent::LoginChanged { .. }
             | UiEvent::PromptHeld
             | UiEvent::HeldPromptDropped
@@ -1100,14 +1103,11 @@ impl Presenter {
             | UiEvent::RecoveryContinuing { .. }
             | UiEvent::ExitRequested => Ok(()),
         };
-        match written {
-            Ok(()) => true,
-            Err(error) => {
-                self.write_error
-                    .get_or_insert(crate::write_error_name(&error));
-                false
-            }
+        if let Err(error) = &written {
+            self.write_error
+                .get_or_insert(crate::write_error_name(error));
         }
+        written.is_ok()
     }
 
     fn assistant_text(&mut self, text: &str) -> io::Result<()> {

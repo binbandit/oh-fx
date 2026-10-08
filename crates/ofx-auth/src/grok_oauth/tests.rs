@@ -1,4 +1,5 @@
 use super::*;
+use crate::oauth::is_loopback_http_url;
 use tokio_util::sync::CancellationToken;
 
 #[test]

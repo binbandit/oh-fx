@@ -153,10 +153,11 @@ async fn bootstrap(
                 context_limits: modifiers.context_limit_overrides(),
                 command_timeout: None,
                 executions: &executions,
-                endpoints: SubscriptionEndpoints::default(),
+                endpoints: SubscriptionEndpoints::from_environment(),
                 web_fetch_progress: None,
                 mode: None,
                 permission_prompts: false,
+                open_browser: ofx_auth::browser_allowed(),
             },
             &CancellationToken::new(),
         )

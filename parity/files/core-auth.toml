@@ -25,7 +25,7 @@ note = "Loopback GET callback validation and success/failure HTML responses exis
 upstream = "src/core/auth/chatgpt_oauth.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/chatgpt_oauth.rs"]
-note = "Browser PKCE login, callback validation, token refresh and session retirement exist; upstream per-operation auth trace diagnostics are absent."
+note = "Browser PKCE login started and finished separately, callback validation, token refresh, session retirement and the loopback test endpoints exist; upstream per-operation auth trace diagnostics are absent."
 
 [[file]]
 upstream = "src/core/auth/chatgpt_session.zig"

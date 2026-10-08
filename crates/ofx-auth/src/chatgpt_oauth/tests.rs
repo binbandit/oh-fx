@@ -491,3 +491,57 @@ async fn non_json_successful_refresh_keeps_the_session() {
     );
     assert!(saved_session(&oauth).await.is_some());
 }
+
+fn browser_redirect(url: &str, code: &str) -> String {
+    let query = url.split_once('?').unwrap().1;
+    let redirect = oauth::query_value(query, "redirect_uri").unwrap();
+    let state = oauth::query_value(query, "state").unwrap();
+    let address = redirect.strip_prefix("http://").unwrap();
+    let (port, path) = address.split_once(':').unwrap().1.split_once('/').unwrap();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port.parse().unwrap())).unwrap();
+    let state = state.as_str();
+    let request =
+        format!("GET /{path}?code={code}&state={state} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = std::io::Read::read_to_string(&mut stream, &mut response);
+    response
+}
+
+#[tokio::test]
+async fn a_started_sign_in_offers_its_url_then_saves_what_its_callback_authorizes() {
+    let tokens = serde_json::json!({
+        "access_token": account_token("acct_browser"),
+        "refresh_token": "refresh-browser",
+        "expires_in": 3600,
+    });
+    let server = FakeServer::start([Reply::status(200, tokens.to_string())]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().to_owned());
+    let sign_in = oauth.start_sign_in().await.unwrap();
+    let url = sign_in.authorization_url().to_owned();
+    assert!(
+        url.starts_with(&format!("{}/oauth/authorize?", server.base_url())),
+        "{url}"
+    );
+    assert!(saved_session(&oauth).await.is_none());
+    let browser = std::thread::spawn(move || browser_redirect(&url, "granted"));
+    sign_in.finish(&CancellationToken::new()).await.unwrap();
+    assert!(browser.join().unwrap().starts_with("HTTP/1.1 200"));
+    let session = saved_session(&oauth).await.unwrap();
+    assert_eq!(session.account_id, "acct_browser");
+    let exchange = server.requests()[0].body_text();
+    assert!(exchange.contains("code=granted"), "{exchange}");
+}
+
+#[tokio::test]
+async fn a_cancelled_sign_in_saves_nothing() {
+    let server = FakeServer::start([]);
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth_for(&server, directory.path().to_owned());
+    let sign_in = oauth.start_sign_in().await.unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert_eq!(sign_in.finish(&cancel).await, Err(ChatGptError::Cancelled));
+    assert!(saved_session(&oauth).await.is_none());
+}
