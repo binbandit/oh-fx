@@ -75,3 +75,14 @@ fn a_finished_sign_in_closes_its_screen() {
     press(&mut test, b"hi");
     assert_eq!(test.shell.composer.text(), "hi");
 }
+
+#[test]
+fn ctrl_o_leaves_the_sign_in_screen_without_opening_the_full_transcript() {
+    let mut test = TestShell::start();
+    open_sign_in(&mut test);
+    press(&mut test, b"\x0f");
+    assert!(!test.written().contains("\x1b[?1049h"));
+    assert!(test.shell.full_transcript.is_none());
+    assert!(test.screen().contains("Sign in with Codex"));
+    assert!(test.sent().is_empty());
+}
