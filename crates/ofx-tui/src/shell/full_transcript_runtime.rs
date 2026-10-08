@@ -877,6 +877,38 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_held_for_a_login_waits_behind_the_viewer_as_upstream_leaves_it() {
+        use ofx_contract::{Notice, NoticeTone, UiCommand, UiEvent};
+
+        let mut test = TestShell::start_with(|options| options.login_missing = true);
+        test.submit("fix the tests");
+        test.screen();
+        test.type_bytes(b"\x0f");
+        test.step();
+        test.deliver(UiEvent::Notice {
+            notice: Notice::new(NoticeTone::Warning, "auth", "Codex needs a login."),
+        });
+        test.deliver(UiEvent::PromptHeld);
+        let screen = test.screen();
+        assert!(screen.contains("! auth: Codex needs a login."), "{screen}");
+        assert!(
+            screen.lines().last().unwrap().starts_with("run /login"),
+            "{screen}"
+        );
+        test.type_bytes(b"\r");
+        test.step();
+        assert_eq!(test.sent().last(), Some(&UiCommand::RetryHeldPrompt));
+        assert!(test.shell.full_transcript.is_some());
+        test.type_bytes(b"\x03");
+        test.step();
+        assert!(test.shell.full_transcript.is_none());
+        assert_eq!(test.sent().last(), Some(&UiCommand::RetryHeldPrompt));
+        test.type_bytes(b"\x03");
+        test.step();
+        assert_eq!(test.sent().last(), Some(&UiCommand::DropHeldPrompt));
+    }
+
+    #[test]
     fn typing_cancels_a_pending_open_without_losing_the_draft() {
         let mut test = TestShell::start();
         test.screen();
