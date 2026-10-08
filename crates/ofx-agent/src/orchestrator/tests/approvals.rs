@@ -611,16 +611,8 @@ async fn a_parallel_group_is_admitted_whole_before_any_of_its_calls_runs() {
             completion(
                 None,
                 vec![
-                    ToolCall {
-                        id: ToolCallId::new("call-1"),
-                        name: "flag".to_owned(),
-                        arguments: r#"{"first":1}"#.to_owned(),
-                    },
-                    ToolCall {
-                        id: ToolCallId::new("call-2"),
-                        name: "flag".to_owned(),
-                        arguments: r#"{"outside":2}"#.to_owned(),
-                    },
+                    ToolCall::new("call-1", "flag", r#"{"first":1}"#),
+                    ToolCall::new("call-2", "flag", r#"{"outside":2}"#),
                 ],
                 FinishReason::ToolCalls,
             ),
@@ -632,7 +624,7 @@ async fn a_parallel_group_is_admitted_whole_before_any_of_its_calls_runs() {
         spec: ToolSpec {
             name: "flag".to_owned(),
             description: "Flag.".to_owned(),
-            input_schema: r#"{"type":"object"}"#,
+            input_schema: r#"{"type":"object"}"#.into(),
         },
         ran: Arc::clone(&ran),
     });
