@@ -45,7 +45,7 @@ pub(crate) fn run(
         Ok(published) if published.ok => {
             match crate::write_stdout(&format!("{}\n", published.text)) {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(error) => error_name(cli_ask::write_error_name(&error)),
+                Err(error) => error_name(crate::write_error_name(&error)),
             }
         }
         Ok(published) => fail(command, &published.text),
