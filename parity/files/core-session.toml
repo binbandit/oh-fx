@@ -131,7 +131,7 @@ note = "Classification of the layout upstream writes today exists; schema-v3 and
 upstream = "src/core/session/session_display_metadata.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_display_metadata.rs"]
-note = "Display-title derivation exists; the display.json sidecar belongs to the schema-v3 layout and is not needed for the reason in session_migration's row (NEW-G), and the first-prompt preview and image-only fallback remain (OH-41)."
+note = "Display-title derivation exists; the display.json sidecar belongs to the schema-v3 layout and the bounded first-prompt preview to legacy snapshot summaries, neither of which is needed for the reason in session_migration's row (NEW-G), and the image-only fallback remains."
 
 [[file]]
 upstream = "src/core/session/session_event.zig"
@@ -200,9 +200,8 @@ note = "The legacy snapshot ceilings and migration results are not needed for th
 
 [[file]]
 upstream = "src/core/session/session_summary_codec.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-session/src/session_summary_codec.rs"]
-note = "Resumable pagination/filtering and ordering exist; the separate sessionListPageFromSummaries all-session listing is missing."
 
 [[file]]
 upstream = "src/core/session/session_title_generation.zig"

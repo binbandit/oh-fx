@@ -39,6 +39,28 @@ pub(crate) fn sort_summaries_newest_first(summaries: &mut [SessionSummary]) {
     });
 }
 
+pub(crate) fn listed_page_from_summaries(
+    summaries: &[SessionSummary],
+    workspace_root: Option<&str>,
+    continuation: Option<&ResumeContinuation>,
+    limit: usize,
+) -> ResumablePage {
+    let mut page = ResumablePage::default();
+    for summary in summaries {
+        if workspace_root.is_some_and(|root| summary.workspace_root != root)
+            || continuation.is_some_and(|position| !summary_follows(summary, position))
+        {
+            continue;
+        }
+        if page.summaries.len() >= limit {
+            page.has_more = true;
+            break;
+        }
+        page.summaries.push(summary.clone());
+    }
+    page
+}
+
 pub(crate) fn resumable_page_from_summaries(
     summaries: &[SessionSummary],
     workspace_root: Option<&str>,
