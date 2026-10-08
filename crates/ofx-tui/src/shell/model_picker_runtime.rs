@@ -99,6 +99,7 @@ impl Shell<'_> {
             || self.help_menu.is_some()
             || self.picker.is_some()
             || self.settings_menu.is_some()
+            || self.full_transcript_open()
         {
             return;
         }
