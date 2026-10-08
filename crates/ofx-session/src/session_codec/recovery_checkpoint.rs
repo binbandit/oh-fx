@@ -209,6 +209,7 @@ impl SavedToolStep {
                     status: result.status,
                     model_view_covers_full_file: false,
                     process: result.process,
+                    permission_feedback: Vec::new(),
                 })
                 .collect(),
         }

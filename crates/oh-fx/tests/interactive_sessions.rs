@@ -424,6 +424,56 @@ fn a_shell_saves_its_turns_and_continue_reopens_them_in_the_scrollback() {
 }
 
 #[test]
+fn approval_feedback_is_saved_on_its_result_and_resumed_after_it() {
+    let read = chat_tool_call_events("call-1", "read_file", r#"{"path":"../notes.txt"}"#);
+    let server = FakeServer::start([
+        Reply::sse(&read),
+        Reply::sse(&chat_text_events(&["Summarized."])),
+        Reply::sse(&chat_text_events(&["Again."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    fs::write(home.root.join("notes.txt"), "outside notes\n").expect("write the outside file");
+    let session = home.shell(&[], WELCOME);
+    session.send(b"read the notes\r");
+    wait(&session, "Permission needed · Choose one");
+    session.send(b"\t");
+    wait(&session, "1. Yes, and tell oh-fx what to do next");
+    session.send(b"then summarize them");
+    wait(&session, "1. Yes, then summarize them");
+    std::thread::sleep(Duration::from_millis(700));
+    session.send(b"\r");
+    wait(&session, "Summarized.");
+    exit(session);
+    let id = home.only_session();
+    let frames = home.frames(&id);
+    let result = frames
+        .iter()
+        .find_map(|frame| frame["event"].get("tool_result"))
+        .expect("a saved tool result");
+    assert_eq!(
+        result["permission_feedback"],
+        json!(["then summarize them"])
+    );
+
+    let session = home.shell(&["-c"], "session resumed: read the notes");
+    let screen = wait(&session, "Summarized.");
+    assert!(screen.contains("┃ then summarize them"), "{screen}");
+    session.send(b"again\r");
+    wait(&session, "Again.");
+    exit(session);
+    let messages = chat(&server.requests()[2]);
+    let tool = messages
+        .iter()
+        .position(|(role, _)| role == "tool")
+        .expect("the tool result");
+    assert!(messages[tool].1.contains("outside notes"), "{messages:?}");
+    assert_eq!(
+        messages[tool + 1],
+        ("user".to_owned(), "then summarize them".to_owned())
+    );
+}
+
+#[test]
 fn a_shell_left_without_a_prompt_saves_nothing_and_continue_explains_why() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url());

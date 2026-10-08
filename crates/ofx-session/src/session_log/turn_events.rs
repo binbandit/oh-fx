@@ -150,6 +150,11 @@ fn step_events(
         event.preview = Some(preview(result.output).to_owned());
         event.created_at_ms = artifacts.timestamp_ms;
         event.command_process_presentation = result.process;
+        event.permission_feedback = result
+            .permission_feedback
+            .iter()
+            .map(|feedback| (*feedback).to_owned())
+            .collect();
         events.push(ConversationEvent::ToolResult(event));
     }
     Ok(())

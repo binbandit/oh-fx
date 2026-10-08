@@ -321,6 +321,52 @@ async fn messages_oh_fx_added_to_a_turn_reach_the_notes_request_as_notes() {
 }
 
 #[tokio::test]
+async fn permission_feedback_reaches_the_notes_request_as_a_note_after_its_results() {
+    let notes = "recorded notes ".repeat(400);
+    let history = vec![
+        ChatMessage::user("read the notes"),
+        assistant("", Some("notes")),
+        result("notes", &notes),
+        ChatMessage::permission_feedback(ToolCallId::new("notes"), "read the tests next"),
+        assistant("", Some("plan")),
+        result("plan", &notes),
+        assistant("Read them.", None),
+        ChatMessage::user("now rewrite them"),
+    ];
+    let starts = [0, 7];
+    let turns = history_turns(&history, &starts);
+    let mut model = Notes::default();
+    compact(
+        Request {
+            turns: &turns,
+            active: true,
+            earlier: None,
+            size: size(),
+            model: "m",
+            sends_after_conversation: false,
+        },
+        &mut model,
+        &mut |_| {},
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let asked = &model.prompts[0].0;
+    let feedback = asked
+        .find("[From oh-fx, not the user]\nPermission feedback: read the tests next\n\n")
+        .unwrap_or_else(|| panic!("{asked}"));
+    assert!(
+        asked.find("[Tool call T1: read_file]").unwrap() < feedback,
+        "{asked}"
+    );
+    assert!(
+        feedback < asked.find("[Tool call T2: read_file]").unwrap(),
+        "{asked}"
+    );
+}
+
+#[tokio::test]
 async fn steering_reaches_the_notes_request_as_a_user_message_added_while_the_turn_ran() {
     let notes = "recorded notes ".repeat(400);
     let history = vec![

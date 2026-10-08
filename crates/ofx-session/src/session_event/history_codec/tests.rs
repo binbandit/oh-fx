@@ -118,6 +118,7 @@ fn history_snapshot_codec_round_trips_every_event_kind() {
     result.preview = Some("first bytes".to_owned());
     result.provider_native = true;
     result.created_at_ms = 42;
+    result.permission_feedback = vec!["run the tests".to_owned(), "skip the docs".to_owned()];
     round_trip(&envelope(6, 6, ConversationEvent::ToolResult(result)));
     round_trip(&envelope(7, 7, steering("keep going")));
     round_trip(&envelope(

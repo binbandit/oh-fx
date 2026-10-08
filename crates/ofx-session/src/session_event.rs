@@ -179,7 +179,7 @@ pub struct ToolResultEvent {
     #[serde(default)]
     pub created_at_ms: i64,
     #[serde(default)]
-    permission_feedback: NoItems,
+    pub permission_feedback: Vec<String>,
     #[serde(default)]
     committed_file_presentation: Null,
     #[serde(default)]
@@ -214,7 +214,7 @@ impl ToolResultEvent {
             provider_native: false,
             review_feedback: False,
             created_at_ms: 0,
-            permission_feedback: NoItems,
+            permission_feedback: Vec::new(),
             committed_file_presentation: Null,
             command_replay_ref: Null,
             command_replay_bytes: Null,
@@ -645,6 +645,10 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
                     .as_ref()
                     .is_none_or(|preview| preview.len() <= MAX_PREVIEW_BYTES)
                 && result.created_at_ms >= 0
+                && result
+                    .permission_feedback
+                    .iter()
+                    .all(|feedback| feedback.len() <= MAX_TEXT_BYTES)
         }
         ConversationEvent::Interrupted(interrupted) => {
             interrupted

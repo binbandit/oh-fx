@@ -460,6 +460,43 @@ fn provider_fields_reject_what_upstream_rejects() {
 }
 
 #[test]
+fn tool_results_keep_their_permission_feedback_in_order() {
+    let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"permission_feedback\":";
+    let frame = format!("{base}[\"read the tests\",\"\",\"then stop\"]}}}}}}\n");
+    let Ok(ConversationEvent::ToolResult(result)) = decode(&frame) else {
+        panic!("{frame}");
+    };
+    assert_eq!(
+        result.permission_feedback,
+        ["read the tests", "", "then stop"]
+    );
+    let encoded = encode(1, &ConversationEvent::ToolResult(result.clone()));
+    assert!(
+        encoded.contains("\"permission_feedback\":[\"read the tests\",\"\",\"then stop\"]"),
+        "{encoded}"
+    );
+    assert_eq!(decode(&encoded), Ok(ConversationEvent::ToolResult(result)));
+    for invalid in ["[1]", "\"no\"", "[null]"] {
+        let frame = format!("{base}{invalid}}}}}}}\n");
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
+        );
+    }
+    let mut oversized = ToolResultEvent::new(
+        "c",
+        "t",
+        ToolResultStatus::Success,
+        "r",
+        0,
+        ArtifactCompleteness::Complete,
+    );
+    oversized.permission_feedback = vec!["x".repeat(MAX_TEXT_BYTES + 1)];
+    assert!(encode_conversation_frame(1, 1, &ConversationEvent::ToolResult(oversized)).is_err());
+}
+
+#[test]
 fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
     let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":";
     for event in [
@@ -471,7 +508,6 @@ fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
         "{\"interrupted\":{\"reason\":\"failed\",\"cancellation_origin\":0}}",
         "{\"interrupted\":{\"reason\":\"stopped\"}}",
         "{\"turn_completed\":{\"files\":[{\"path\":\"a\",\"tool_call_id\":\"c\"}]}}",
-        "{\"tool_result\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"status\":\"success\",\"artifact_ref\":\"r\",\"stored_bytes\":0,\"completeness\":\"complete\",\"permission_feedback\":[\"no\"]}}",
     ] {
         let frame = format!("{base}{event}}}\n");
         assert_eq!(

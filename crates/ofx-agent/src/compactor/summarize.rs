@@ -22,6 +22,7 @@ const MAX_INDEX_BYTES: usize = 240;
 const MAX_INDEX_DEPTH: usize = 4;
 const MIN_CLIP_BYTES: usize = 256;
 const QUESTION_TOOL: &str = "ask_user_question";
+const PERMISSION_FEEDBACK_PREFIX: &str = "Permission feedback: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolCall<'a> {
@@ -43,6 +44,7 @@ pub(crate) enum Item<'a> {
     User(&'a str),
     Assistant(&'a str),
     Note(&'a str),
+    PermissionFeedback(&'a str),
     ToolCall(ToolCall<'a>),
     ToolResult(ToolResult<'a>),
 }
@@ -164,7 +166,10 @@ fn kept_texts<'a>(kept: &[Turn<'a>]) -> Vec<&'a str> {
     kept.iter()
         .flat_map(|turn| {
             std::iter::once(turn.user).chain(turn.items.iter().map(|item| match item {
-                Item::User(text) | Item::Assistant(text) | Item::Note(text) => *text,
+                Item::User(text)
+                | Item::Assistant(text)
+                | Item::Note(text)
+                | Item::PermissionFeedback(text) => *text,
                 Item::ToolCall(call) => call.arguments,
                 Item::ToolResult(result) => result.output,
             }))
@@ -202,6 +207,10 @@ fn turn_tokens(turn: &Turn<'_>) -> usize {
         estimator.consume(" ");
         match item {
             Item::User(text) | Item::Assistant(text) | Item::Note(text) => {
+                estimator.consume(text);
+            }
+            Item::PermissionFeedback(text) => {
+                estimator.consume(PERMISSION_FEEDBACK_PREFIX);
                 estimator.consume(text);
             }
             Item::ToolCall(call) => {
@@ -659,7 +668,7 @@ fn prepare<'a>(
                     *next_tool += 1;
                 }
             }
-            Item::User(_) | Item::Assistant(_) | Item::Note(_) => {}
+            Item::User(_) | Item::Assistant(_) | Item::Note(_) | Item::PermissionFeedback(_) => {}
         }
     }
 
@@ -670,7 +679,10 @@ fn prepare<'a>(
         has_work |= match item {
             Item::User(_) => false,
             Item::Assistant(text) => !text.is_empty() && Some(index) != final_index,
-            Item::Note(_) | Item::ToolCall(_) | Item::ToolResult(_) => true,
+            Item::Note(_)
+            | Item::PermissionFeedback(_)
+            | Item::ToolCall(_)
+            | Item::ToolResult(_) => true,
         };
     }
 
@@ -741,6 +753,12 @@ fn write_item(
         Item::Assistant(_) => {}
         Item::Note(message) => {
             let _ = write!(text, "From oh-fx, not the user:\n{message}\n\n");
+        }
+        Item::PermissionFeedback(message) => {
+            let _ = write!(
+                text,
+                "From oh-fx, not the user:\n{PERMISSION_FEEDBACK_PREFIX}{message}\n\n"
+            );
         }
         Item::ToolCall(call) => {
             let index_line = index_line(call.arguments);
@@ -1052,6 +1070,7 @@ fn longest_text(plan: &Plan<'_>) -> usize {
         .flat_map(|turn| {
             let items = turn.source.items.iter().map(|item| match item {
                 Item::User(text) | Item::Assistant(text) | Item::Note(text) => text.len(),
+                Item::PermissionFeedback(text) => PERMISSION_FEEDBACK_PREFIX.len() + text.len(),
                 Item::ToolCall(call) => call.arguments.len(),
                 Item::ToolResult(result) => result.output.len(),
             });
@@ -1191,6 +1210,14 @@ fn render_transcript(plan: &Plan<'_>, clip: usize, earlier_clip: usize) -> (Stri
                         text,
                         "[From oh-fx, not the user]\n{}\n\n",
                         clipped(note, clip)
+                    );
+                }
+                Item::PermissionFeedback(feedback) => {
+                    let note = format!("{PERMISSION_FEEDBACK_PREFIX}{feedback}");
+                    let _ = write!(
+                        text,
+                        "[From oh-fx, not the user]\n{}\n\n",
+                        clipped(&note, clip)
                     );
                 }
                 Item::ToolCall(call) => {

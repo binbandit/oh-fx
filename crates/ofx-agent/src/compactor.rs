@@ -228,6 +228,12 @@ fn step_items<'a>(steps: &[ToolStep<'a>]) -> Vec<summarize::Item<'a>> {
                 failed: result.failed,
             })
         }));
+        items.extend(
+            step.results
+                .iter()
+                .flat_map(|result| &result.feedback)
+                .map(|feedback| summarize::Item::PermissionFeedback(feedback)),
+        );
     }
     items
 }
