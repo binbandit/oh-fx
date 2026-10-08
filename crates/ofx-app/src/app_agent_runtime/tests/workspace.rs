@@ -88,6 +88,7 @@ async fn connected(server: &FakeServer, directories: &[&Path]) -> (tempfile::Tem
                 web_fetch_progress: None,
                 mode: None,
                 permission_prompts: false,
+                open_browser: false,
             },
             &CancellationToken::new(),
         )
