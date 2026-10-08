@@ -3,7 +3,7 @@ use ofx_markdown::Event;
 use super::Shell;
 use crate::input::{Action, InputEvent, MouseWheel, ShortcutAction};
 use crate::render_engine::frame_layout::LiveLayout;
-use crate::render_engine::frame_sink::{Frame, FrameSink, LiveRegionRenderer};
+use crate::render_engine::frame_sink::{Frame, FrameSink, LiveRegionRenderer, SHOW_CURSOR};
 use crate::render_engine::transcript_blocks::{
     Entry, render_assistant_event, trailing_blank_lines,
 };
@@ -127,6 +127,9 @@ impl Shell<'_> {
             return Ok(());
         }
         self.output.push_str("\x1b[?1049l");
+        if self.renderer.cursor_row().is_some() {
+            self.output.push_str(SHOW_CURSOR);
+        }
         self.flush_output()?;
         if let Some(screen) = self.full_transcript.take()
             && (screen.primary_changed || screen.layout != self.layout)
@@ -573,6 +576,7 @@ mod tests {
         test.step();
         assert!(test.written().contains("\x1b[?1049l"));
         assert_eq!(test.screen(), before);
+        assert!(!test.cursor_hidden());
         assert!(test.sent().is_empty());
     }
 
@@ -611,6 +615,7 @@ mod tests {
                 assert!(!entered.contains(sequence), "{entered:?}");
                 assert!(!left.contains(sequence), "{left:?}");
             }
+            assert!(!test.cursor_hidden());
             assert!(test.sent().is_empty());
         }
     }
