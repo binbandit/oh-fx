@@ -120,7 +120,15 @@ fn parse_upgrade_args_accept_only_one_json_flag() {
 
 #[test]
 fn parse_session_list_args_supports_bounded_canonical_pagination() {
-    assert_eq!(parse_session_list(os(&[])).unwrap(), OutputFormat::Text);
+    assert_eq!(
+        parse_session_list(os(&[])).unwrap(),
+        SessionListArgs {
+            format: OutputFormat::Text,
+            scope: ListScope::CurrentWorkspace,
+            limit: 100,
+            cursor: None,
+        }
+    );
     assert_eq!(
         parse_session_list(os(&[
             "--json",
@@ -131,7 +139,24 @@ fn parse_session_list_args_supports_bounded_canonical_pagination() {
             "v1:20:session-a"
         ]))
         .unwrap(),
-        OutputFormat::Json
+        SessionListArgs {
+            format: OutputFormat::Json,
+            scope: ListScope::AllWorkspaces,
+            limit: 2,
+            cursor: Some(ResumeContinuation {
+                updated_at_ms: 20,
+                id: "session-a".to_owned()
+            }),
+        }
+    );
+    assert_eq!(
+        parse_session_list(os(&["--cursor", "v1:-5:x"]))
+            .unwrap()
+            .cursor,
+        Some(ResumeContinuation {
+            updated_at_ms: -5,
+            id: "x".to_owned()
+        })
     );
     for args in [
         &["--limit", "1_0"][..],
