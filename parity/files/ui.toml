@@ -104,13 +104,13 @@ note = "Question option/freeform panels, hints and resolution rows are implement
 upstream = "src/ui/footer/render_input.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs"]
-note = "Composer input rows exist; upstream prepared model, help, resume, MCP and settings menu projection adapters are absent."
+note = "Composer input rows and the session menu projection the resume picker draws exist; upstream prepared model, help, MCP and settings menu projection adapters are absent."
 
 [[file]]
 upstream = "src/ui/footer/resume_menu_presentation.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tui/src/footer/resume_menu_presentation.rs"]
-note = "Session rows with the right metadata cluster, header scope tabs, loading, empty, failure and refusal rows, load more and the row budgets exist; upstream's tests for long and shared-prefix titles when narrow, metadata width across windows and the three-row compact item are not ported."
+note = "Session rows with the right metadata cluster, header scope tabs, loading, empty, failure and refusal rows, load more and the row budgets pass upstream's tests; the being-updated refusal is left out with the session-v2 authority transitions that raise it, as docs/differences/sessions.md records."
 
 [[file]]
 upstream = "src/ui/footer/row_text.zig"
