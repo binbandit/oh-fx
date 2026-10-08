@@ -802,7 +802,8 @@ mod tests {
         terminal.request_theme_background().unwrap();
         assert!(terminal.write_all_unless_full(b"probe").unwrap());
         let fake = crate::terminal::fake_tmux::FakeTmux::new(0, 0);
-        crate::terminal::TmuxHistory::with_program(fake.program(), "%1").clear(&terminal);
+        crate::terminal::TmuxHistory::with_program(fake.program(), "%1", test_pty::WAIT)
+            .clear(&terminal);
         terminal.write_all(b"frame").unwrap();
         let written = test_pty::read_written(&pty);
         assert!(written.ends_with(b"probe\x1b[0m\x1b[2J\x1b[3J\x1b[Hframe"));
