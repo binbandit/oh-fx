@@ -13,6 +13,7 @@ fn evidence(cause: ModelRecoveryCause) -> Evidence {
         pacing: RetryPacing::Idle,
         progress: Progress::Unknown,
         output: Output::None,
+        tool: ToolEvidence::None,
         recovery_elapsed: None,
     }
 }
@@ -29,6 +30,49 @@ fn model_response_recovery_policy_is_deterministic_and_never_pauses_transient_fa
     );
     assert_eq!(first.delay, Duration::from_millis(250));
     assert_eq!(first.required_action, ModelRecoveryRequiredAction::None);
+    let partial = Evidence {
+        output: Output::Partial,
+        ..base
+    };
+    assert_eq!(decide(partial).strategy, Strategy::ContinueResponse);
+    let with_tool = |tool| decide(Evidence { tool, ..partial }).strategy;
+    assert_eq!(
+        with_tool(ToolEvidence::ProvenUnexecuted),
+        Strategy::RegenerateTool
+    );
+    assert_eq!(with_tool(ToolEvidence::Uncertain), Strategy::ReconcileTool);
+    assert_eq!(
+        with_tool(ToolEvidence::Confirmed),
+        Strategy::ContinueAfterTool
+    );
+    let actions = [
+        Strategy::RegenerateTool,
+        Strategy::ContinueAfterTool,
+        Strategy::ReconcileTool,
+    ]
+    .map(Strategy::action);
+    assert_eq!(
+        actions,
+        [
+            Some(ModelRecoveryAction::RegeneratingTool),
+            Some(ModelRecoveryAction::ContinuingAfterTool),
+            Some(ModelRecoveryAction::ReconcilingTool),
+        ]
+    );
+    for (cause, waiting) in [
+        (CONNECTIVITY, Strategy::WaitForConnectivity),
+        (STREAM_TIMEOUT, Strategy::ProbeLiveness),
+    ] {
+        let tool = ToolEvidence::ProvenUnexecuted;
+        assert_eq!(
+            decide(Evidence {
+                tool,
+                ..evidence(cause)
+            })
+            .strategy,
+            waiting
+        );
+    }
 }
 
 #[test]
@@ -261,14 +305,24 @@ fn network_and_stream_failures_carry_progress_evidence_and_http_status_failures_
     assert!(!tracks_progress(RATE_LIMITED, &stream_failure));
     let mut recovery = Recovery::default();
     for _ in 0..3 {
-        let decision = recovery.decide(UNAVAILABLE, &http_failure, 12, Output::None);
+        let decision = recovery.decide(
+            UNAVAILABLE,
+            &http_failure,
+            12,
+            (Output::None, ToolEvidence::None),
+        );
         assert_eq!(decision.strategy, Strategy::RetryRequest);
     }
     let mut recovery = Recovery::default();
     let decisions: Vec<Strategy> = (0..3)
         .map(|_| {
             recovery
-                .decide(UNAVAILABLE, &stream_failure, 12, Output::None)
+                .decide(
+                    UNAVAILABLE,
+                    &stream_failure,
+                    12,
+                    (Output::None, ToolEvidence::None),
+                )
                 .strategy
         })
         .collect();

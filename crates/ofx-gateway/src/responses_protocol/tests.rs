@@ -1565,3 +1565,51 @@ fn canonical_reasoning_text_matches_the_value_writer_byte_for_byte() {
         );
     }
 }
+
+fn applied(reducer: &mut Reducer, event: &str) -> Vec<Delta> {
+    let (result, deltas) = reducer.apply(event.as_bytes(), false);
+    result.unwrap();
+    deltas
+}
+
+#[test]
+fn function_calls_report_their_start_and_each_streamed_argument_chunk() {
+    let mut reducer = Reducer::new(LIMITS);
+    assert_eq!(
+        applied(&mut reducer, START),
+        [Delta::ToolCallStarted {
+            call_id: ToolCallId::new("call_1"),
+            tool_name: "write_file".to_owned(),
+        }]
+    );
+    assert_eq!(applied(&mut reducer, START), []);
+    let delta = json!({"type": "response.function_call_arguments.delta", "output_index": 0, "item_id": "fc_1", "delta": "{\"path\":"});
+    assert_eq!(
+        applied(&mut reducer, &delta.to_string()),
+        [Delta::ToolInput("{\"path\":".to_owned())]
+    );
+    assert_eq!(
+        applied(&mut reducer, FINALIZED),
+        [Delta::ToolInput("\"preview.txt\"}".to_owned())]
+    );
+    let done = json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "write_file", "arguments": "{\"path\":\"preview.txt\"}"}});
+    assert_eq!(applied(&mut reducer, &done.to_string()), []);
+}
+
+#[test]
+fn arguments_sent_with_the_added_item_are_not_reported_as_streamed_input() {
+    let mut reducer = Reducer::new(LIMITS);
+    let added = json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":"}});
+    assert_eq!(
+        applied(&mut reducer, &added.to_string()),
+        [Delta::ToolCallStarted {
+            call_id: ToolCallId::new("call_1"),
+            tool_name: "read_file".to_owned(),
+        }]
+    );
+    let done = json!({"type": "response.function_call_arguments.done", "output_index": 0, "item_id": "fc_1", "arguments": "{\"path\":\"a\"}"});
+    assert_eq!(
+        applied(&mut reducer, &done.to_string()),
+        [Delta::ToolInput("\"a\"}".to_owned())]
+    );
+}
