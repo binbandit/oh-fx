@@ -853,3 +853,55 @@ fn pasted_blocks_stay_with_the_text_that_holds_them() {
     test.draining(|shell| shell.flush_pending_input().unwrap());
     assert_eq!(test.shell.composer.expanded_text(), kept);
 }
+
+#[test]
+fn partial_effort_queries_preview_the_submitted_selection() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\rhi");
+    assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");
+    press(&mut test, b"\r\r");
+    assert_eq!(
+        picks(&test),
+        [pick("anthropic/claude-x", named("high"), Some(true))]
+    );
+}
+
+#[test]
+fn partial_mode_queries_preview_the_submitted_selection() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\r\rfa");
+    assert_eq!(status_row(&mut test), "auto · x · ⚡︎");
+    press(&mut test, b"\r");
+    assert_eq!(
+        picks(&test),
+        [pick(
+            "anthropic/claude-x",
+            ReasoningEffort::Auto,
+            Some(true)
+        )]
+    );
+}
+
+#[test]
+fn committed_controls_updates_preserve_a_pending_picker_and_appear_on_dismissal() {
+    let mut test = TestShell::start();
+    open_menu(&mut test);
+    press(&mut test, b"\rhi");
+    test.deliver(UiEvent::ModelControlsChanged {
+        controls: ModelControls {
+            effort: named("low"),
+            effort_supported: true,
+            fast: false,
+        },
+    });
+    assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");
+    press(&mut test, b"\rfa");
+    assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");
+    press(&mut test, ESC);
+    test.advance(100);
+    test.settle();
+    assert_eq!(status_row(&mut test), "auto · model-a · low");
+    assert!(picks(&test).is_empty());
+}

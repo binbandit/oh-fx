@@ -26,6 +26,13 @@ impl ModelSource {
         }
     }
 
+    pub(crate) async fn ready(&self) {
+        match self {
+            Self::Connection(_) | Self::Unavailable => std::future::pending().await,
+            Self::Codex(catalog) => catalog.ready().await,
+        }
+    }
+
     pub(crate) async fn catalog(&self) -> ModelCatalog {
         match self {
             Self::Connection(connection) => connection_catalog(connection),

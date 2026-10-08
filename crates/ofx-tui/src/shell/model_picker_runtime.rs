@@ -254,7 +254,8 @@ impl Shell<'_> {
         };
         let capabilities = self.capabilities(&flow.pending);
         let efforts = &capabilities.reasoning_efforts;
-        let typed = query.query.trim_matches([' ', '\t']);
+        let selected = self.model_column().and_then(|column| column.selected());
+        let typed = selected.as_deref().unwrap_or_default();
         let effort = ReasoningEffort::parse(typed)
             .filter(|effort| {
                 query.stage == ModelStage::Effort && effort_options(efforts).contains(effort)

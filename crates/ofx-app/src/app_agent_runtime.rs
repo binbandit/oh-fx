@@ -1068,6 +1068,10 @@ impl Controller {
             }
             events(event);
         };
+        let source = self.state.setup.models_source();
+        let ready = source.ready();
+        tokio::pin!(ready);
+        let mut controls_ready = false;
         let state = &mut self.state;
         let persistence = &mut self.persistence;
         let questions = &mut self.questions;
@@ -1082,6 +1086,10 @@ impl Controller {
                 tokio::select! {
                     biased;
                     report = &mut turn => break report,
+                    () = &mut ready, if !controls_ready => {
+                        controls_ready = true;
+                        state.sync_model_controls();
+                    }
                     result = wait_install(installation) => {
                         complete_install(state, installation, result);
                         drain_install_inputs(state, installation, &cancel);
@@ -4171,6 +4179,77 @@ mod tests {
             notice_body(picked),
             [format!("|Switched to {OTHER_CODEX_MODEL}")]
         );
+    }
+
+    #[tokio::test]
+    async fn internally_loaded_capabilities_update_controls_during_a_held_turn() {
+        let codex = FakeServer::start([codex_partial()]);
+        let catalog = codex_catalog(false, 1);
+        let home = codex_home();
+        let settings = codex_settings();
+        let mut setup = agent_setup_with(&home, &settings, codex_endpoints(&codex, &catalog)).await;
+        setup.restore_reasoning(Some("high".to_owned()), false);
+        assert_eq!(
+            setup.model_controls().effort,
+            ReasoningEffort::Named("high".to_owned())
+        );
+        assert!(setup.models_source().cached().is_none());
+        let mut harness = Harness::with_setup(home, setup);
+        harness.submit("hello");
+        within(harness.until(|event| matches!(event, UiEvent::AssistantText { .. }))).await;
+        assert_eq!(codex.requests()[0].json().get("reasoning"), None);
+        let updated = |event: &UiEvent| matches!(event, UiEvent::ModelControlsChanged { controls } if controls.effort == ReasoningEffort::Auto && controls.effort_supported);
+        if !harness.seen.iter().any(updated) {
+            let result = timeout(Duration::from_secs(10), harness.until(updated)).await;
+            assert!(
+                result.is_ok(),
+                "controls arrive while held: {:?}",
+                harness.seen
+            );
+        }
+        assert!(
+            !harness
+                .seen
+                .iter()
+                .any(|event| matches!(event, UiEvent::TurnFinished { .. }))
+        );
+        assert_eq!(
+            harness.seen.iter().filter(|event| updated(event)).count(),
+            1
+        );
+        let turn_id = harness
+            .seen
+            .iter()
+            .find_map(|event| match event {
+                UiEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+                _ => None,
+            })
+            .unwrap();
+        harness.send(UiCommand::Cancel { turn_id });
+        timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Interrupted)),
+        )
+        .await
+        .expect("cancel settles held response");
+    }
+
+    #[tokio::test]
+    async fn a_populated_catalog_is_ready_before_the_waiter_starts() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 1);
+        let home = codex_home();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let source = setup.models_source();
+        assert!(source.cached().is_none());
+        assert!(matches!(
+            source.catalog().await,
+            ModelCatalog::Listed { .. }
+        ));
+        within(source.ready()).await;
+        assert_eq!(catalog.requests().len(), 2);
+        assert!(codex.requests().is_empty());
     }
 
     fn controls_changed(event: &UiEvent) -> bool {
