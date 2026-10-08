@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use ofx_config::{MaxTokensParameter, ToolChoiceMode};
 use ofx_contract::{ChatMessage, FinishReason, ProviderOptions, ToolChoice, ToolSpec};
-use ofx_testkit::{FakeServer, RefusedPort, Reply, chat_text_events};
+use ofx_testkit::{FakeServer, Gate, RefusedPort, Reply, chat_text_events};
 
 use super::*;
 use crate::chat_completions_protocol::Selection;
@@ -736,6 +736,72 @@ async fn a_cut_off_429_keeps_its_retry_after_and_shows_no_body_bytes() {
     );
     assert_eq!(error.kind, ProviderErrorKind::TransportInterrupted);
     assert_eq!(error.code, "ReadFailed");
+}
+
+#[tokio::test]
+async fn a_response_head_that_never_arrives_times_out_after_two_minutes() {
+    let head = Gate::default();
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["late"])).after(&head)]);
+    let provider = portkey(&server);
+    let request = test_request();
+    let request = request.borrowed();
+    let mut sink = |_: StreamEvent| {};
+    let cancel = CancellationToken::new();
+    let started = tokio::time::Instant::now();
+    let mut stream = provider.stream(&request, &mut sink, &cancel);
+    while server.requests().is_empty() {
+        tokio::select! {
+            biased;
+            outcome = &mut stream => panic!("{outcome:?}"),
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+    }
+    tokio::time::pause();
+    let paused = tokio::time::Instant::now();
+    let error = tokio::time::timeout(Duration::from_hours(1), stream)
+        .await
+        .expect("the head wait times out")
+        .unwrap_err();
+    assert!(started.elapsed() >= Duration::from_mins(2));
+    assert!(paused.elapsed() <= Duration::from_mins(2));
+    assert_eq!(error.kind, ProviderErrorKind::Timeout);
+    assert_eq!(error.code, "Timeout");
+    assert_eq!(error.status, None);
+}
+
+#[tokio::test]
+async fn an_error_body_that_stops_arriving_times_out_after_thirty_seconds() {
+    let server = FakeServer::start([Reply::held_status_with_headers(
+        503,
+        &[("Retry-After", "7")],
+        r#"{"error":{"message":"overloaded"#,
+    )]);
+    let provider = portkey(&server);
+    let response = provider
+        .client
+        .post(&provider.chat_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let cancel = CancellationToken::new();
+    let error = tokio::time::timeout(
+        Duration::from_hours(1),
+        http_failure(response, &cancel, &[], None),
+    )
+    .await
+    .expect("the body read times out");
+    let elapsed = started.elapsed();
+    assert!(
+        (Duration::from_secs(30)..=Duration::from_millis(30_001)).contains(&elapsed),
+        "{elapsed:?}"
+    );
+    assert_eq!(error.kind, ProviderErrorKind::Timeout);
+    assert_eq!(error.code, "Timeout");
+    assert_eq!(error.status, None);
+    assert_eq!(error.retry_after, Some(Duration::from_secs(7)));
 }
 
 #[tokio::test]
