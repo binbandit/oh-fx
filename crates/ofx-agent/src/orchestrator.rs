@@ -518,11 +518,7 @@ impl Agent {
                 failure: Some(TurnFailure::Persistence(failure)),
             };
         }
-        let continuation = self
-            .steering
-            .as_ref()
-            .is_some_and(|worker| worker.continues_steering());
-        self.close_interrupted_turns(continuation);
+        self.close_interrupted_turns(self.continues_steering());
         let mut turn = self.new_turn(id, prompt);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
@@ -587,10 +583,7 @@ impl Agent {
         {
             failure = Some(TurnFailure::Persistence(error));
         }
-        if matches!(ending, Ending::Stopped(_)) {
-            self.pending_interruptions
-                .push(turn.start..self.history.len());
-        }
+        self.hold_interruption(ending, turn.start);
         events(UiEvent::TurnFinished {
             turn_id: id,
             outcome,
