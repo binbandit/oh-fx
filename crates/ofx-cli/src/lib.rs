@@ -7,6 +7,7 @@ mod commands;
 mod registry;
 
 pub use cli_ask::{AskArgs, AskError, AskOutput, read_stdin_prompt};
+pub use cli_replay::ReplayArgs;
 pub use cli_surface::{
     CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
     RequestedResume, SessionListArgs, ULTRAFAST_ARG, UPGRADE_RELAUNCH_ARG, WorkflowArgs,
