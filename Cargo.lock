@@ -802,6 +802,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-github"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "ofx-http"
 version = "0.1.0"
 dependencies = [

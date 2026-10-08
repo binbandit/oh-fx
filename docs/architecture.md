@@ -36,6 +36,7 @@ The shipping target is the native terminal binary. Upstream WASM, Node-API addon
 | 3 | `ofx-permissions` | Rules, command admission, grants, auto-mode review | `core/permissions` |
 | 3 | `ofx-auth` | Credential storage, login providers, and login flows | `core/auth` |
 | 3 | `ofx-skills` | Skill discovery, frontmatter, catalog | `core/skills` |
+| 3 | `ofx-github` | Git snapshots and drafting prompts for the `pr` and `issue` workflows | `core/github` |
 | 4 | `ofx-cli` | Command spec table, argument parsing, help rendering | `core/cli`, `core/slash_commands` |
 | 4 | `ofx-tools` | Built-in tools, one module per upstream tool | `src/tools`, `builtins/tools` |
 | 4 | `ofx-mcp` | MCP client: stdio, streamable HTTP, legacy SSE, OAuth | `core/mcp` |
