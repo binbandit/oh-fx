@@ -129,6 +129,19 @@ impl SignalPipe {
         Ok(self.fatal_reader.try_clone()?.into())
     }
 
+    pub(crate) fn take_resized(&self) -> bool {
+        self.resized.swap(false, Ordering::SeqCst)
+    }
+
+    pub(crate) fn resize_pending(&self) -> bool {
+        self.resized.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_resized(&self) {
+        self.resized.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn take(&self) -> Signals {
         let mut sink = [0_u8; 64];
         while matches!((&self.reader).read(&mut sink), Ok(count) if count > 0) {}
