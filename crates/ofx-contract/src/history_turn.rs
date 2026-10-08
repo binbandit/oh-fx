@@ -87,8 +87,30 @@ pub struct RecoveredTurn {
     pub messages: Vec<ChatMessage>,
     pub files: Vec<FileEvidence>,
     pub outputs: Vec<RecordedOutput>,
+    pub source: String,
+    pub source_presented: bool,
+    pub tool_state: RecoveryToolState,
     pub strategy: RecoveryStrategy,
     pub fast_mode: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryToolState {
+    None,
+    ProvenUnexecuted,
+    Confirmed,
+    Uncertain,
+}
+
+impl RecoveryToolState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ProvenUnexecuted => "proven_unexecuted",
+            Self::Confirmed => "confirmed",
+            Self::Uncertain => "uncertain",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,8 +123,10 @@ pub enum RecoveryProgress {
 pub struct RecoveryPoint<'a> {
     pub turn_id: TurnId,
     pub turn: HistoryTurn<'a>,
+    pub source: &'a str,
     pub cause: ModelRecoveryCause,
     pub progress: RecoveryProgress,
+    pub tool_state: RecoveryToolState,
     pub model: &'a str,
     pub requested_fast_mode: bool,
     pub fast_mode: bool,

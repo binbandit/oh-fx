@@ -4,6 +4,7 @@ use ofx_contract::{
     file_evidence_context,
 };
 
+use super::recovery::Restart;
 use super::turn_ledger::TurnRecord;
 use super::{Agent, Stop, Turn, TurnFailure};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
@@ -176,6 +177,7 @@ impl Agent {
         cause: ModelRecoveryCause,
         progress: RecoveryProgress,
         consumed_attempts: usize,
+        source: &str,
     ) -> Result<(), LogFailure> {
         let Some(log) = self.log.as_ref() else {
             return Ok(());
@@ -189,8 +191,10 @@ impl Agent {
         log.record_recovery(&RecoveryPoint {
             turn_id: turn.id,
             turn: point_turn,
+            source,
             cause,
             progress,
+            tool_state: turn.tool_evidence.saved(),
             model: &self.config.model,
             requested_fast_mode: self.config.fast_mode,
             fast_mode: turn.fast_mode,
@@ -205,17 +209,18 @@ impl Agent {
         cause: ModelRecoveryCause,
         action: ModelRecoveryAction,
         consumed_attempts: usize,
-        partial: &str,
+        restart: &Restart<'_>,
     ) -> Result<(), Stop> {
         self.record_recovery(
             turn,
             cause,
             RecoveryProgress::Waiting(action),
             consumed_attempts,
+            restart.source(&turn.language.stage),
         )
         .map_err(|failure| Stop::Failed {
             failure: TurnFailure::Persistence(failure),
-            partial: partial.to_owned(),
+            partial: restart.partial().to_owned(),
         })
     }
 
