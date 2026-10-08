@@ -5466,7 +5466,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_prompt_sent_before_the_sign_in_screen_waits_behind_it_and_is_dropped_on_cancel() {
+    async fn prompts_sent_before_the_sign_in_screen_wait_behind_it_and_are_dropped_on_cancel() {
         let auth = FakeServer::start([]);
         let codex = FakeServer::start([]);
         let catalog = FakeServer::start([]);
@@ -5475,10 +5475,13 @@ mod tests {
         let settings = switching_settings("local", &local, &other);
         let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
         harness.send(select_provider("codex"));
-        harness.submit("hello");
+        harness.submit("first");
+        harness.submit("second");
         within(harness.until(sign_in_started)).await;
-        let held = within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
-        assert!(notice_body(held).is_empty());
+        for _ in 0..2 {
+            let held = within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+            assert!(notice_body(held).is_empty());
+        }
         harness.send(UiCommand::CancelSignIn);
         let dropped = within(harness.until(|event| *event == UiEvent::HeldPromptDropped)).await;
         assert!(dropped.contains(&UiEvent::SignInEnded));
@@ -5492,26 +5495,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_prompt_sent_before_the_sign_in_screen_runs_on_codex_once_signed_in() {
+    async fn prompts_sent_before_the_sign_in_screen_run_in_order_on_codex_once_signed_in() {
         let auth = FakeServer::start([granted_tokens()]);
-        let codex = FakeServer::start([codex_text("signed in")]);
+        let codex = FakeServer::start([codex_text("one"), codex_text("two")]);
         let catalog = codex_catalog(false, 2);
         let local = FakeServer::start([]);
         let other = FakeServer::start([]);
         let settings = switching_settings("local", &local, &other);
         let mut harness = signing_in(&settings, &auth, &codex, &catalog).await;
         harness.send(select_provider("codex"));
-        harness.submit("hello");
+        harness.submit("first");
+        harness.submit("second");
         let started = within(harness.until(sign_in_started)).await;
         let url = sign_in_url(started);
-        within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+        for _ in 0..2 {
+            within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+        }
         let browser = std::thread::spawn(move || authorize_in_browser(&url));
-        within(harness.until(finished(TurnOutcome::Completed))).await;
+        for _ in 0..2 {
+            within(harness.until(finished(TurnOutcome::Completed))).await;
+        }
         browser.join().unwrap();
         assert!(local.requests().is_empty());
-        let request = codex.requests()[0].json();
-        assert_eq!(request["model"], CODEX_MODEL);
-        assert!(request.to_string().contains("hello"), "{request}");
+        let requests = codex.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].json()["model"], CODEX_MODEL);
+        let first = requests[0].json().to_string();
+        assert!(
+            first.contains("first") && !first.contains("second"),
+            "{first}"
+        );
+        assert!(requests[1].json().to_string().contains("second"));
     }
 
     #[tokio::test]

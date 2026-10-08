@@ -4,15 +4,19 @@ use super::{ActiveTurn, Shell, SubmissionState};
 
 impl Shell<'_> {
     pub(super) fn prompt_held(&mut self) {
-        if let Some(submission) = self
-            .outstanding
-            .iter_mut()
-            .find(|submission| submission.state == SubmissionState::Active)
-            .filter(|submission| submission.turn_id.is_none())
-        {
-            submission.state = SubmissionState::Held;
+        let Some(submission) = self.outstanding.iter_mut().find(|submission| {
+            submission.turn_id.is_none()
+                && matches!(
+                    submission.state,
+                    SubmissionState::Active | SubmissionState::Queued
+                )
+        }) else {
+            return;
+        };
+        if submission.state == SubmissionState::Active {
             self.turn = None;
         }
+        submission.state = SubmissionState::Held;
     }
 
     pub(super) fn holds_prompt(&self) -> bool {
