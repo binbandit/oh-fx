@@ -193,5 +193,3 @@ Port `src/gateway/xai_grok_models.zig` as of #1110 or later with the next OH-9 r
 4. Add the rows under a new `<old>..<new>` heading. Move the sync point to the last merge reviewed, update the date and `parity/UPSTREAM` to its full commit, and reconcile every file-map row against the new tree. The checker requires the documented Sync point to match that pin.
 
 When a deferred area is ported, move its rows to `ported` and update its file-map statuses in the same pull request. Partial implementations must retain concrete missing-behavior notes.
-
-Token-only streaming updates now coalesce within 50 ms of the last frame. Visible assistant output, phase changes and usage reports still request immediate frames. Blocked frames retain token work without an overdue token deadline. This partial adaptation is documented in [architecture](architecture.md) and [renderer differences](differences/renderer.md); it does not complete the assistant pacer or render-request rows. The referenced token-update and render-request sources are identical at `34f1ed1` and `6bdd497`.
