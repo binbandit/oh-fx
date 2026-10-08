@@ -252,6 +252,7 @@ impl Shell<'_> {
             && self.model_menu.is_none()
             && self.help_menu.is_none()
             && self.picker.is_none()
+            && !self.full_transcript_open()
     }
 
     fn file_picker_distrusted(&self) -> bool {
