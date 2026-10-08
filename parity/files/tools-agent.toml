@@ -1,8 +1,8 @@
 [[file]]
 upstream = "src/tools/agent/ask_user_question.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tools/src/ask_user_question.rs"]
-note = "Batch validation, exact sentinels, terminal-safe prompts and ordered answer forwarding exist; ignored overflowing-number fields such as extra:1e400 are rejected by native JSON parsing but accepted upstream."
+note = "Batch validation in upstream's order with its sentinels, the legacy permission refusal before prompting, terminal-safe prompts and ordered answer encoding are ported, and the arguments are read with upstream's std.json acceptance: any number token, any nesting depth, and no repeated key. How the shell delivers questions and answers differs as docs/differences/shell-approvals.md records."
 
 [[file]]
 upstream = "src/tools/agent/subagent.zig"
