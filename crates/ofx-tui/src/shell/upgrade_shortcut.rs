@@ -36,6 +36,9 @@ impl Shell<'_> {
         if self.picker_active() {
             return Some("close the session picker before upgrading");
         }
+        if self.full_transcript_open() {
+            return Some("close the transcript view before upgrading");
+        }
         if !self.composer.is_empty() {
             return Some("submit or clear the current prompt before upgrading");
         }

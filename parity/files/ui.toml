@@ -156,9 +156,9 @@ note = "No Rust implementation of upstream Geometry, inputPointerPosition, Input
 
 [[file]]
 upstream = "src/ui/full_transcript_screen.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream FullDiffResolver, ViewportOffsetSelector, Projection behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/shell/full_transcript_runtime.rs"]
+note = "The alternate-screen viewport draws the retained entries with the inline text and tool rows, terminal-safe wrapping, tail following, scrolling, resize and inline restoration, under upstream's navigation, blank and status rows. Saved result and command output projection, full diff expansion, timestamp metadata, source-ID anchors and asynchronous page preparation are missing."
 
 [[file]]
 upstream = "src/ui/input/escape_parser.zig"

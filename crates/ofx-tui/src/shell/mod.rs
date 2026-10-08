@@ -5,6 +5,7 @@ mod approval_amendment;
 mod approval_runtime;
 mod directory_completion_job;
 mod event_loop;
+mod full_transcript_runtime;
 mod held_prompt_runtime;
 pub(crate) mod help_menu;
 mod help_menu_runtime;
@@ -234,6 +235,7 @@ pub(crate) struct Shell<'a> {
     file_picker: FilePicker,
     gestures: gesture_state::State,
     transcript: Transcript,
+    full_transcript: Option<full_transcript_runtime::Screen>,
     renderer: LiveRegionRenderer,
     theme: Theme,
     theme_pinned: bool,
@@ -445,6 +447,7 @@ impl<'a> Shell<'a> {
             file_picker,
             gestures: gesture_state::State::default(),
             transcript,
+            full_transcript: None,
             renderer,
             theme: setup.theme,
             theme_pinned: setup.theme_pinned,
@@ -523,6 +526,7 @@ impl<'a> Shell<'a> {
             return;
         }
         self.metrics.full_redraws += 1;
+        self.reset_full_transcript_frame();
         self.renderer.resize(self.layout.rows, self.layout.cols);
         self.renderer.reset_screen();
         self.transcript.replay(self.cols());
@@ -630,6 +634,7 @@ impl<'a> Shell<'a> {
     }
 
     fn commit_frame(&mut self) -> Result<(), TerminalError> {
+        self.settle_full_transcript_owner()?;
         self.sync_waiting_clock();
         if self.prepare_file_picker() {
             self.mark_dirty();
@@ -697,16 +702,18 @@ impl<'a> Shell<'a> {
             usize::from(self.layout.rows),
         );
         self.frame.composer = Some(composer);
-        self.footer_row = live.footer_row;
-        self.clear_tmux_history();
-        self.renderer.present(
-            &Frame {
-                appended: &appended,
-                live: &live.rows,
-                cursor: live.cursor,
-            },
-            &mut self.output,
-        );
+        if !self.present_full_transcript_frame(&appended, &live) {
+            self.footer_row = live.footer_row;
+            self.clear_tmux_history();
+            self.renderer.present(
+                &Frame {
+                    appended: &appended,
+                    live: &live.rows,
+                    cursor: live.cursor,
+                },
+                &mut self.output,
+            );
+        }
         let hidden_rows = live
             .rows
             .len()
@@ -882,6 +889,7 @@ impl<'a> Shell<'a> {
     }
 
     fn leave_normally(&mut self) -> Option<i32> {
+        let _ = self.close_full_transcript();
         self.renderer.flush_queued(&mut self.output);
         let _ = self.flush_output();
         let _ = self.terminal.write_all(b"\x1b]2;\x07");
@@ -949,6 +957,7 @@ impl<'a> Shell<'a> {
     }
 
     fn suspend(&mut self) -> Result<(), TerminalError> {
+        self.close_full_transcript()?;
         self.renderer.flush_queued(&mut self.output);
         self.flush_output()?;
         let cleanup = self.exit_cleanup();
@@ -1008,6 +1017,7 @@ impl<'a> Shell<'a> {
     fn native_clear_row(&self) -> Option<u16> {
         let blocked = self.approval.is_some()
             || self.question.is_some()
+            || self.full_transcript.is_some()
             || self.pending_resize.is_some()
             || self.dimensions_invalid
             || self.layout.cols < CONFIRMATION_TAG_COLUMN;
