@@ -258,6 +258,7 @@ fn a_paused_turn_keeps_its_label_until_the_next_prompt() {
     let mut paused = stopped(1);
     paused.cause = Some(ModelRecoveryCause::ConnectivityLost);
     paused.action = Some(ModelRecoveryAction::Paused);
+    paused.required_action = ModelRecoveryRequiredAction::ContinueLater;
     paused.diagnostic = Some(ModelFailureDiagnostic::new("ConnectionFailed"));
     test.deliver(recovery(TURN, paused));
     test.deliver(finished(TurnOutcome::Failed));
@@ -455,4 +456,37 @@ fn a_restart_inside_an_open_code_block_starts_the_new_reply_afresh() {
     assert!(row("let value =") < notice, "{screen}");
     assert!(notice < row("Done:"), "{screen}");
     assert!(row("Done:") < row("let value = 1;"), "{screen}");
+}
+
+#[test]
+fn a_paused_turn_says_what_it_needs_to_continue() {
+    for (required_action, hint) in [
+        (
+            ModelRecoveryRequiredAction::ContinueLater,
+            " · send a new message when you're ready",
+        ),
+        (
+            ModelRecoveryRequiredAction::InspectUncertainTool,
+            " · reopen the session to continue",
+        ),
+        (ModelRecoveryRequiredAction::None, ""),
+    ] {
+        let mut test = running();
+        test.resize(24, 160);
+        let mut paused = stopped(1);
+        paused.cause = Some(ModelRecoveryCause::NetworkInterrupted);
+        paused.action = Some(ModelRecoveryAction::Paused);
+        paused.required_action = required_action;
+        paused.diagnostic = Some(ModelFailureDiagnostic::new("ReadFailed"));
+        test.deliver(recovery(TURN, paused));
+        test.deliver(finished(TurnOutcome::Failed));
+        let screen = test.screen();
+        let label = format!(
+            "⚠ Network interrupted · connection dropped · recovery paused after 1 attempt{hint}"
+        );
+        assert!(
+            screen.lines().any(|row| row.trim() == label),
+            "{required_action:?}\n{screen}"
+        );
+    }
 }

@@ -49,6 +49,7 @@ fn checkpoint() -> RecoveryCheckpoint {
             }],
             turn_summary: None,
         },
+        cause: None,
         tool_state: RecoveryToolState::Confirmed,
         strategy: RecoveryStrategy::ContinueAfterTool,
         route: RecoveryRoute {
@@ -663,6 +664,28 @@ fn a_continuation_restarts_from_the_saved_partial_reply() {
     );
     assert_eq!(continued.source, "Looking at");
     assert_eq!(continued.strategy, RecoveryStrategy::ContinueResponse);
+    assert_eq!(continued.cause, None);
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    for (tag, cause) in [
+        (
+            "network_interrupted",
+            ModelRecoveryCause::NetworkInterrupted,
+        ),
+        ("connectivity_lost", ModelRecoveryCause::ConnectivityLost),
+        (
+            "provider_stream_timeout",
+            ModelRecoveryCause::ProviderStreamTimeout,
+        ),
+        (
+            "provider_unavailable",
+            ModelRecoveryCause::ProviderUnavailable,
+        ),
+        ("rate_limited", ModelRecoveryCause::RateLimited),
+    ] {
+        let continued = decoded(&upstream_checkpoint().replace("response_interrupted", tag))
+            .into_continuation(&codex, "gpt-5.4", false);
+        assert_eq!(continued.cause, Some(cause), "{tag}");
+    }
 }
 
 #[test]

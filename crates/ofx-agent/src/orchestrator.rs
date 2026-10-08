@@ -14,14 +14,14 @@ use ofx_contract::{
     FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
     ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
     ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryProgress, RecoveryStrategy, RequestId,
-    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
-    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus,
-    SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
-    ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
-    ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage, bound_model_output,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure,
+    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
+    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
+    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
+    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    TurnStop, UiEvent, Usage, bound_model_output, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -46,6 +46,7 @@ use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
 mod mode_policy;
+mod paused;
 mod project_gate;
 mod provider_tools;
 mod recovery;
@@ -57,6 +58,7 @@ mod turn_log;
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use mode_policy::{Offer, denial, offer};
+use paused::{Pause, paused_required_action};
 use project_gate::GatedGroup;
 use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
@@ -201,6 +203,7 @@ struct Turn {
     reviews: TurnReviews,
     language: TurnLanguage,
     recovery: Option<RecoveryStrategy>,
+    recovery_cause: Option<ModelRecoveryCause>,
     tool_evidence: ToolEvidence,
     restored: RestoredReply,
 }
@@ -513,6 +516,7 @@ impl Agent {
             reviews: TurnReviews::default(),
             language: self.turn_language(prompt),
             recovery: None,
+            recovery_cause: None,
             tool_evidence: ToolEvidence::None,
             restored: RestoredReply::default(),
         }
@@ -531,6 +535,7 @@ impl Agent {
         turn.raw_outputs = recovered.outputs;
         turn.fast_mode = recovered.fast_mode;
         turn.recovery = Some(recovered.strategy);
+        turn.recovery_cause = recovered.cause;
         turn.tool_evidence = ToolEvidence::restored(recovered.tool_state);
         turn.restored = RestoredReply {
             source: recovered.source,
@@ -698,6 +703,7 @@ impl Agent {
                 Ok(completion) => {
                     self.settle_measurement(measured, completion.usage.input_tokens);
                     turn.recovery = None;
+                    turn.recovery_cause = None;
                     turn.tool_evidence = ToolEvidence::None;
                     completion
                 }
@@ -711,6 +717,7 @@ impl Agent {
                 Err(Stop::Interrupted { partial }) if self.steers_after_interrupt(cancel) => {
                     self.settle_measurement(measured, None);
                     turn.recovery = None;
+                    turn.recovery_cause = None;
                     turn.tool_evidence = ToolEvidence::None;
                     self.keep_interrupted_reply(&partial);
                     step += 1;
@@ -929,13 +936,8 @@ impl Agent {
             let spoke = restart.observe(partial, tool, &mut turn.tool_evidence);
             let error = match streamed {
                 Ok(completion) => {
-                    if recovering_from.is_some() {
-                        events(UiEvent::Recovery {
-                            turn_id,
-                            status: recovered_status(attempt),
-                        });
-                    }
-                    return Ok(completion);
+                    let outcome = (recovering_from.is_some(), attempt, tool);
+                    return self.completed(turn, completion, outcome, &restart, events);
                 }
                 Err(error) => error,
             };
@@ -943,7 +945,10 @@ impl Agent {
                 let recovery = recovering_from.map(|cause| (cause, consumed));
                 return Err(self.interruption(turn, recovery, &error, restart, events));
             }
-            let Some(cause) = recovery_cause(error.kind) else {
+            let cause = recovery_cause(error.kind);
+            let observed = (tool, cause, &error);
+            self.reconcile_broken(turn, observed, (attempt, consumed), &restart, events)?;
+            let Some(cause) = cause else {
                 if let Some(status) =
                     stopped_status(recovering_from, attempt, consumed, &error, spoke)
                 {
@@ -979,6 +984,7 @@ impl Agent {
                 request.tool_choice = recovery_tool_choice(strategy);
                 restart.resend(self.request_messages(turn));
             }
+            turn.recovery_cause = Some(cause);
             let mut status = retry_status(attempt, cause, action, &decision, &error);
             self.record_wait(turn, cause, action, consumed, &restart)?;
             events(UiEvent::Recovery {
@@ -1097,33 +1103,13 @@ impl Agent {
                 partial: restart.into_partial(),
             };
         }
-        let source = restart.source(&turn.language.stage);
-        if let Err(failure) =
-            self.record_recovery(turn, cause, RecoveryProgress::Paused, attempt, source)
-        {
-            return Stop::Failed {
-                failure: TurnFailure::Persistence(failure),
-                partial: restart.into_partial(),
-            };
-        }
-        events(UiEvent::Recovery {
-            turn_id: turn.id,
-            status: RouteRecoveryStatus {
-                kind: RouteRecoveryKind::TerminalProviderError,
-                failed_attempt: attempt,
-                succeeded_attempt: 0,
-                attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
-                cause: Some(cause),
-                action: Some(ModelRecoveryAction::Paused),
-                required_action: ModelRecoveryRequiredAction::None,
-                delay_seconds: 0,
-                diagnostic: Some(failure_diagnostic(error)),
-                retry_wait: None,
-            },
-        });
-        Stop::Paused {
-            failure: TurnFailure::RecoveryPaused,
-        }
+        let pause = Pause {
+            cause,
+            attempt,
+            required_action: paused_required_action(turn.tool_evidence),
+            diagnostic: failure_diagnostic(error),
+        };
+        self.pause(turn, pause, &restart, events)
     }
 
     fn streamed_tool_start(

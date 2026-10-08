@@ -89,6 +89,7 @@ pub struct RecoveredTurn {
     pub outputs: Vec<RecordedOutput>,
     pub source: String,
     pub source_presented: bool,
+    pub cause: Option<ModelRecoveryCause>,
     pub tool_state: RecoveryToolState,
     pub strategy: RecoveryStrategy,
     pub fast_mode: bool,

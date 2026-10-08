@@ -471,6 +471,8 @@ impl ModelRecoveryAction {
 pub enum ModelRecoveryRequiredAction {
     #[default]
     None,
+    ContinueLater,
+    InspectUncertainTool,
     SurfaceStall,
 }
 
