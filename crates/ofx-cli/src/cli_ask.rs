@@ -33,6 +33,7 @@ pub enum AskLayout {
     #[default]
     FollowsStdout,
     Raw,
+    Captured,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -209,7 +210,7 @@ fn model_safe_text(bytes: &[u8]) -> Option<String> {
     (!text.contains('\0')).then(|| text.to_owned())
 }
 
-pub(crate) fn drafting_ask(prompt: String, auto: bool) -> AskArgs {
+pub(crate) fn drafting_ask(prompt: String, auto: bool, layout: AskLayout) -> AskArgs {
     AskArgs {
         prompt: AskPrompt::Text(prompt),
         permissions: AskPermissions {
@@ -221,7 +222,7 @@ pub(crate) fn drafting_ask(prompt: String, auto: bool) -> AskArgs {
         fast: None,
         system_prompt: None,
         output: AskOutput {
-            layout: AskLayout::Raw,
+            layout,
             ..AskOutput::default()
         },
         session: AskSession::default(),

@@ -5,8 +5,8 @@ modules = ["crates/ofx-github/src/git_context.rs"]
 
 [[file]]
 upstream = "src/core/github/github_publish.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-github/src/github_publish.rs"]
 
 [[file]]
 upstream = "src/core/github/github_workflows.zig"
