@@ -32,7 +32,7 @@ note = "Excluded JavaScript host configuration get/set FFI entrypoint."
 upstream = "src/core/config/model_capabilities.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/model_capabilities.rs", "crates/ofx-contract/src/model_capabilities.rs"]
-note = "Request output bounds and exact reasoning-effort/fast-option resolution exist; Vercel/Grok catalog resolution and full vision/file/web-search/caching capability metadata are absent."
+note = "Request output bounds, exact reasoning-effort/fast-option resolution and intrinsic Fast identity from model IDs exist; Vercel/Grok catalog resolution and full vision/file/web-search/caching capability metadata are absent."
 
 [[file]]
 upstream = "src/core/config/model_preferences.zig"

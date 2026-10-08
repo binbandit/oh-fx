@@ -45,6 +45,23 @@ pub enum NoticeTone {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelControls {
+    pub effort: ReasoningEffort,
+    pub effort_supported: bool,
+    pub fast: bool,
+}
+
+impl Default for ModelControls {
+    fn default() -> Self {
+        Self {
+            effort: ReasoningEffort::Auto,
+            effort_supported: false,
+            fast: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoticeLink {
     pub label: String,
     pub url: String,
@@ -333,6 +350,9 @@ pub enum UiEvent {
     },
     ModelSelected {
         model: String,
+    },
+    ModelControlsChanged {
+        controls: ModelControls,
     },
     SessionTitleChanged {
         title: Option<String>,
