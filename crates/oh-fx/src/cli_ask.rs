@@ -207,6 +207,7 @@ struct ReceivedSignals {
     first: Arc<AtomicI32>,
     interrupt: Arc<AtomicBool>,
     terminate: Arc<AtomicBool>,
+    default_action: Arc<AtomicBool>,
 }
 
 impl ReceivedSignals {
@@ -224,6 +225,10 @@ impl ReceivedSignals {
             Some(signal) => Err(Signalled(signal)),
             None => Ok(value),
         }
+    }
+
+    fn restore_default_action(&self) {
+        self.default_action.store(true, Ordering::SeqCst);
     }
 }
 
@@ -395,6 +400,9 @@ async fn ask(
     };
     let answered = answer(&request, endpoints, echo, &cancel, &received).await;
     executions.shutdown().await;
+    if args.output.layout == AskLayout::Captured {
+        received.restore_default_action();
+    }
     settle(answered, &received)
 }
 
@@ -675,6 +683,12 @@ fn watch_signals(cancel: CancellationToken) -> ReceivedSignals {
     let received = ReceivedSignals::default();
     let _ = signal_hook::flag::register(SIGINT, Arc::clone(&received.interrupt));
     let _ = signal_hook::flag::register(SIGTERM, Arc::clone(&received.terminate));
+    for signal in [SIGINT, SIGTERM] {
+        let _ = signal_hook::flag::register_conditional_default(
+            signal,
+            Arc::clone(&received.default_action),
+        );
+    }
     let Ok(mut signals) = Signals::new([SIGINT, SIGTERM]) else {
         return received;
     };

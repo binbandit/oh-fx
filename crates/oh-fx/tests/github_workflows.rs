@@ -1,7 +1,11 @@
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events};
 use serde_json::{Value, json};
@@ -60,7 +64,7 @@ impl Home {
         let gh = bin.join("gh");
         fs::write(
             &gh,
-            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$GH_ARGS_FILE\"\nprintf '%s' \"$GH_STDOUT\"\nprintf '%s' \"$GH_STDERR\" >&2\nexit \"${GH_EXIT:-0}\"\n",
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$GH_ARGS_FILE\"\nwhile [ -n \"$GH_WAIT_FILE\" ] && [ ! -e \"$GH_WAIT_FILE\" ]; do sleep 0.05; done\nprintf '%s' \"$GH_STDOUT\"\nprintf '%s' \"$GH_STDERR\" >&2\nexit \"${GH_EXIT:-0}\"\n",
         )
         .expect("write the fake gh");
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("make gh runnable");
@@ -79,7 +83,14 @@ impl Home {
     }
 
     fn run_with(&self, args: &[&str], path: &str, environment: &[(&str, &str)]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        self.command(args, path, environment)
+            .output()
+            .expect("run oh-fx")
+    }
+
+    fn command(&self, args: &[&str], path: &str, environment: &[(&str, &str)]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
             .args(args)
             .current_dir(&self.workspace)
             .env_clear()
@@ -94,9 +105,8 @@ impl Home {
             .env("SHELL", "/bin/sh")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env(KEY.0, KEY.1)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run oh-fx")
+            .stdin(Stdio::null());
+        command
     }
 }
 
@@ -409,4 +419,63 @@ fn a_failed_draft_exits_without_publishing() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), "");
     assert_eq!(home.gh_args(), None);
+}
+
+fn exit_within(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().expect("poll oh-fx") {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_signal_while_gh_publishes_ends_oh_fx_by_that_signal() {
+    for (name, signal) in [("TERM", 15), ("INT", 2)] {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
+        let home = Home::new(&server);
+        let path = home.fake_gh();
+        let release = home.root.join("release");
+        let mut child = home
+            .command(
+                &["issue", "--create"],
+                &path,
+                &[
+                    ("GH_WAIT_FILE", release.to_str().unwrap()),
+                    ("GH_STDOUT", "https://github.com/o/r/issues/3"),
+                ],
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn oh-fx");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while home.gh_args().is_none() {
+            assert!(Instant::now() < deadline, "gh never started");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let killed = Command::new("kill")
+            .arg(format!("-{name}"))
+            .arg(child.id().to_string())
+            .status()
+            .expect("run kill");
+        assert!(killed.success());
+        let ended = exit_within(&mut child, Duration::from_secs(5));
+        fs::write(&release, "").expect("release gh");
+        let status = ended.unwrap_or_else(|| child.wait().expect("wait for oh-fx"));
+        let mut printed = String::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout")
+            .read_to_string(&mut printed)
+            .expect("read stdout");
+        assert_eq!(status.signal(), Some(signal), "{name}: {status:?}");
+        assert_eq!(printed, "", "{name}");
+    }
 }
