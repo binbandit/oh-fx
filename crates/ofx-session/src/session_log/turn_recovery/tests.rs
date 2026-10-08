@@ -1116,6 +1116,242 @@ fn a_compaction_prepared_checkpoint_is_committed_when_the_session_opens() {
 }
 
 #[test]
+fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let calls = vec![ToolCall::new("c2", "shell", "{\"command\":\"ls\"}")];
+    let turn = HistoryTurn {
+        user: "fix the build",
+        steps: vec![HistoryStep {
+            assistant: "",
+            provider_replay: None,
+            tool_calls: &calls,
+            tool_results: vec![StepResult {
+                call_id: "c2",
+                tool_name: "shell",
+                output: "out",
+                output_bytes: 3,
+                status: ToolResultStatus::Success,
+                process: None,
+                model_view_covers_full_file: false,
+            }],
+        }],
+        steering: Vec::new(),
+        files: &[],
+        end: TurnEnd::Replied {
+            text: "",
+            provider_replay: None,
+        },
+    };
+    let mut session = fixture.resume().unwrap();
+    session.settle_open_recovery().unwrap();
+    session
+        .record_compaction(
+            "<summary>before</summary>",
+            HistoryCut {
+                turns: 1,
+                tool_steps: 0,
+                steering: 0,
+            },
+            Some(&HistoryTurn {
+                steps: Vec::new(),
+                ..turn.clone()
+            }),
+            &provider,
+        )
+        .unwrap();
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn,
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    assert!(session.turn_open());
+    assert!(session.holds_recovery());
+    session.settle_open_recovery().unwrap();
+    assert!(!session.turn_open());
+    assert!(!session.holds_recovery());
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+    let log = fixture.log();
+    let kinds: Vec<&str> = log
+        .iter()
+        .map(|line| {
+            [
+                "user",
+                "context_checkpoint",
+                "tool_call",
+                "tool_result",
+                "interrupted",
+                "assistant",
+                "turn_completed",
+            ]
+            .into_iter()
+            .find(|kind| line.contains(&format!("\"event\":{{\"{kind}\"")))
+            .unwrap_or("other")
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "context_checkpoint",
+            "tool_call",
+            "tool_result",
+            "interrupted"
+        ],
+        "{log:#?}"
+    );
+}
+
+#[test]
+fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() {
+    let fixture = Fixture::new();
+    let mut started = start_session(&fixture.sessions, metadata()).unwrap();
+    started.append(2, &finished_turn()).unwrap();
+    started
+        .append(
+            3,
+            &[
+                user("fix the build"),
+                ConversationEvent::ContextCheckpoint(ContextCheckpointEvent {
+                    covers_through_seq: 3,
+                    summary: "<summary>before</summary>".to_owned(),
+                }),
+            ],
+        )
+        .unwrap();
+    drop(started);
+    fixture.save_checkpoint(5, &checkpoint("fix the build", &[], "", ""));
+    let provider = metadata().preferences.provider;
+    let mut session = fixture.resume().unwrap();
+    let continued = session
+        .take_recovery()
+        .unwrap()
+        .into_turn(&provider, "openai/gpt-5", false);
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: continued_history(&continued, replied("")),
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    assert!(session.holds_recovery());
+    session.settle_open_recovery().unwrap();
+    assert!(!session.turn_open());
+    session
+        .record_turn(
+            &HistoryTurn {
+                user: "next question",
+                steps: Vec::new(),
+                steering: Vec::new(),
+                files: &[],
+                end: replied("Moved on."),
+            },
+            &provider,
+        )
+        .unwrap();
+    let log = fixture.log();
+    assert_eq!(log.len(), 9, "{log:#?}");
+    assert!(log[5].contains("\"interrupted\":{"), "{}", log[5]);
+    assert!(
+        log[6].contains("\"user\":{\"text\":\"next question\""),
+        "{}",
+        log[6]
+    );
+    assert!(log[7].contains("Moved on."), "{}", log[7]);
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
+fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is_saved() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    fixture.save_checkpoint(3, &checkpoint("fix the build", &[], "", ""));
+    let provider = metadata().preferences.provider;
+    let mut session = fixture.resume().unwrap();
+    let continued = session
+        .take_recovery()
+        .unwrap()
+        .into_turn(&provider, "openai/gpt-5", false);
+    let turn = continued_history(&continued, replied(""));
+    session
+        .record_compaction(
+            "<summary>before</summary>",
+            HistoryCut {
+                turns: 1,
+                tool_steps: 0,
+                steering: 0,
+            },
+            Some(&turn),
+            &provider,
+        )
+        .unwrap();
+    assert!(session.turn_open());
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn,
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    session.settle_open_recovery().unwrap();
+    assert!(!session.turn_open());
+    session
+        .record_turn(
+            &HistoryTurn {
+                user: "next question",
+                steps: Vec::new(),
+                steering: Vec::new(),
+                files: &[],
+                end: replied("Moved on."),
+            },
+            &provider,
+        )
+        .unwrap();
+    let log = fixture.log();
+    assert_eq!(log.len(), 9, "{log:#?}");
+    assert!(
+        log[3].contains("\"user\":{\"text\":\"fix the build\""),
+        "{}",
+        log[3]
+    );
+    assert!(log[4].contains("\"context_checkpoint\":{"), "{}", log[4]);
+    assert!(log[5].contains("\"interrupted\":{"), "{}", log[5]);
+    assert!(
+        log[6].contains("\"user\":{\"text\":\"next question\""),
+        "{}",
+        log[6]
+    );
+    assert!(!fixture.path(RECOVERY_FILE).exists());
+}
+
+#[test]
 fn a_refused_credential_leaves_the_checkpoint_pending_until_it_is_settled() {
     let fixture = Fixture::new();
     fixture.start(&finished_turn());

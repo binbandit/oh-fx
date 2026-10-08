@@ -7,7 +7,8 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_testkit::{
-    FakeServer, PtySession, RecordedRequest, Reply, chat_text_events, chat_tool_call_events,
+    FakeServer, PtySession, RecordedRequest, RefusedPort, Reply, chat_text_events,
+    chat_tool_call_events,
 };
 use serde_json::{Value, json};
 
@@ -2306,6 +2307,77 @@ fn a_resumed_shell_shows_the_turn_summaries_upstream_saved() {
                 "  2s (↑50 ↓0)",
             ]
         ),
+        "{screen}"
+    );
+    exit(session);
+}
+
+#[test]
+fn a_first_turn_paused_with_escape_is_kept_for_continue_to_resume() {
+    let port = RefusedPort::reserve();
+    let home = Home::new(&port.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"hi\r");
+    wait(&session, " · esc to pause");
+    session.send(b"\x1b");
+    wait(&session, "recovery paused after 1 attempt");
+    exit(session);
+    let id = home.only_session();
+    assert!(home.sessions().join(&id).join("recovery.json").exists());
+    assert!(home.frames(&id).is_empty());
+
+    let session = home.shell(&["-c"], "continues automatically");
+    let screen = wait(&session, "waiting for connection");
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ hi",
+                "model response recovery paused and continues automatically",
+                "waiting for connection"
+            ]
+        ),
+        "{screen}"
+    );
+    session.send(b"\x03");
+    wait(&session, CANCELLATION);
+    exit(session);
+}
+
+#[test]
+fn a_shell_killed_while_its_first_turn_waits_to_retry_is_reopened_by_continue() {
+    let port = RefusedPort::reserve();
+    let home = Home::new(&port.base_url());
+    let mut session = home.shell(&[], WELCOME);
+    session.send(b"hi\r");
+    wait(&session, " · esc to pause");
+    let remembered = home.sessions().with_file_name("continue");
+    let deadline = std::time::Instant::now() + WAIT;
+    let named = |entry: fs::DirEntry| {
+        let name = entry.file_name();
+        name.len() == 64
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+    };
+    while !fs::read_dir(&remembered).is_ok_and(|entries| entries.filter_map(Result::ok).any(named))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the session was never remembered for -c"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    session.kill().expect("kill oh-fx");
+    assert!(session.wait_exit(WAIT).is_some());
+    let id = home.only_session();
+    assert!(home.sessions().join(&id).join("recovery.json").exists());
+
+    let session = home.shell(&["-c"], "quit unexpectedly");
+    let screen = wait(&session, "auto · model-a");
+    assert!(
+        appears_in_order(&screen, &["┃ hi", "quit unexpectedly"]),
         "{screen}"
     );
     exit(session);
