@@ -181,15 +181,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Check pinned upstream file coverage
+      - name: Check pinned upstream coverage and golden bytes
         run: |
           upstream_commit="$(cat parity/UPSTREAM)"
           upstream_path="$RUNNER_TEMP/fx-upstream"
           git init --bare "$upstream_path"
           git -C "$upstream_path" remote add origin https://github.com/vercel-labs/fx
-          git -C "$upstream_path" fetch --no-tags --depth=1 --filter=blob:none origin "$upstream_commit"
+          git -C "$upstream_path" fetch --no-tags --depth=1 origin "$upstream_commit"
           git -C "$upstream_path" update-ref HEAD "$upstream_commit"
           cargo xtask parity --upstream "$upstream_path"
+          cargo xtask parity goldens --check --upstream "$upstream_path"
 
   repository:
     name: Repository checks

@@ -311,13 +311,11 @@ fn verify_checkout(upstream: &Path, pin: &str) -> Result<(), String> {
 }
 
 fn git(upstream: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
-    command.current_dir(upstream).args(args);
-    for (variable, _) in std::env::vars_os() {
-        if variable.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(variable);
-        }
-    }
+    git_with_transport(upstream, args, false)
+}
+
+fn git_with_transport(upstream: &Path, args: &[&str], offline: bool) -> Result<String, String> {
+    let mut command = git_command(std::ffi::OsStr::new("git"), upstream, args, offline);
     let output = command
         .output()
         .map_err(|error| format!("upstream git {}: {error}", args.join(" ")))?;
@@ -329,6 +327,27 @@ fn git(upstream: &Path, args: &[&str]) -> Result<String, String> {
         ));
     }
     String::from_utf8(output.stdout).map_err(|error| error.to_string())
+}
+
+fn git_command(
+    program: &std::ffi::OsStr,
+    upstream: &Path,
+    args: &[&str],
+    offline: bool,
+) -> Command {
+    let mut command = Command::new(program);
+    command.current_dir(upstream).args(args);
+    for (variable, _) in std::env::vars_os() {
+        if variable.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(variable);
+        }
+    }
+    if offline {
+        command
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_ALLOW_PROTOCOL", "");
+    }
+    command
 }
 
 fn upstream_path(options: &[&str], fallback: Option<PathBuf>) -> Result<PathBuf, String> {

@@ -213,6 +213,10 @@ const ROOT: &str = "current_request: Run the fixture.\n";
 
 #[test]
 fn automatic_review_policy_matches_the_tested_provider_neutral_artifact() {
+    assert_eq!(
+        REVIEW_POLICY_TEMPLATE.as_bytes(),
+        include_bytes!("../../../../parity/goldens/review_policy.xml")
+    );
     assert_eq!(REVIEW_POLICY_TEMPLATE.len(), 3195);
     assert_eq!(
         lowercase_hex(&Sha256::digest(REVIEW_POLICY_TEMPLATE.as_bytes())),
