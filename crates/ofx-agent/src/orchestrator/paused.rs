@@ -1,7 +1,7 @@
 use ofx_contract::{
     Completion, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,
-    ModelRecoveryRequiredAction, ProviderError, RecoveryProgress, RecoveryStrategy,
-    RouteRecoveryKind, RouteRecoveryStatus, UiEvent,
+    ModelRecoveryRequiredAction, ProviderError, ProviderErrorKind, RecoveryProgress,
+    RecoveryStrategy, RouteRecoveryKind, RouteRecoveryStatus, UiEvent,
 };
 
 use super::recovery::Restart;
@@ -93,7 +93,7 @@ impl Agent {
     pub(super) fn reconcile_broken(
         &self,
         turn: &mut Turn,
-        (observed, cause, error): (ToolEvidence, ModelRecoveryCause, &ProviderError),
+        (observed, cause, error): (ToolEvidence, Option<ModelRecoveryCause>, &ProviderError),
         (attempt, consumed): (usize, usize),
         restart: &Restart<'_>,
         events: EventSink<'_>,
@@ -102,11 +102,17 @@ impl Agent {
         {
             return Ok(());
         }
-        if failed_in_stream(cause, error) {
+        let ended_in_stream = match cause {
+            Some(cause) => failed_in_stream(cause, error),
+            None => error.status.is_none() && error.kind == ProviderErrorKind::ProviderError,
+        };
+        if ended_in_stream {
             return Err(self.unexpected_tool_call(turn, attempt, restart, events));
         }
         let pause = Pause {
-            cause,
+            cause: cause
+                .or(turn.recovery_cause)
+                .unwrap_or(ModelRecoveryCause::NetworkInterrupted),
             attempt: consumed,
             required_action: ModelRecoveryRequiredAction::InspectUncertainTool,
             diagnostic: failure_diagnostic(error),

@@ -945,7 +945,10 @@ impl Agent {
                 let recovery = recovering_from.map(|cause| (cause, consumed));
                 return Err(self.interruption(turn, recovery, &error, restart, events));
             }
-            let Some(cause) = recovery_cause(error.kind) else {
+            let cause = recovery_cause(error.kind);
+            let observed = (tool, cause, &error);
+            self.reconcile_broken(turn, observed, (attempt, consumed), &restart, events)?;
+            let Some(cause) = cause else {
                 if let Some(status) =
                     stopped_status(recovering_from, attempt, consumed, &error, spoke)
                 {
@@ -957,7 +960,6 @@ impl Agent {
                 });
             };
             let observed = (tool, cause, &error);
-            self.reconcile_broken(turn, observed, (attempt, consumed), &restart, events)?;
             let evidence =
                 restart.evidence(&mut turn.tool_evidence, observed, &turn.language.stage);
             let decision = recovery.decide(cause, &error, streamed_bytes, evidence);

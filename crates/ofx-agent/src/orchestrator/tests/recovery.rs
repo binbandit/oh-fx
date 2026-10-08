@@ -704,3 +704,68 @@ async fn a_reconciling_reply_that_calls_a_tool_pauses_without_running_it() {
         Some((RecoveryToolState::Uncertain, 1))
     );
 }
+
+fn started_then(error: ProviderError) -> Script {
+    Script::Fail(
+        vec![
+            StreamEvent::TextDelta {
+                text: "Checking the file".to_owned(),
+            },
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call-2"),
+                tool_name: "echo".to_owned(),
+            },
+        ],
+        error,
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reconciling_request_that_starts_a_tool_and_then_fails_for_good_still_pauses() {
+    let mut rejected = failure(ProviderErrorKind::ProviderError, "ProviderError");
+    rejected.diagnostic = Some("invalid_prompt: request rejected".to_owned());
+    let cases = [
+        (
+            rejected,
+            "UnexpectedToolCallDuringReconciliation",
+            RecoveryToolState::Uncertain,
+        ),
+        (
+            failure(ProviderErrorKind::Protocol, "OpenAICodexStreamIncomplete"),
+            "OpenAICodexStreamIncomplete",
+            RecoveryToolState::ProvenUnexecuted,
+        ),
+    ];
+    for (error, diagnostic, tool_state) in cases {
+        let provider = FakeProvider::new(vec![
+            started_then(error),
+            text_reply("must not be requested"),
+        ]);
+        let (log, entries) = MemoryLog::shared();
+        let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+        let (report, events) = continue_turn(&mut agent, reconciling()).await;
+        assert_eq!(
+            report.failure.unwrap().code(),
+            "RecoveryPaused",
+            "{diagnostic}"
+        );
+        assert_eq!(provider.requests().len(), 1);
+        let paused = recoveries(&events).pop().unwrap();
+        assert_eq!(
+            paused.required_action,
+            ModelRecoveryRequiredAction::InspectUncertainTool
+        );
+        assert_eq!(
+            paused.label(),
+            format!("⚠ Network interrupted · {diagnostic} · recovery paused after 1 attempt")
+        );
+        let entries = entries.lock().unwrap();
+        assert_eq!(paused_checkpoint(&entries), Some((tool_state, 1)));
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, Logged::Turn { .. })),
+            "{diagnostic}"
+        );
+    }
+}
