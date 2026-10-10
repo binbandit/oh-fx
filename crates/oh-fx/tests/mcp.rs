@@ -58,6 +58,10 @@ while IFS= read -r line; do
     *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
     *'"method":"prompts/list"'*)
       reply "$id" '{"prompts":[{"name":"review","title":"Review","arguments":[{"name":"focus","required":true},{"name":"depth"}]},{"name":"explain","description":"Explain code"}]}' ;;
+    *'"method":"prompts/get"'*'"name":"explain"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"Prompt request rejected by fixture"}}\n' "$id" ;;
+    *'"method":"prompts/get"'*)
+      reply "$id" '{"description":"Review the change","messages":[{"role":"user","content":{"type":"text","text":"PROMPT_TEXT"}}]}' ;;
   esac
 done
 "#;
@@ -834,6 +838,29 @@ fn the_mcp_command_lists_prompts() {
     );
     session.send(b"/mcp prompt list missing\r");
     shown(&session, "MCP prompt listing failed: McpServerNotFound.");
+    exit(session);
+}
+
+#[test]
+fn the_mcp_command_gets_a_prompt() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("docs.sh", PROMPT_SERVER);
+    home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
+    let session = home.shell();
+    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    session.send(b"/mcp prompt get docs review {\"focus\":\"security\"}\r");
+    shown(&session, "[untrusted MCP prompt content] docs :: review");
+    shown(&session, "Review the change");
+    shown(&session, "user (text):");
+    shown(&session, "PROMPT_TEXT");
+    session.send(b"/mcp prompt get docs review\r");
+    shown(&session, "MCP prompt invocation failed: InvalidArguments.");
+    session.send(b"/mcp prompt get docs explain\r");
+    shown(
+        &session,
+        "MCP protocol error -32603: Prompt request rejected by fixture",
+    );
     exit(session);
 }
 

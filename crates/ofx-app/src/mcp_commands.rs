@@ -5,9 +5,9 @@ use std::sync::Arc;
 use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
 use ofx_contract::NoticeTone;
 use ofx_mcp::{
-    AddIntentError, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction, PromptSummary,
-    ResourceContent, ResourceData, ResourceReadFailure, ResourceSummary, add_profile_server,
-    apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
+    AddIntentError, FeatureFailure, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction,
+    PromptGetResult, PromptSummary, ResourceContent, ResourceData, ResourceSummary,
+    add_profile_server, apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
     remove_profile_server,
 };
 use ofx_text::{encode_terminal_safe, mask_secrets};
@@ -61,6 +61,11 @@ pub(crate) enum Outcome {
     },
     ListPrompts {
         server: String,
+    },
+    GetPrompt {
+        server: String,
+        name: String,
+        arguments: String,
     },
 }
 
@@ -129,6 +134,11 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
         Outcome::ListResources { server, templates } => host.list_resources(server, templates),
         Outcome::ReadResource { server, uri } => host.read_resource(server, uri),
         Outcome::ListPrompts { server } => host.list_prompts(server),
+        Outcome::GetPrompt {
+            server,
+            name,
+            arguments,
+        } => host.get_prompt(server, name, arguments),
     }
 }
 
@@ -164,16 +174,11 @@ pub(crate) fn render_resource_listing(
 pub(crate) fn render_resource_read(
     server: &str,
     uri: &str,
-    read: Result<Arc<[ResourceContent]>, ResourceReadFailure>,
+    read: Result<Arc<[ResourceContent]>, FeatureFailure>,
 ) -> String {
     let contents = match read {
         Ok(contents) => contents,
-        Err(ResourceReadFailure::Error(error)) => {
-            return format!("MCP resource read failed: {error}.");
-        }
-        Err(ResourceReadFailure::Diagnostic(diagnostic)) => {
-            return mask_secrets(&diagnostic).into_owned();
-        }
+        Err(failure) => return render_failure("MCP resource read failed", failure),
     };
     let mut out = format!("[untrusted MCP resource content] {server} :: {uri}\n");
     for content in contents.iter() {
@@ -191,6 +196,38 @@ pub(crate) fn render_resource_read(
         out.push('\n');
     }
     out
+}
+
+pub(crate) fn render_prompt_get(
+    server: &str,
+    name: &str,
+    result: Result<PromptGetResult, FeatureFailure>,
+) -> String {
+    let result = match result {
+        Ok(result) => result,
+        Err(failure) => return render_failure("MCP prompt invocation failed", failure),
+    };
+    let mut out = format!("[untrusted MCP prompt content] {server} :: {name}\n");
+    if let Some(description) = &result.description {
+        let _ = writeln!(out, "{description}");
+    }
+    for message in &result.messages {
+        let _ = write!(
+            out,
+            "\n{} ({}):\n{}\n",
+            message.role.as_str(),
+            message.content_kind.as_str(),
+            message.content_json
+        );
+    }
+    out
+}
+
+fn render_failure(prefix: &str, failure: FeatureFailure) -> String {
+    match failure {
+        FeatureFailure::Error(error) => format!("{prefix}: {error}."),
+        FeatureFailure::Diagnostic(diagnostic) => mask_secrets(&diagnostic).into_owned(),
+    }
 }
 
 pub(crate) fn render_prompt_listing(
@@ -451,15 +488,29 @@ fn prompt(rest: &str) -> Outcome {
             },
             _ => show(PROMPT_LIST_USAGE),
         },
-        Some("get") => show(match (tokens.next(), tokens.next()) {
-            (Some(_), Some(_)) => "MCP prompt invocation is not available yet.",
-            _ => PROMPT_GET_USAGE,
-        }),
+        Some("get") => get_prompt(rest),
         Some("complete") => show(match (tokens.next(), tokens.next(), tokens.next()) {
             (Some(_), Some(_), Some(_)) => "MCP prompt completion is not available yet.",
             _ => PROMPT_COMPLETE_USAGE,
         }),
         _ => show(PROMPT_USAGE),
+    }
+}
+
+fn get_prompt(rest: &str) -> Outcome {
+    let mut input = rest;
+    take_token(&mut input);
+    let (Some(server), Some(name)) = (take_token(&mut input), take_token(&mut input)) else {
+        return show(PROMPT_GET_USAGE);
+    };
+    let arguments = match input.trim_matches(TRIMMED) {
+        "" => "{}",
+        arguments => arguments,
+    };
+    Outcome::GetPrompt {
+        server: server.to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
     }
 }
 
@@ -499,7 +550,10 @@ mod tests {
     use std::path::PathBuf;
 
     use ofx_config::{ContextLimitName, ContextLimits};
-    use ofx_mcp::{ConnectOptions, NativeConfigLoad, PromptArgument, SchemaLimits};
+    use ofx_mcp::{
+        ConnectOptions, NativeConfigLoad, PromptArgument, PromptContentKind, PromptMessage,
+        PromptRole, SchemaLimits,
+    };
 
     use super::*;
 
@@ -715,10 +769,8 @@ mod tests {
             ("prompt list", PROMPT_LIST_USAGE),
             ("prompt list docs extra", PROMPT_LIST_USAGE),
             ("prompt get docs", PROMPT_GET_USAGE),
-            (
-                "prompt get docs review {}",
-                "MCP prompt invocation is not available yet.",
-            ),
+            ("prompt get", PROMPT_GET_USAGE),
+            ("prompt get \t docs \t", PROMPT_GET_USAGE),
             ("prompt complete docs review", PROMPT_COMPLETE_USAGE),
             (
                 "prompt complete docs review topic x",
@@ -833,7 +885,7 @@ mod tests {
             render_resource_read(
                 "docs",
                 "memory://x",
-                Err(ResourceReadFailure::Error(McpError::McpResourceNotFound))
+                Err(FeatureFailure::Error(McpError::McpResourceNotFound))
             ),
             "MCP resource read failed: McpResourceNotFound."
         );
@@ -841,7 +893,7 @@ mod tests {
             render_resource_read(
                 "docs",
                 "memory://x",
-                Err(ResourceReadFailure::Diagnostic(
+                Err(FeatureFailure::Diagnostic(
                     "MCP protocol error -32002: denied; data={\"token\":\"sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789\"}".to_owned()
                 ))
             ),
@@ -894,6 +946,96 @@ mod tests {
         assert_eq!(
             render_prompt_listing("docs", Err(McpError::McpPromptsUnsupported)),
             "MCP prompt listing failed: McpPromptsUnsupported."
+        );
+    }
+
+    #[test]
+    fn prompt_gets_take_the_rest_of_the_line_as_arguments_and_show_each_message() {
+        let (_home, path) = profile();
+        for (command, arguments) in [
+            (
+                "prompt get server-b shared {\"tone\":\"very brief\"}",
+                "{\"tone\":\"very brief\"}",
+            ),
+            ("prompt \tget  server-b   shared \t", "{}"),
+            ("prompt get server-b shared  {} \t", "{}"),
+            ("prompt get server-b shared not json", "not json"),
+        ] {
+            for config_path in [Some(path.as_path()), None] {
+                assert_eq!(
+                    respond(command, config_path, &runtime()),
+                    Outcome::GetPrompt {
+                        server: "server-b".to_owned(),
+                        name: "shared".to_owned(),
+                        arguments: arguments.to_owned(),
+                    },
+                    "{command}"
+                );
+            }
+        }
+        let message = |role, content_kind, content_json: &str| PromptMessage {
+            role,
+            content_kind,
+            content_json: content_json.to_owned(),
+        };
+        assert_eq!(
+            render_prompt_get(
+                "docs",
+                "review",
+                Ok(PromptGetResult {
+                    description: Some("Review code".to_owned()),
+                    messages: vec![
+                        message(
+                            PromptRole::User,
+                            PromptContentKind::Text,
+                            r#"{"type":"text","text":"hello"}"#
+                        ),
+                        message(
+                            PromptRole::Assistant,
+                            PromptContentKind::ResourceLink,
+                            r#"{"type":"resource_link","uri":"git://repo","name":"repo"}"#
+                        ),
+                    ],
+                })
+            ),
+            "[untrusted MCP prompt content] docs :: review\nReview code\n\nuser (text):\n{\"type\":\"text\",\"text\":\"hello\"}\n\nassistant (resource_link):\n{\"type\":\"resource_link\",\"uri\":\"git://repo\",\"name\":\"repo\"}\n"
+        );
+        assert_eq!(
+            render_prompt_get(
+                "docs",
+                "empty",
+                Ok(PromptGetResult {
+                    description: None,
+                    messages: Vec::new(),
+                })
+            ),
+            "[untrusted MCP prompt content] docs :: empty\n"
+        );
+        for (kind, name) in [
+            (PromptContentKind::Image, "image"),
+            (PromptContentKind::Audio, "audio"),
+            (PromptContentKind::Resource, "resource"),
+        ] {
+            assert_eq!(kind.as_str(), name);
+        }
+        assert_eq!(
+            render_prompt_get(
+                "docs",
+                "review",
+                Err(FeatureFailure::Error(McpError::InvalidArguments))
+            ),
+            "MCP prompt invocation failed: InvalidArguments."
+        );
+        assert_eq!(
+            render_prompt_get(
+                "docs",
+                "review",
+                Err(FeatureFailure::Diagnostic(
+                    "MCP protocol error -32603: rejected SERVICE_TOKEN=fixture-token-123456"
+                        .to_owned()
+                ))
+            ),
+            "MCP protocol error -32603: rejected SERVICE_TOKEN=[redacted]"
         );
     }
 

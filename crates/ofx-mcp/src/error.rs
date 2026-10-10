@@ -66,6 +66,8 @@ pub enum McpError {
     McpPromptsUnsupported,
     #[error("McpPromptCatalogUnavailable")]
     McpPromptCatalogUnavailable,
+    #[error("McpPromptNotFound")]
+    McpPromptNotFound,
     #[error("McpResourceNotFound")]
     McpResourceNotFound,
     #[error("McpResourceTemplateMatchLimitExceeded")]
@@ -156,6 +158,14 @@ pub enum McpError {
     PromptLimitExceeded,
     #[error("ArgumentLimitExceeded")]
     ArgumentLimitExceeded,
+    #[error("InvalidGetResult")]
+    InvalidGetResult,
+    #[error("MessageLimitExceeded")]
+    MessageLimitExceeded,
+    #[error("InvalidMessage")]
+    InvalidMessage,
+    #[error("InvalidArguments")]
+    InvalidArguments,
     #[error("InvalidTool")]
     InvalidTool,
     #[error("DuplicateTool")]

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use ofx_contract::ArgumentShape;
+use ofx_contract::{ArgumentShape, parse_strict_json_value};
 use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
@@ -208,7 +208,8 @@ impl CatalogBuilder {
 }
 
 pub(crate) fn parse_list_page(response: &str, limits: Limits) -> Result<Page, McpError> {
-    let value: Value = serde_json::from_str(response).map_err(|_| McpError::InvalidEnvelope)?;
+    let value =
+        parse_strict_json_value(response.as_bytes()).map_err(|_| McpError::InvalidEnvelope)?;
     validate_json_rpc_response_envelope(&value).map_err(|_| McpError::InvalidEnvelope)?;
     if value.get("error").is_some() {
         return Err(McpError::ProtocolFailure);
@@ -403,7 +404,8 @@ pub(crate) fn parse_call_outcome(
     max_result_bytes: usize,
     limits: Limits,
 ) -> Result<ToolCallOutcome, McpError> {
-    let mut value: Value = serde_json::from_str(response).map_err(|_| McpError::InvalidEnvelope)?;
+    let mut value =
+        parse_strict_json_value(response.as_bytes()).map_err(|_| McpError::InvalidEnvelope)?;
     validate_json_rpc_response_envelope(&value).map_err(|_| McpError::InvalidEnvelope)?;
     if let Some(error) = value.get("error") {
         return parse_protocol_error(error, limits).map(ToolCallOutcome::ProtocolFailure);
@@ -837,6 +839,10 @@ mod tests {
                 McpError::InvalidListResult,
             ),
             ("not json", McpError::InvalidEnvelope),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[],"tools":[]}}"#,
+                McpError::InvalidEnvelope,
+            ),
         ];
         for (response, expected) in cases {
             assert_eq!(
@@ -1138,6 +1144,15 @@ mod tests {
             assert_eq!(outcome(size), Some(McpError::InvalidContent), "{size}");
         }
         assert_eq!(outcome("1e400"), Some(McpError::InvalidEnvelope));
+        assert_eq!(
+            parse_call_outcome(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"a","text":"b"}]}}"#,
+                64 * 1024,
+                Limits::default(),
+            )
+            .err(),
+            Some(McpError::InvalidEnvelope)
+        );
     }
 
     #[test]
