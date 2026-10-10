@@ -17,8 +17,8 @@ use crate::command_specs::TopLevelKind;
 
 pub(crate) use arg_stream::{ArgStream, ValueForm, non_blank, requests_json};
 pub use command_args::{
-    OutputFormat, SessionAction, SessionArgs, SessionListArgs, SessionTarget, UsageArgs,
-    WorkspaceAction, WorkspaceArgs,
+    McpOperation, OutputFormat, SessionAction, SessionArgs, SessionListArgs, SessionTarget,
+    UsageArgs, WorkspaceAction, WorkspaceArgs,
 };
 pub(crate) use failure::Report;
 pub use failure::{CliError, command_failure_json};
@@ -68,7 +68,7 @@ pub enum Command {
     Setup,
     Status(OutputFormat),
     Permissions(OutputFormat),
-    Mcp,
+    Mcp(McpOperation),
     Models(OutputFormat),
     Provider(ProviderId),
     Doctor(OutputFormat),
@@ -94,7 +94,7 @@ impl Command {
             Self::Setup => TopLevelKind::Setup,
             Self::Status(_) => TopLevelKind::Status,
             Self::Permissions(_) => TopLevelKind::Permissions,
-            Self::Mcp => TopLevelKind::Mcp,
+            Self::Mcp(_) => TopLevelKind::Mcp,
             Self::Models(_) => TopLevelKind::Models,
             Self::Provider(_) => TopLevelKind::Provider,
             Self::Doctor(_) => TopLevelKind::Doctor,
@@ -131,7 +131,7 @@ impl Command {
             | Self::Login(_)
             | Self::Logout(_)
             | Self::Setup
-            | Self::Mcp
+            | Self::Mcp(_)
             | Self::Provider(_)
             | Self::Teams => OutputFormat::Text,
         }
@@ -275,7 +275,7 @@ fn parse_command(
         TopLevelKind::Models => Command::Models(command_args::parse_output_format(kind, &rest)?),
         TopLevelKind::Doctor => Command::Doctor(command_args::parse_output_format(kind, &rest)?),
         TopLevelKind::Credits => Command::Credits(command_args::parse_output_format(kind, &rest)?),
-        TopLevelKind::Mcp => command_args::validate_mcp(&rest).map(|()| Command::Mcp)?,
+        TopLevelKind::Mcp => Command::Mcp(command_args::parse_mcp(&rest)?),
         TopLevelKind::Provider => Command::Provider(command_args::parse_provider(&rest)?),
         TopLevelKind::Session => Command::Session(command_args::parse_session(rest)?),
         TopLevelKind::Sessions => Command::Sessions(command_args::parse_session_list(rest)?),

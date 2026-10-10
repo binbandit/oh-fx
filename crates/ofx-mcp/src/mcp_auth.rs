@@ -4,8 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_auth::{FormBody, percent_encode};
-use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use reqwest::{Method, StatusCode};
 use serde_json::error::Category;
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
@@ -169,10 +169,16 @@ fn refresh_rejection_is_final(body: &[u8]) -> bool {
         .is_ok_and(|value| value.get("error").and_then(Value::as_str) == Some("invalid_grant"))
 }
 
-struct OAuthResponse {
-    status: StatusCode,
-    content_type: Option<String>,
-    body: Zeroizing<Vec<u8>>,
+pub(crate) struct OAuthResponse {
+    pub(crate) status: StatusCode,
+    pub(crate) content_type: Option<String>,
+    pub(crate) body: Zeroizing<Vec<u8>>,
+}
+
+pub(crate) enum Payload<'a> {
+    Empty,
+    Form(&'a FormBody),
+    Json(&'a str),
 }
 
 async fn post_form(
@@ -181,15 +187,30 @@ async fn post_form(
     form: &FormBody,
     authorization: Option<&Zeroizing<String>>,
 ) -> Result<OAuthResponse, McpError> {
+    request(http, Method::POST, url, Payload::Form(form), authorization).await
+}
+
+pub(crate) async fn request(
+    http: &reqwest::Client,
+    method: Method,
+    url: &str,
+    payload: Payload<'_>,
+    authorization: Option<&Zeroizing<String>>,
+) -> Result<OAuthResponse, McpError> {
     let uri = OAuthUri::parse(url).ok_or(McpError::InvalidMcpAuthEndpoint)?;
     if !uri.is_secure_or_loopback() || uri.has_userinfo || uri.fragment.is_some() {
         return Err(McpError::InsecureMcpAuthEndpoint);
     }
-    let mut request = http
-        .post(url)
-        .timeout(REQUEST_TIMEOUT)
-        .header(CONTENT_TYPE, FORM_CONTENT_TYPE)
-        .body(form.as_str().to_owned());
+    let mut request = http.request(method, url).timeout(REQUEST_TIMEOUT);
+    request = match payload {
+        Payload::Empty => request,
+        Payload::Form(form) => request
+            .header(CONTENT_TYPE, FORM_CONTENT_TYPE)
+            .body(form.as_str().to_owned()),
+        Payload::Json(body) => request
+            .header(CONTENT_TYPE, "application/json")
+            .body(body.to_owned()),
+    };
     if let Some(authorization) = authorization {
         let mut value = HeaderValue::from_str(authorization)
             .map_err(|_| McpError::Header(HeaderError::InvalidHeaderValue))?;
@@ -224,7 +245,7 @@ pub(crate) fn parse_json(bytes: &[u8]) -> Result<Value, McpError> {
     })
 }
 
-fn validate_json_content_type(content_type: Option<&str>) -> Result<(), McpError> {
+pub(crate) fn validate_json_content_type(content_type: Option<&str>) -> Result<(), McpError> {
     let value = content_type.ok_or(McpError::InvalidOAuthResponseContentType)?;
     let media_type = value.split(';').next().unwrap_or_default();
     if media_type
@@ -273,6 +294,12 @@ fn token_expires_at(object: &Map<String, Value>, now_ms: i64) -> Result<i64, Mcp
         .ok_or(McpError::InvalidTokenResponse)?;
     Ok(now_ms.saturating_add(seconds.saturating_mul(1000)))
 }
+
+mod authorization;
+mod metadata;
+
+pub(crate) use authorization::{AuthorizationResult, ClientConfig, authorize_interactive};
+pub(crate) use metadata::{issuers_match, resource_covers_endpoint};
 
 #[cfg(test)]
 mod tests;

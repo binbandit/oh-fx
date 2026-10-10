@@ -116,6 +116,10 @@ mod stored {
             CredentialStore::new(&self.data())
         }
 
+        fn lookup(&self) -> GrantLookup {
+            GrantLookup::for_server(&self.config()).unwrap()
+        }
+
         fn config(&self) -> McpServerConfig {
             McpServerConfig {
                 bearer_token_env: Some("OH_FX_TEST_UNSET_BEARER".to_owned()),
@@ -166,7 +170,7 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(i64::MAX, None))
+            .save(&fixture.lookup(), &fixture.credentials(i64::MAX, None))
             .unwrap();
         let client = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -187,7 +191,7 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(i64::MAX, None))
+            .save(&fixture.lookup(), &fixture.credentials(i64::MAX, None))
             .unwrap();
         let refused = McpServerConfig {
             allow_stored_credentials: false,
@@ -211,7 +215,10 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let client = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -231,11 +238,7 @@ mod stored {
                 .count(),
             1
         );
-        let saved = fixture
-            .store()
-            .load("remote", &fixture.server.url, None, None)
-            .unwrap()
-            .unwrap();
+        let saved = fixture.store().load(&fixture.lookup()).unwrap().unwrap();
         assert_eq!(saved.access_token.as_str(), "renewed-token");
         assert_eq!(
             saved.refresh_token.as_deref().map(String::as_str),
@@ -249,7 +252,7 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, None))
+            .save(&fixture.lookup(), &fixture.credentials(1, None))
             .unwrap();
         let failure = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -268,7 +271,10 @@ mod stored {
         let fixture = Fixture::start(r#"{"access_token":""}"#).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let failure = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -329,9 +335,9 @@ mod stored {
     }
 
     fn oauth_client() -> reqwest::Client {
-        ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
+        ofx_http::build_connection_client(&ConnectionOptions {
             follow_redirects: false,
-            ..ofx_http::ConnectionOptions::default()
+            ..ConnectionOptions::default()
         })
         .unwrap()
     }
@@ -355,11 +361,96 @@ mod stored {
     }
 
     #[tokio::test]
+    async fn a_refresh_replaces_only_the_grant_it_refreshed() {
+        let fixture = Fixture::start(RENEWED).await;
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let auth = resolved(&fixture).await;
+        let other_issuer = GrantLookup::new(
+            "remote",
+            &fixture.server.url,
+            None,
+            Some("https://other-issuer.example"),
+        )
+        .unwrap();
+        let mut newer = fixture.credentials(i64::MAX, None);
+        newer.issuer = "https://other-issuer.example".to_owned();
+        newer.access_token = Zeroizing::new("newer-token".to_owned());
+        fixture.store().save(&other_issuer, &newer).unwrap();
+        let builder = auth
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization(builder).as_deref(),
+            Some("Bearer renewed-token")
+        );
+        let kept = fixture.store().load(&other_issuer).unwrap().unwrap();
+        assert_eq!(kept.access_token.as_str(), "newer-token");
+        let refreshed = fixture
+            .store()
+            .load(
+                &GrantLookup::new(
+                    "remote",
+                    &fixture.server.url,
+                    None,
+                    Some("https://issuer.example"),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(refreshed.access_token.as_str(), "renewed-token");
+    }
+
+    #[tokio::test]
+    async fn a_refresh_of_a_superseded_grant_stays_with_its_session() {
+        let fixture = Fixture::start(RENEWED).await;
+        let mut slashed = fixture.credentials(1, Some("stored-refresh"));
+        slashed.issuer = "https://issuer.example/".to_owned();
+        fixture.store().save(&fixture.lookup(), &slashed).unwrap();
+        let auth = resolved(&fixture).await;
+        let mut reauthorized = fixture.credentials(i64::MAX, None);
+        reauthorized.access_token = Zeroizing::new("newer-token".to_owned());
+        fixture
+            .store()
+            .save(&fixture.lookup(), &reauthorized)
+            .unwrap();
+        let builder = auth
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization(builder).as_deref(),
+            Some("Bearer renewed-token")
+        );
+        let stored = std::fs::read_to_string(
+            fixture
+                .data()
+                .join("mcp-credentials")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        assert_eq!(stored.matches("\"server_identity\"").count(), 1, "{stored}");
+        assert!(!stored.contains("renewed-token"));
+        let loaded = fixture.store().load(&fixture.lookup()).unwrap().unwrap();
+        assert_eq!(loaded.access_token.as_str(), "newer-token");
+    }
+
+    #[tokio::test]
     async fn concurrent_requests_share_one_refresh() {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let auth = resolved(&fixture).await;
         let http = oauth_client();
@@ -381,7 +472,10 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let auth = resolved(&fixture).await;
         let closing = auth.apply_current(oauth_client().delete(&fixture.server.url));
@@ -423,7 +517,7 @@ mod stored {
         fixture
             .store()
             .save(
-                "remote",
+                &fixture.lookup(),
                 &fixture.credentials(expires_at_ms, Some("stored-refresh")),
             )
             .unwrap();
@@ -460,5 +554,154 @@ mod stored {
                 .await
         );
         call.abort();
+    }
+}
+
+mod authenticating {
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    use zeroize::Zeroizing;
+
+    use super::*;
+    use crate::mcp_auth_store::CredentialStore;
+    use crate::mcp_contract::McpAuthConfig;
+    use crate::test_support::{FakeServer, Reply};
+
+    fn remote(url: &str) -> McpServerConfig {
+        McpServerConfig {
+            allow_stored_credentials: true,
+            auth: Some(McpAuthConfig {
+                client_id: Some("configured".to_owned()),
+                ..McpAuthConfig::default()
+            }),
+            ..McpServerConfig::remote("remote", TransportType::Http, url)
+        }
+    }
+
+    fn options(data: &std::path::Path) -> ConnectOptions {
+        ConnectOptions {
+            profile_data: Some(data.to_path_buf()),
+            ..ConnectOptions::default()
+        }
+    }
+
+    async fn attempt(
+        config: &McpServerConfig,
+        options: &ConnectOptions,
+        environment: &(dyn Fn(&str) -> Option<String> + Sync),
+    ) -> (Result<AuthenticationOutcome, McpError>, Vec<String>) {
+        let opened = Arc::new(StdMutex::new(Vec::new()));
+        let seen = Arc::clone(&opened);
+        let open = move |url: &str| {
+            seen.lock().unwrap().push(url.to_owned());
+            false
+        };
+        let result = authenticate(
+            config,
+            options,
+            &open,
+            &CancellationToken::new(),
+            environment,
+        )
+        .await;
+        let urls = opened.lock().unwrap().clone();
+        (result, urls)
+    }
+
+    #[tokio::test]
+    async fn only_remote_servers_that_read_stored_grants_and_have_their_secrets_authenticate() {
+        let data = tempfile::tempdir().unwrap();
+        let options = options(data.path());
+        let pending = McpServerConfig {
+            source: ConfigSource::Workspace,
+            workspace_admission: Some(WorkspaceAdmission::Pending),
+            ..remote("https://mcp.example/mcp")
+        };
+        let approved = McpServerConfig {
+            source: ConfigSource::Workspace,
+            workspace_admission: Some(WorkspaceAdmission::Approved),
+            allow_stored_credentials: false,
+            ..remote("https://mcp.example/mcp")
+        };
+        let stdio = McpServerConfig::stdio("local", "/bin/true", Vec::new());
+        let mut secretive = remote("https://mcp.example/mcp");
+        secretive.auth = Some(McpAuthConfig {
+            client_secret_env: Some("OH_FX_TEST_CLIENT_SECRET".to_owned()),
+            ..McpAuthConfig::default()
+        });
+        for (config, options, expected) in [
+            (&pending, &options, McpError::McpWorkspaceApprovalRequired),
+            (&stdio, &options, McpError::McpAuthenticationNotRemote),
+            (
+                &approved,
+                &options,
+                McpError::McpStoredCredentialsNotAllowed,
+            ),
+            (
+                &secretive,
+                &options,
+                McpError::McpClientSecretEnvironmentMissing,
+            ),
+            (
+                &remote("https://mcp.example/mcp"),
+                &ConnectOptions::default(),
+                McpError::HomeNotSet,
+            ),
+        ] {
+            let (result, urls) = attempt(config, options, &|_| None).await;
+            assert_eq!(result, Err(expected));
+            assert!(urls.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_stored_grant_scope_is_requested_again() {
+        let server = FakeServer::start(|request| {
+            let origin = format!(
+                "http://{}",
+                request.header("host").unwrap_or_default()
+            );
+            match request.path.as_str() {
+                "/.well-known/oauth-protected-resource/mcp" => Reply::json(&format!(
+                    r#"{{"resource":"{origin}/mcp","authorization_servers":["{origin}"]}}"#
+                )),
+                "/.well-known/oauth-authorization-server" => Reply::json(&format!(
+                    r#"{{"issuer":"{origin}","authorization_endpoint":"{origin}/authorize","token_endpoint":"{origin}/token","code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"]}}"#
+                )),
+                _ => Reply::status(404),
+            }
+        })
+        .await;
+        let data = tempfile::tempdir().unwrap();
+        let data_path = std::fs::canonicalize(data.path()).unwrap().join("oh-fx");
+        let previous = Credentials {
+            endpoint: server.url.clone(),
+            resource: server.url.clone(),
+            issuer: "https://issuer.example".to_owned(),
+            client_id: "configured".to_owned(),
+            client_secret: None,
+            access_token: Zeroizing::new("old".to_owned()),
+            refresh_token: None,
+            scope: "earlier.scope".to_owned(),
+            token_type: "Bearer".to_owned(),
+            token_endpoint_auth_method: "none".to_owned(),
+            expires_at_ms: i64::MAX,
+            authorization_endpoint: "https://issuer.example/authorize".to_owned(),
+            token_endpoint: "https://issuer.example/token".to_owned(),
+            revocation_endpoint: None,
+        };
+        CredentialStore::new(&data_path)
+            .save(
+                &GrantLookup::for_server(&remote(&server.url)).unwrap(),
+                &previous,
+            )
+            .unwrap();
+        let (result, urls) = attempt(&remote(&server.url), &options(&data_path), &|_| None).await;
+        assert_eq!(result, Err(McpError::McpAuthorizationBrowserOpenFailed));
+        let (_, query) = urls[0].split_once('?').unwrap();
+        assert_eq!(
+            ofx_auth::query_value(query, "scope").unwrap().as_str(),
+            "earlier.scope"
+        );
     }
 }
