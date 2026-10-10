@@ -14,6 +14,7 @@ mod permissions_command;
 mod provider_activation;
 mod provider_command;
 mod question_call_record;
+mod session_command;
 mod sessions_command;
 mod shell_call_record;
 mod status_command;
@@ -99,6 +100,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Ask(args) => cli_ask::run(&args, &modifiers),
             Command::Upgrade(format) => upgrade_command::run(matches!(format, OutputFormat::Json)),
             Command::Doctor(format) => doctor_command::run(format, &modifiers),
+            Command::Session(args) => session_command::run(&args, &modifiers),
             Command::Sessions(args) => sessions_command::run(&args, &modifiers),
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),

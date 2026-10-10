@@ -55,7 +55,7 @@ note = "Request/result validation exists; matchCatalogModel catalog matching and
 upstream = "src/core/subagent/resume_admission.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs", "crates/ofx-session/src/session_discovery.rs"]
-note = "Child sessions are left out of listings, of the visible session page that sessions lists with its skipped-session count, and of latest-session selection, a direct resume of one is refused with OneOffSessionNotResumable, and a resumed parent takes its children back; the session index cache and read-only detail admission are absent."
+note = "Child sessions are left out of listings, of the visible session page that sessions lists with its skipped-session count, and of latest-session selection, a direct resume of one is refused with OneOffSessionNotResumable, a resumed parent takes its children back, and latestVisibleWorkspaceSummary answers session last from that page; the session index cache and read-only detail admission are absent."
 
 [[file]]
 upstream = "src/core/subagent/tool_host.zig"
