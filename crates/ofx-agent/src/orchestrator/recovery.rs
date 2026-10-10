@@ -196,9 +196,9 @@ impl<'a> Restart<'a> {
         self.messages = messages;
     }
 
-    pub(super) fn failed(self, error: ProviderError) -> Stop {
+    pub(super) fn failed(self, failure: TurnFailure) -> Stop {
         Stop::Failed {
-            failure: TurnFailure::Provider(error),
+            failure,
             partial: self.into_partial(),
         }
     }

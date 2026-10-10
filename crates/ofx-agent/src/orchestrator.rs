@@ -1177,12 +1177,16 @@ impl Agent {
                 streamed_bytes,
                 admitted,
                 tool,
+                settled,
             } = self
                 .attempt(turn, &sent, body.take(), &mut pending, events, cancel)
                 .await?;
             let consumed = attempt - usize::from(!admitted);
             let counted = (attempt, consumed, tool);
             let observed = restart.observe(partial, counted, &mut turn.tool_evidence);
+            if let Err(failure) = settled {
+                return Err(restart.failed(TurnFailure::Persistence(failure)));
+            }
             let error = match streamed {
                 Ok(completion) => {
                     let outcome = (recovering_from.is_some(), attempt, tool);
@@ -1209,7 +1213,7 @@ impl Agent {
                 {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                return Err(restart.failed(error));
+                return Err(restart.failed(TurnFailure::Provider(error)));
             };
             let evidence = (tool, cause, &error);
             let evidence =
@@ -1223,7 +1227,7 @@ impl Agent {
                     status: stalled_status(cause, consumed, &error, &decision),
                 });
                 self.discard_recovery(STALL_STOP);
-                return Err(restart.failed(error));
+                return Err(restart.failed(TurnFailure::Provider(error)));
             };
             let decided = (cause, decision.strategy);
             self.prepare_retry(turn, &mut request, &mut restart, failed, decided);
@@ -1326,18 +1330,14 @@ impl Agent {
             }
         };
         Meter::new(self.network_calls, trace).record(request.model, started_at_ms, &streamed);
-        if let Err(failure) = usage.settle(&streamed) {
-            return Err(Stop::Failed {
-                failure: TurnFailure::Persistence(failure),
-                partial: streamed_text.partial,
-            });
-        }
+        let settled = usage.settle(&streamed);
         Ok(Attempt {
             streamed,
             partial: streamed_text.partial,
             streamed_bytes,
             admitted,
             tool,
+            settled,
         })
     }
 
@@ -2238,6 +2238,7 @@ struct Attempt {
     streamed_bytes: usize,
     admitted: bool,
     tool: ToolEvidence,
+    settled: Result<(), LogFailure>,
 }
 
 fn stopped_status(
