@@ -457,3 +457,56 @@ fn session_diagnostics_stop_after_sixty_four_session_directories() {
         ))
     );
 }
+
+#[test]
+fn a_session_folder_open_to_others_or_a_linked_log_is_reported_unsafe() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["two"])),
+    ]);
+    let home = Home::new();
+    home.write_settings(&local_settings(&server.base_url()));
+    let environment = [("LOCAL_KEY", "secret")];
+    for prompt in ["first", "second"] {
+        let output = home.run(&["ask", prompt], &environment);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    }
+    let sessions = home.root.join("data/oh-fx/sessions");
+    let mut ids: Vec<String> = fs::read_dir(&sessions)
+        .expect("the sessions directory")
+        .map(|entry| {
+            entry
+                .expect("a session entry")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 id")
+        })
+        .collect();
+    ids.sort();
+    let [open, linked] = ids.as_slice() else {
+        panic!("two sessions: {ids:?}");
+    };
+    fs::set_permissions(sessions.join(open), fs::Permissions::from_mode(0o755))
+        .expect("open the session folder");
+    let log = sessions.join(linked).join("events.jsonl");
+    let moved = home.root.join("events.jsonl");
+    fs::rename(&log, &moved).expect("move the log");
+    symlink(&moved, &log).expect("link the log");
+
+    let shown = sessions.display();
+    let report: Value =
+        serde_json::from_str(&home.doctor(&["--json"], &environment)).expect("doctor JSON");
+    assert_eq!(
+        session_checks(&report),
+        [open, linked].map(|id| (
+            "fail".to_owned(),
+            format!("session {id}: unsafe_path; recovery=back up {shown} and avoid opening this session until the path is repaired"),
+        ))
+    );
+    let shown_session = home.run(&["session", linked], &environment);
+    assert_eq!(shown_session.status.code(), Some(1));
+    assert_eq!(
+        text(&shown_session.stderr),
+        "oh-fx session: record not found\n"
+    );
+}

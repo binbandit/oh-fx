@@ -327,6 +327,23 @@ fn a_session_that_cannot_be_shown_names_why() {
     broken_log.write(EVENTS_FILE, b"{\"not\":\"a frame\"}\n");
     assert_eq!(broken_log.archive(), Err(SessionError::SessionNotFound));
 
+    let linked_log = Store::new();
+    linked_log.log(&[]);
+    let log = linked_log
+        .root
+        .path()
+        .join("sessions")
+        .join(ID)
+        .join(EVENTS_FILE);
+    let moved = linked_log.root.path().join(EVENTS_FILE);
+    fs::rename(&log, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &log).unwrap();
+    assert_eq!(linked_log.archive(), Err(SessionError::SessionNotFound));
+    assert_eq!(
+        check_conversation(&linked_log.session, ID),
+        Err(SessionError::SessionPathUnsafe)
+    );
+
     let broken_metadata = Store::new();
     broken_metadata.log(&[]).write("session.json", b"{");
     assert_eq!(

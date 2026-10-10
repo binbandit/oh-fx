@@ -256,3 +256,27 @@ fn issue_kinds_keep_upstreams_names() {
         ]
     );
 }
+
+#[test]
+fn a_session_folder_open_to_others_or_a_log_that_is_not_its_own_file_is_unsafe() {
+    let store = Store::new();
+    fs::set_permissions(
+        store.seed("open-root", false),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let log = store.seed("linked-log", false).join("events.jsonl");
+    let moved = store.root.path().join("events.jsonl");
+    fs::rename(&log, &moved).unwrap();
+    symlink(&moved, &log).unwrap();
+    let shared = store.seed("shared-log", false).join("events.jsonl");
+    fs::hard_link(&shared, store.root.path().join("shared.jsonl")).unwrap();
+    assert_eq!(
+        store.issues(),
+        [
+            ("linked-log".to_owned(), DoctorIssueKind::UnsafePath),
+            ("open-root".to_owned(), DoctorIssueKind::UnsafePath),
+            ("shared-log".to_owned(), DoctorIssueKind::UnsafePath),
+        ]
+    );
+}

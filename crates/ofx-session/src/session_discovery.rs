@@ -168,10 +168,11 @@ fn inspect_session_dir(
     } else {
         return Err(SessionError::InvalidSessionFormat);
     }
-    Ok(MANAGED_CHILDREN
-        .iter()
-        .any(|route| !managed_child_is_safe(dir, route))
-        .then_some(DoctorIssueKind::UnsafePath))
+    let safe = has_private_dir_mode(dir).unwrap_or(false)
+        && MANAGED_CHILDREN
+            .iter()
+            .all(|route| managed_child_is_safe(dir, route));
+    Ok((!safe).then_some(DoctorIssueKind::UnsafePath))
 }
 
 fn holds_conversation_metadata(dir: &PrivateDir) -> Result<bool, SessionError> {
