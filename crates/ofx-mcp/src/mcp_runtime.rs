@@ -1188,6 +1188,7 @@ done
 
     const RESOURCE_SERVER: &str = r#"
 echo $$ >> "$STATE/pids"
+if [ -f "$STATE/stall" ]; then while IFS= read -r line; do :; done; exit 0; fi
 reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
@@ -1377,6 +1378,41 @@ done
         assert_eq!(
             requests(state.path()),
             "resources\npage-2\ntemplates\nresources\ntemplates\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_restart_for_a_listing_stays_within_the_operation_timeout() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("exit"), "").unwrap();
+        let runtime = runtime(vec![McpServerConfig {
+            restart_limit: 1,
+            operation_timeout_ms: 500,
+            startup_timeout_ms: 10_000,
+            ..config("fixture", RESOURCE_SERVER, state.path())
+        }]);
+        runtime.connect(StartupPhase::All).await;
+        let server = stopped_after_a_list_change(&runtime).await;
+        std::fs::write(state.path().join("stall"), "").unwrap();
+        let started = Instant::now();
+        let listing = runtime.list_resources("fixture", false).await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            summaries(&listing),
+            [("memory://a", "Alpha"), ("memory://b", "b")]
+        );
+        let Lifecycle::Failed(failure) = server.lifecycle() else {
+            panic!("the stalled restart did not fail the server");
+        };
+        assert!(
+            failure.starts_with("MCP server did not complete startup within ")
+                && !failure.contains("startup_timeout_ms"),
+            "{failure}"
         );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }

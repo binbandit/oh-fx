@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::feature_catalog::Invalidation;
@@ -13,7 +14,8 @@ use crate::features::tools::ToolCatalog;
 use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
-    ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
+    ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse,
+    connect_stdio, startup_deadline,
 };
 use crate::transport::{McpTransport, ShutdownMode, Transport};
 
@@ -47,15 +49,23 @@ impl McpClient {
         config: &McpServerConfig,
         options: &ConnectOptions,
     ) -> Result<Self, StartupFailure> {
+        Self::connect_until(config, options, startup_deadline(config)).await
+    }
+
+    pub(crate) async fn connect_until(
+        config: &McpServerConfig,
+        options: &ConnectOptions,
+        deadline: Instant,
+    ) -> Result<Self, StartupFailure> {
         if config.source == ConfigSource::Workspace
             && config.workspace_admission != Some(WorkspaceAdmission::Approved)
         {
             return Err(StartupFailure::from(McpError::McpWorkspaceApprovalRequired));
         }
         let connected = match config.transport {
-            TransportType::Stdio => connect_stdio(config, options).await?,
-            TransportType::Http => connect_http(config, options).await?,
-            TransportType::Sse => connect_sse(config, options).await?,
+            TransportType::Stdio => connect_stdio(config, options, deadline).await?,
+            TransportType::Http => connect_http(config, options, deadline).await?,
+            TransportType::Sse => connect_sse(config, options, deadline).await?,
         };
         Ok(Self::from_connected(config, connected))
     }

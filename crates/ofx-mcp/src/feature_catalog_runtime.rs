@@ -43,7 +43,7 @@ impl Server {
                 return self.keep_after_failure(current, McpError::McpConnectionClosed);
             };
             if self.config.transport == TransportType::Stdio && !client.is_running() {
-                match self.running_client().await {
+                match self.running_client(deadline).await {
                     Ok(_) => continue,
                     Err(failure) => return self.keep_after_failure(current, failure.into_error()),
                 }

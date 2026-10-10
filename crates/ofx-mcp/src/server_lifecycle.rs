@@ -1,6 +1,9 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
@@ -9,7 +12,7 @@ use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{ConnectOptions, StartupFailure, startup_failure_message};
-use crate::timing::spawn;
+use crate::timing::{spawn, timeout_at};
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
 
@@ -137,17 +140,20 @@ impl Server {
             }
             *state = State::Starting;
         }
-        if let Err(failure) = self.connect().await {
-            self.settle_failure(self.failure_message(&failure));
+        if let Err(failure) = self
+            .connect(McpClient::connect(&self.config, &self.options))
+            .await
+        {
+            let timeout_ms = self.config.startup_timeout_ms;
+            self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
         }
     }
 
-    fn failure_message(&self, failure: &StartupFailure) -> String {
-        startup_failure_message(failure, self.config.startup_timeout_ms)
-    }
-
-    async fn connect(self: &Arc<Self>) -> Result<(), StartupFailure> {
-        let client = McpClient::connect(&self.config, &self.options).await?;
+    async fn connect(
+        self: &Arc<Self>,
+        connecting: impl Future<Output = Result<McpClient, StartupFailure>>,
+    ) -> Result<(), StartupFailure> {
+        let client = connecting.await?;
         let connection = Connection {
             client: Arc::new(client),
             stop: CancellationToken::new(),
@@ -193,7 +199,9 @@ impl Server {
         arguments_json: &str,
         options: CallOptions,
     ) -> Result<ToolCallOutcome, CallFailure> {
-        let client = self.running_client().await?;
+        let deadline =
+            Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
+        let client = self.running_client(deadline).await?;
         let published = client.tool_catalog();
         let catalog = client.current_tools().await?;
         if !Arc::ptr_eq(&published, &catalog) {
@@ -211,14 +219,19 @@ impl Server {
         Ok(client.call_tool(name, arguments_json, options).await?)
     }
 
-    pub(crate) async fn running_client(self: &Arc<Self>) -> Result<Arc<McpClient>, RestartFailure> {
+    pub(crate) async fn running_client(
+        self: &Arc<Self>,
+        deadline: Instant,
+    ) -> Result<Arc<McpClient>, RestartFailure> {
         let client = self
             .ready_client()
             .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))?;
         if client.is_running() {
             return Ok(client);
         }
-        let _recovering = self.recovery.lock().await;
+        let _recovering = timeout_at(deadline, self.recovery.lock())
+            .await
+            .map_err(|_| RestartFailure::Unavailable(McpError::McpRequestTimedOut))?;
         let client = self
             .ready_client()
             .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))?;
@@ -236,8 +249,20 @@ impl Server {
             }
             *restarts += 1;
         }
-        if let Err(failure) = self.connect().await {
-            let message = self.failure_message(&failure);
+        let span_ms = millis_until(deadline);
+        if span_ms == 0 {
+            return Err(RestartFailure::Unavailable(McpError::McpRequestTimedOut));
+        }
+        if let Err(failure) = self
+            .connect(Box::pin(McpClient::connect_until(
+                &self.config,
+                &self.options,
+                deadline,
+            )))
+            .await
+        {
+            let message =
+                startup_failure_message(&failure, span_ms, self.config.startup_timeout_ms);
             self.settle_failure(message.clone());
             return Err(RestartFailure::Failed {
                 error: failure.error,
@@ -300,6 +325,11 @@ async fn watch(server: Weak<Server>, connection: Connection) {
             None => return,
         }
     }
+}
+
+fn millis_until(deadline: Instant) -> u32 {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    u32::try_from(remaining.as_nanos().div_ceil(1_000_000)).unwrap_or(u32::MAX)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
