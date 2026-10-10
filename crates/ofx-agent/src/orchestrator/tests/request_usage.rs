@@ -162,3 +162,51 @@ async fn an_answer_streamed_before_its_settlement_failed_stays_in_history_and_th
         ]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_whose_settlement_fails_keeps_the_text_an_earlier_attempt_streamed() {
+    let interrupted = |text: &str| {
+        let stream = [text]
+            .into_iter()
+            .filter(|text| !text.is_empty())
+            .map(|text| StreamEvent::TextDelta {
+                text: text.to_owned(),
+            })
+            .collect();
+        Script::Fail(
+            stream,
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+        )
+    };
+    let provider = FakeProvider::new(vec![
+        interrupted("Already shown"),
+        interrupted(""),
+        text_reply("never requested"),
+    ]);
+    let log = MemoryLog {
+        refused_settlement: Some("SessionPersistenceUncertain"),
+        settlements_kept: 1,
+        ..MemoryLog::default()
+    };
+    let entries = Arc::clone(&log.entries);
+    let (mut agent, _) = accounting_agent(Arc::clone(&provider), log);
+    let (report, _) = run(&mut agent, "hi").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(
+        report.failure.map(|failure| failure.code().to_owned()),
+        Some("SessionPersistenceUncertain".to_owned())
+    );
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(
+        agent.history.last(),
+        Some(&ChatMessage::Assistant {
+            content: Some("Already shown".to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        })
+    );
+    assert_eq!(
+        entries.lock().unwrap().last(),
+        Some(&logged_turn("hi", &[], r#"Failed "Already shown""#))
+    );
+}

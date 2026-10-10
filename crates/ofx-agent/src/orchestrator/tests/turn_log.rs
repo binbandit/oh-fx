@@ -47,6 +47,7 @@ pub(super) struct MemoryLog {
     pub(super) accounted: Arc<Mutex<Vec<Accounted>>>,
     pub(super) refused_request: Option<&'static str>,
     pub(super) refused_settlement: Option<&'static str>,
+    pub(super) settlements_kept: usize,
     pub(super) failing: Option<&'static str>,
     pub(super) blocked: Option<&'static str>,
     pub(super) refused_checkpoint: Option<&'static str>,
@@ -251,15 +252,17 @@ impl ConversationLog for MemoryLog {
         ticket: RequestTicket,
         outcome: DeliveryOutcome,
     ) -> Result<(), LogFailure> {
-        self.accounted
-            .lock()
-            .unwrap()
-            .push(Accounted::Finished(ticket.sequence, outcome));
+        let mut accounted = self.accounted.lock().unwrap();
+        accounted.push(Accounted::Finished(ticket.sequence, outcome));
+        let settled = accounted
+            .iter()
+            .filter(|entry| matches!(entry, Accounted::Finished(..)))
+            .count();
         match self.refused_settlement {
-            Some(code) => Err(LogFailure {
+            Some(code) if settled > self.settlements_kept => Err(LogFailure {
                 code: code.to_owned(),
             }),
-            None => Ok(()),
+            _ => Ok(()),
         }
     }
 

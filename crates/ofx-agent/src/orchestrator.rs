@@ -82,7 +82,7 @@ use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
     may_run_at_provider, provider_executed,
 };
-use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted};
+use recovery::{Restart, RestoredReply, recovery_tool_choice};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -1219,6 +1219,7 @@ impl Agent {
                 streamed_bytes,
                 admitted,
                 tool,
+                settled,
             } = self
                 .attempt(
                     turn,
@@ -1232,6 +1233,7 @@ impl Agent {
             let consumed = attempt - usize::from(!admitted);
             let counted = (attempt, consumed, tool);
             let observed = restart.observe(partial, counted, &mut turn.tool_evidence);
+            restart.settled(settled)?;
             let error = match streamed {
                 Ok(completion) => {
                     let outcome = (recovering_from.is_some(), attempt, tool);
@@ -1258,7 +1260,7 @@ impl Agent {
                 {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                return Err(restart.failed(error));
+                return Err(restart.failed(TurnFailure::Provider(error)));
             };
             let evidence = (tool, cause, &error);
             let evidence =
@@ -1272,7 +1274,7 @@ impl Agent {
                     status: stalled_status(cause, consumed, &error, &decision),
                 });
                 self.discard_recovery(STALL_STOP);
-                return Err(restart.failed(error));
+                return Err(restart.failed(TurnFailure::Provider(error)));
             };
             let decided = (cause, decision.strategy);
             self.prepare_retry(turn, &mut request, &mut restart, failed, decided);
@@ -1290,10 +1292,7 @@ impl Agent {
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
-            if restart.restarted(&turn.language.stage) {
-                events(restarted(turn_id));
-            }
-            turn.language.stage.restart();
+            restart.begin_again(turn, events);
             attempt += 1;
             status.failed_attempt = attempt;
             status.retry_wait = None;
@@ -1384,18 +1383,14 @@ impl Agent {
             }
         };
         Meter::new(self.network_calls, trace).record(request.model, started_at_ms, &streamed);
-        if let Err(failure) = usage.settle(&streamed) {
-            return Err(Stop::Failed {
-                failure: TurnFailure::Persistence(failure),
-                partial: streamed_text.partial,
-            });
-        }
+        let settled = usage.settle(&streamed);
         Ok(Attempt {
             streamed,
             partial: streamed_text.partial,
             streamed_bytes,
             admitted,
             tool,
+            settled,
         })
     }
 
@@ -2296,6 +2291,7 @@ struct Attempt {
     streamed_bytes: usize,
     admitted: bool,
     tool: ToolEvidence,
+    settled: Result<(), LogFailure>,
 }
 
 fn stopped_status(
