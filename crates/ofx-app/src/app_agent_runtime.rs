@@ -5380,7 +5380,7 @@ mod tests {
                 "skills": [], "mcp_tools": [],
                 "counts": {"skills": 0, "mcp_tools": 0},
                 "total_matches": {"skills": 0, "mcp_tools": 0},
-                "state": "no_match"
+                "mcp_state": "server_not_found"
             })
         );
     }
