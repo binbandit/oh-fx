@@ -672,6 +672,7 @@ impl Agent {
         {
             failure = Some(TurnFailure::Persistence(error));
         }
+        self.forget_summary_prompt(&turn);
         self.forget_stop_continuation(&turn);
         self.hold_interruption(ending, turn.start);
         events(UiEvent::TurnFinished {
@@ -1840,6 +1841,26 @@ impl Agent {
         }
         self.history.push(reply);
         Ok(Some(presented))
+    }
+
+    fn forget_summary_prompt(&mut self, turn: &Turn) {
+        if !turn.summary_requested {
+            return;
+        }
+        let start = (turn.start + 1).min(self.history.len());
+        let prompt = self.history[start..].iter().rposition(|message| {
+            matches!(
+                message,
+                ChatMessage::User {
+                    content,
+                    restored_steering: false,
+                    feedback_for: None,
+                } if content == SUMMARIZE_PROMPT
+            )
+        });
+        if let Some(index) = prompt {
+            self.history.remove(start + index);
+        }
     }
 
     fn has_turn_progress(&self, start: usize) -> bool {
