@@ -2,7 +2,11 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use ofx_contract::{RecoveredTurn, SkillBinding};
+use ofx_trace::{TraceContext, trace_event, trace_log};
 use tokio_util::sync::CancellationToken;
+
+const WORKER: &str = "worker";
+const INTERRUPT: &str = "interrupt";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Delivery {
@@ -203,6 +207,7 @@ impl WorkerRuntime {
 
     pub fn finish_processing(&self) {
         let mut state = self.lock();
+        trace_log!(WORKER, "finish processing queued={}", state.queue.len());
         for prompt in &mut state.queue {
             if prompt.delivery == Delivery::ActiveTurn {
                 prompt.delivery = Delivery::Continuation;
@@ -212,11 +217,56 @@ impl WorkerRuntime {
     }
 
     pub fn request_cancel(&self) {
-        self.lock().interruption = Interruption::Stop;
+        let mut state = self.lock();
+        let processing = state.processing();
+        let queued = state.queue.len();
+        trace_log!(
+            WORKER,
+            "cancel requested processing={processing} queued={queued}"
+        );
+        trace_event!(
+            INTERRUPT,
+            "cancel_requested",
+            TraceContext::default(),
+            "processing={processing} queued={queued} active_tool_known=false"
+        );
+        state.interruption = Interruption::Stop;
+    }
+
+    pub fn request_interactive_cancel(&self) {
+        let mut state = self.lock();
+        let processing = state.processing();
+        let queued = state.queue.len();
+        let steering_pending = state
+            .queue
+            .iter()
+            .any(|prompt| prompt.delivery != Delivery::Ordinary);
+        trace_log!(
+            WORKER,
+            "cancel requested processing={processing} queued={queued} steering_pending={steering_pending}"
+        );
+        trace_event!(
+            INTERRUPT,
+            "cancel_requested",
+            TraceContext::default(),
+            "processing={processing} queued={queued} steering_pending={steering_pending} active_tool_known=false"
+        );
+        state.interruption = Interruption::Stop;
     }
 
     pub fn clear(&self) {
-        self.lock().queue.clear();
+        let mut state = self.lock();
+        let dropped = state.queue.len();
+        if dropped > 0 {
+            trace_log!(WORKER, "clear queued prompts dropped={dropped}");
+            trace_event!(
+                WORKER,
+                "queued_prompts_cleared",
+                TraceContext::default(),
+                "dropped={dropped}"
+            );
+        }
+        state.queue.clear();
     }
 
     pub fn holds_recovery(&self) -> bool {

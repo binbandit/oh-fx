@@ -1204,7 +1204,7 @@ impl Controller {
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
-                                state.worker.request_cancel();
+                                state.worker.request_interactive_cancel();
                                 cancel.cancel();
                             }
                         }

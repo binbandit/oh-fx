@@ -6,6 +6,12 @@ pub struct RecoveryPause(Arc<AtomicBool>);
 
 impl RecoveryPause {
     pub fn request(&self) {
+        ofx_trace::trace_event!(
+            "recovery",
+            "pause_requested",
+            ofx_trace::TraceContext::default(),
+            "source=interactive_try_later"
+        );
         self.0.store(true, Ordering::Release);
     }
 

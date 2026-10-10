@@ -968,6 +968,7 @@ dependencies = [
  "ofx-skills",
  "ofx-testkit",
  "ofx-text",
+ "ofx-trace",
  "ofx-workspace",
  "reqwest",
  "rustix",
