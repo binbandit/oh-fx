@@ -127,8 +127,8 @@ note = "Turn completion with its PostTurnEnd checkpoint, the Stop candidate kept
 [[file]]
 upstream = "src/core/agent/runtime/gateway_step.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/stream_provider.rs"]
-note = "Model requests, provider completion and provider admission are implemented; tool image projection, usage observations at admission and detailed delivery-certainty evidence are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs", "crates/ofx-contract/src/stream_provider.rs"]
+note = "Model requests, provider completion and provider admission are implemented, and each step advertises the dynamic tools the turn selected that the source still publishes, replacing a changed definition and adding and retiring tools as executions report them; tool image projection, usage observations at admission and detailed delivery-certainty evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/image_provider.zig"
@@ -157,8 +157,8 @@ note = "The recovery policy retries without a turn budget, throttles past the 15
 [[file]]
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the pause of a reconcile that starts a tool, the retry of a post-tool assistant prefill rejection with its continuation, the continue_response restart with its note, shell calls kept in their normalized form and projected into each request, and the <mcp_servers> section and its change notice placed after the project context and rendered once per turn, as appendStablePromptContext does, exist; vision, dynamic tool advertisement and Gateway or compaction recovery checkpoints remain absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs"]
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the pause of a reconcile that starts a tool, the retry of a post-tool assistant prefill rejection with its continuation, the continue_response restart with its note, shell calls kept in their normalized form and projected into each request, and the <mcp_servers> section and its change notice placed after the project context and rendered once per turn, as appendStablePromptContext does, and the per-turn selected dynamic tools, which start empty because only ACP supplies initial ones, exist; vision and Gateway or compaction recovery checkpoints remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
@@ -266,7 +266,7 @@ note = "Streaming text/reasoning, tool starts and streamed tool input, provider 
 upstream = "src/core/agent/tool_preparation.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "Built-in call preparation, the argument validation of advertised MCP calls before approval, and panic containment exist; dynamic host tool availability and image-specific preparation are absent."
+note = "Built-in call preparation, the argument validation of advertised MCP calls before approval, and panic containment exist, and a call to an unadvertised name that an MCP server lists is classified as a deferred dynamic call with the not-selected result while any other unknown name stays unsupported; dynamic host tool availability and image-specific preparation are absent."
 
 [[file]]
 upstream = "src/core/agent/worker_runtime.zig"

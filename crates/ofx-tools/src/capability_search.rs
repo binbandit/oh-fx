@@ -136,7 +136,7 @@ impl Tool for CapabilitySearch {
             } else {
                 ToolEffect::None
             },
-            concurrency: Concurrency::Parallel,
+            concurrency: Concurrency::Serial,
         };
         Ok(Box::new(SearchCall {
             context: Arc::clone(&self.context),
@@ -217,7 +217,7 @@ impl SearchContext {
         };
         notices.extend(mcp.notice);
         match combine(skills.as_ref(), &mcp.model_output, output_cap) {
-            Ok(output) => ToolOutput::success(output),
+            Ok(output) => ToolOutput::success(output).selecting_tools(mcp.selected),
             Err(error) => {
                 ToolOutput::failure(format!("capability_search combined search failed: {error}"))
             }

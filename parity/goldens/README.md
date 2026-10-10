@@ -15,6 +15,7 @@ Each golden holds fixed bytes that oh-fx ships, extracted from upstream at the c
 | `mcp_servers_change_notice.txt` | `src/core/mcp/model_catalog.zig` | The `change_header` and `change_footer` literals of `renderChangeNotice`, which wrap its transition lines, joined with their `\n` escapes decoded |
 | `mcp_features_tool.json` | `src/builtins/tools.zig` and `src/core/tooling/model_tool_schema.zig` | The `mcp_features` `ToolSpec` model schema and `mcp_features_description`, written the same way, with its inline `action` enum, its two untyped `object` properties and `additionalProperties`, without a final newline |
 | `capability_search_tool.json` | `src/builtins/tools.zig`, `src/core/shared/lexical_relevance.zig` and `src/core/tooling/model_tool_schema.zig` | The `capability_search` `ToolSpec` model schema and `capability_search_description`, written the same way, with each property's `minLength` and `maxLength` bounds, the `query` maximum taken from `max_query_bytes` in `lexical_relevance.zig`, and `additionalProperties`, without a final newline |
+| `mcp_select_tool.json` | `src/builtins/tools.zig` and `src/core/tooling/model_tool_schema.zig` | The `mcp_select_tool` `ToolSpec` model schema and `mcp_select_tool_description`, written the same way, without `additionalProperties`, which the declaration leaves unset, and without a final newline |
 
 Each extractor accepts only the source grammar it was reviewed against, and rejects changed syntax, escapes, empty values, and missing or duplicate declarations. Such a change needs a source review rather than a silent change to the extraction rules.
 
@@ -35,6 +36,8 @@ The two MCP server goldens come from `src/core/mcp/model_catalog.zig` blob `da6e
 The `mcp_features` declaration comes from `src/builtins/tools.zig` blob `c3d34efc17861d54d7511cda9010bd7fd281c6c1` at the pin `6bdd49736abd4a85fb6dd60a824e4329784f34c0`. The golden is 1,728 bytes with SHA-256 `d82afddf67ec1ae8590b0a33c8338c3c2ac4cef5ebf2b77cedafc8c13a0da502`. As for `read_file`, only upstream's digest of every built-in tool together covers it. The `ofx-mcp` test compares the spec `McpFeatures` advertises with the golden.
 
 The `capability_search` declaration comes from the same `src/builtins/tools.zig` blob `c3d34efc17861d54d7511cda9010bd7fd281c6c1`, and its `query` bound from `max_query_bytes` in `src/core/shared/lexical_relevance.zig` blob `16e9316642099a2b3cd49bfc65072b026d7cc82f`, at the pin. The golden is 816 bytes with SHA-256 `e5edd0396414399c7938ae5f5b495a806efab92e508d49f31822f8032a5918b6`. The extractor accepts only `min_length` and `max_length` bounds, each a decimal or that one constant, which the writer prints after any enum and before the description. The `ofx-tools` test compares the spec `CapabilitySearch` advertises with the golden.
+
+The `mcp_select_tool` declaration comes from the same `src/builtins/tools.zig` blob at the pin. The golden is 566 bytes with SHA-256 `de3df5398d3cb0d8261752a7671d2774b9cf9014dac05bb00733e5128a560d3a`. The `ofx-mcp` test compares the spec `McpSelectTool` advertises with the golden.
 
 ## Exact substitutions
 

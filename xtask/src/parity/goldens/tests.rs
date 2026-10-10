@@ -118,7 +118,28 @@ pub const capability_search = ToolSpec{
     },
     .executor_kind = .capability_search,
 };
+
+const mcp_select_tool_description =
+    "Exact-select one configured MCP/dynamic tool by name.";
+
+pub const mcp_select_tool = ToolSpec{
+    .name = "mcp_select_tool",
+    .internal = true,
+    .description = mcp_select_tool_description,
+    .model_schema = .{
+        .name = "mcp_select_tool",
+        .description = mcp_select_tool_description,
+        .input_schema = .{
+            .properties = &.{
+                .{ .name = "name", .json_type = .string, .description = "Exact dynamic MCP tool name." },
+            },
+            .required = &.{"name"},
+        },
+    },
+    .executor_kind = .mcp_select_tool,
+};
 "#;
+const MCP_SELECT_TOOL: &str = r#"{"type":"function","name":"mcp_select_tool","description":"Exact-select one configured MCP/dynamic tool by name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact dynamic MCP tool name."}},"required":["name"]}}"#;
 const LEXICAL: &str = "pub const max_query_bytes: usize = 4 * 1024;\n";
 const CAPABILITY_SEARCH_TOOL: &str = r#"{"type":"function","name":"capability_search","description":"Find installed skills and configured MCP tools for a described capability.","inputSchema":{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":4096,"description":"Natural-language capability needed for the current task."},"server":{"type":"string","minLength":1,"description":"Optional exact configured MCP server alias."}},"additionalProperties":false,"required":["query"]}}"#;
 const WRITER: &str = "pub const description_max_bytes: usize = 1024;\n";
@@ -169,6 +190,7 @@ const GOLDENS: &[(&str, &str)] = &[
     ("mcp_servers_change_notice.txt", "Changed:\nCurrent.\n"),
     ("mcp_features_tool.json", MCP_FEATURES_TOOL),
     ("capability_search_tool.json", CAPABILITY_SEARCH_TOOL),
+    ("mcp_select_tool.json", MCP_SELECT_TOOL),
 ];
 
 fn setup_git(directory: &Path, args: &[&str]) -> String {
@@ -694,6 +716,34 @@ fn capability_search_extraction_writes_length_bounds_and_rejects_changed_grammar
         assert!(capability_search(&source, LEXICAL, 1024).is_err());
     }
     assert!(capability_search(TOOLS, LEXICAL, 40).is_err());
+}
+
+#[test]
+fn mcp_select_tool_extraction_omits_unset_additional_properties_and_rejects_changed_grammar() {
+    let extract =
+        |source: &str, limit| internal_tool::extract(source, "mcp_select_tool", &[], limit);
+    assert_eq!(extract(TOOLS, 1024).unwrap(), MCP_SELECT_TOOL);
+    for source in [
+        String::new(),
+        format!("{TOOLS}\n{TOOLS}"),
+        TOOLS.replacen(
+            ".required = &.{\"name\"},\n",
+            ".required = &.{\"name\"},\n            .additional_properties = true,\n",
+            1,
+        ),
+        TOOLS.replace(
+            ".description = mcp_select_tool_description",
+            ".description = other_description",
+        ),
+        TOOLS.replace(
+            r#".name = "name", .json_type = .string"#,
+            r#".name = "name", .json_type = .boolean"#,
+        ),
+        TOOLS.replace(r#".required = &.{"name"}"#, r#".required = &.{"tool"}"#),
+    ] {
+        assert!(extract(&source, 1024).is_err());
+    }
+    assert!(extract(TOOLS, 40).is_err());
 }
 
 #[test]

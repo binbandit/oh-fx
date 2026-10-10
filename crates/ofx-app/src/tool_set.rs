@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use ofx_contract::{LiveAdditionalRoots, LivePermissionMode, McpToolSearch, QuestionAsker, Tool};
 use ofx_exec::ManagedExecutions;
-use ofx_mcp::{McpFeatures, McpRuntime};
+use ofx_mcp::{McpFeatures, McpRuntime, McpSelectTool};
 use ofx_tools::{
     AskUserQuestion, CapabilitySearch, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool,
     WebFetch, WebFetchProgress, WebSearch, WriteFile,
@@ -79,7 +79,13 @@ pub(crate) fn with_mcp(
         .iter()
         .position(|tool| tool.spec().name == "skill")
         .map_or(tools.len(), |index| index + 1);
-    tools.insert(skill, Arc::new(McpFeatures::new(runtime)));
+    tools.splice(
+        skill..skill,
+        [
+            Arc::new(McpSelectTool::new(runtime.clone())) as Arc<dyn Tool>,
+            Arc::new(McpFeatures::new(runtime)),
+        ],
+    );
     tools
 }
 

@@ -1,5 +1,5 @@
 [[file]]
 upstream = "src/tools/capabilities/capability_search.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-tools/src/capability_search.rs"]
-note = "The decoder, presentation, skill and MCP halves with the shared budget, the ask-only MCP result clamp and McpServerNotFound for an unknown server, which upstream's deferred ask connection reports, and the combined envelope exist; matched MCP schemas are not loaded because every MCP tool is advertised, as docs/differences/mcp.md records."
+note = "The decoder, presentation, skill and MCP halves with the shared budget, the ask-only MCP result clamp and McpServerNotFound for an unknown server, which upstream's deferred ask connection reports, and the combined envelope exist, and the MCP tools a search loads are selected for the next step; it runs serially, as upstream keeps it out of parallel read groups."

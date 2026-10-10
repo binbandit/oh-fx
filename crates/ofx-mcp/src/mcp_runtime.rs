@@ -29,8 +29,9 @@ use crate::server_transport::ConnectOptions;
 use crate::server_views::{health_failure, model_summary, snapshot_server};
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
 use crate::timing::{sleep, spawn, spawn_on};
+use crate::tool_mcp_dispatch::NAME as SELECT_TOOL;
 use crate::tool_mcp_feature_dispatch::NAME as FEATURES_TOOL;
-use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
+use crate::tool_mcp_registry::{Projection, SchemaLimits, publish_tools, schema_for};
 use crate::tool_names::ToolNames;
 use crate::tool_search::{self, Search, SearchLimits};
 use crate::transport::ShutdownMode;
@@ -58,7 +59,6 @@ pub struct McpRuntime {
 struct Published {
     generation: Option<u64>,
     tools: Vec<Arc<dyn Tool>>,
-    notices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +81,7 @@ impl McpRuntime {
         mut reserved: Vec<String>,
         limits: ContextLimits,
     ) -> Self {
-        reserved.push(FEATURES_TOOL.to_owned());
+        reserved.extend([SELECT_TOOL, FEATURES_TOOL].map(str::to_owned));
         let installed = hosts_anything(&load);
         let catalog_generation = Arc::new(AtomicU64::new(0));
         let servers = load
@@ -124,6 +124,36 @@ impl McpRuntime {
         );
         settling.discovery = Some(Discovery(Arc::clone(&self.discovering)));
         settling
+    }
+
+    fn owner(&self, name: &str) -> Option<Arc<Server>> {
+        let mut names = lock(&self.names);
+        self.current().into_iter().find(|server| {
+            server.catalog().is_some_and(|(catalog, _)| {
+                catalog.tools.iter().any(|tool| {
+                    names
+                        .name(&self.reserved, &server.config.name, &tool.name)
+                        .is_ok_and(|prefixed| prefixed == name)
+                })
+            })
+        })
+    }
+
+    pub(crate) async fn tool_schema(&self, name: &str) -> Option<Projection> {
+        if let Some(server) = self.owner(name)
+            && let Lifecycle::Ready(client) = server.lifecycle()
+        {
+            server
+                .refresh_tools(&client, Instant::now() + client.operation_timeout)
+                .await;
+        }
+        schema_for(
+            &self.current(),
+            &mut lock(&self.names),
+            &self.reserved,
+            name,
+            SchemaLimits::from(&self.limits),
+        )
     }
 
     fn early_answer(&self, request: &McpSearchRequest) -> Option<McpSearchResult> {
@@ -655,21 +685,19 @@ impl DynamicTools for McpRuntime {
         if published.generation != Some(generation) {
             let servers = self.current();
             let mut names = lock(&self.names);
-            let (tools, notices) = publish_tools(
+            published.tools = publish_tools(
                 &servers,
                 &mut names,
                 &self.reserved,
                 SchemaLimits::from(&self.limits),
             );
             published.generation = Some(generation);
-            published.tools = tools;
-            published.notices.extend(notices);
         }
         published.tools.clone()
     }
 
-    fn take_notices(&self) -> Vec<String> {
-        std::mem::take(&mut lock(&self.published).notices)
+    fn lists(&self, name: &str) -> bool {
+        self.owner(name).is_some()
     }
 }
 
@@ -991,6 +1019,8 @@ done
             output.content,
             "MCP tool definition changed before execution. Its current schema is loaded; review it before issuing a new call."
         );
+        assert_eq!(output.selected_tools(), ["mcp_fixture_alpha"]);
+        assert!(output.retired_tools().is_empty());
         let calls = std::fs::read_to_string(state.path().join("calls")).unwrap_or_default();
         assert!(!calls.contains(r#""n":1"#), "{calls}");
         assert_eq!(execute(unchanged).await.status, ToolResultStatus::Success);
@@ -1002,6 +1032,85 @@ done
             )
         );
         assert_eq!(execute(current).await.status, ToolResultStatus::Success);
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    const SHRINKING: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      if [ -f "$STATE/shrunk" ]; then
+        reply "$id" '{"tools":[{"name":"wide","inputSchema":{"type":"object","properties":{"padding":{"description":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}}},{"name":"shrink","inputSchema":{"type":"object"}}]}'
+      else
+        reply "$id" '{"tools":[{"name":"gone","inputSchema":{"type":"object"}},{"name":"wide","inputSchema":{"type":"object"}},{"name":"shrink","inputSchema":{"type":"object"}}]}'
+      fi ;;
+    *'"name":"shrink"'*)
+      touch "$STATE/shrunk"
+      printf '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n'
+      reply "$id" '{"content":[{"type":"text","text":"shrunk"}]}' ;;
+  esac
+done
+"#;
+
+    #[tokio::test]
+    async fn a_withdrawn_or_oversized_changed_tool_is_retired() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(McpRuntime::new(
+            load(vec![config("fixture", SHRINKING, state.path())]),
+            ConnectOptions::default(),
+            Vec::new(),
+            {
+                let mut limits = limits();
+                limits.apply_command_line(&[ofx_config::ContextLimitOverride {
+                    name: ContextLimitName::McpSelectedSchemaBytes,
+                    value: ContextLimitValue::Bytes(160),
+                }]);
+                limits
+            },
+        ));
+        runtime.connect(StartupPhase::All).await;
+        let gone = prepare(&runtime, "mcp_fixture_gone", "{}");
+        let wide = prepare(&runtime, "mcp_fixture_wide", "{}");
+        let before = runtime.generation();
+        assert_eq!(
+            call(&runtime, "mcp_fixture_shrink", "{}").await.status,
+            ToolResultStatus::Success
+        );
+        for _ in 0..200 {
+            if runtime.generation() > before
+                && !names(&runtime).contains(&"mcp_fixture_gone".to_owned())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let withdrawn = execute(gone).await;
+        assert_eq!(
+            withdrawn.content,
+            "MCP tool definition changed before execution and is no longer available. Search for current tools."
+        );
+        assert_eq!(withdrawn.retired_tools(), ["mcp_fixture_gone"]);
+        assert!(withdrawn.selected_tools().is_empty());
+        let rejected = execute(wide).await;
+        assert_eq!(rejected.status, ToolResultStatus::Failure);
+        assert!(
+            rejected
+                .content
+                .starts_with(r#"{"context_limit_rejection":{"name":"mcp_selected_schema_bytes","tool":"mcp_fixture_wide","action":"rejected","observed_bytes":"#),
+            "{}",
+            rejected.content
+        );
+        assert_eq!(rejected.retired_tools(), ["mcp_fixture_wide"]);
+        assert_eq!(rejected.context_notices.len(), 1);
+        assert!(
+            rejected.context_notices[0]
+                .starts_with("[context] MCP schema \"mcp_fixture_wide\" rejected: ")
+        );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 
@@ -1087,7 +1196,7 @@ done
     }
 
     #[tokio::test]
-    async fn oversized_schemas_are_left_out_with_a_context_notice() {
+    async fn oversized_schemas_are_left_out_and_refused_with_a_context_notice() {
         let state = tempfile::tempdir().unwrap();
         let runtime = Arc::new(McpRuntime::new(
             NativeConfigLoad {
@@ -1107,13 +1216,17 @@ done
         ));
         runtime.connect(StartupPhase::All).await;
         assert!(runtime.tools().is_empty());
-        let notices = runtime.take_notices();
-        assert_eq!(notices.len(), 3);
+        assert!(runtime.lists("mcp_fixture_alpha"));
+        assert!(!runtime.lists("mcp_fixture_absent"));
+        let Some(Projection::Rejected { notice, .. }) =
+            runtime.tool_schema("mcp_fixture_alpha").await
+        else {
+            panic!("the schema is rejected");
+        };
         assert!(
-            notices[0]
-                .starts_with("[context] MCP schema \"mcp_fixture_alpha\" rejected: observed=")
+            notice.starts_with("[context] MCP schema \"mcp_fixture_alpha\" rejected: observed=")
         );
-        assert!(notices[0].ends_with(
+        assert!(notice.ends_with(
             "effective=16 bytes source=command line; override with --context-limit mcp_selected_schema_bytes=BYTES|off"
         ));
         runtime.shutdown(ShutdownMode::Immediate).await;

@@ -80,4 +80,4 @@ note = "Visible skill roots, loading, create/remove/path commands exist; remote 
 upstream = "src/builtins/tools.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/tool_set.rs", "crates/ofx-contract/src/tool_dispatch.rs"]
-note = "Implemented local tool schemas are composed, with mcp_features in upstream's advertisement order after skill; complete built-in registry order/schemas, provider search and remaining tools are absent."
+note = "Implemented local tool schemas are composed, with mcp_select_tool and mcp_features in upstream's advertisement order after skill; complete built-in registry order/schemas, provider search and remaining tools are absent."

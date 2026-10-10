@@ -61,7 +61,6 @@ pub(crate) fn model_summary(server: &Server) -> ServerSummary {
         tool_count: client
             .filter(|_| connection == ConnectionState::Ready)
             .map(|client| client.tool_catalog().tools.len()),
-        always_loaded: true,
     }
 }
 

@@ -96,9 +96,9 @@ note = "Tool/PreparedCall traits replace the registry coupling; dynamic schema r
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_dispatch.zig"
-status = "partial"
-modules = ["crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Advertised MCP tool calls run through the permission gate; selected-tool execution and read-only classification are missing."
+status = "ported"
+modules = ["crates/ofx-mcp/src/tool_mcp_dispatch.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
+note = "mcp_select_tool decodes its name, answers without a runtime and for an unknown name with upstream's messages, refuses a schema over mcp_selected_schema_bytes with its context_limit_rejection and notice, and reports the selected tool with upstream's success text; advertised MCP tool calls run through the permission gate. The server that lists the name first lists its tools again when they expired or changed, as refreshToolCatalogForName does."
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_feature_dispatch.zig"
@@ -108,15 +108,15 @@ note = "The mcp_features tool exists with upstream's schema, its decoder and fai
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_registry.zig"
-status = "partial"
-modules = ["crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Every tool of a connected server is advertised with its selected schema; selected and unselected resolution through capability_search and mcp_select_tool is missing."
+status = "ported"
+modules = ["crates/ofx-mcp/src/tool_mcp_registry.rs", "crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs"]
+note = "An advertised dynamic tool runs as its MCP tool. A call to a name that a ready server lists but the step did not advertise returns upstream's not-selected output, as upstream's deferred dynamic candidates reach resolve, and any other unknown name stays an unsupported tool; the orchestrator decides this where it looks the call up."
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs", "crates/ofx-contract/src/tool_mcp_runtime.rs"]
-note = "The runtime publishes its tools as a dynamic tool source the agent reads before each step, an advertised tool's arguments are validated when its call is prepared, before approval, and the MCP search request and result reach capability_search through McpToolSearch; selected tools, availability checks for selected capabilities and the not-selected output are missing."
+modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs", "crates/ofx-contract/src/tool_mcp_runtime.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs"]
+note = "The runtime publishes its tools as a dynamic tool source, an advertised tool's arguments are validated when its call is prepared, before approval, the MCP search request and result reach capability_search through McpToolSearch, tool outputs report selected and retired dynamic tools, and the not-selected output exists; ACP host channels, scoped access and input-required continuations are missing."
 
 [[file]]
 upstream = "src/core/tooling/tool_presentation.zig"
@@ -152,7 +152,7 @@ note = "Sanitization and bounded inline model output exist; saved large results 
 upstream = "src/core/tooling/tool_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/tool_runtime.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Blocking execution, panic containment and prepared calls exist; host/MCP tool authorization, Vision preparation and dynamic availability are absent."
+note = "Blocking execution, panic containment and prepared calls exist; a tool whose MCP definition changed before execution is selected again with its current schema, or retired with its rejection or withdrawal output, as refreshChangedMcpTool does (in tool_mcp_registry.rs); host/MCP tool authorization and Vision preparation are absent."
 
 [[file]]
 upstream = "src/core/tooling/tool_set.zig"

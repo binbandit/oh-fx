@@ -10,6 +10,7 @@ use crate::permission_gate::{
 };
 use crate::stream_provider::BoxFuture;
 use crate::subagent::SubagentStatusSink;
+use crate::tool_mcp_runtime::DynamicToolChange;
 use crate::types::{
     CommandProcessPresentation, FileChangeStats, QuestionBatchEntry, ToolResultStatus,
     ToolStatusDetail,
@@ -106,6 +107,7 @@ pub struct ToolOutput {
     pub status_detail: Option<ToolStatusDetail>,
     pub file_change: Option<FileChangeStats>,
     pub model_view_covers_full_file: Option<bool>,
+    pub dynamic_tools: Option<Box<DynamicToolChange>>,
 }
 
 impl ToolOutput {
@@ -119,6 +121,7 @@ impl ToolOutput {
             status_detail: None,
             file_change: None,
             model_view_covers_full_file: None,
+            dynamic_tools: None,
         }
     }
 
@@ -132,6 +135,7 @@ impl ToolOutput {
             status_detail: None,
             file_change: None,
             model_view_covers_full_file: None,
+            dynamic_tools: None,
         }
     }
 
@@ -169,6 +173,39 @@ impl ToolOutput {
     pub fn covering_full_file(mut self, covered: bool) -> Self {
         self.model_view_covers_full_file = Some(covered);
         self
+    }
+
+    #[must_use]
+    pub fn selecting_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        let mut names = names.into_iter().peekable();
+        if names.peek().is_some() {
+            self.dynamic_tools
+                .get_or_insert_default()
+                .selected
+                .extend(names);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn retiring_tool(mut self, name: impl Into<String>) -> Self {
+        self.dynamic_tools
+            .get_or_insert_default()
+            .retired
+            .push(name.into());
+        self
+    }
+
+    pub fn selected_tools(&self) -> &[String] {
+        self.dynamic_tools
+            .as_deref()
+            .map_or(&[], |change| &change.selected)
+    }
+
+    pub fn retired_tools(&self) -> &[String] {
+        self.dynamic_tools
+            .as_deref()
+            .map_or(&[], |change| &change.retired)
     }
 }
 
@@ -253,7 +290,7 @@ pub trait DynamicTools: Send + Sync {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 
-    fn take_notices(&self) -> Vec<String>;
+    fn lists(&self, name: &str) -> bool;
 }
 
 pub trait PreparedCall: Send {

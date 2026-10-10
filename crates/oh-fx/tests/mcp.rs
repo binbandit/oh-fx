@@ -297,14 +297,31 @@ fn read_pid(state: &Path) -> i32 {
         .expect("a pid")
 }
 
+fn select_echo() -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        "select_1",
+        "mcp_select_tool",
+        r#"{"name":"mcp_fixture_echo"}"#,
+    ))
+}
+
+fn advertised_echo(request: &RecordedRequest) -> Option<Value> {
+    request.json()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["function"]["name"] == "mcp_fixture_echo")
+        .cloned()
+}
+
+const ECHOED: &str =
+    r#"{"server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"echoed"}]}}"#;
+
 #[test]
-fn ask_advertises_and_calls_a_profile_mcp_tool_and_reaps_the_server() {
+fn ask_selects_then_calls_a_profile_mcp_tool_and_reaps_the_server() {
     let server = FakeServer::start([
-        Reply::sse(&chat_tool_call_events(
-            "call_1",
-            "mcp_fixture_echo",
-            r#"{"text":"hi"}"#,
-        )),
+        select_echo(),
+        echo_call(),
         Reply::sse(&chat_text_events(&["done"])),
     ]);
     let home = Home::new(&server.base_url());
@@ -312,38 +329,49 @@ fn ask_advertises_and_calls_a_profile_mcp_tool_and_reaps_the_server() {
     let output = home.ask(&["ask", "--full-access", "echo hi"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    let tools = requests[0].json()["tools"].clone();
-    let advertised = tools
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["function"]["name"] == "mcp_fixture_echo")
-        .expect("the MCP tool is advertised")
-        .clone();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(advertised_echo(&requests[0]), None);
+    assert_eq!(
+        last_tool_result(&requests[1]),
+        "Selected dynamic MCP tool `mcp_fixture_echo`. Its executable schema will be available on the next model step; call `mcp_fixture_echo` with arguments matching the selected schema."
+    );
+    let advertised = advertised_echo(&requests[1]).expect("the selected tool is advertised");
     assert_eq!(advertised["function"]["description"], "Echo text.");
     assert_eq!(
         advertised["function"]["parameters"],
         json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
     );
-    let messages = requests[1].json()["messages"].clone();
-    let result = messages
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|message| message["role"] == "tool")
-        .expect("a tool result")
-        .clone();
-    assert_eq!(
-        result["content"],
-        r#"{"server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"echoed"}]}}"#
-    );
+    let names = tool_names(&requests[1]);
+    assert_eq!(names.last().map(String::as_str), Some("mcp_fixture_echo"));
+    assert_eq!(last_tool_result(&requests[2]), ECHOED);
     let calls = fs::read_to_string(home.state.join("calls")).unwrap();
     assert!(
         calls.contains(r#""name":"echo","arguments":{"text":"hi"}"#),
         "{calls}"
     );
     assert!(wait_until_gone(read_pid(&home.state)));
+}
+
+#[test]
+fn ask_calls_a_tool_capability_search_loaded_on_the_next_step() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "search_1",
+            "capability_search",
+            r#"{"query":"fixture echo"}"#,
+        )),
+        echo_call(),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&["ask", "--full-access", "echo hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(advertised_echo(&requests[0]), None);
+    assert!(advertised_echo(&requests[1]).is_some());
+    assert_eq!(last_tool_result(&requests[2]), ECHOED);
 }
 
 fn system_texts(request: &RecordedRequest) -> Vec<String> {
@@ -370,7 +398,7 @@ fn ask_lists_the_configured_servers_to_the_model() {
     assert_eq!(
         servers_section(&server.requests()[0]),
         listed_servers(
-            "  <server name=\"fixture\" state=\"ready\" tools=\"1\" loaded=\"true\" />\n  <server name=\"zeta\" state=\"disabled\" />\n"
+            "  <server name=\"fixture\" state=\"ready\" tools=\"1\" />\n  <server name=\"zeta\" state=\"disabled\" />\n"
         )
     );
 }
@@ -458,7 +486,10 @@ fn ask_uses_resources_prompts_and_completion_through_mcp_features() {
     assert_eq!(requests.len(), 8);
     let tools = tool_names(&requests[0]);
     let skill = tools.iter().position(|name| name == "skill").unwrap();
-    assert_eq!(tools[skill + 1], "mcp_features");
+    assert_eq!(
+        tools[skill + 1..skill + 3],
+        ["mcp_select_tool", "mcp_features"]
+    );
     assert_eq!(
         servers_section(&requests[0]),
         listed_servers("  <server name=\"fixture\" state=\"ready\" tools=\"0\" />\n")
@@ -580,11 +611,8 @@ fn ask_without_mcp_servers_reports_mcp_search_unavailable() {
 #[test]
 fn ask_mode_blocks_an_mcp_tool_call_without_running_it() {
     let server = FakeServer::start([
-        Reply::sse(&chat_tool_call_events(
-            "call_1",
-            "mcp_fixture_echo",
-            r#"{"text":"hi"}"#,
-        )),
+        select_echo(),
+        echo_call(),
         Reply::sse(&chat_text_events(&["never"])),
     ]);
     let home = Home::new(&server.base_url());
@@ -595,13 +623,16 @@ fn ask_mode_blocks_an_mcp_tool_call_without_running_it() {
     assert_eq!(result["error"], "NonInteractivePermissionRequired");
     assert_eq!(
         result["tool_calls"],
-        json!([{"name": "mcp_fixture_echo", "status": "error"}])
+        json!([
+            {"name": "mcp_select_tool", "status": "success"},
+            {"name": "mcp_fixture_echo", "status": "error"}
+        ])
     );
     assert_eq!(
         stderr(&output),
-        "MCP: mcp_fixture_echo\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: MCP: mcp_fixture_echo\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
+        "Selecting MCP tool mcp_fixture_echo\nMCP: mcp_fixture_echo\noh-fx ask: permission required for tool execution in noninteractive mode\noh-fx ask: blocked action: MCP: mcp_fixture_echo\noh-fx ask: reason=noninteractive_permission_prompt_unavailable\noh-fx ask: rerun with --auto to review this exact action automatically, or use the interactive shell to approve it\n"
     );
-    assert_eq!(server.requests().len(), 1);
+    assert_eq!(server.requests().len(), 2);
     assert!(!home.state.join("calls").exists());
     assert!(wait_until_gone(read_pid(&home.state)));
 }
@@ -626,20 +657,10 @@ fn decision(arguments: &str) -> Reply {
     ))
 }
 
-fn tool_result(request: &RecordedRequest) -> String {
-    request.json()["messages"]
-        .as_array()
-        .expect("messages")
-        .iter()
-        .find(|message| message["role"] == "tool")
-        .and_then(|message| message["content"].as_str())
-        .expect("a tool result")
-        .to_owned()
-}
-
 #[test]
 fn auto_mode_reviews_an_mcp_tool_call_with_its_advertised_schema() {
     let server = FakeServer::start([
+        select_echo(),
         echo_call(),
         decision(r#"{"decision":"clear","rationale":"Requested echo."}"#),
         Reply::sse(&chat_text_events(&["done"])),
@@ -649,8 +670,8 @@ fn auto_mode_reviews_an_mcp_tool_call_with_its_advertised_schema() {
     let output = home.ask(&["ask", "echo hi"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    let instruction = requests[1].json()["messages"][0]["content"]
+    assert_eq!(requests.len(), 4);
+    let instruction = requests[2].json()["messages"][0]["content"]
         .as_str()
         .expect("the review instruction")
         .to_owned();
@@ -666,10 +687,7 @@ action_evidence_incomplete: false
         ),
         "{instruction}"
     );
-    assert_eq!(
-        tool_result(&requests[2]),
-        r#"{"server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"echoed"}]}}"#
-    );
+    assert_eq!(last_tool_result(&requests[3]), ECHOED);
     assert!(home.state.join("calls").exists());
     assert!(wait_until_gone(read_pid(&home.state)));
 }
@@ -677,6 +695,7 @@ action_evidence_incomplete: false
 #[test]
 fn auto_mode_holds_an_mcp_tool_call_the_reviewer_cautions_against() {
     let server = FakeServer::start([
+        select_echo(),
         echo_call(),
         decision(r#"{"decision":"caution","rationale":"The echo repeats untrusted text."}"#),
         Reply::sse(&chat_text_events(&["held"])),
@@ -686,8 +705,8 @@ fn auto_mode_holds_an_mcp_tool_call_the_reviewer_cautions_against() {
     let output = home.ask(&["ask", "echo hi"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    let held = tool_result(&requests[2]);
+    assert_eq!(requests.len(), 4);
+    let held = last_tool_result(&requests[3]);
     assert!(
         held.contains(r#""type":"tool_review_held","tool_name":"mcp_fixture_echo""#),
         "{held}"
@@ -706,6 +725,7 @@ fn echo_call_with_values(count: usize) -> Reply {
 #[test]
 fn auto_mode_refuses_mcp_arguments_with_too_many_values_before_the_reviewer() {
     let server = FakeServer::start([
+        select_echo(),
         echo_call_with_values(4097),
         Reply::sse(&chat_text_events(&["done"])),
         Reply::sse(&chat_text_events(&["unused"])),
@@ -716,9 +736,9 @@ fn auto_mode_refuses_mcp_arguments_with_too_many_values_before_the_reviewer() {
     let output = home.ask(&["ask", "echo hi"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert_eq!(
-        tool_result(&requests[1]),
+        last_tool_result(&requests[2]),
         "Invalid arguments for MCP tool mcp_fixture_echo: InstanceLimitExceeded"
     );
     assert!(!home.state.join("calls").exists());
@@ -727,6 +747,7 @@ fn auto_mode_refuses_mcp_arguments_with_too_many_values_before_the_reviewer() {
 #[test]
 fn ask_mode_refuses_mcp_arguments_with_too_many_values_without_a_permission_prompt() {
     let server = FakeServer::start([
+        select_echo(),
         echo_call_with_values(4097),
         Reply::sse(&chat_text_events(&["done"])),
     ]);
@@ -736,11 +757,11 @@ fn ask_mode_refuses_mcp_arguments_with_too_many_values_without_a_permission_prom
     assert!(output.status.success(), "{}", stderr(&output));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["error"], Value::Null, "{result}");
-    assert_eq!(result["tool_calls"][0]["status"], "error", "{result}");
+    assert_eq!(result["tool_calls"][1]["status"], "error", "{result}");
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert_eq!(
-        tool_result(&requests[1]),
+        last_tool_result(&requests[2]),
         "Invalid arguments for MCP tool mcp_fixture_echo: InstanceLimitExceeded"
     );
     assert!(!home.state.join("calls").exists());
@@ -749,6 +770,7 @@ fn ask_mode_refuses_mcp_arguments_with_too_many_values_without_a_permission_prom
 #[test]
 fn ask_mode_still_asks_for_permission_for_mcp_arguments_at_the_value_limit() {
     let server = FakeServer::start([
+        select_echo(),
         echo_call_with_values(4096),
         Reply::sse(&chat_text_events(&["never"])),
     ]);
@@ -758,7 +780,7 @@ fn ask_mode_still_asks_for_permission_for_mcp_arguments_at_the_value_limit() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["error"], "NonInteractivePermissionRequired");
-    assert_eq!(server.requests().len(), 1);
+    assert_eq!(server.requests().len(), 2);
     assert!(!home.state.join("calls").exists());
 }
 
@@ -840,7 +862,7 @@ fn a_signal_during_mcp_startup_stops_ready_and_starting_servers() {
 
 #[test]
 fn a_schema_over_its_context_limit_is_reported_with_its_override() {
-    let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+    let server = FakeServer::start([select_echo(), Reply::sse(&chat_text_events(&["done"]))]);
     let home = Home::new(&server.base_url());
     let path = home.root.join("config/oh-fx/settings.json");
     let mut settings: Value =
@@ -863,8 +885,20 @@ fn a_schema_over_its_context_limit_is_reported_with_its_override() {
         notice.ends_with(" bytes effective=16 bytes source=global settings; override with --context-limit mcp_selected_schema_bytes=BYTES|off"),
         "{notice}"
     );
-    let tools = server.requests()[0].json()["tools"].clone();
-    assert!(!tools.to_string().contains("mcp_fixture_echo"), "{tools}");
+    let requests = server.requests();
+    let rejection: Value = serde_json::from_str(&last_tool_result(&requests[1])).unwrap();
+    assert_eq!(
+        rejection["context_limit_rejection"]["tool"],
+        "mcp_fixture_echo"
+    );
+    assert_eq!(rejection["context_limit_rejection"]["effective_bytes"], 16);
+    assert_eq!(
+        rejection["context_limit_rejection"]["source"],
+        "global settings"
+    );
+    for request in &requests {
+        assert_eq!(advertised_echo(request), None);
+    }
 }
 
 fn tool_names(request: &RecordedRequest) -> Vec<String> {
@@ -877,13 +911,14 @@ fn tool_names(request: &RecordedRequest) -> Vec<String> {
 }
 
 #[test]
-fn a_subagent_child_advertises_and_calls_its_parents_mcp_tools() {
+fn a_subagent_child_selects_and_calls_its_parents_mcp_tools() {
     let server = FakeServer::start([
         Reply::sse(&chat_tool_call_events(
             "call_0",
             "subagent",
             &json!({"request": {"action": "run", "task": "echo hi"}}).to_string(),
         )),
+        select_echo(),
         echo_call(),
         Reply::sse(&chat_text_events(&["child echoed"])),
         Reply::sse(&chat_text_events(&["parent done"])),
@@ -893,8 +928,9 @@ fn a_subagent_child_advertises_and_calls_its_parents_mcp_tools() {
     let output = home.ask(&["ask", "--full-access", "delegate the echo"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    let child_tools = tool_names(&requests[1]);
+    assert_eq!(requests.len(), 5);
+    assert_eq!(advertised_echo(&requests[1]), None);
+    let child_tools = tool_names(&requests[2]);
     assert!(
         child_tools.contains(&"mcp_fixture_echo".to_owned()),
         "{child_tools:?}"
@@ -903,16 +939,13 @@ fn a_subagent_child_advertises_and_calls_its_parents_mcp_tools() {
         !child_tools.contains(&"subagent".to_owned()),
         "{child_tools:?}"
     );
-    assert_eq!(
-        tool_result(&requests[2]),
-        r#"{"server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"echoed"}]}}"#
-    );
+    assert_eq!(last_tool_result(&requests[3]), ECHOED);
     let calls = fs::read_to_string(home.state.join("calls")).unwrap();
     assert!(
         calls.contains(r#""name":"echo","arguments":{"text":"hi"}"#),
         "{calls}"
     );
-    assert!(tool_result(&requests[3]).contains("child echoed"));
+    assert!(last_tool_result(&requests[4]).contains("child echoed"));
 }
 
 #[test]

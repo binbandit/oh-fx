@@ -22,9 +22,9 @@ use ofx_contract::{
     SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
     ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
     ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome, TurnStop, UiEvent, Usage,
-    bound_model_output, continuation_message, join_visible_segments, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
-    tool_review_held_json,
+    bound_model_output, continuation_message, format_unknown_action, join_visible_segments,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use ofx_trace::{Ring, TraceContext};
@@ -52,6 +52,7 @@ use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
+mod dynamic_tools;
 mod mode_policy;
 mod paused;
 mod project_gate;
@@ -64,6 +65,7 @@ mod turn_log;
 
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
+use dynamic_tools::{DynamicToolSet, SelectedTools, not_selected};
 use mode_policy::{Offer, denial, offer};
 use paused::{Pause, paused_required_action};
 use project_gate::GatedGroup;
@@ -218,6 +220,7 @@ struct Turn {
     steps: u64,
     stop: StopState,
     trace: TraceContext,
+    selected_tools: SelectedTools,
 }
 
 #[derive(Default)]
@@ -273,12 +276,6 @@ fn read_tools(tools: &[Arc<dyn Tool>]) -> (Vec<ToolSpec>, Vec<bool>) {
         .unzip()
 }
 
-struct DynamicToolSet {
-    source: Arc<dyn DynamicTools>,
-    generation: Option<u64>,
-    tools: Vec<Arc<dyn Tool>>,
-}
-
 pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tools: Vec<Arc<dyn Tool>>,
@@ -329,7 +326,7 @@ impl Agent {
         let Offer {
             specs: offered_specs,
             guidance: tool_guidance,
-        } = offer(&tool_specs, &provider_executed, None);
+        } = offer(&tool_specs, tool_specs.len(), &provider_executed, None);
         Self {
             provider,
             tools,
@@ -398,11 +395,7 @@ impl Agent {
 
     #[must_use]
     pub fn with_dynamic_tools(mut self, source: Arc<dyn DynamicTools>) -> Self {
-        self.dynamic = Some(DynamicToolSet {
-            source,
-            generation: None,
-            tools: Vec::new(),
-        });
+        self.dynamic = Some(DynamicToolSet::new(source));
         self
     }
 
@@ -449,7 +442,7 @@ impl Agent {
         (self.tool_specs, self.provider_executed) = read_tools(&tools);
         self.tools = tools;
         if let Some(set) = &mut self.dynamic {
-            set.generation = None;
+            set.forget_advertised();
         }
         self.offer_tools();
     }
@@ -457,6 +450,7 @@ impl Agent {
     fn offer_tools(&mut self) {
         let Offer { specs, guidance } = offer(
             &self.tool_specs,
+            self.tools.len(),
             &self.provider_executed,
             self.mode.as_ref(),
         );
@@ -577,6 +571,7 @@ impl Agent {
                 turn_id: ofx_trace::next_turn_id(),
                 ..TraceContext::default()
             },
+            selected_tools: SelectedTools::default(),
         }
     }
 
@@ -817,7 +812,7 @@ impl Agent {
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
-            self.refresh_dynamic_tools(turn.id, events);
+            self.refresh_dynamic_tools(&turn.selected_tools);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             let messages = self.request_messages(turn);
@@ -1513,6 +1508,7 @@ impl Agent {
             let Some(output) = output else {
                 continue;
             };
+            turn.selected_tools.record(&output);
             let status = output.status;
             if executed {
                 let saved = self.saved_arguments(call);
@@ -1638,7 +1634,7 @@ impl Agent {
     }
 
     fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
-        let dynamic = self.dynamic.iter().flat_map(|set| &set.tools);
+        let dynamic = self.dynamic.iter().flat_map(DynamicToolSet::advertised);
         self.tools
             .iter()
             .chain(dynamic)
@@ -1663,22 +1659,16 @@ impl Agent {
         Ok(())
     }
 
-    fn refresh_dynamic_tools(&mut self, turn_id: TurnId, events: EventSink<'_>) {
+    fn refresh_dynamic_tools(&mut self, selected: &SelectedTools) {
         let Some(set) = &mut self.dynamic else {
             return;
         };
-        let generation = set.source.generation();
-        if set.generation == Some(generation) {
+        if !set.advertise(selected) {
             return;
-        }
-        set.generation = Some(generation);
-        set.tools = set.source.tools();
-        for text in set.source.take_notices() {
-            events(UiEvent::ContextNotice { turn_id, text });
         }
         self.tool_specs.truncate(self.tools.len());
         self.provider_executed.truncate(self.tools.len());
-        for tool in &set.tools {
+        for tool in set.advertised() {
             self.tool_specs.push(tool.spec().clone());
             self.provider_executed.push(tool.provider_executed());
         }
@@ -1771,19 +1761,29 @@ impl Agent {
         if let Some(output) = self
             .mode
             .as_ref()
-            .and_then(|mode| denial(mode, &self.tool_specs, &call.name))
+            .and_then(|mode| denial(mode, &self.tool_specs[..self.tools.len()], &call.name))
         {
             return Err(Rejection {
                 reason: ToolRejection::Invalid,
                 description: None,
-                output,
+                output: Box::new(output),
             });
         }
         let Some(tool) = self.tool(&call.name) else {
+            if self
+                .dynamic
+                .as_ref()
+                .is_some_and(|set| set.lists(&call.name))
+            {
+                return Err(Rejection::not_selected(&call.name));
+            }
             return Err(Rejection {
                 reason: ToolRejection::Unsupported,
                 description: None,
-                output: ToolOutput::failure(format!("Unsupported tool: {}", call.name)),
+                output: Box::new(ToolOutput::failure(format!(
+                    "Unsupported tool: {}",
+                    call.name
+                ))),
             });
         };
         match contained(|| tool.prepare(&call.arguments)) {
@@ -1791,7 +1791,7 @@ impl Agent {
             Some(Err(output)) => Err(Rejection {
                 reason: ToolRejection::Invalid,
                 description: None,
-                output,
+                output: Box::new(output),
             }),
             None => Err(Rejection::panicked(&call.name)),
         }
@@ -1964,7 +1964,7 @@ fn prepared_for_history(
         let rejection = Rejection {
             reason: ToolRejection::MalformedArguments,
             description: None,
-            output,
+            output: Box::new(output),
         };
         return (call, Some(rejection));
     }
@@ -1975,7 +1975,7 @@ fn prepared_for_history(
             let rejection = Rejection {
                 reason: ToolRejection::Invalid,
                 description: None,
-                output: ToolOutput::failure(content),
+                output: Box::new(ToolOutput::failure(content)),
             };
             (call, Some(rejection))
         }
@@ -2087,15 +2087,29 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
 struct Rejection {
     reason: ToolRejection,
     description: Option<Box<CallDescription>>,
-    output: ToolOutput,
+    output: Box<ToolOutput>,
 }
 
 impl Rejection {
+    fn not_selected(tool_name: &str) -> Self {
+        Self {
+            reason: ToolRejection::Invalid,
+            description: Some(Box::new(CallDescription {
+                title: format_unknown_action(tool_name),
+                label: None,
+                activity: ToolActivity::Command,
+                effect: ToolEffect::None,
+                concurrency: Concurrency::Serial,
+            })),
+            output: Box::new(ToolOutput::failure(not_selected(tool_name))),
+        }
+    }
+
     fn panicked(tool_name: &str) -> Self {
         Self {
             reason: ToolRejection::Panicked,
             description: None,
-            output: panicked(tool_name),
+            output: Box::new(panicked(tool_name)),
         }
     }
 }
@@ -2122,7 +2136,7 @@ fn inspected(prepared: Box<dyn PreparedCall>, tool_name: &str) -> Prepared {
         return Prepared::Rejected(Rejection {
             reason: ToolRejection::Invalid,
             description: Some(Box::new(description)),
-            output,
+            output: Box::new(output),
         });
     }
     Prepared::Ready(prepared, description, mutation, command)
@@ -2544,7 +2558,7 @@ async fn run_group<'c>(
                 output,
             }) => {
                 events(tool_rejected(turn_id, call, reason, description, &output));
-                dispatched.push((call, Dispatched::Rejected(output, reason), None));
+                dispatched.push((call, Dispatched::Rejected(*output, reason), None));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);

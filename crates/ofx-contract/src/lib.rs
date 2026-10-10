@@ -84,7 +84,9 @@ pub use tool_dispatch::{
     ActionLabel, CallDescription, CallPresentation, Concurrency, DynamicTools, PreparedCall,
     QuestionAsker, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
 };
-pub use tool_mcp_runtime::{McpSearchHost, McpSearchRequest, McpSearchResult, McpToolSearch};
+pub use tool_mcp_runtime::{
+    DynamicToolChange, McpSearchHost, McpSearchRequest, McpSearchResult, McpToolSearch,
+};
 pub use tool_presentation::{
     SubagentActionState, SubagentActionText, format_plain_action, format_subagent_plain_action,
     format_unknown_action, is_captured_command, is_provider_search_alias, plain_description,
