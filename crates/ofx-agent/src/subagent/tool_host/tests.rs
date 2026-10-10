@@ -253,6 +253,7 @@ impl ChildAgents for Agents {
                 step_limit: 0,
                 reasoning_effort: settings.effort.clone().into_named(),
                 fast_mode: settings.fast_mode,
+                ultrafast_mode: false,
                 auto_compact_percent: AutoCompactPercent::resolve(None, None),
             },
         );
@@ -1160,6 +1161,7 @@ fn intent_config() -> AgentConfig {
         step_limit: 0,
         reasoning_effort: None,
         fast_mode: false,
+        ultrafast_mode: false,
         auto_compact_percent: AutoCompactPercent::resolve(None, None),
     }
 }

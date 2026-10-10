@@ -5,6 +5,7 @@ pub(crate) struct LaunchOverrides {
     pub(crate) model: Option<String>,
     pub(crate) effort: Option<ReasoningEffort>,
     pub(crate) fast_mode: Option<bool>,
+    pub(crate) ultrafast_mode: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub(crate) struct RestoredPreferences {
     pub(crate) model: String,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) fast_mode: bool,
+    pub(crate) ultrafast_mode: bool,
 }
 
 impl LaunchOverrides {
@@ -25,6 +27,7 @@ impl LaunchOverrides {
                 .clone()
                 .into_named(),
             fast_mode: self.fast_mode.unwrap_or(saved.fast_mode),
+            ultrafast_mode: self.ultrafast_mode.unwrap_or(saved.ultrafast_mode),
         }
     }
 }
@@ -41,7 +44,8 @@ mod tests {
             provider: SavedProvider::new(ProviderId::Gateway, None).unwrap(),
             model: "saved-model".to_owned(),
             effort: ReasoningEffort::parse("high").unwrap(),
-            fast_mode: true,
+            fast_mode: false,
+            ultrafast_mode: true,
         }
     }
 
@@ -51,26 +55,30 @@ mod tests {
             model: None,
             effort: None,
             fast_mode: None,
+            ultrafast_mode: None,
         };
         assert_eq!(
             unset.restore(&saved()),
             RestoredPreferences {
                 model: "saved-model".to_owned(),
                 reasoning_effort: Some("high".to_owned()),
-                fast_mode: true,
+                fast_mode: false,
+                ultrafast_mode: true,
             }
         );
         let flags = LaunchOverrides {
             model: Some("flag-model".to_owned()),
             effort: Some(ReasoningEffort::Auto),
-            fast_mode: Some(false),
+            fast_mode: Some(true),
+            ultrafast_mode: Some(false),
         };
         assert_eq!(
             flags.restore(&saved()),
             RestoredPreferences {
                 model: "flag-model".to_owned(),
                 reasoning_effort: None,
-                fast_mode: false,
+                fast_mode: true,
+                ultrafast_mode: false,
             }
         );
     }

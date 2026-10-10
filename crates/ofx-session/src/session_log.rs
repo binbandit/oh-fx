@@ -491,6 +491,7 @@ impl WritableSession {
         model: &str,
         effort: Option<&ReasoningEffort>,
         fast_mode: bool,
+        ultrafast_mode: Option<bool>,
     ) -> Result<(), SessionError> {
         let mut preferences = self.metadata.preferences.clone();
         model.clone_into(&mut preferences.model);
@@ -498,6 +499,9 @@ impl WritableSession {
             effort.clone_into(&mut preferences.effort);
         }
         preferences.fast_mode = fast_mode;
+        if let Some(ultrafast_mode) = ultrafast_mode {
+            preferences.ultrafast_mode = ultrafast_mode;
+        }
         self.set_preferences(preferences, now_ms())
     }
 

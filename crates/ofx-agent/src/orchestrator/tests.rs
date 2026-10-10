@@ -620,6 +620,7 @@ fn config() -> AgentConfig {
         step_limit: 0,
         reasoning_effort: None,
         fast_mode: false,
+        ultrafast_mode: false,
         auto_compact_percent: AutoCompactPercent::new(80).unwrap(),
     }
 }

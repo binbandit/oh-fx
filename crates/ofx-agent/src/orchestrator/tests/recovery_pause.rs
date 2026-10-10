@@ -15,6 +15,7 @@ fn checkpoint(progress: RecoveryProgress, consumed_attempts: usize) -> Logged {
         progress,
         consumed_attempts,
         fast_mode: false,
+        ultrafast_mode: false,
     }
 }
 
@@ -113,6 +114,42 @@ async fn a_paused_turn_keeps_its_checkpoint_and_leaves_the_log_and_the_history()
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_checkpoint_saves_the_ultra_request_of_its_turn() {
+    let provider = FakeProvider::new(vec![lost()]);
+    let (log, entries) = MemoryLog::shared();
+    let agent = Agent::new(
+        provider,
+        Vec::new(),
+        Arc::new(FixedContext),
+        Arc::new(ArgumentGate),
+        AgentConfig {
+            ultrafast_mode: true,
+            ..config()
+        },
+    );
+    let mut agent = logged(agent, log);
+    pause_on(&mut agent, "go", waiting).await;
+    let ultra = |progress| Logged::Recovery {
+        user: "go".to_owned(),
+        steps: Vec::new(),
+        files: Vec::new(),
+        source: String::new(),
+        tool_state: RecoveryToolState::None,
+        progress,
+        consumed_attempts: 1,
+        fast_mode: false,
+        ultrafast_mode: true,
+    };
+    assert_eq!(
+        *entries.lock().unwrap(),
+        [
+            ultra(RecoveryProgress::Waiting(CONNECTIVITY)),
+            ultra(RecoveryProgress::Paused),
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn pausing_a_retried_request_in_flight_counts_it() {
     let provider = FakeProvider::new(vec![lost(), Script::WaitForCancel]);
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
@@ -163,6 +200,7 @@ async fn a_paused_turn_leaves_the_history_with_the_text_its_retried_request_stre
                         progress: RecoveryProgress::Paused,
                         consumed_attempts: 2,
                         fast_mode: false,
+                        ultrafast_mode: false,
                     },
                 ]
             );
@@ -236,6 +274,7 @@ async fn a_paused_restart_saves_the_interrupted_reply_and_tool_state() {
             progress: RecoveryProgress::Paused,
             consumed_attempts: 1,
             fast_mode: false,
+            ultrafast_mode: false,
         })
     );
 }

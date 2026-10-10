@@ -100,6 +100,7 @@ pub struct AgentConfig {
     pub step_limit: u64,
     pub reasoning_effort: Option<String>,
     pub fast_mode: bool,
+    pub ultrafast_mode: bool,
     pub auto_compact_percent: AutoCompactPercent,
 }
 

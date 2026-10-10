@@ -76,6 +76,7 @@ fn metadata() -> SessionMetadata {
             model: "openai/gpt-5".to_owned(),
             effort: ReasoningEffort::Auto,
             fast_mode: false,
+            ultrafast_mode: false,
         },
         title: None,
         subagent_child: false,
@@ -1190,7 +1191,7 @@ fn only_the_first_save_of_a_fresh_session_names_it() {
     let fixture = Fixture::new();
     let mut session = fixture.start();
     session
-        .select_model("openai/gpt-5-mini", None, false)
+        .select_model("openai/gpt-5-mini", None, false, None)
         .unwrap();
     session
         .record_turn(&simple_turn("after a model choice", "ok"), &gateway())

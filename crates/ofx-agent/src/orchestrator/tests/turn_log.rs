@@ -29,6 +29,7 @@ pub(super) enum Logged {
         progress: RecoveryProgress,
         consumed_attempts: usize,
         fast_mode: bool,
+        ultrafast_mode: bool,
     },
     RecoveryCleared,
 }
@@ -206,6 +207,7 @@ impl ConversationLog for MemoryLog {
             progress: point.progress,
             consumed_attempts: point.consumed_attempts,
             fast_mode: point.fast_mode,
+            ultrafast_mode: point.ultrafast_mode,
         });
         Ok(())
     }

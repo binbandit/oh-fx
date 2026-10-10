@@ -251,6 +251,7 @@ fn saved_at(
         progress,
         consumed_attempts,
         fast_mode: false,
+        ultrafast_mode: false,
     }
 }
 

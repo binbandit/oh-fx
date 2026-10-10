@@ -40,6 +40,7 @@ fn preferences() -> SessionPreferences {
         model: "openai/gpt-5".to_owned(),
         effort: ReasoningEffort::Auto,
         fast_mode: false,
+        ultrafast_mode: false,
     }
 }
 
@@ -334,6 +335,7 @@ fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_fi
                 model: "openai/gpt-5",
                 requested_fast_mode: false,
                 fast_mode: false,
+                ultrafast_mode: false,
                 attempt_limit: 10,
                 consumed_attempts: 10,
             },

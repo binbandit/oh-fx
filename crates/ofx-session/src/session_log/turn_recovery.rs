@@ -51,8 +51,10 @@ impl PendingRecovery {
         provider: &SavedProvider,
         model: &str,
         fast_mode: bool,
+        ultrafast_mode: bool,
     ) -> RecoveredTurn {
-        self.0.into_continuation(provider, model, fast_mode)
+        self.0
+            .into_continuation(provider, model, fast_mode, ultrafast_mode)
     }
 }
 

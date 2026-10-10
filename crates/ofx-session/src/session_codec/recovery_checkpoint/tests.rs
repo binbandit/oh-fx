@@ -60,7 +60,10 @@ fn checkpoint() -> RecoveryCheckpoint {
                 "chatgpt_subscription",
                 Some([0xab; 32]),
             )),
-            requested_fast_mode: false,
+            requested: RequestedModes {
+                fast_mode: false,
+                ultrafast_mode: false,
+            },
             fast_mode: true,
             may_have_sent: true,
         },
@@ -507,7 +510,7 @@ fn the_recovery_strategy_follows_the_saved_tool_state_and_cause() {
 #[test]
 fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
     let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
-    let continued = checkpoint().into_continuation(&codex, "gpt-5.4", false);
+    let continued = checkpoint().into_continuation(&codex, "gpt-5.4", false, false);
     assert!(continued.fast_mode);
     assert_eq!(continued.prompt, "fix the build");
     assert_eq!(continued.strategy, RecoveryStrategy::ContinueAfterTool);
@@ -522,18 +525,94 @@ fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
     assert_eq!(continued.messages.len(), 3);
     assert!(
         !checkpoint()
-            .into_continuation(&codex, "gpt-5.5", false)
+            .into_continuation(&codex, "gpt-5.5", false, false)
             .fast_mode
     );
     assert!(
         checkpoint()
-            .into_continuation(&codex, "gpt-5.4", true)
+            .into_continuation(&codex, "gpt-5.4", true, false)
             .fast_mode
     );
     let gateway = SavedProvider::new(ProviderId::Gateway, None).unwrap();
     assert!(
         !checkpoint()
-            .into_continuation(&gateway, "gpt-5.4", false)
+            .into_continuation(&gateway, "gpt-5.4", false, false)
+            .fast_mode
+    );
+}
+
+#[test]
+fn an_ultra_request_is_read_as_upstream_writes_it_and_kept_only_for_the_same_selection() {
+    let pair = "\"requested_ultrafast_mode\":true,\"ultrafast_mode\":true,";
+    let ultra =
+        upstream_checkpoint().replace("\"fast_mode\":true,", &format!("\"fast_mode\":true,{pair}"));
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let continued = |text: &str, ultrafast| {
+        decoded(text)
+            .into_continuation(&codex, "gpt-5.4", false, ultrafast)
+            .fast_mode
+    };
+    assert!(continued(&ultra, true));
+    assert!(!continued(&ultra, false));
+    assert!(!continued(&upstream_checkpoint(), true));
+    let effective_only = ultra.replace(
+        "\"requested_ultrafast_mode\":true",
+        "\"requested_ultrafast_mode\":false",
+    );
+    assert!(continued(&effective_only, false));
+    for invalid in [
+        ultra.replace("\"requested_ultrafast_mode\":true,", ""),
+        ultra.replace("\"ultrafast_mode\":true,\"max", "\"max"),
+        ultra.replace(
+            "\"requested_ultrafast_mode\":true",
+            "\"requested_ultrafast_mode\":null",
+        ),
+        ultra.replace(
+            "\"ultrafast_mode\":true,\"max",
+            "\"ultrafast_mode\":1,\"max",
+        ),
+        ultra.replace(
+            "\"requested_ultrafast_mode\":true",
+            "\"requested_ultrafast_mode\":\"true\"",
+        ),
+    ] {
+        assert_eq!(
+            decode_recovery_file(&file_with(&invalid, 1), 1),
+            Err(SessionError::InvalidRecoveryCheckpoint),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn an_ultra_request_is_written_as_upstream_writes_it() {
+    let calls = read_step_calls();
+    let mut point = recovery_point(&calls, "fn main() {}");
+    point.ultrafast_mode = true;
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: None,
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        files: Vec::new(),
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(3, &source).unwrap().unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(
+        text.contains(
+            "\"requested_fast_mode\":false,\"fast_mode\":true,\"requested_ultrafast_mode\":true,\"ultrafast_mode\":true,\"max_provider_attempts\":10,"
+        ),
+        "{text}"
+    );
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let read = decode_recovery_file(&written, 3).unwrap().unwrap();
+    assert!(
+        read.into_continuation(&codex, "gpt-5.4", false, true)
             .fast_mode
     );
 }
@@ -546,7 +625,9 @@ fn a_continuation_keeps_each_restored_results_raw_size_and_process() {
     result.output_bytes = 40;
     result.process = Some(CommandProcessPresentation::ExitCode(3));
     assert_eq!(
-        saved.into_continuation(&codex, "gpt-5.4", false).outputs,
+        saved
+            .into_continuation(&codex, "gpt-5.4", false, false)
+            .outputs,
         [RecordedOutput {
             call_id: ToolCallId::new("call_1"),
             bytes: 40,
@@ -598,6 +679,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
         model: "gpt-5.4",
         requested_fast_mode: false,
         fast_mode: true,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 1,
     }
@@ -658,6 +740,7 @@ fn a_continuation_restarts_from_the_saved_partial_reply() {
         &SavedProvider::new(ProviderId::Codex, None).unwrap(),
         "gpt-5.4",
         false,
+        false,
     );
     assert_eq!(continued.source, "Looking at");
     assert_eq!(continued.strategy, RecoveryStrategy::ContinueResponse);
@@ -680,7 +763,7 @@ fn a_continuation_restarts_from_the_saved_partial_reply() {
         ("rate_limited", ModelRecoveryCause::RateLimited),
     ] {
         let continued = decoded(&upstream_checkpoint().replace("response_interrupted", tag))
-            .into_continuation(&codex, "gpt-5.4", false);
+            .into_continuation(&codex, "gpt-5.4", false, false);
         assert_eq!(continued.cause, Some(cause), "{tag}");
     }
 }
@@ -880,7 +963,9 @@ fn a_continuation_gives_approval_feedback_after_every_result_of_its_step() {
         status: ToolResultStatus::Success,
     };
     assert_eq!(
-        saved.into_continuation(&codex, "gpt-5.4", false).messages,
+        saved
+            .into_continuation(&codex, "gpt-5.4", false, false)
+            .messages,
         [
             ChatMessage::Assistant {
                 content: Some("Reading.".to_owned()),

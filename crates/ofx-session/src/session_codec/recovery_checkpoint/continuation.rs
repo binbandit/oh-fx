@@ -1,6 +1,6 @@
 use ofx_contract::{ChatMessage, RecordedOutput, RecoveredTurn, ToolCallId};
 
-use super::{RecoveryCheckpoint, RouteCredential, SavedSteering, SavedToolStep};
+use super::{RecoveryCheckpoint, RequestedModes, RouteCredential, SavedSteering, SavedToolStep};
 use crate::session_codec::SavedProvider;
 
 impl RecoveryCheckpoint {
@@ -21,10 +21,15 @@ impl RecoveryCheckpoint {
         provider: &SavedProvider,
         model: &str,
         fast_mode: bool,
+        ultrafast_mode: bool,
     ) -> RecoveredTurn {
         let unchanged = self.route.provider == *provider
             && self.route.model == model
-            && self.route.requested_fast_mode == fast_mode;
+            && self.route.requested
+                == RequestedModes {
+                    fast_mode,
+                    ultrafast_mode,
+                };
         let (messages, outputs) = messages(self.execution.tool_steps, self.execution.steering);
         RecoveredTurn {
             messages,

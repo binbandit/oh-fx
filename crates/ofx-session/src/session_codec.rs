@@ -90,6 +90,7 @@ pub struct SessionPreferences {
     pub model: String,
     pub effort: ReasoningEffort,
     pub fast_mode: bool,
+    pub ultrafast_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +119,9 @@ struct MetadataWire<'a> {
     model: &'a str,
     effort: &'a str,
     fast_mode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ultrafast_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<&'a str>,
     subagent_child: bool,
 }
@@ -137,6 +141,7 @@ pub(crate) fn encode_session_metadata(metadata: &SessionMetadata) -> Result<Vec<
         model: &metadata.preferences.model,
         effort,
         fast_mode: metadata.preferences.fast_mode,
+        ultrafast_mode: metadata.preferences.ultrafast_mode.then_some(true),
         title: metadata.title.as_deref(),
         subagent_child: metadata.subagent_child,
     })
@@ -178,6 +183,7 @@ fn metadata_from(document: Json<'_>) -> Option<SessionMetadata> {
             model: fields.string("model")?,
             effort: ReasoningEffort::parse(&fields.string("effort")?)?,
             fast_mode: fields.flag("fast_mode")?,
+            ultrafast_mode: fields.nullable("ultrafast_mode", |value| value.as_bool())?,
         },
         title: fields.nullable("title", |value| string(value).map(Some))?,
         subagent_child: fields.or("subagent_child", false, |value| value.as_bool())?,

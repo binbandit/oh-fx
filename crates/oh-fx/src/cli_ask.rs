@@ -2137,6 +2137,7 @@ mod tests {
             model: "gpt-5.4".to_owned(),
             effort: ofx_contract::ReasoningEffort::parse("medium").unwrap(),
             fast_mode: false,
+            ultrafast_mode: false,
         };
         assert_eq!(
             requested_reasoning(&ask_args(&["ask", "hi"]), &saved, Some(&resumed)),
@@ -3120,6 +3121,7 @@ mod tests {
                 step_limit: 3,
                 reasoning_effort: None,
                 fast_mode: false,
+                ultrafast_mode: false,
                 auto_compact_percent: ofx_contract::AutoCompactPercent::new(80).unwrap(),
             },
         );
