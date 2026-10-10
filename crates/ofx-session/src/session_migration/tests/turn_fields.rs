@@ -426,3 +426,60 @@ fn a_provider_replay_upstream_would_refuse_hides_the_session() {
         assert!(fixture.summary(&log).is_err(), "{case}");
     }
 }
+
+#[test]
+fn listing_accepts_exactly_what_the_import_converts() {
+    let fixture = Fixture::new();
+    let small = presentation_007("x", "y");
+    let large = presentation_007(&"a\n".repeat(3_000), "b");
+    let too_large_text = presentation_007(&"a".repeat(17 * 1024 * 1024), "b");
+    let too_large_bytes = presentation_007("x", "y").replace(
+        "\"after_content\":\"y\"",
+        &format!(
+            "\"after_content\":{}",
+            base64_007(&vec![0xff; 6 * 1024 * 1024])
+        ),
+    );
+    let binary_output = turn_007(
+        "call_1",
+        "run_command",
+        "{\"command\":\"cat blob\"}",
+        &result_007(
+            "call_1",
+            "run_command",
+            &base64_007(b"ok \xff"),
+            "null",
+            "null",
+        ),
+    );
+    for (case, turn, converts) in [
+        ("small edit", edit_turn_007(&small), true),
+        ("large edit", edit_turn_007(&large), true),
+        (
+            "edit too large to pack",
+            edit_turn_007(&too_large_text),
+            true,
+        ),
+        (
+            "binary edit too large to pack",
+            edit_turn_007(&too_large_bytes),
+            false,
+        ),
+        ("binary preview", binary_output, false),
+    ] {
+        let id = format!("legacy-agree-{}", case.replace(' ', "-"));
+        let log = LegacyLog::started_007(&id).turn(&turn);
+        let listed = fixture.summary(&log);
+        let imported = read_schema_v3(&fixture.dir(&log), &id);
+        assert_eq!(listed.is_ok(), converts, "{case}");
+        assert_eq!(imported.is_ok(), converts, "{case}");
+        if let (Ok(listed), Ok(imported)) = (listed, imported) {
+            assert_eq!(
+                listed,
+                imported.map(|converted| converted.summary(None)),
+                "{case}"
+            );
+            written(&fixture, &log);
+        }
+    }
+}

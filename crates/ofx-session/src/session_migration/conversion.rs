@@ -9,7 +9,8 @@ use super::durable_turn::{
 use super::legacy_presentation::{CommandReplay, LegacyPresentation};
 use super::recovery_file::recovery_file;
 use crate::result_store::{
-    PREVIEW_BYTES, bytes_handle, bytes_preview, diff_content_pack, store_new_results,
+    PREVIEW_BYTES, bytes_handle, bytes_preview, diff_content_pack, fits_diff_pack,
+    store_new_results,
 };
 use crate::session_codec::{SessionMetadata, encode_session_metadata};
 use crate::session_display_metadata::history_title;
@@ -24,6 +25,9 @@ use crate::session_log::{
     ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint, RECOVERY_FILE,
 };
 use crate::session_summary_codec::{SessionSource, SessionSummary};
+
+const LISTED_OUTPUT: &str = "result-listed.txt";
+const LISTED_PACK: &str = "diff-listed.json";
 
 pub(crate) struct Converted {
     metadata: SessionMetadata,
@@ -44,8 +48,45 @@ struct StoredResult {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Purpose {
+    Listing,
+    Import,
+}
+
+struct Results {
+    purpose: Purpose,
+    stored: Vec<StoredResult>,
+}
+
+impl Results {
+    fn output(&mut self, call_id: &str, tool_name: &str, bytes: Vec<u8>) -> String {
+        if self.purpose == Purpose::Listing {
+            return LISTED_OUTPUT.to_owned();
+        }
+        let handle = bytes_handle(call_id, tool_name, &bytes);
+        self.stored.push(StoredResult {
+            handle: handle.clone(),
+            bytes,
+        });
+        handle
+    }
+
+    fn pack(&mut self, call_id: &str, previous: Option<&[u8]>, after: Option<&[u8]>) -> String {
+        if self.purpose == Purpose::Listing {
+            return LISTED_PACK.to_owned();
+        }
+        let (handle, bytes) = diff_content_pack(call_id, previous, after);
+        self.stored.push(StoredResult {
+            handle: handle.clone(),
+            bytes,
+        });
+        handle
+    }
+}
+
 impl LegacySession {
-    pub(super) fn convert(self) -> Result<Converted, SessionError> {
+    pub(super) fn convert(self, purpose: Purpose) -> Result<Converted, SessionError> {
         let history_len = self.turns.len();
         let prompts = self.turns.iter().filter_map(|turn| match turn {
             LegacyTurn::Conversation(turn) => Some(turn.user.as_str()),
@@ -63,7 +104,10 @@ impl LegacySession {
             subagent_child: false,
         };
         encode_session_metadata(&metadata)?;
-        let mut results = Vec::new();
+        let mut results = Results {
+            purpose,
+            stored: Vec::new(),
+        };
         let mut log = LogBuilder {
             state: ConversationState::default(),
             events: Vec::new(),
@@ -96,17 +140,19 @@ impl LegacySession {
             None => None,
         };
         let recovery = file.map(|file| {
-            results.extend(file.spilled.into_iter().map(|(handle, text)| StoredResult {
-                handle,
-                bytes: text.into_bytes(),
-            }));
+            results
+                .stored
+                .extend(file.spilled.into_iter().map(|(handle, text)| StoredResult {
+                    handle,
+                    bytes: text.into_bytes(),
+                }));
             file.bytes
         });
         Ok(Converted {
             metadata,
             events: log.events,
             history_len,
-            results,
+            results: results.stored,
             recovery,
         })
     }
@@ -189,7 +235,7 @@ impl Converted {
 
 fn turn_events(
     turn: ConversationTurn,
-    results: &mut Vec<StoredResult>,
+    results: &mut Results,
 ) -> Result<Vec<ConversationEvent>, SessionError> {
     let ConversationTurn {
         user,
@@ -302,7 +348,7 @@ fn steering_events(entry: Steering, events: &mut Vec<ConversationEvent>) {
 
 fn result_event(
     result: SavedResult,
-    results: &mut Vec<StoredResult>,
+    results: &mut Results,
 ) -> Result<ToolResultEvent, SessionError> {
     let preview = match result.preview {
         Some(preview) => preview,
@@ -313,12 +359,8 @@ fn result_event(
     let (artifact_ref, stored_bytes, truncated) = if let Some(handle) = result.output_handle {
         (handle, result.stored_output_bytes, result.truncated)
     } else {
-        let handle = bytes_handle(&result.call_id, &result.tool_name, &result.output);
         let stored_bytes = u64::try_from(result.output.len()).unwrap_or(u64::MAX);
-        results.push(StoredResult {
-            handle: handle.clone(),
-            bytes: result.output,
-        });
+        let handle = results.output(&result.call_id, &result.tool_name, result.output);
         (handle, stored_bytes, true)
     };
     let completeness = if truncated {
@@ -354,7 +396,7 @@ fn result_event(
 fn shown_presentation(
     call_id: &str,
     legacy: LegacyPresentation,
-    results: &mut Vec<StoredResult>,
+    results: &mut Results,
 ) -> Result<Box<CommittedFilePresentation>, SessionError> {
     let LegacyPresentation {
         mut shown,
@@ -363,21 +405,15 @@ fn shown_presentation(
     } = legacy;
     let size = |content: &Option<Vec<u8>>| content.as_ref().map_or(0, Vec::len);
     let inline = size(&previous_content).saturating_add(size(&after_content));
-    let pack = if shown.content_handle.is_none() && inline > PREVIEW_BYTES {
-        diff_content_pack(
+    let spills = shown.content_handle.is_none()
+        && inline > PREVIEW_BYTES
+        && fits_diff_pack(previous_content.as_deref(), after_content.as_deref());
+    if spills {
+        shown.content_handle = Some(results.pack(
             call_id,
             previous_content.as_deref(),
             after_content.as_deref(),
-        )
-    } else {
-        None
-    };
-    if let Some((handle, pack)) = pack {
-        shown.content_handle = Some(handle.clone());
-        results.push(StoredResult {
-            handle,
-            bytes: pack,
-        });
+        ));
         return Ok(Box::new(shown));
     }
     let text = |content: Option<Vec<u8>>| {
