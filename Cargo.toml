@@ -37,6 +37,7 @@ ofx-testkit = { path = "crates/ofx-testkit" }
 ofx-tui = { path = "crates/ofx-tui" }
 ofx-text = { path = "crates/ofx-text" }
 ofx-tools = { path = "crates/ofx-tools" }
+ofx-trace = { path = "crates/ofx-trace" }
 ofx-upgrade = { path = "crates/ofx-upgrade" }
 ofx-vt = { path = "crates/ofx-vt" }
 ofx-workspace = { path = "crates/ofx-workspace" }

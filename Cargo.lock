@@ -664,6 +664,7 @@ version = "0.1.0"
 dependencies = [
  "ofx-contract",
  "ofx-text",
+ "ofx-trace",
  "serde",
  "serde_json",
  "sha2",
@@ -675,6 +676,7 @@ dependencies = [
 name = "ofx-app"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "ofx-agent",
  "ofx-auth",
  "ofx-cli",
@@ -690,6 +692,7 @@ dependencies = [
  "ofx-testkit",
  "ofx-text",
  "ofx-tools",
+ "ofx-trace",
  "ofx-tui",
  "ofx-upgrade",
  "ofx-workspace",
@@ -964,6 +967,13 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "ofx-trace"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

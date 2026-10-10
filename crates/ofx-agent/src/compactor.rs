@@ -3,6 +3,7 @@ mod ledger;
 mod lint;
 mod model;
 mod summarize;
+pub(crate) mod trace;
 mod window;
 
 use std::fmt;
@@ -15,6 +16,7 @@ use crate::execution_memory::{Cut, HistoryTurn, Note, ToolStep};
 pub(crate) use checkpoint::{Payload, encode_checkpoint, restore_checkpoint};
 pub(crate) use model::Summarizer;
 pub(crate) use summarize::SummaryModel;
+pub use trace::{CompactionEvent, CompactionTraceKind, compaction_trace, reset_compaction_trace};
 pub(crate) use window::{Correction, Size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

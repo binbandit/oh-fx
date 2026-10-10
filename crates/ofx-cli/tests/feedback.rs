@@ -8,7 +8,7 @@ fn feedback_keeps_upstreams_position_category_and_argument_policy() {
         .position(|spec| spec.command == "/feedback")
         .unwrap();
     assert_eq!(commands[index - 1].command, "/copy");
-    assert_eq!(commands[index + 1].command, "/compact");
+    assert_eq!(commands[index + 1].command, "/trace");
     assert_eq!(commands[index].presentation_category.label(), "Product");
     assert_eq!(
         commands[index].completion_description,

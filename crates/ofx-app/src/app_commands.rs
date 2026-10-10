@@ -173,6 +173,10 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         SlashKind::Model if !command.payload.is_empty() => {
             CommandEffect::SwitchModel(command.payload.to_owned())
         }
+        SlashKind::Trace => {
+            state.trace(work);
+            CommandEffect::None
+        }
         kind => {
             report(state, kind, command.payload);
             CommandEffect::None
@@ -260,6 +264,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         | SlashKind::Provider
         | SlashKind::Fast
         | SlashKind::Workspace
+        | SlashKind::Trace
         | SlashKind::Compact => {}
     }
 }

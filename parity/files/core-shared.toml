@@ -12,9 +12,9 @@ note = "Rust subprocess spawning handles environment/stdin/stdout; upstream expl
 
 [[file]]
 upstream = "src/core/shared/debug_trace.zig"
-status = "todo"
-modules = []
-note = "Opt-in trace file/ring lifecycle and contextual turn/step/subagent event logging are unimplemented."
+status = "partial"
+modules = ["crates/ofx-trace/src/debug_trace.rs", "crates/ofx-trace/src/lib.rs"]
+note = "The OH_FX_TRACE_LOG, OH_FX_TRACE, OH_FX_TRACE_STDERR and OH_FX_TRACE_SCOPES configuration with the state-directory default path as docs/differences/trace.md records, first-configuration-wins, the 2 MiB rotation, 64 KiB terminal-safe lines, scope filters, events with turn, step and subagent ids, and the process-wide turn and step ids are ported. logf, preview, terminalPreview, keylessJsonPreview and nextSubagentId arrive with their first trace lines; redactedJsonPreview has no upstream caller and shutdown is not needed because the log lives for the process."
 
 [[file]]
 upstream = "src/core/shared/display_width.zig"

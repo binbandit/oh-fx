@@ -87,7 +87,8 @@ The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `
 | #1062 | `34f1ed1` | (same) | `defer:interactive` | future interactive shell | The compaction activity line during automatic and provider-overflow compaction. |
 | #1062 | `34f1ed1` | (same) | `defer:acp` | future ACP | ACP applies the auto compaction percent. |
 | #1062 | `34f1ed1` | (same) | `defer:ai-gateway` | future Vercel AI Gateway transport | The fallback model for a failed or empty summary. |
-| #1062 | `34f1ed1` | (same) | `defer:trace` | future trace log | Compaction trace lines and the `/trace` ring. |
+| #1062 | `34f1ed1` | (same) | `ported` | `ofx-trace`, `ofx-agent`, `ofx-app` | The `/trace` compaction ring and its report section, and the turn loop's compaction decision, `no_compactable_context`, `overflow_recovery_incomplete`, and `provider_overflow_recovery` trace lines. |
+| #1062 | `34f1ed1` | (same) | `defer:trace` | future trace slices | The compactor's own trace lines, which need its trace context. |
 | #1062 | `34f1ed1` | (same) | `omitted` | none | The credential check behind `ContextCompactionUnavailable`: the summary request uses the turn's own provider connection and credential. |
 | #1062 | `34f1ed1` | (same) | `n/a` | none | `scripts/check-compactor-boundary.sh` and its CI steps, AGENTS.md and CONTRIBUTING.md process text, the SDK compaction test. |
 
@@ -116,7 +117,7 @@ The `slack` command (`slack install`, `slack status`, and `slack refresh`) preda
 
 ## Feedback command
 
-`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and bounded launcher wait difference recorded in [differences/slash-commands.md](differences/slash-commands.md). The trace ring, `/trace`, trace emissions and interactive tracing remain deferred; this slice does not complete OH-11 or its compactor trace rows.
+`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and bounded launcher wait difference recorded in [differences/slash-commands.md](differences/slash-commands.md). `/trace`, the trace log, and the compaction ring are ported in `ofx-trace`, `ofx-agent`, and `ofx-app`, as [differences/trace.md](differences/trace.md) records; the remaining trace emissions and interactive tracing remain deferred.
 
 ## Deferred areas
 
@@ -159,7 +160,7 @@ The private result reader supports bounded raw pages, and storage no longer appl
 - **Interactive:** the footer shows the compaction activity line (`activity_status.zig`) during automatic and provider-overflow compaction, with the turn's clock, as it already does for `/compact`.
 - **ACP:** ACP applies the auto compaction percent.
 - **Vercel AI Gateway:** `model.zig` sends a failed or empty summary once more to another model family.
-- **Trace:** `trace.zig`'s ring and the compaction trace lines.
+- **Trace:** the compactor's own trace lines through `trace.zig`.
 
 ### MCP OAuth
 

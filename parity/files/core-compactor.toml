@@ -48,8 +48,9 @@ note = "Summary generation and checkpoint validation exist; saved-record referen
 
 [[file]]
 upstream = "src/core/compactor/trace.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-agent/src/compactor/trace.rs", "crates/ofx-trace/src/ring.rs"]
+note = "The 64-event ring with 512-byte details, its info, failure and infoIf recording with the context_compaction trace lines, snapshot and reset are ported with the decision, no_compactable_context, overflow_recovery_incomplete and provider_overflow_recovery kinds the turn loop writes; the remaining kinds and the free-form log arrive with the compactor's own trace lines."
 
 [[file]]
 upstream = "src/core/compactor/window.zig"
