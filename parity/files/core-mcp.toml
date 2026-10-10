@@ -120,8 +120,9 @@ note = "Health rendering, the /mcp summary, the startup notice and the local con
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/json_number.rs"]
+note = "Exact parsing and non-negative integers for ttlMs and size exist, read from serde_json values as docs/differences/mcp.md records; ordering and multipleOf are missing until elicitation needs them."
 
 [[file]]
 upstream = "src/core/mcp/json_schema_pattern.zig"
