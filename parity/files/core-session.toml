@@ -108,8 +108,8 @@ note = "Only the subagent control directory exists, with a child's owner marker 
 [[file]]
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_codec.rs", "crates/ofx-session/src/session_migration/durable_turn.rs", "crates/ofx-session/src/session_migration/durable_state.rs"]
-note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, and approval feedback written and restored as upstream does; the legacy connection preferences, the history turns and compacted summaries, and the durable state a replacement carries are read when fx's schema-v3 sessions are imported, and older checkpoint versions and the turn fields oh-fx cannot write yet come with the rest of NEW-G."
+modules = ["crates/ofx-session/src/session_codec.rs", "crates/ofx-session/src/session_migration/durable_turn.rs", "crates/ofx-session/src/session_migration/durable_state.rs", "crates/ofx-session/src/session_migration/legacy_checkpoint.rs"]
+note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, and approval feedback written and restored as upstream does; the legacy connection preferences, the history turns and compacted summaries, the durable state a replacement carries, and the version 1, version 2 and pre-public route checkpoints are read when fx's schema-v3 sessions are imported, the pre-public ones archived as failed turns as archive_legacy_recovery does, and the turn fields oh-fx cannot write yet come with the rest of NEW-G."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"
@@ -138,7 +138,7 @@ note = "Display-title derivation exists, the title of the display.json sidecar l
 upstream = "src/core/session/session_event.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_migration/legacy_frame.rs", "crates/ofx-session/src/session_migration/replay.rs"]
-note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, command output replays on tool results and an interrupted turn's cancelled command round-trip, committed file presentations round-trip and give resumed edit rows their path and line counts, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing. The schema-v3 envelopes of fx's older sessions are decoded and reduced for their import, state replacements included once their chunks and digests check out, with the recovery checkpoints a later turn settled dropped; checkpoint payloads and a checkpoint left set come with the rest of NEW-G."
+note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, command output replays on tool results and an interrupted turn's cancelled command round-trip, committed file presentations round-trip and give resumed edit rows their path and line counts, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing. The schema-v3 envelopes of fx's older sessions are decoded and reduced for their import, state replacements included once their chunks and digests check out, with each recovery checkpoint decoded as upstream decodes it, one a later turn settled dropped, and one left set carried into the copy's recovery."
 
 [[file]]
 upstream = "src/core/session/session_json.zig"
@@ -155,14 +155,14 @@ note = "Session-ID validation/generation exists; terminal-specific IDs and v2 di
 [[file]]
 upstream = "src/core/session/session_log.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_migration/conversion.rs"]
-note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, and recovery checkpoint prefix validation/copy, the recovery part of legacy imports, and the in-place import recovery are missing; the permission and usage sidecars are not written, as for oh-fx's own sessions."
+modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_migration/conversion.rs", "crates/ofx-session/src/session_migration/recovery_file.rs"]
+note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy and the in-place import recovery are missing; the permission and usage sidecars are not written, as for oh-fx's own sessions."
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_migration.rs"]
-note = "Reads the committed prefix of the schema-v3 semantic event log fx 0.0.1 to 0.0.7 wrote, as loadSchemaV3ReadOnly does, and converts an ordinary conversation into oh-fx's copy of the fx session instead of rewriting it in place, as docs/differences/sessions.md records. State replacements are read once their chunks and digests check out, and compacted summaries become checkpoints as upstream's import writes them. A recovery checkpoint left set at the watermark, base64 text, and turn fields oh-fx cannot write yet keep a session hidden. The v1 and v2 session.json snapshots are not ported: only builds before fx's public repository wrote them, and the first public commit already writes the schema-v3 layout."
+note = "Reads the committed prefix of the schema-v3 semantic event log fx 0.0.1 to 0.0.7 wrote, as loadSchemaV3ReadOnly does, and converts an ordinary conversation into oh-fx's copy of the fx session instead of rewriting it in place, as docs/differences/sessions.md records. State replacements are read once their chunks and digests check out, and compacted summaries become checkpoints as upstream's import writes them. A recovery checkpoint left set at the watermark becomes the copy's recovery, or a failed turn when it predates fx's public repository. Base64 text, a subagent work id or provider-run tool result in an open checkpoint, and turn fields oh-fx cannot write yet keep a session hidden. The v1 and v2 session.json snapshots are not ported: only builds before fx's public repository wrote them, and the first public commit already writes the schema-v3 layout."
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
@@ -179,7 +179,7 @@ modules = []
 upstream = "src/core/session/session_replay.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_replay.rs", "crates/ofx-session/src/session_migration.rs"]
-note = "Buffered line reading exists, and the committed prefix of an fx schema-v3 log is replayed for its import; exact-commit, recovery checkpoint and child-identity replay coordination are missing."
+note = "Buffered line reading exists, and the committed prefix of an fx schema-v3 log is replayed for its import as replayCommittedPrefix does, with its state replacements and recovery checkpoints; exact-position, checkpoint-projection and child-identity replay coordination are missing."
 
 [[file]]
 upstream = "src/core/session/session_store.zig"
