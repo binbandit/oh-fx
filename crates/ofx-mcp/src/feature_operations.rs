@@ -1,30 +1,33 @@
 use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::time::Instant;
 
 use crate::catalog_freshness::page_expiry;
 use crate::error::McpError;
 use crate::feature_catalog_runtime::FEATURE_RESPONSE_FRAME_CAP_BYTES;
 use crate::features::common::ResourceContent;
-use crate::features::prompts::{Prompt, PromptArgument};
+use crate::features::prompts::{
+    self, GetOutcome, Prompt, PromptArgument, PromptGetResult, parse_get_outcome,
+};
 use crate::features::resources::{
     Limits, ReadOutcome, Resource, ResourceTemplate, parse_read_outcome, stale_fallback_eligible,
 };
 use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
-use crate::protocol_messages::build_resource_read_request;
+use crate::protocol_messages::{build_prompt_get_request, build_resource_read_request};
 use crate::server_connection::McpClient;
 use crate::server_lifecycle::{Lifecycle, Server};
 use crate::tool_result::protocol_diagnostic;
 use crate::transport::{McpTransport, TransportRequest};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ResourceReadFailure {
+pub enum FeatureFailure {
     Error(McpError),
     Diagnostic(String),
 }
 
-impl From<McpError> for ResourceReadFailure {
+impl From<McpError> for FeatureFailure {
     fn from(error: McpError) -> Self {
         Self::Error(error)
     }
@@ -99,7 +102,7 @@ impl Server {
         self: &Arc<Self>,
         uri: &str,
         deadline: Instant,
-    ) -> Result<Arc<[ResourceContent]>, ResourceReadFailure> {
+    ) -> Result<Arc<[ResourceContent]>, FeatureFailure> {
         if !self.features.advertises_resources() {
             return Err(McpError::McpResourcesUnsupported.into());
         }
@@ -122,7 +125,7 @@ impl Server {
             let stale = self.features.cached_read(uri, now_ms, true);
             let fall_back = |error: McpError, eligible: bool| match &stale {
                 Some(stale) if eligible => Ok(Arc::clone(stale)),
-                _ => Err(ResourceReadFailure::Error(error)),
+                _ => Err(FeatureFailure::Error(error)),
             };
             let Some(client) = client else {
                 return fall_back(McpError::McpConnectionClosed, true);
@@ -154,7 +157,7 @@ impl Server {
             let result = match outcome {
                 ReadOutcome::Complete(result) => result,
                 ReadOutcome::ProtocolFailure(error) => {
-                    return Err(ResourceReadFailure::Diagnostic(protocol_diagnostic(&error)));
+                    return Err(FeatureFailure::Diagnostic(protocol_diagnostic(&error)));
                 }
             };
             let contents: Arc<[ResourceContent]> = result.contents.into();
@@ -168,6 +171,61 @@ impl Server {
             return Ok(contents);
         }
     }
+
+    pub(crate) async fn get_prompt(
+        self: &Arc<Self>,
+        name: &str,
+        arguments_json: &str,
+        deadline: Instant,
+    ) -> Result<PromptGetResult, FeatureFailure> {
+        if !self.features.advertises_prompts() {
+            return Err(McpError::McpPromptsUnsupported.into());
+        }
+        loop {
+            let (identity, arguments) =
+                self.prompt_identity(name, arguments_json, deadline).await?;
+            let Lifecycle::Ready(client) = self.lifecycle() else {
+                return Err(McpError::McpConnectionClosed.into());
+            };
+            if self.config.transport == TransportType::Stdio && !client.is_running() {
+                self.running_client(deadline)
+                    .await
+                    .map_err(|failure| failure.into_error())?;
+                continue;
+            }
+            let current = self
+                .while_current(&client, || identity.current(&self.features))
+                .unwrap_or(false);
+            if !current || client.prompts_invalidation.pending() {
+                return Err(McpError::McpFeatureCatalogChanged.into());
+            }
+            return match request_prompt(&client, name, &arguments, deadline).await? {
+                GetOutcome::Complete(result) => Ok(result),
+                GetOutcome::ProtocolFailure(error) => {
+                    Err(FeatureFailure::Diagnostic(protocol_diagnostic(&error)))
+                }
+            };
+        }
+    }
+}
+
+async fn request_prompt(
+    client: &McpClient,
+    name: &str,
+    arguments: &Value,
+    deadline: Instant,
+) -> Result<GetOutcome, McpError> {
+    let id = client.transport.next_request_id()?;
+    let response = client
+        .transport
+        .request(TransportRequest::new(
+            id,
+            build_prompt_get_request(id, name, arguments),
+            FEATURE_RESPONSE_FRAME_CAP_BYTES,
+            deadline,
+        ))
+        .await?;
+    parse_get_outcome(&response, prompts::Limits::default())
 }
 
 async fn request_read(
