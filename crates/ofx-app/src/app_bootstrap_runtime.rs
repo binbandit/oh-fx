@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use ofx_agent::{
-    Agent, AgentConfig, Approvals, ChildStore, ProjectContext, QuestionRequests, Questions,
-    RuntimeContext, SkillContextProvider,
+    Agent, AgentConfig, Approvals, ChildStore, MeteredProvider, ProjectContext, QuestionRequests,
+    Questions, RuntimeContext, SkillContextProvider,
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
@@ -709,7 +709,7 @@ fn connection_route(
     let definition = Arc::new(connection.clone());
     let limits = Arc::clone(&definition);
     let reviewer = ChatCompletionsReviewTransport::new(
-        Arc::clone(&provider),
+        Arc::new(MeteredProvider::new(Arc::clone(&provider))),
         connection.reviewer_model().map(str::to_owned),
         move |model| limits.capabilities(model).max_output_tokens,
     );
