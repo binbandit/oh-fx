@@ -25,6 +25,8 @@ use crate::session_log::{
     ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint, RECOVERY_FILE,
 };
 use crate::session_summary_codec::{SessionSource, SessionSummary};
+use crate::session_usage::UsageSnapshot;
+use crate::session_usage_sidecar;
 
 const LISTED_OUTPUT: &str = "result-listed.txt";
 const LISTED_PACK: &str = "diff-listed.json";
@@ -35,6 +37,7 @@ pub(crate) struct Converted {
     history_len: usize,
     results: Vec<StoredResult>,
     recovery: Option<Vec<u8>>,
+    usage: Option<UsageSnapshot>,
 }
 
 struct LogBuilder {
@@ -159,6 +162,7 @@ impl LegacySession {
             history_len,
             results: results.stored,
             recovery,
+            usage: self.usage,
         })
     }
 }
@@ -230,6 +234,9 @@ impl Converted {
         let mut events = create_managed_file(copy, EVENTS_FILE)?;
         events.write_all(&log)?;
         events.sync_all()?;
+        if let Some(usage) = &self.usage {
+            session_usage_sidecar::write(copy, &self.metadata.id, usage)?;
+        }
         if let Some(recovery) = &self.recovery {
             copy.replace(RECOVERY_FILE, recovery)?;
         }

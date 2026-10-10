@@ -24,6 +24,7 @@ use crate::session_log::managed_file::{
 use crate::session_log::{EVENTS_FILE, read_metadata};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::SessionSummary;
+use crate::session_usage::UsageSnapshot;
 
 pub(crate) use conversion::Converted;
 use conversion::Purpose;
@@ -47,6 +48,7 @@ pub(crate) struct LegacySession {
     turns: Vec<LegacyTurn>,
     context_history_start: usize,
     recovery: Option<Box<Continuable>>,
+    usage: Option<UsageSnapshot>,
 }
 
 struct Watermark {
