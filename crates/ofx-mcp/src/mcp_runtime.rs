@@ -12,8 +12,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::feature_operations::{PromptSummary, ResourceReadFailure, ResourceSummary};
+use crate::feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
 use crate::features::common::ResourceContent;
+use crate::features::prompts::PromptGetResult;
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
 use crate::native_config::NativeConfigLoad;
@@ -197,7 +198,7 @@ impl McpRuntime {
         &self,
         server_name: &str,
         uri: &str,
-    ) -> Result<Arc<[ResourceContent]>, ResourceReadFailure> {
+    ) -> Result<Arc<[ResourceContent]>, FeatureFailure> {
         let (server, deadline) = self.feature_server(server_name).await?;
         server.read_resource(uri, deadline).await
     }
@@ -205,6 +206,16 @@ impl McpRuntime {
     pub async fn list_prompts(&self, server_name: &str) -> Result<Vec<PromptSummary>, McpError> {
         let (server, deadline) = self.feature_server(server_name).await?;
         server.list_prompts(deadline).await
+    }
+
+    pub async fn get_prompt(
+        &self,
+        server_name: &str,
+        name: &str,
+        arguments_json: &str,
+    ) -> Result<PromptGetResult, FeatureFailure> {
+        let (server, deadline) = self.feature_server(server_name).await?;
+        server.get_prompt(name, arguments_json, deadline).await
     }
 
     async fn feature_server(&self, server_name: &str) -> Result<(Arc<Server>, Instant), McpError> {
@@ -525,6 +536,7 @@ mod tests {
     use crate::catalog_freshness::SnapshotMetadata;
     use crate::feature_catalog::Snapshot;
     use crate::features::common::ResourceData;
+    use crate::features::prompts::{PromptContentKind, PromptRole};
     use crate::features::resources::Resource;
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
     use crate::project_config::WorkspaceDiagnosticCause;
@@ -1812,7 +1824,7 @@ done
         );
         assert_eq!(read_text(&runtime, "memory://items/7").await, "item");
         assert_eq!(lists(), "resources\ntemplates\n");
-        let failure = |error| Err(ResourceReadFailure::Error(error));
+        let failure = |error| Err(FeatureFailure::Error(error));
         assert_eq!(
             runtime.read_resource("fixture", "memory://other").await,
             failure(McpError::McpResourceNotFound)
@@ -1825,7 +1837,7 @@ done
             runtime
                 .read_resource("fixture", "memory://items/denied")
                 .await,
-            Err(ResourceReadFailure::Diagnostic(
+            Err(FeatureFailure::Diagnostic(
                 r#"MCP protocol error -32002: denied; data={"uri":"memory://items/denied"}"#
                     .to_owned()
             ))
@@ -1866,7 +1878,7 @@ done
         ));
         assert_eq!(
             runtime.read_resource("fixture", "memory://items/7").await,
-            Err(ResourceReadFailure::Error(McpError::McpConnectionClosed))
+            Err(FeatureFailure::Error(McpError::McpConnectionClosed))
         );
         assert_eq!(
             requests(state.path()),
@@ -1884,7 +1896,7 @@ done
         std::fs::write(state.path().join("crash"), "").unwrap();
         assert_eq!(
             runtime.read_resource("fixture", "memory://items/1").await,
-            Err(ResourceReadFailure::Error(McpError::McpConnectionClosed))
+            Err(FeatureFailure::Error(McpError::McpConnectionClosed))
         );
         assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
         std::fs::remove_file(state.path().join("crash")).unwrap();
@@ -1909,9 +1921,7 @@ done
         until_resources_invalidated(&runtime).await;
         assert_eq!(
             runtime.read_resource("fixture", "memory://notes").await,
-            Err(ResourceReadFailure::Error(
-                McpError::McpFeatureCatalogChanged
-            ))
+            Err(FeatureFailure::Error(McpError::McpFeatureCatalogChanged))
         );
         std::fs::remove_file(state.path().join("broken")).unwrap();
         std::fs::write(state.path().join("version"), "v2").unwrap();
@@ -1935,7 +1945,7 @@ done
         .unwrap();
         let runtime = runtime(vec![config("fixture", READ_SERVER, state.path())]);
         runtime.connect(StartupPhase::All).await;
-        let failure = |error| Err(ResourceReadFailure::Error(error));
+        let failure = |error| Err(FeatureFailure::Error(error));
         assert_eq!(
             runtime.read_resource("fixture", "memory://missing").await,
             failure(McpError::DuplicateCursor)
@@ -1954,6 +1964,191 @@ done
             failure(McpError::McpResourceTemplateMatchLimitExceeded)
         );
         assert_eq!(requests(state.path()), "");
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    const PROMPT_GET_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"prompts\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+    *'"method":"prompts/list"'*)
+      echo list >> "$STATE/requests"
+      if [ -f "$STATE/broken" ]; then
+        reply "$id" '{"prompts":[{"name":"review","arguments":[{"name":"focus"},{"name":"focus"}]}]}'
+      else
+        reply "$id" '{"prompts":[{"name":"review","arguments":[{"name":"focus","required":true},{"name":"depth"}]},{"name":"plain"}]}'
+      fi ;;
+    *'"method":"prompts/get"'*)
+      params=$(printf '%s' "$line" | sed -n 's/.*"params":\(.*\)}$/\1/p')
+      echo "get $params" >> "$STATE/requests"
+      if [ -f "$STATE/crash" ]; then exit 0; fi
+      text=$(cat "$STATE/version" 2>/dev/null || echo v1)
+      case "$line" in
+        *'"name":"plain"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"rejected","data":{"name":"plain"}}}\n' "$id" ;;
+        *) reply "$id" "{\"description\":\"Review code\",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"$text\"}},{\"role\":\"assistant\",\"content\":{\"type\":\"resource_link\",\"uri\":\"git://repo\",\"name\":\"repo\"}}]}" ;;
+      esac
+      if [ -f "$STATE/notify" ]; then
+        rm "$STATE/notify"
+        touch "$STATE/broken"
+        printf '{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}\n'
+      fi ;;
+  esac
+done
+"#;
+
+    async fn prompt_text(runtime: &McpRuntime, arguments: &str) -> String {
+        let result = runtime
+            .get_prompt("fixture", "review", arguments)
+            .await
+            .unwrap();
+        result.messages[0].content_json.clone()
+    }
+
+    #[tokio::test]
+    async fn prompt_gets_check_their_arguments_and_name_their_failures() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![
+            config("fixture", PROMPT_GET_SERVER, state.path()),
+            config("tools", SERVER, state.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        let result = runtime
+            .get_prompt(
+                "fixture",
+                "review",
+                r#" {"depth": "2", "focus": "security"} "#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.description.as_deref(), Some("Review code"));
+        let messages: Vec<_> = result
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.role,
+                    message.content_kind,
+                    message.content_json.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                (
+                    PromptRole::User,
+                    PromptContentKind::Text,
+                    r#"{"type":"text","text":"v1"}"#
+                ),
+                (
+                    PromptRole::Assistant,
+                    PromptContentKind::ResourceLink,
+                    r#"{"type":"resource_link","uri":"git://repo","name":"repo"}"#
+                ),
+            ]
+        );
+        let failure = |error| Err(FeatureFailure::Error(error));
+        for (server, name, arguments, expected) in [
+            ("fixture", "missing", "{}", McpError::McpPromptNotFound),
+            ("fixture", "review", "{}", McpError::InvalidArguments),
+            (
+                "fixture",
+                "review",
+                r#"{"focus":1}"#,
+                McpError::InvalidArguments,
+            ),
+            (
+                "fixture",
+                "plain",
+                r#"{"focus":"a"}"#,
+                McpError::InvalidArguments,
+            ),
+            ("missing", "review", "{}", McpError::McpServerNotFound),
+            ("tools", "review", "{}", McpError::McpPromptsUnsupported),
+        ] {
+            assert_eq!(
+                runtime.get_prompt(server, name, arguments).await,
+                failure(expected),
+                "{server} {name} {arguments}"
+            );
+        }
+        assert_eq!(
+            runtime.get_prompt("fixture", "plain", "{}").await,
+            Err(FeatureFailure::Diagnostic(
+                r#"MCP protocol error -32603: rejected; data={"name":"plain"}"#.to_owned()
+            ))
+        );
+        assert_eq!(
+            requests(state.path()),
+            "list\nget {\"name\":\"review\",\"arguments\":{\"depth\":\"2\",\"focus\":\"security\"}}\nget {\"name\":\"plain\",\"arguments\":{}}\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_prompt_get_after_a_failed_list_refresh_waits_for_the_catalog_to_settle() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("notify"), "").unwrap();
+        let runtime = runtime(vec![config("fixture", PROMPT_GET_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let focus = r#"{"focus":"a"}"#;
+        assert_eq!(
+            prompt_text(&runtime, focus).await,
+            r#"{"type":"text","text":"v1"}"#
+        );
+        until_prompts_invalidated(&runtime).await;
+        assert_eq!(
+            runtime.get_prompt("fixture", "review", focus).await,
+            Err(FeatureFailure::Error(McpError::McpFeatureCatalogChanged))
+        );
+        std::fs::remove_file(state.path().join("broken")).unwrap();
+        std::fs::write(state.path().join("version"), "v2").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            prompt_text(&runtime, focus).await,
+            r#"{"type":"text","text":"v2"}"#
+        );
+        let get = "get {\"name\":\"review\",\"arguments\":{\"focus\":\"a\"}}\n";
+        assert_eq!(
+            requests(state.path()),
+            format!("list\n{get}list\nlist\n{get}")
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_prompt_get_restarts_a_stopped_server_and_lists_its_prompts_again() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", PROMPT_GET_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let focus = r#"{"focus":"a"}"#;
+        assert_eq!(
+            prompt_text(&runtime, focus).await,
+            r#"{"type":"text","text":"v1"}"#
+        );
+        std::fs::write(state.path().join("crash"), "").unwrap();
+        assert_eq!(
+            runtime.get_prompt("fixture", "review", focus).await,
+            Err(FeatureFailure::Error(McpError::McpConnectionClosed))
+        );
+        std::fs::remove_file(state.path().join("crash")).unwrap();
+        std::fs::write(state.path().join("version"), "v2").unwrap();
+        assert_eq!(
+            prompt_text(&runtime, focus).await,
+            r#"{"type":"text","text":"v2"}"#
+        );
+        assert_eq!(runtime.current()[0].restarts(), 1);
+        let get = "get {\"name\":\"review\",\"arguments\":{\"focus\":\"a\"}}\n";
+        assert_eq!(
+            requests(state.path()),
+            format!("list\n{get}{get}list\n{get}")
+        );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 }
