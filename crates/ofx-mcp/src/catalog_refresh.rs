@@ -73,7 +73,7 @@ impl McpClient {
                     catalog: self.tool_catalog(),
                     replaced: false,
                     in_flight: false,
-                    authentication_required: error == McpError::McpAuthenticationRequired,
+                    authentication_required: self.transport.lost_authentication(&error),
                 };
             }
         };

@@ -107,6 +107,13 @@ impl Transport {
         }
     }
 
+    pub(crate) fn lost_authentication(&self, error: &McpError) -> bool {
+        *error == McpError::McpAuthenticationRequired
+            || self
+                .http_auth()
+                .is_some_and(|auth| auth.failure().is_some())
+    }
+
     pub(crate) fn listening(&self) -> bool {
         match self {
             Self::Stdio(_) => true,
