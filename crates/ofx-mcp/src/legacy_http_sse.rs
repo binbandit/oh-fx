@@ -60,6 +60,10 @@ pub(crate) fn validate_initialize_response(value: &Value) -> Result<(), McpError
 }
 
 impl LegacySseClient {
+    pub(crate) fn auth(&self) -> &HttpAuth {
+        &self.shared.auth
+    }
+
     pub(crate) async fn connect(
         endpoint: HttpEndpoint,
         initial_max_event_bytes: usize,

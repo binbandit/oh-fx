@@ -235,6 +235,10 @@ impl Server {
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
         let refreshed = client.settled_tools(deadline).await?;
+        if refreshed.authentication_required {
+            self.authentication_failed(&client);
+            return Err(McpError::McpAuthenticationRequired.into());
+        }
         if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
@@ -252,19 +256,60 @@ impl Server {
         if Instant::now() >= deadline {
             return Err(McpError::McpRequestTimedOut.into());
         }
-        Ok(client
+        let outcome = client
             .call_tool(name, arguments_json, options, deadline)
-            .await?)
+            .await;
+        if outcome.as_ref().err() == Some(&McpError::McpAuthenticationRequired) {
+            self.authentication_failed(&client);
+        }
+        Ok(outcome?)
+    }
+
+    fn authentication_failed(&self, client: &McpClient) {
+        let Some(auth) = client.transport.http_auth() else {
+            return;
+        };
+        let message = auth.authentication_message();
+        let retired = {
+            let mut state = lock(&self.state);
+            match &*state {
+                State::Ready(connection)
+                    if std::ptr::eq(Arc::as_ptr(&connection.client), client) =>
+                {
+                    let State::Ready(connection) =
+                        std::mem::replace(&mut *state, State::Failed(message))
+                    else {
+                        return;
+                    };
+                    Some(connection)
+                }
+                _ => None,
+            }
+        };
+        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        if let Some(connection) = retired {
+            connection.stop.cancel();
+            spawn(async move {
+                connection.client.shutdown(ShutdownMode::Graceful).await;
+            });
+        }
     }
 
     pub(crate) async fn refresh_tools(&self, client: &McpClient, deadline: Instant) {
-        if client.refresh_tools(deadline).await.replaced {
+        let refreshed = client.refresh_tools(deadline).await;
+        if refreshed.authentication_required {
+            self.authentication_failed(client);
+        } else if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
         while let Ok(refreshed) = client.settled_tools(deadline).await {
+            if refreshed.authentication_required {
+                self.authentication_failed(client);
+                return;
+            }
             if refreshed.replaced {
                 self.catalog_generation.fetch_add(1, Ordering::AcqRel);
             }

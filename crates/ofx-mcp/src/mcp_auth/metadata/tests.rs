@@ -5,7 +5,7 @@ const LOGIN: &str = r#"{"issuer":"https://login.example.com","authorization_endp
 fn metadata(bytes: &str, issuer: &str) -> AuthorizationMetadata {
     match parse_authorization_metadata(bytes.as_bytes(), issuer).unwrap() {
         MetadataOutcome::Metadata(metadata) => *metadata,
-        MetadataOutcome::IssuerMismatch => panic!("the issuer matches"),
+        MetadataOutcome::IssuerMismatch(_) => panic!("the issuer matches"),
     }
 }
 
@@ -119,7 +119,11 @@ fn issuers_match_exactly_apart_from_a_trailing_slash() {
     ] {
         assert_eq!(
             parse_authorization_metadata(LOGIN.as_bytes(), expected),
-            Ok(MetadataOutcome::IssuerMismatch),
+            Ok(MetadataOutcome::IssuerMismatch(IssuerMismatch {
+                source: IssuerMismatchSource::AuthorizationMetadata,
+                expected: expected.to_owned(),
+                returned: "https://login.example.com".to_owned(),
+            })),
             "{expected}"
         );
     }

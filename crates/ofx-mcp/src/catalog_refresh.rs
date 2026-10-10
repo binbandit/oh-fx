@@ -17,6 +17,7 @@ pub(crate) struct Refreshed {
     pub(crate) catalog: Arc<ToolCatalog>,
     pub(crate) replaced: bool,
     pub(crate) in_flight: bool,
+    pub(crate) authentication_required: bool,
 }
 
 impl McpClient {
@@ -54,6 +55,7 @@ impl McpClient {
                     catalog: Arc::clone(&snapshot.catalog),
                     replaced: false,
                     in_flight: action == RefreshAction::AlreadyRefreshing,
+                    authentication_required: false,
                 };
             }
             let source = snapshot.metadata;
@@ -64,12 +66,16 @@ impl McpClient {
             client: self,
             source: Some(source),
         };
-        let Ok(listing) = discover_tools(&self.transport, deadline, |error| error).await else {
-            return Refreshed {
-                catalog: self.tool_catalog(),
-                replaced: false,
-                in_flight: false,
-            };
+        let listing = match discover_tools(&self.transport, deadline, |error| error).await {
+            Ok(listing) => listing,
+            Err(error) => {
+                return Refreshed {
+                    catalog: self.tool_catalog(),
+                    replaced: false,
+                    in_flight: false,
+                    authentication_required: error == McpError::McpAuthenticationRequired,
+                };
+            }
         };
         pending.source = None;
         let mut snapshot = lock(&self.tools);
@@ -83,6 +89,7 @@ impl McpClient {
             catalog: Arc::clone(&snapshot.catalog),
             replaced,
             in_flight: false,
+            authentication_required: false,
         }
     }
 }

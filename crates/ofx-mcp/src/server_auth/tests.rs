@@ -326,6 +326,7 @@ mod stored {
         HttpAuth::resolve(
             &fixture.config(),
             Some(fixture.store()),
+            &Arc::default(),
             || Ok(oauth_client()),
             &|_| None,
         )
@@ -599,6 +600,7 @@ mod authenticating {
         let result = authenticate(
             config,
             options,
+            &Challenge::default(),
             &open,
             &CancellationToken::new(),
             environment,

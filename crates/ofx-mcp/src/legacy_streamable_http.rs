@@ -267,6 +267,12 @@ impl LegacyHttpClient {
     }
 }
 
+impl LegacyHttpClient {
+    pub(crate) fn auth(&self) -> &HttpAuth {
+        &self.shared.auth
+    }
+}
+
 impl Drop for LegacyHttpClient {
     fn drop(&mut self) {
         let stopped = self.shared.stopping.swap(true, Ordering::AcqRel);
