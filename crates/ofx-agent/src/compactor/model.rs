@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use super::CompactionError;
 use super::summarize::{Prompt, SummaryModel};
 use super::trace::{CompactionTraceKind, Optional, Tracer};
+use crate::gateway_step::Meter;
 use crate::text_completion::{self, Failure, Outcome, Reason};
 
 const MAX_SUMMARY_BYTES: usize = 8 * 1024 * 1024;
@@ -20,6 +21,7 @@ pub(crate) struct Summarizer<'a> {
     pub(crate) session_id: Option<&'a str>,
     pub(crate) cancel: &'a CancellationToken,
     pub(crate) trace: Tracer,
+    pub(crate) meter: Meter,
 }
 
 impl SummaryModel for Summarizer<'_> {
@@ -42,6 +44,7 @@ impl SummaryModel for Summarizer<'_> {
                     self.provider,
                     &request,
                     MAX_SUMMARY_BYTES,
+                    self.meter,
                     self.cancel,
                 )
                 .await;
@@ -66,6 +69,7 @@ impl SummaryModel for Summarizer<'_> {
                     self.provider,
                     &request,
                     MAX_SUMMARY_BYTES,
+                    self.meter,
                     self.cancel,
                 )
                 .await;

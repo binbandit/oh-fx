@@ -98,6 +98,10 @@ impl Tracer {
         )
     }
 
+    pub(crate) const fn context(self) -> TraceContext {
+        self.context
+    }
+
     pub(crate) fn info(self, kind: CompactionTraceKind, detail: fmt::Arguments<'_>) {
         self.note(Line::Event(kind), false, true, detail);
     }

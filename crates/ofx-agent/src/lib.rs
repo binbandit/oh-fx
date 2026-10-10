@@ -3,6 +3,7 @@ mod approvals;
 mod assistant_stream;
 mod compactor;
 mod execution_memory;
+mod gateway_step;
 mod lifecycle;
 mod model_response_recovery;
 mod orchestrator;
@@ -26,6 +27,7 @@ pub use assistant_stream::{normalize_assistant_text_for_display, text_for_comple
 pub use compactor::{
     CompactionError, CompactionEvent, CompactionTraceKind, compaction_trace, reset_compaction_trace,
 };
+pub use gateway_step::MeteredProvider;
 pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };

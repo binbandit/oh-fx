@@ -1,5 +1,6 @@
 mod debug_trace;
 mod json_preview;
+mod network_metrics;
 mod preview;
 mod ring;
 
@@ -8,6 +9,10 @@ pub use debug_trace::{
     next_step_id, next_subagent_id, next_turn_id, timestamp_ms,
 };
 pub use json_preview::keyless_json_preview;
+pub use network_metrics::{
+    NETWORK_CALLS, NetworkCall, NetworkCallKind, NetworkLifetime, NetworkRing, NetworkTrace,
+    NetworkTurnRollup, network_trace, reset_network_trace,
+};
 pub use preview::{preview, terminal_preview};
 pub use ring::{Ring, Sequenced};
 

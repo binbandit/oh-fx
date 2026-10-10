@@ -28,7 +28,7 @@ use ofx_contract::{
     tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
-use ofx_trace::{Ring, TraceContext};
+use ofx_trace::{NETWORK_CALLS, NetworkRing, Ring, TraceContext};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -40,6 +40,7 @@ use crate::assistant_stream::normalize_assistant_text_for_display;
 use crate::compactor::trace::COMPACTION_TRACE;
 use crate::compactor::{CompactionError, CompactionEvent, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
+use crate::gateway_step::Meter;
 use crate::lifecycle::{LifecycleContext, ToolPreparation};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, ToolEvidence, recovery_cause,
@@ -55,6 +56,7 @@ use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
 mod dynamic_tools;
+mod gateway_trace;
 mod mode_policy;
 mod paused;
 mod project_gate;
@@ -69,6 +71,7 @@ mod turn_trace;
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use dynamic_tools::{DynamicToolSet, SelectedTools, not_selected};
+use gateway_trace::Recovering;
 use mode_policy::{Offer, denial, offer};
 use paused::{Pause, paused_required_action};
 use project_gate::GatedGroup;
@@ -76,7 +79,7 @@ use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
     may_run_at_provider, provider_executed,
 };
-use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted, retried_strategy};
+use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -97,6 +100,8 @@ const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the re
 const SILENT_STEPS_BEFORE_SUMMARY: u32 = 2;
 const TERMINAL_VALIDATION_RETRY: &str = "terminal_validation_retry";
 const RECOVERY_STALLED: &str = "recovery_stalled";
+const STALL_STOP: &str = "stall stop";
+const CANCEL: &str = "cancel";
 
 const TOOL_CANCEL_GRACE: Duration = Duration::from_secs(2);
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
@@ -321,6 +326,7 @@ pub struct Agent {
     lifecycle: Option<LifecycleContext>,
     compaction_trace: &'static Ring<CompactionEvent>,
     tool_call_trace: &'static ToolCallRing,
+    network_calls: &'static NetworkRing,
     next_trace: Option<TraceContext>,
 }
 
@@ -374,6 +380,7 @@ impl Agent {
             lifecycle: None,
             compaction_trace: &COMPACTION_TRACE,
             tool_call_trace: &TOOL_CALL_TRACE,
+            network_calls: &NETWORK_CALLS,
             next_trace: None,
         }
     }
@@ -1162,7 +1169,8 @@ impl Agent {
                 .attempt(turn, &sent, body.take(), &mut pending, events, cancel)
                 .await;
             let consumed = attempt - usize::from(!admitted);
-            let spoke = restart.observe(partial, tool, &mut turn.tool_evidence);
+            let counted = (attempt, consumed, tool);
+            let observed = restart.observe(partial, counted, &mut turn.tool_evidence);
             let error = match streamed {
                 Ok(completion) => {
                     let outcome = (recovering_from.is_some(), attempt, tool);
@@ -1170,50 +1178,43 @@ impl Agent {
                 }
                 Err(error) => error,
             };
+            let failed = (&error, observed, cancel);
             if error.kind == ProviderErrorKind::Cancelled || cancel.is_cancelled() {
+                self.trace_failure(turn, &restart, failed, Recovering::Cancelled);
                 let recovery = recovering_from.map(|cause| (cause, consumed));
                 return Err(self.interruption(turn, recovery, &error, restart, events));
             }
-            let cause = recovery_cause(error.kind);
-            let observed = (tool, cause, &error);
-            self.reconcile_broken(turn, observed, (attempt, consumed), &restart, events)?;
-            let Some(cause) = cause else {
+            self.reconcile_broken(turn, failed, &restart, events)?;
+            let Some(cause) = recovery_cause(error.kind) else {
                 if self.asks_again(turn, (&error, tool, attempt), &mut restart) {
                     recovery.reset_pacing();
                     attempt += 1;
                     continue;
                 }
+                self.trace_failure(turn, &restart, failed, Recovering::Stop);
                 if let Some(status) =
-                    stopped_status(recovering_from, attempt, consumed, &error, spoke)
+                    stopped_status(recovering_from, attempt, consumed, &error, observed.spoke)
                 {
                     events(UiEvent::Recovery { turn_id, status });
                 }
                 return Err(restart.failed(error));
             };
-            let observed = (tool, cause, &error);
+            let evidence = (tool, cause, &error);
             let evidence =
-                restart.evidence(&mut turn.tool_evidence, observed, &turn.language.stage);
+                restart.evidence(&mut turn.tool_evidence, evidence, &turn.language.stage);
             let decision = recovery.decide(cause, &error, streamed_bytes, evidence);
             let Some(action) = decision.strategy.action() else {
+                self.trace_failure(turn, &restart, failed, Recovering::Stall);
                 turn.trail.finish = Some(RECOVERY_STALLED);
                 events(UiEvent::Recovery {
                     turn_id,
                     status: stalled_status(cause, consumed, &error, &decision),
                 });
-                self.discard_recovery();
+                self.discard_recovery(STALL_STOP);
                 return Err(restart.failed(error));
             };
-            if restart.replay_safe(cause, tool, &turn.language.stage) {
-                turn.fast_mode = false;
-                request.provider_options.fast = false;
-            }
-            let strategy = retried_strategy(turn.recovery, decision.strategy);
-            if strategy != turn.recovery {
-                turn.recovery = strategy;
-                request.tool_choice = recovery_tool_choice(strategy);
-                restart.resend(self.request_messages(turn));
-            }
-            turn.recovery_cause = Some(cause);
+            let decided = (cause, decision.strategy);
+            self.prepare_retry(turn, &mut request, &mut restart, failed, decided);
             let mut status = retry_status(attempt, cause, action, &decision, &error);
             self.record_wait(turn, cause, action, consumed, &restart)?;
             events(UiEvent::Recovery {
@@ -1294,6 +1295,7 @@ impl Agent {
                 events(UiEvent::ReasoningText { turn_id, text });
             }
         };
+        let started_at_ms = ofx_trace::timestamp_ms();
         let streamed = match body {
             Some(body) => {
                 self.provider
@@ -1302,6 +1304,7 @@ impl Agent {
             }
             None => self.provider.stream(request, &mut sink, cancel).await,
         };
+        Meter::new(self.network_calls, trace).record(request.model, started_at_ms, &streamed);
         Attempt {
             streamed,
             partial: streamed_text.partial,
@@ -1329,7 +1332,7 @@ impl Agent {
             };
         };
         if !self.recovery_pause.requested() {
-            self.discard_recovery();
+            self.discard_recovery(CANCEL);
             return Stop::Interrupted {
                 partial: restart.into_partial(),
             };
