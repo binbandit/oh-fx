@@ -158,7 +158,7 @@ async fn a_provider_error_detail_is_masked_before_its_preview_is_cut() {
             let Ok(Outcome {
                 reply: Err(rejection),
                 ..
-            }) = complete(&rejected, &request(&messages), 1024, &cancel).await
+            }) = complete(&rejected, &request(&messages), 1024, meter(), &cancel).await
             else {
                 panic!("the request should fail");
             };
