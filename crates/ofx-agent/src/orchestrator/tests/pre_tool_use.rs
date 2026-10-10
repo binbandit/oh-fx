@@ -8,6 +8,7 @@ use ofx_contract::{
 use super::*;
 
 type Seen = Arc<Mutex<Vec<(String, String, usize)>>>;
+type Action = fn(&str) -> Result<PreToolUseAction, HookHandlerError>;
 
 fn hooked(
     agent: Agent,
@@ -213,7 +214,7 @@ async fn a_block_is_the_calls_failed_result_and_nothing_else_runs() {
 
 #[tokio::test]
 async fn handler_failures_and_invalid_outputs_block_the_call_closed() {
-    let actions: [fn(&str) -> Result<PreToolUseAction, HookHandlerError>; 4] = [
+    let actions: [Action; 4] = [
         |_| Err(HookHandlerError::Failed),
         |_| Err(HookHandlerError::Cancelled),
         |_| Ok(PreToolUseAction::RewriteArguments("[]".to_owned())),
