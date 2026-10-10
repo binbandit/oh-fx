@@ -7,10 +7,10 @@ use ofx_contract::{UsageCompleteness, UsageIncident};
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, Stat};
 use rustix::io::Errno;
 
-use crate::json_fields::{parse_json, push_string};
+use crate::json_fields::{Json, parse_json, push_string};
 use crate::session_error::SessionError;
 use crate::session_log::managed_file::{file_type, permissions, private_file_mode};
-use crate::session_usage::{MAX_SNAPSHOT_BYTES, UsageSnapshot};
+use crate::session_usage::{MAX_SNAPSHOT_BYTES, UsageSnapshot, supports_snapshot_schema};
 
 pub(crate) const SIDECAR_FILE: &str = "usage-v2.json";
 const MAX_SIDECAR_BYTES: usize = MAX_SNAPSHOT_BYTES + 512;
@@ -70,6 +70,48 @@ pub(crate) fn load_conversation(
         completeness: UsageCompleteness::Incomplete,
     })?;
     Ok(snapshot)
+}
+
+pub(crate) fn has_recoverable_corruption(
+    dir: &PrivateDir,
+    session_id: &str,
+) -> Result<bool, SessionError> {
+    let bytes = match capture(dir) {
+        Captured::Missing => return Ok(false),
+        Captured::Unreadable(Damage::Unsafe) => return Err(SessionError::InvalidUsageSidecar),
+        Captured::Unreadable(Damage::Empty | Damage::Oversized) => return Ok(true),
+        Captured::Encoded(bytes) => bytes,
+    };
+    if decode(&bytes, session_id).is_some() {
+        return Ok(false);
+    }
+    let Ok(envelope) = parse_json(&bytes) else {
+        return Ok(true);
+    };
+    if envelope
+        .get("session_id")
+        .and_then(|bound| bound.as_str())
+        .is_some_and(|bound| !bound.is_empty() && bound != session_id)
+    {
+        return Err(SessionError::UsageSidecarSessionMismatch);
+    }
+    let envelope_version = envelope.get("schema_version").and_then(Json::as_i64);
+    let snapshot_version = envelope
+        .get("snapshot")
+        .and_then(|snapshot| snapshot.get("schema_version"))
+        .and_then(Json::as_i64);
+    if unsupported(envelope_version, |version| {
+        version == SIDECAR_SCHEMA_VERSION
+    }) || unsupported(snapshot_version, supports_snapshot_schema)
+    {
+        return Err(SessionError::UnsupportedUsageSidecar);
+    }
+    Ok(true)
+}
+
+fn unsupported(version: Option<i64>, supported: impl Fn(u64) -> bool) -> bool {
+    version
+        .is_some_and(|version| u64::try_from(version).map_or(true, |version| !supported(version)))
 }
 
 fn capture(dir: &PrivateDir) -> Captured {

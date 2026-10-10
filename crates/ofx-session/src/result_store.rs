@@ -4,6 +4,7 @@ use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
+use crate::artifact_digest::is_lower_hex;
 use crate::session_error::SessionError;
 use crate::session_log::managed_file::{create_managed_file, sync_dir};
 
@@ -19,7 +20,8 @@ const MAX_TOOL_PART_BYTES: usize = 48;
 const DIGEST_HEX_BYTES: usize = 8;
 const DIFF_HANDLE_PREFIX: &str = "diff-";
 const DIFF_HANDLE_SUFFIX: &str = ".json";
-const DIFF_CONTENT_MAX_BYTES: usize = 2 * STORED_TEXT_MAX_BYTES;
+pub(crate) const DIFF_CONTENT_MAX_BYTES: usize = 2 * STORED_TEXT_MAX_BYTES;
+const DIFF_DIGEST_HEX_BYTES: usize = 2 * DIGEST_HEX_BYTES;
 const PACK_PREVIOUS: &[u8] = b"{\"previous_content\":";
 const PACK_AFTER: &[u8] = b",\"after_content\":";
 const PACK_NULL: &[u8] = b"null";
@@ -272,6 +274,24 @@ fn is_valid_handle(handle: &str) -> bool {
         && handle
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+pub(crate) fn diff_handle_matches_call(handle: &str, tool_call_id: &str) -> bool {
+    let Some(digests) = handle
+        .strip_prefix(DIFF_HANDLE_PREFIX)
+        .and_then(|rest| rest.strip_suffix(DIFF_HANDLE_SUFFIX))
+    else {
+        return false;
+    };
+    let Some((call, content)) = digests.split_once('-') else {
+        return false;
+    };
+    let mut expected = String::new();
+    push_digest_hex(&mut expected, tool_call_id.as_bytes());
+    [call, content]
+        .iter()
+        .all(|digest| digest.len() == DIFF_DIGEST_HEX_BYTES && is_lower_hex(digest))
+        && call == expected
 }
 
 fn push_digest_hex(out: &mut String, bytes: &[u8]) {
