@@ -3,7 +3,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use ofx_text::{content_for_display, mask_secrets};
 
-const RING_CAPACITY: usize = 64;
+pub(crate) const RING_CAPACITY: usize = 64;
 const MAX_NAME_BYTES: usize = 64;
 const MAX_ARGS_BYTES: usize = 1200;
 const MAX_RESULT_BYTES: usize = 2000;
