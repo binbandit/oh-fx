@@ -412,8 +412,8 @@ fn provider_command_requires_exactly_one_valid_name() {
 #[test]
 fn mcp_subcommands_validate_their_operand_shapes() {
     assert_eq!(
-        parse_mcp(&os(&["auth", "linear"])),
-        Ok(McpOperation::Auth("linear".to_owned()))
+        parse_mcp(&os(&["auth", "linear"])).ok(),
+        Some(McpOperation::Auth("linear".to_owned()))
     );
     for args in [
         &["add", "fixture", "node", "server.js"][..],
@@ -429,7 +429,11 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["trust", "approve", "x"],
         &["trust", "reject", "x"],
     ] {
-        assert_eq!(parse_mcp(&os(args)), Ok(McpOperation::Unported), "{args:?}");
+        assert_eq!(
+            parse_mcp(&os(args)).ok(),
+            Some(McpOperation::Unported),
+            "{args:?}"
+        );
     }
     for args in [
         &["add"][..],

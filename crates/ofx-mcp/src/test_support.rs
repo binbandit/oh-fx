@@ -88,6 +88,11 @@ impl Reply {
         .header("Content-Type", "text/event-stream")
     }
 
+    pub(crate) fn with_status(mut self, status: u16) -> Self {
+        self.status = status;
+        self
+    }
+
     pub(crate) fn body(mut self, body: &str) -> Self {
         self.parts = vec![body.as_bytes().to_vec()];
         self

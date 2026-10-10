@@ -366,14 +366,16 @@ fn parse_authorization_redirect(location: &str) -> Result<AuthorizationResponse,
         .split_once('?')
         .ok_or(McpError::InvalidAuthorizationRedirect)?;
     let query = after.split_once('#').map_or(after, |(query, _)| query);
+    let code = query_value(query, "code").map_err(query_error)?;
+    let state = query_value(query, "state").map_err(query_error)?;
     let issuer = match query_value(query, "iss") {
         Ok(value) => Some(value.to_string()),
         Err(QueryError::MissingQueryParameter) => None,
         Err(error) => return Err(query_error(error)),
     };
     Ok(AuthorizationResponse {
-        code: query_value(query, "code").map_err(query_error)?,
-        state: query_value(query, "state").map_err(query_error)?,
+        code,
+        state,
         issuer,
     })
 }

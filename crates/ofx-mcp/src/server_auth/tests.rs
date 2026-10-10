@@ -329,9 +329,9 @@ mod stored {
     }
 
     fn oauth_client() -> reqwest::Client {
-        ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
+        ofx_http::build_connection_client(&ConnectionOptions {
             follow_redirects: false,
-            ..ofx_http::ConnectionOptions::default()
+            ..ConnectionOptions::default()
         })
         .unwrap()
     }
