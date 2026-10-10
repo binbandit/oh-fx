@@ -32,6 +32,7 @@ const INCIDENT_FIELDS: usize = 4;
 const ABANDON_CHECK_LINES: usize = 256;
 
 mod append;
+mod compaction;
 mod records;
 
 pub(crate) use records::{AppendOutcome, ProfileEvent};

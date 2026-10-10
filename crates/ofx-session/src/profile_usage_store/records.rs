@@ -39,6 +39,14 @@ impl ProfileEvent<'_> {
         }
     }
 
+    pub(super) fn timestamp(self) -> i64 {
+        match self {
+            Self::Generation(fact) => fact.created_at_ms,
+            Self::Pending(marker) => marker.observed_at_ms,
+            Self::Incident(incident) => incident.occurred_at_ms,
+        }
+    }
+
     pub(super) fn line(self) -> String {
         let mut out = String::new();
         match self {

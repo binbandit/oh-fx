@@ -7,6 +7,7 @@ use super::*;
 use crate::spawn_gate::hold_off_spawns;
 
 mod append;
+mod compaction;
 
 const FACT_ID: &str = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const OTHER_ID: &str = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAW";
