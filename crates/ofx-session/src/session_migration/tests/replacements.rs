@@ -241,7 +241,7 @@ fn a_log_fx_rewrote_past_4096_frames_reads_from_its_new_generation() {
         .replaced("log_compaction", &state, 900_000)
         .turn(&reply_007("after the rewrite", "still here"));
     assert_eq!(log.frame_count(), 8);
-    let dir = log.write(&fixture.root.path().to_path_buf());
+    let dir = log.write(fixture.root.path());
     fs::write(
         dir.join(format!("commit.{GENERATION}.json")),
         "{\"schema_version\":1,\"session_id\":\"legacy-rewritten\",\"log_generation\":\"01010101010101010101010101010101\",\"through_seq\":4096,\"through_event_id\":\"00000000000000000000000000001100\",\"through_event_log_bytes\":99999999}\n",
@@ -260,161 +260,154 @@ fn a_log_fx_rewrote_past_4096_frames_reads_from_its_new_generation() {
     assert_eq!(checkpoints[0].0, 6_001);
 }
 
-#[test]
-fn a_replacement_that_does_not_check_out_makes_the_session_unreadable() {
+fn broken_state(updated: usize, tail: &str) -> String {
+    state_007(
+        "legacy-broken",
+        updated,
+        &[reply_007("one", "first")],
+        0,
+        tail,
+    )
+}
+
+fn broken(reason: &str, state: &str) -> LegacyLog {
+    LegacyLog::started_007("legacy-broken")
+        .turn(&reply_007("one", "first"))
+        .replaced(reason, state, 50)
+}
+
+fn recovery_tail() -> String {
+    format!(
+        ",\"recovery_checkpoint\":{}",
+        &REQUEST_CHECKPOINT[14..REQUEST_CHECKPOINT.len() - 1]
+    )
+}
+
+fn assert_unreadable(cases: Vec<(&str, LegacyLog)>) {
     let fixture = Fixture::new();
-    let state = |updated: usize, tail: &str| {
-        state_007(
-            "legacy-broken",
-            updated,
-            &[reply_007("one", "first")],
-            0,
-            tail,
-        )
-    };
-    let base = || LegacyLog::started_007("legacy-broken").turn(&reply_007("one", "first"));
-    let replaced = |reason: &str, state: &str| base().replaced(reason, state, 50);
-    let good = replaced("compaction", &state(50, ""));
-    assert!(fixture.summary(&good).unwrap().is_some());
-    let cases = [
+    for (case, log) in cases {
+        assert!(fixture.summary(&log).is_err(), "{case}");
+    }
+}
+
+#[test]
+fn a_replacement_whose_frames_do_not_add_up_makes_the_session_unreadable() {
+    let fixture = Fixture::new();
+    let good = || broken("compaction", &broken_state(50, ""));
+    assert!(fixture.summary(&good()).unwrap().is_some());
+    assert_unreadable(vec![
         (
             "chunk digest",
-            good_with(5, |payload| zero_digest(payload, "chunk_sha256")),
+            good().edited(5, |payload| zero_digest(payload, "chunk_sha256")),
         ),
         (
             "overall digest",
-            replaced("compaction", &state(50, ""))
+            good()
                 .edited(4, |payload| zero_digest(payload, "sha256"))
                 .edited(6, |payload| zero_digest(payload, "sha256")),
         ),
         (
             "commit size",
-            replaced("compaction", &state(50, "")).edited(6, |payload| {
+            good().edited(6, |payload| {
                 payload.replace("\"encoded_bytes\":", "\"encoded_bytes\":1")
             }),
         ),
         (
             "chunk index",
-            replaced("compaction", &state(50, "")).edited(5, |payload| {
+            good().edited(5, |payload| {
                 payload.replace("\"chunk_index\":0", "\"chunk_index\":1")
             }),
         ),
         (
             "reason",
-            replaced("compaction", &state(50, ""))
-                .edited(4, |payload| payload.replace("compaction", "tidying")),
+            good().edited(4, |payload| payload.replace("compaction", "tidying")),
         ),
-        (
-            "cut by the watermark",
-            replaced("compaction", &state(50, "")).committed_through(6),
-        ),
+        ("cut by the watermark", good().committed_through(6)),
         (
             "workspace",
-            replaced(
+            broken(
                 "compaction",
-                &state(50, "").replace(
+                &broken_state(50, "").replace(
                     "\"workspace_root\":\"/work\"",
                     "\"workspace_root\":\"/moved\"",
                 ),
             ),
         ),
-        ("updated", replaced("compaction", &state(40, ""))),
+        ("updated", broken("compaction", &broken_state(40, ""))),
         (
             "log rewrite time",
-            replaced("log_compaction", &state(50, "")),
+            broken("log_compaction", &broken_state(50, "")),
         ),
+    ]);
+}
+
+#[test]
+fn a_replacement_whose_state_does_not_check_out_makes_the_session_unreadable() {
+    assert_unreadable(vec![
         (
             "key order",
-            replaced("compaction", &context_last(&state(50, ""))),
+            broken("compaction", &context_last(&broken_state(50, ""))),
         ),
         (
             "start past history",
-            replaced(
+            broken(
                 "compaction",
-                &state(50, "")
+                &broken_state(50, "")
                     .replace("\"context_history_start\":0", "\"context_history_start\":2"),
             ),
         ),
         (
             "unknown key",
-            replaced("compaction", &state(50, ",\"unknown\":true")),
+            broken("compaction", &broken_state(50, ",\"unknown\":true")),
         ),
         (
             "rule id",
-            replaced(
+            broken(
                 "compaction",
-                &state(50, "").replace("\"id\":1,", "\"id\":0,"),
+                &broken_state(50, "").replace("\"id\":1,", "\"id\":0,"),
             ),
         ),
         (
             "rule decision",
-            replaced(
+            broken(
                 "compaction",
-                &state(50, "").replace("\"allow\"", "\"maybe\""),
+                &broken_state(50, "").replace("\"allow\"", "\"maybe\""),
             ),
         ),
         (
             "rule generation",
-            replaced(
+            broken(
                 "compaction",
-                &state(50, "").replace("\"next_generation\":2", "\"next_generation\":1"),
+                &broken_state(50, "").replace("\"next_generation\":2", "\"next_generation\":1"),
             ),
         ),
         (
             "child flag",
-            replaced("compaction", &state(50, ",\"subagent_child\":false")),
+            broken("compaction", &broken_state(50, ",\"subagent_child\":false")),
         ),
         (
             "recovery left set",
-            replaced(
-                "compaction",
-                &state(
-                    50,
-                    &format!(
-                        ",\"recovery_checkpoint\":{}",
-                        &REQUEST_CHECKPOINT[14..REQUEST_CHECKPOINT.len() - 1]
-                    ),
-                ),
-            ),
+            broken("compaction", &broken_state(50, &recovery_tail())),
         ),
-    ];
-    for (case, log) in cases {
-        assert!(fixture.summary(&log).is_err(), "{case}");
-    }
+    ]);
+}
 
-    let child = replaced("compaction", &state(50, ",\"subagent_child\":true"));
+#[test]
+fn a_replaced_state_keeps_its_child_flag_settles_its_checkpoint_and_reads_older_rules() {
+    let fixture = Fixture::new();
+    let child = broken("compaction", &broken_state(50, ",\"subagent_child\":true"));
     assert_eq!(fixture.summary(&child).unwrap(), None);
-    let settled = replaced(
-        "compaction",
-        &state(
-            50,
-            &format!(
-                ",\"recovery_checkpoint\":{}",
-                &REQUEST_CHECKPOINT[14..REQUEST_CHECKPOINT.len() - 1]
-            ),
-        ),
-    )
-    .turn(&reply_007("two", "second"));
+    let settled =
+        broken("compaction", &broken_state(50, &recovery_tail())).turn(&reply_007("two", "second"));
     assert_eq!(fixture.summary(&settled).unwrap().unwrap().history_len, 2);
-    let legacy_rules = replaced(
+    let older_rules = broken(
         "compaction",
-        &state(50, "").replace(
+        &broken_state(50, "").replace(
             "\"schema_version\":2,\"next_generation\"",
             "\"schema_version\":1,\"next_generation\"",
         ),
     );
-    assert!(fixture.summary(&legacy_rules).unwrap().is_some());
-}
-
-fn good_with(frame: usize, edit: impl Fn(&str) -> String) -> LegacyLog {
-    LegacyLog::started_007("legacy-broken")
-        .turn(&reply_007("one", "first"))
-        .replaced(
-            "compaction",
-            &state_007("legacy-broken", 50, &[reply_007("one", "first")], 0, ""),
-            50,
-        )
-        .edited(frame, edit)
+    assert!(fixture.summary(&older_rules).unwrap().is_some());
 }
 
 fn zero_digest(payload: &str, key: &str) -> String {

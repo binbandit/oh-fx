@@ -27,7 +27,17 @@ const UNREADABLE_ARGUMENTS: &str = "Tool arguments were not valid JSON.";
 const UNREADABLE_ARGUMENTS_SUGGESTION: &str =
     "Reissue the tool call with complete valid JSON arguments matching the tool schema.";
 
-pub(super) struct LegacyTurn {
+pub(super) enum LegacyTurn {
+    Conversation(Box<ConversationTurn>),
+    Compacted(CompactedSummary),
+}
+
+pub(super) struct CompactedSummary {
+    pub(super) summary: String,
+    pub(super) removed_turn_count: usize,
+}
+
+pub(super) struct ConversationTurn {
     pub(super) user: String,
     pub(super) work_id: Option<String>,
     pub(super) execution: Execution,
@@ -85,9 +95,41 @@ pub(super) fn history_turn(value: Json<'_>) -> Option<LegacyTurn> {
         "assistant" => assistant(&mut fields)?,
         "background_command" => background_command(&mut fields)?,
         "interrupted" => interrupted(&mut fields)?,
+        "compacted_summary" => LegacyTurn::Compacted(compacted_summary(&mut fields)?),
         _ => return None,
     };
     fields.finish(turn)
+}
+
+fn compacted_summary(fields: &mut Fields<'_>) -> Option<CompactedSummary> {
+    let summary = durable_text(fields.required("summary")?)?;
+    let removed_turn_count = usize::try_from(fields.unsigned("removed_turn_count")?).ok()?;
+    fields.unsigned("compaction_count")?;
+    let root_messages = fields.required("root_user_messages");
+    let root_complete = fields.required("root_user_messages_complete");
+    let feedback = fields.required("permission_feedback");
+    let feedback_complete = fields.required("permission_feedback_complete");
+    let shaped = match (
+        root_messages.is_some(),
+        root_complete.is_some(),
+        feedback.is_some(),
+        feedback_complete.is_some(),
+    ) {
+        (true, true, feedback, complete) => feedback == complete,
+        (_, false, false, false) => true,
+        _ => false,
+    };
+    shaped.then_some(())?;
+    for messages in [root_messages, feedback].into_iter().flatten() {
+        list(messages, durable_text)?;
+    }
+    for complete in [root_complete, feedback_complete].into_iter().flatten() {
+        complete.as_bool()?;
+    }
+    Some(CompactedSummary {
+        summary,
+        removed_turn_count,
+    })
 }
 
 pub(super) fn is_valid_work_id(work_id: &str) -> bool {
@@ -99,12 +141,12 @@ fn assistant(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     let reply = durable_text(fields.required("assistant")?)?;
     let execution = execution(fields.required("execution")?)?;
     fields.or("provider_replay", (), |value| absent(&value))?;
-    Some(LegacyTurn {
+    Some(LegacyTurn::Conversation(Box::new(ConversationTurn {
         user,
         work_id,
         execution,
         close: TurnClose::Replied(reply),
-    })
+    })))
 }
 
 fn background_command(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
@@ -125,7 +167,7 @@ fn background_command(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     } else {
         (None, Execution::default())
     };
-    Some(LegacyTurn {
+    Some(LegacyTurn::Conversation(Box::new(ConversationTurn {
         user,
         work_id,
         execution,
@@ -134,7 +176,7 @@ fn background_command(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
             &log_path,
             url.as_deref(),
         )),
-    })
+    })))
 }
 
 fn historical_command(reply: Option<&str>, log_path: &str, url: Option<&str>) -> String {
@@ -180,7 +222,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     if fields.required("cancelled_command").is_some() {
         return None;
     }
-    Some(LegacyTurn {
+    Some(LegacyTurn::Conversation(Box::new(ConversationTurn {
         user,
         work_id,
         execution,
@@ -189,7 +231,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
             partial,
             pending,
         },
-    })
+    })))
 }
 
 fn user(value: Json<'_>) -> Option<(String, Option<String>)> {
