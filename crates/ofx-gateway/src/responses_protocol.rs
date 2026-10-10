@@ -1,10 +1,11 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_contract::{
     ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
-    ToolExecutionProvenance, ToolSpec, Usage,
+    ToolExecutionProvenance, ToolImage, ToolResultStatus, ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
 use ofx_images::{AttachmentError, VerifiedSnapshot, load_verified_snapshot};
@@ -255,18 +256,57 @@ pub(crate) fn write_input(
                 }
             }
             ChatMessage::Tool {
-                call_id, content, ..
+                call_id,
+                content,
+                status,
+                images,
+                ..
             } => {
                 push_comma(out, &mut first);
                 out.push_str("{\"type\":\"function_call_output\",\"call_id\":");
                 push_json_string(out, ids.resolve(call_id.as_str()));
                 out.push_str(",\"output\":");
-                push_json_string(out, content);
+                if images.is_empty() {
+                    push_json_string(out, content);
+                } else {
+                    write_tool_image_output(out, content, *status, images);
+                }
                 out.push('}');
             }
         }
     }
     Ok(())
+}
+
+fn write_tool_image_output(
+    out: &mut String,
+    content: &str,
+    status: ToolResultStatus,
+    images: &[ToolImage],
+) {
+    let text = if status == ToolResultStatus::Failure {
+        Cow::Owned(format!("Tool error: {content}"))
+    } else {
+        Cow::Borrowed(content)
+    };
+    out.push('[');
+    let mut first_part = true;
+    if !text.is_empty() {
+        out.push_str("{\"type\":\"input_text\",\"text\":");
+        push_json_string(out, &text);
+        out.push('}');
+        first_part = false;
+    }
+    for image in images {
+        push_comma(out, &mut first_part);
+        out.push_str("{\"type\":\"input_image\",\"image_url\":");
+        push_json_string(
+            out,
+            &format!("data:{};base64,{}", image.mime_type, image.data),
+        );
+        out.push('}');
+    }
+    out.push(']');
 }
 
 fn write_input_image(out: &mut String, image: &VerifiedSnapshot) {

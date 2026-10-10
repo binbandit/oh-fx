@@ -7,3 +7,7 @@ pub use image_attachments::{
     capture_image_snapshots, load_resolved_image_attachment, load_verified_snapshot,
     normalize_path_input,
 };
+pub use image_data::{
+    Dimensions, MAX_ENCODED_IMAGE_BYTES, MAX_SINGLE_IMAGE_DIMENSION, detect_media_type,
+    image_dimensions,
+};

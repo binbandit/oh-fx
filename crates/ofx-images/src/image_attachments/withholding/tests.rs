@@ -273,8 +273,8 @@ fn more_than_twenty_request_images_lower_the_pixel_limit() {
     let messages = [user("many", images)];
     let cache = AttachmentDimensionCache::default();
 
-    assert!(cache.withhold_oversized_attachments(&messages).is_some());
-    assert_eq!(cache.withhold_oversized_attachments(&messages[..0]), None);
+    assert!(cache.withhold_oversized_images(&messages).is_some());
+    assert_eq!(cache.withhold_oversized_images(&messages[..0]), None);
     let twenty = [user("many", parts(&messages[0]).1[..20].to_vec())];
-    assert_eq!(cache.withhold_oversized_attachments(&twenty), None);
+    assert_eq!(cache.withhold_oversized_images(&twenty), None);
 }

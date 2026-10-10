@@ -89,10 +89,7 @@ impl ChatCompletionsProvider {
     }
 
     fn build(&self, request: &ModelRequest<'_>) -> Result<PreparedRequest, ProtocolError> {
-        match self
-            .attachments
-            .withhold_oversized_attachments(request.messages)
-        {
+        match self.attachments.withhold_oversized_images(request.messages) {
             Some(messages) => build_request(
                 &ModelRequest {
                     messages: &messages,

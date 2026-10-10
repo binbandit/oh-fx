@@ -21,6 +21,10 @@ use crate::tool_admission::admit_existing_path;
 use crate::tool_args::{optional_integer, parse_arguments, required_string};
 use crate::tool_runtime::BlockingCall;
 
+mod image_result;
+
+use image_result::{ImageRead, image_tool_result};
+
 const TOOL_NAME: &str = "read_file";
 const DESCRIPTION: &str = "Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.";
 const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}"#;
@@ -130,7 +134,9 @@ impl ReadFileArgs {
             return failure;
         }
         match self.read(context, path_access) {
-            Ok((text, covered)) => ToolOutput::success(text).covering_full_file(covered),
+            Ok(read) => ToolOutput::success(read.text)
+                .covering_full_file(read.covered)
+                .with_images(read.images),
             Err(failure) => failure,
         }
     }
@@ -139,7 +145,7 @@ impl ReadFileArgs {
         &self,
         context: &FilesystemContext,
         path_access: &PathAccess,
-    ) -> Result<(String, bool), ToolOutput> {
+    ) -> Result<ImageRead, ToolOutput> {
         let target = self.resolve(context, path_access)?;
         self.read_target(context, &target)
     }
@@ -165,7 +171,7 @@ impl ReadFileArgs {
         &self,
         context: &FilesystemContext,
         target: &Path,
-    ) -> Result<(String, bool), ToolOutput> {
+    ) -> Result<ImageRead, ToolOutput> {
         let target_text = target.to_string_lossy();
         let (file, metadata) = open_regular_file(target)
             .map_err(|failure| read_file_failure(failure, &target_text))?;
@@ -183,6 +189,10 @@ impl ReadFileArgs {
         let snapshot_covers_full_file = !truncated_by_size && snapshot.len() as u64 == size;
 
         if !is_model_safe_text(&snapshot) {
+            let incomplete = truncated_by_size || snapshot.len() as u64 != size;
+            if let Some(image) = image_tool_result(display_path, &snapshot, size, incomplete) {
+                return Ok(image);
+            }
             let mut text = Vec::new();
             text.extend_from_slice(b"<path>");
             text.extend_from_slice(display_path);
@@ -190,7 +200,11 @@ impl ReadFileArgs {
                 text,
                 "</path>\n<content>binary or non-utf8 file omitted ({size} bytes)</content>"
             );
-            return Ok((sanitize_model_text_owned(text), false));
+            return Ok(ImageRead {
+                text: sanitize_model_text_owned(text),
+                covered: false,
+                images: Vec::new(),
+            });
         }
 
         let line_count = self.line_count.min(context.max_read_file_lines);
@@ -208,7 +222,11 @@ impl ReadFileArgs {
             &scan,
             snapshot_covers_full_file,
         );
-        Ok((sanitize_model_text_owned(text), covered))
+        Ok(ImageRead {
+            text: sanitize_model_text_owned(text),
+            covered,
+            images: Vec::new(),
+        })
     }
 }
 
@@ -471,7 +489,7 @@ mod tests {
     fn read(context: &FilesystemContext, args_json: &str) -> Result<String, ToolOutput> {
         ReadFileArgs::decode(args_json)?
             .read(context, &PathAccess::WorkspaceOrExternal)
-            .map(|(text, _)| text)
+            .map(|read| read.text)
     }
 
     fn text(context: &FilesystemContext, args_json: &str) -> String {

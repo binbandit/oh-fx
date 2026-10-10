@@ -1,6 +1,10 @@
 use std::fmt::Write;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ofx_contract::ChatMessage;
+
+const SUPPORTED_MEDIA_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImageFormat {
@@ -10,7 +14,7 @@ enum ImageFormat {
     Webp,
 }
 
-pub(crate) fn detect_media_type(bytes: &[u8]) -> Option<&'static str> {
+pub fn detect_media_type(bytes: &[u8]) -> Option<&'static str> {
     Some(match detect_format(bytes)? {
         ImageFormat::Png => "image/png",
         ImageFormat::Jpeg => "image/jpeg",
@@ -33,9 +37,9 @@ fn detect_format(bytes: &[u8]) -> Option<ImageFormat> {
     }
 }
 
-const MAX_ENCODED_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_ENCODED_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 2000;
-const MAX_SINGLE_IMAGE_DIMENSION: u32 = 8000;
+pub const MAX_SINGLE_IMAGE_DIMENSION: u32 = 8000;
 const STRICT_IMAGE_COUNT: usize = 20;
 const HEADER_PROBE_BYTES: usize = 30;
 const MAX_JPEG_SEGMENTS: usize = 4096;
@@ -43,13 +47,13 @@ const MAX_JPEG_SEGMENTS: usize = 4096;
 pub(crate) type ReadAt<'a> = &'a dyn Fn(u64, &mut [u8]) -> usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Dimensions {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+pub struct Dimensions {
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Dimensions {
-    pub(crate) fn exceeds(self, limit: u32) -> bool {
+    pub fn exceeds(self, limit: u32) -> bool {
         self.width > limit || self.height > limit
     }
 }
@@ -62,11 +66,16 @@ pub(crate) fn request_max_dimension(image_count: usize) -> u32 {
     }
 }
 
+pub(crate) fn supported_media_type(mime_type: &str) -> bool {
+    SUPPORTED_MEDIA_TYPES.contains(&mime_type)
+}
+
 pub(crate) fn count_request_images(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
         .map(|message| match message {
             ChatMessage::User { images, .. } => images.len(),
+            ChatMessage::Tool { images, .. } => images.len(),
             _ => 0,
         })
         .fold(0, usize::saturating_add)
@@ -91,7 +100,43 @@ pub(crate) fn write_host_image_recovery_notice(
     );
 }
 
-pub(crate) fn image_dimensions(bytes: &[u8]) -> Option<Dimensions> {
+pub(crate) fn encoded_image_dimensions(encoded: &str) -> Option<Dimensions> {
+    dimensions_from(&|offset, buffer| read_base64(encoded.as_bytes(), offset, buffer))
+}
+
+fn read_base64(encoded: &[u8], offset: u64, buffer: &mut [u8]) -> usize {
+    let Ok(offset) = usize::try_from(offset) else {
+        return 0;
+    };
+    let mut written = 0;
+    let mut group = offset / 3;
+    let mut skip = offset % 3;
+    while written < buffer.len() {
+        let Some(quad) = group
+            .checked_mul(4)
+            .and_then(|start| encoded.get(start..start.checked_add(4)?))
+        else {
+            break;
+        };
+        let mut decoded = [0; 3];
+        let Ok(length) = STANDARD.decode_slice(quad, &mut decoded) else {
+            break;
+        };
+        if skip < length {
+            let count = (length - skip).min(buffer.len() - written);
+            buffer[written..written + count].copy_from_slice(&decoded[skip..skip + count]);
+            written += count;
+        }
+        skip = 0;
+        if length < 3 {
+            break;
+        }
+        group += 1;
+    }
+    written
+}
+
+pub fn image_dimensions(bytes: &[u8]) -> Option<Dimensions> {
     dimensions_from(&|offset, buffer| {
         let start = usize::try_from(offset)
             .unwrap_or(usize::MAX)

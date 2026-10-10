@@ -833,6 +833,7 @@ dependencies = [
 name = "ofx-images"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "getrandom 0.4.3",
  "ofx-contract",
  "ofx-text",
@@ -969,12 +970,14 @@ dependencies = [
 name = "ofx-tools"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "flate2",
  "memchr",
  "ofx-config",
  "ofx-contract",
  "ofx-exec",
  "ofx-http",
+ "ofx-images",
  "ofx-markdown",
  "ofx-permissions",
  "ofx-skills",

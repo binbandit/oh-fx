@@ -190,9 +190,11 @@ impl Agent {
             calibration.map_or(cost, |calibration| cost.calibrated(calibration))
         };
         let body = self.provider.request_body(request)?;
-        let has_images = request.messages.iter().any(
-            |message| matches!(message, ChatMessage::User { images, .. } if !images.is_empty()),
-        );
+        let has_images = request.messages.iter().any(|message| match message {
+            ChatMessage::User { images, .. } => !images.is_empty(),
+            ChatMessage::Tool { images, .. } => !images.is_empty(),
+            ChatMessage::System { .. } | ChatMessage::Assistant { .. } => false,
+        });
         let cost = measure(&body, has_images);
         let fixed = ModelRequest {
             messages: &[],

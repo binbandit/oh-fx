@@ -4,12 +4,13 @@ use std::fs::File;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::{Mutex, PoisonError};
 
-use ofx_contract::{ChatMessage, ImageAttachment};
+use ofx_contract::{ChatMessage, DEFAULT_MAX_TOOL_RESULT_BYTES, ImageAttachment, ToolImage};
 
 use super::snapshots::open_snapshot_file_no_follow;
 use crate::image_data::{
-    Dimensions, count_request_images, fits_encoded_image_limit, image_dimensions,
-    positional_image_dimensions, request_max_dimension, write_host_image_recovery_notice,
+    Dimensions, MAX_ENCODED_IMAGE_BYTES, count_request_images, encoded_image_dimensions,
+    fits_encoded_image_limit, image_dimensions, positional_image_dimensions, request_max_dimension,
+    supported_media_type, write_host_image_recovery_notice,
 };
 
 #[derive(Debug, Default)]
@@ -18,14 +19,11 @@ pub struct AttachmentDimensionCache {
 }
 
 impl AttachmentDimensionCache {
-    pub fn withhold_oversized_attachments(
-        &self,
-        messages: &[ChatMessage],
-    ) -> Option<Vec<ChatMessage>> {
-        self.withhold(
-            messages,
-            request_max_dimension(count_request_images(messages)),
-        )
+    pub fn withhold_oversized_images(&self, messages: &[ChatMessage]) -> Option<Vec<ChatMessage>> {
+        let max_dimension = request_max_dimension(count_request_images(messages));
+        let tools = withhold_tool_images(messages, max_dimension, DEFAULT_MAX_TOOL_RESULT_BYTES);
+        self.withhold(tools.as_deref().unwrap_or(messages), max_dimension)
+            .or(tools)
     }
 
     fn withhold(&self, messages: &[ChatMessage], max_dimension: u32) -> Option<Vec<ChatMessage>> {
@@ -80,6 +78,76 @@ impl AttachmentDimensionCache {
             .entry(digest.clone())
             .or_insert_with(|| probe_snapshot_dimensions(path))
     }
+}
+
+fn withhold_tool_images(
+    messages: &[ChatMessage],
+    max_dimension: u32,
+    text_limit: usize,
+) -> Option<Vec<ChatMessage>> {
+    let mut projected: Option<Vec<ChatMessage>> = None;
+    for (index, message) in messages.iter().enumerate() {
+        let ChatMessage::Tool { images, .. } = message else {
+            continue;
+        };
+        if images
+            .iter()
+            .all(|image| tool_image_fits(image, max_dimension))
+        {
+            continue;
+        }
+        let mut kept = Vec::with_capacity(images.len());
+        let mut notice = String::new();
+        for image in images {
+            if tool_image_fits(image, max_dimension) {
+                kept.push(image.clone());
+            } else {
+                write_withheld_tool_image_notice(&mut notice, image, max_dimension);
+            }
+        }
+        let messages = projected.get_or_insert_with(|| messages.to_vec());
+        if let ChatMessage::Tool {
+            content, images, ..
+        } = &mut messages[index]
+        {
+            *images = kept;
+            *content = prepend_image_notice(&notice, content, text_limit);
+        }
+    }
+    projected
+}
+
+fn tool_image_fits(image: &ToolImage, max_dimension: u32) -> bool {
+    encoded_image_dimensions(&image.data).is_some_and(|size| !size.exceeds(max_dimension))
+        && image.data.len() <= MAX_ENCODED_IMAGE_BYTES
+        && supported_media_type(&image.mime_type)
+}
+
+fn write_withheld_tool_image_notice(out: &mut String, image: &ToolImage, max_dimension: u32) {
+    if let Some(size) = encoded_image_dimensions(&image.data) {
+        let _ = write!(
+            out,
+            "[Image not sent: {} is {}x{} pixels; this request permits at most {max_dimension} per side and 5 MiB encoded per image. ",
+            image.mime_type, size.width, size.height
+        );
+    } else if image.source_ref.is_some() && image.data.is_empty() {
+        let _ = write!(
+            out,
+            "[Image not sent: only a host source reference was supplied; this request permits at most {max_dimension} per side and 5 MiB encoded per image. "
+        );
+    } else {
+        out.push_str("[Image not sent: its dimensions could not be verified. ");
+    }
+    match &image.source_ref {
+        Some(source_ref) => write_host_image_recovery_notice(out, source_ref, max_dimension),
+        None => out.push_str("If this tool result names a local file, use an available image tool to save a smaller copy, then read_file the copy. If no tool or path is available, ask the user; ask before installing software.]\n"),
+    }
+}
+
+fn prepend_image_notice(notice: &str, content: &str, limit: usize) -> String {
+    let notice = &notice[..notice.floor_char_boundary(limit)];
+    let content = &content[..content.floor_char_boundary(limit.saturating_sub(notice.len()))];
+    format!("{notice}{content}")
 }
 
 fn probe_snapshot_dimensions(path: &str) -> Option<Dimensions> {

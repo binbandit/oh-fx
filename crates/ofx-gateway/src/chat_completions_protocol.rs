@@ -8,8 +8,9 @@ use base64::engine::general_purpose::STANDARD;
 use ofx_config::{MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id};
 use ofx_contract::{
     ChatMessage, Completion, DuplicateKeys, FinishReason, ImageAttachment, Json, ModelRequest,
-    Object, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolSpec, Usage,
-    parse_strict_json, parse_strict_json_value,
+    Object, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolImage,
+    ToolResultStatus, ToolSpec, Usage, parse_strict_json, parse_strict_json_value,
+    tool_permission_denial_reason,
 };
 use ofx_images::load_verified_snapshot;
 use serde::Serialize;
@@ -325,10 +326,9 @@ pub(crate) fn build_request(
     body.extend_from_slice(
         b",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[",
     );
-    for (index, instruction) in request.instructions.iter().enumerate() {
-        if index != 0 {
-            body.push(b',');
-        }
+    let mut written = 0;
+    for instruction in request.instructions {
+        separate_message(&mut body, &mut written);
         write_json(
             &mut body,
             &WireMessage::System {
@@ -336,17 +336,34 @@ pub(crate) fn build_request(
             },
         )?;
     }
-    for (index, message) in request.messages.iter().enumerate() {
-        if index != 0 || !request.instructions.is_empty() {
-            body.push(b',');
+    let mut tool_images = ToolImageRun::default();
+    for message in request.messages {
+        if !matches!(message, ChatMessage::Tool { .. }) {
+            tool_images.flush(&mut body, &mut written)?;
         }
+        separate_message(&mut body, &mut written);
         match message {
             ChatMessage::User {
                 content, images, ..
             } if !images.is_empty() => write_user_content_parts(&mut body, content, images)?,
             _ => write_json(&mut body, &encode_message(message, &projection))?,
         }
+        if let ChatMessage::Tool {
+            tool_name,
+            content,
+            status,
+            images,
+            ..
+        } = message
+            && !images.is_empty()
+            && !(*status == ToolResultStatus::Failure
+                && tool_permission_denial_reason(content).is_some())
+        {
+            tool_images.names.push(tool_name);
+            tool_images.images.extend(images);
+        }
     }
+    tool_images.flush(&mut body, &mut written)?;
     body.push(b']');
     if !functions.is_empty() {
         write_tools(&mut body, &functions)?;
@@ -407,6 +424,47 @@ fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> W
             content,
             tool_call_id: projection.resolve(call_id.as_str()),
         },
+    }
+}
+
+fn separate_message(body: &mut Vec<u8>, written: &mut usize) {
+    if *written != 0 {
+        body.push(b',');
+    }
+    *written += 1;
+}
+
+#[derive(Default)]
+struct ToolImageRun<'a> {
+    names: Vec<&'a str>,
+    images: Vec<&'a ToolImage>,
+}
+
+impl ToolImageRun<'_> {
+    fn flush(&mut self, body: &mut Vec<u8>, written: &mut usize) -> ProtocolResult<()> {
+        if self.images.is_empty() {
+            return Ok(());
+        }
+        separate_message(body, written);
+        let count = self.images.len();
+        let label = match self.names.as_slice() {
+            [name] => format!("The tool \"{name}\" returned {count} image(s)."),
+            _ => format!("Tool results returned {count} image(s)."),
+        };
+        body.extend_from_slice(b"{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":");
+        write_json(body, &label)?;
+        body.push(b'}');
+        for image in &self.images {
+            body.extend_from_slice(b",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+            body.extend_from_slice(image.mime_type.as_bytes());
+            body.extend_from_slice(b";base64,");
+            body.extend_from_slice(image.data.as_bytes());
+            body.extend_from_slice(b"\"}}");
+        }
+        body.extend_from_slice(b"]}");
+        self.names.clear();
+        self.images.clear();
+        Ok(())
     }
 }
 
