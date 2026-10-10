@@ -128,7 +128,7 @@ modules = []
 upstream = "src/core/session/session_discovery.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_discovery.rs"]
-note = "Classification of the layout upstream writes today exists, for oh-fx's sessions and for the sessions fx saves in ~/.fx/sessions, and fx's schema-v3 sessions are listed from their committed log; the fenced legacy upgrade comes with the rest of NEW-G, legacy snapshot candidates are not read because no public fx release wrote those snapshots, and the doctor inspection belongs to oh-fx doctor (OH-41)."
+note = "Classification of the layout upstream writes today exists, for oh-fx's sessions and for the sessions fx saves in ~/.fx/sessions, and fx's schema-v3 sessions are listed from their committed log; the fenced legacy upgrade comes with the rest of NEW-G, legacy snapshot candidates are not read because no public fx release wrote those snapshots, so the doctor inspection reports a marker-less folder without conversation metadata as canonical_state_invalid, never oversized_legacy_snapshot; inspectDoctorSession and inspectDoctorManagedChildren otherwise report what upstream reports."
 
 [[file]]
 upstream = "src/core/session/session_display_metadata.zig"
@@ -187,7 +187,7 @@ note = "Buffered line reading exists, and the committed prefix of an fx schema-v
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists, a listing can include the sessions fx saves in ~/.fx/sessions, read-only, resuming one by id or from the session picker copies it into oh-fx's store, and -c and resume last also reach the session fx remembers and the newest fx session of the workspace, converting a schema-v3 session fx 0.0.1 to 0.0.7 saved; legacy snapshot migration is not ported because no public fx release wrote those snapshots, the legacy image repair comes with the rest of NEW-G, the .resume-catalog index and history-cache.bin exist, loadReadOnlyAdmissionDetail answers oh-fx session <id> for conversation sessions, reading an fx session that oh-fx does not hold in place, and doctor (OH-41) and v2 routing (OH-27) remain."
+note = "Modern create, resume and list storage exists, a listing can include the sessions fx saves in ~/.fx/sessions, read-only, resuming one by id or from the session picker copies it into oh-fx's store, and -c and resume last also reach the session fx remembers and the newest fx session of the workspace, converting a schema-v3 session fx 0.0.1 to 0.0.7 saved; legacy snapshot migration is not ported because no public fx release wrote those snapshots, the legacy image repair comes with the rest of NEW-G, the .resume-catalog index and history-cache.bin exist, loadReadOnlyAdmissionDetail answers oh-fx session <id> for conversation sessions, reading an fx session that oh-fx does not hold in place, inspectForDoctorBounded inspects up to 64 session folders for oh-fx doctor, and v2 routing (OH-27) remains."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
@@ -197,9 +197,9 @@ note = "Workspace normalization and root validation exist; sessions open through
 
 [[file]]
 upstream = "src/core/session/session_store_types.zig"
-status = "todo"
-modules = []
-note = "The legacy snapshot ceilings and migration results are not ported because no public fx release wrote those snapshots, as session_migration's row records; the listing, resume and history page types live in ofx-session's own types, and the doctor results belong to oh-fx doctor (OH-41)."
+status = "partial"
+modules = ["crates/ofx-session/src/session_store_types.rs"]
+note = "DoctorDiagnostic and DoctorInspectionResult exist, and DoctorIssueKind keeps the three kinds upstream's inspection reports for oh-fx's store: canonical_state_invalid, unsafe_path and authority_transition_pending. Upstream reports no other kind at the pin, and oversized_legacy_snapshot needs the legacy snapshots. The legacy snapshot ceilings and migration results are not ported because no public fx release wrote those snapshots, as session_migration's row records; the listing, resume and history page types live in ofx-session's own types."
 
 [[file]]
 upstream = "src/core/session/session_summary_codec.zig"
