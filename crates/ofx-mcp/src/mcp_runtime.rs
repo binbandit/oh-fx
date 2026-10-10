@@ -1297,6 +1297,10 @@ done
 
         until_resources_invalidated(&runtime).await;
         assert_eq!(
+            counts(&runtime),
+            (Some(2), Some(1), health::CacheFreshness::Fresh)
+        );
+        assert_eq!(
             runtime.list_resources("fixture", false).await.unwrap(),
             listing
         );
