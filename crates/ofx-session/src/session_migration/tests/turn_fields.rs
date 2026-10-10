@@ -337,3 +337,41 @@ fn text_upstream_cannot_write_as_utf8_hides_the_session() {
         assert!(fixture.summary(&log).is_err(), "{turn}");
     }
 }
+
+#[test]
+fn provider_replays_are_kept_on_the_steps_and_reply_that_saved_them() {
+    let fixture = Fixture::new();
+    let replay = |parts: &str| {
+        format!(
+            "{{\"source\":{{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\"}},\"parts_json\":{}}}",
+            serde_json::to_string(parts).unwrap()
+        )
+    };
+    let turn = format!(
+        "{{\"kind\":\"assistant\",\"user\":{{\"text\":\"think\",\"images\":[]}},\"assistant\":\"\",\"execution\":{{\"schema_version\":9,\"tool_steps\":[{{\"assistant\":null,\"tool_calls\":[],\"tool_results\":[],\"provider_replay\":{}}}],\"files\":[],\"steering\":[],\"turn_summary\":null}},\"provider_replay\":{}}}",
+        replay("[{\"type\":\"step\"}]"),
+        replay("[{\"type\":\"reply\"}]")
+    );
+    let log = LegacyLog::started_007("legacy-replays").turn(&turn);
+    let (events, _) = written(&fixture, &log);
+    let replays: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            ConversationEvent::Assistant(assistant) => Some((
+                assistant
+                    .provider_replay
+                    .as_ref()
+                    .map(|replay| replay.parts_json.as_str()),
+                assistant.standalone_response,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        replays,
+        [
+            (Some("[{\"type\":\"step\"}]"), true),
+            (Some("[{\"type\":\"reply\"}]"), false)
+        ]
+    );
+}

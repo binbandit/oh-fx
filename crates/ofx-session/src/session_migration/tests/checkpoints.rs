@@ -399,3 +399,25 @@ fn a_checkpoint_holding_what_oh_fx_cannot_keep_yet_hides_the_session() {
         assert!(fixture.summary(&log).is_err(), "{case}");
     }
 }
+
+#[test]
+fn a_checkpoint_keeps_the_provider_replay_of_its_steps() {
+    let fixture = Fixture::new();
+    let replay =
+        "{\"source\":{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\"},\"parts_json\":\"[]\"}";
+    let checkpoint = checkpoint_007("ok")
+        .replace("\"schema_version\":4", "\"schema_version\":9")
+        .replace(
+            "\"files\":[]}",
+            "\"files\":[],\"steering\":[],\"turn_summary\":null}",
+        )
+        .replace(
+            ",\"terminal_action_presentation\":null}]}",
+            &format!(",\"terminal_action_presentation\":null}}],\"provider_replay\":{replay}}}"),
+        );
+    let saved = saved_recovery(&fixture, "legacy-step-replay", &checkpoint);
+    assert!(
+        saved.contains(&format!("\"provider_replay\":{replay}")),
+        "{saved}"
+    );
+}

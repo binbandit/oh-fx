@@ -14,7 +14,8 @@ use crate::session_codec::recovery_checkpoint::{
     durable_bytes, durable_text, file_evidence, list, tag,
 };
 use crate::session_event::{
-    CommittedFilePresentation, FileEvidence, InterruptReason, ToolCallEvent,
+    CommittedFilePresentation, FileEvidence, InterruptReason, SavedReplay, ToolCallEvent,
+    saved_replay,
 };
 use crate::{process_presentation, turn_summary};
 
@@ -61,6 +62,7 @@ pub(super) struct Execution {
 
 pub(super) struct Step {
     pub(super) assistant: String,
+    pub(super) replay: Option<SavedReplay>,
     pub(super) calls: Vec<ToolCallEvent>,
     pub(super) results: Vec<SavedResult>,
 }
@@ -90,7 +92,7 @@ pub(super) struct Steering {
 }
 
 pub(super) enum TurnClose {
-    Replied(String),
+    Replied(String, Option<SavedReplay>),
     Interrupted {
         reason: InterruptReason,
         partial: Option<String>,
@@ -150,12 +152,13 @@ fn assistant(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     let (user, work_id) = user(fields.required("user")?)?;
     let reply = durable_text(fields.required("assistant")?)?;
     let execution = execution(fields.required("execution")?)?;
-    fields.or("provider_replay", (), |value| absent(&value))?;
+    let provider_replay =
+        fields.nullable("provider_replay", |value| saved_replay(value).map(Some))?;
     Some(LegacyTurn::Conversation(Box::new(ConversationTurn {
         user,
         work_id,
         execution,
-        close: TurnClose::Replied(reply),
+        close: TurnClose::Replied(reply, provider_replay),
     })))
 }
 
@@ -181,11 +184,10 @@ fn background_command(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
         user,
         work_id,
         execution,
-        close: TurnClose::Replied(historical_command(
-            reply.as_deref(),
-            &log_path,
-            url.as_deref(),
-        )),
+        close: TurnClose::Replied(
+            historical_command(reply.as_deref(), &log_path, url.as_deref()),
+            None,
+        ),
     })))
 }
 
@@ -334,12 +336,15 @@ fn tool_step(value: Json<'_>, version: u64) -> Option<Step> {
     let mut results = list(fields.required("tool_results")?, |result| {
         tool_result(result, version)
     })?;
-    if version >= PROVIDER_REPLAY_SCHEMA {
-        absent(&fields.required("provider_replay")?)?;
-    }
+    let replay = if version >= PROVIDER_REPLAY_SCHEMA {
+        fields.present_or_null("provider_replay", |value| saved_replay(value).map(Some))?
+    } else {
+        None
+    };
     repair_arguments(&mut calls, &mut results)?;
     fields.finish(Step {
         assistant,
+        replay,
         calls,
         results,
     })

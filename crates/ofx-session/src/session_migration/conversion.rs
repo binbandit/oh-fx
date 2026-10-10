@@ -16,8 +16,8 @@ use crate::session_display_metadata::history_title;
 use crate::session_error::SessionError;
 use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, CommittedFilePresentation, ContextCheckpointEvent,
-    ConversationEvent, ConversationState, FileEvidence, InterruptedEvent, SteeringEvent,
-    ToolResultEvent, TurnCompletedEvent, UserEvent, encode_conversation_frame,
+    ConversationEvent, ConversationState, FileEvidence, InterruptedEvent, SavedReplay,
+    SteeringEvent, ToolResultEvent, TurnCompletedEvent, UserEvent, encode_conversation_frame,
 };
 use crate::session_log::managed_file::{create_managed_file, sync_dir};
 use crate::session_log::{
@@ -214,8 +214,12 @@ fn turn_events(
     }
     let mut follows_standalone = false;
     for (index, step) in steps.into_iter().enumerate() {
-        if !step.assistant.is_empty() || follows_standalone {
-            events.push(assistant(step.assistant, step.calls.is_empty()));
+        if !step.assistant.is_empty() || step.replay.is_some() || follows_standalone {
+            events.push(assistant(
+                step.assistant,
+                step.replay,
+                step.calls.is_empty(),
+            ));
         }
         follows_standalone = step.calls.is_empty();
         events.extend(step.calls.into_iter().map(ConversationEvent::ToolCall));
@@ -236,9 +240,9 @@ fn turn_events(
         .filter(|file| !file.path.is_empty())
         .collect();
     match close {
-        TurnClose::Replied(reply) => {
-            if !reply.is_empty() || ends_standalone {
-                events.push(assistant(reply, false));
+        TurnClose::Replied(reply, provider_replay) => {
+            if !reply.is_empty() || provider_replay.is_some() || ends_standalone {
+                events.push(assistant(reply, provider_replay, false));
             }
             events.push(ConversationEvent::TurnCompleted(TurnCompletedEvent {
                 files,
@@ -253,7 +257,7 @@ fn turn_events(
         } => {
             if let Some(call) = pending {
                 if ends_standalone {
-                    events.push(assistant(String::new(), false));
+                    events.push(assistant(String::new(), None, false));
                 }
                 events.push(ConversationEvent::ToolCall(call));
             }
@@ -273,17 +277,21 @@ fn turn_events(
     Ok(events)
 }
 
-fn assistant(text: String, standalone_response: bool) -> ConversationEvent {
+fn assistant(
+    text: String,
+    provider_replay: Option<SavedReplay>,
+    standalone_response: bool,
+) -> ConversationEvent {
     ConversationEvent::Assistant(AssistantEvent {
         text,
-        provider_replay: None,
+        provider_replay,
         standalone_response,
     })
 }
 
 fn steering_events(entry: Steering, events: &mut Vec<ConversationEvent>) {
     if !entry.assistant_prefix.is_empty() {
-        events.push(assistant(entry.assistant_prefix, false));
+        events.push(assistant(entry.assistant_prefix, None, false));
     }
     if !entry.text.is_empty() {
         events.push(ConversationEvent::Steering(SteeringEvent {

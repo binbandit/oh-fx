@@ -11,7 +11,7 @@ use crate::session_codec::recovery_checkpoint::{
     CHECKPOINT_VERSION, EXECUTION_SCHEMA_VERSION, decode_recovery_file,
 };
 use crate::session_error::SessionError;
-use crate::session_event::{FileEvidence, WireTag};
+use crate::session_event::{FileEvidence, SavedReplay, WireTag};
 use crate::{process_presentation, turn_summary};
 
 pub(super) struct RecoveryFile {
@@ -60,7 +60,7 @@ struct ExecutionWire<'a> {
 #[derive(Serialize)]
 struct StepWire<'a> {
     assistant: Option<&'a str>,
-    provider_replay: Null,
+    provider_replay: Option<&'a SavedReplay>,
     tool_calls: Vec<CallWire<'a>>,
     tool_results: Vec<ResultWire<'a>>,
 }
@@ -197,7 +197,7 @@ fn step_wire<'a>(step: &'a Step, spilled: &mut Vec<(String, String)>) -> Option<
         .collect::<Option<Vec<_>>>()?;
     Some(StepWire {
         assistant: (!step.assistant.is_empty()).then_some(step.assistant.as_str()),
-        provider_replay: Null,
+        provider_replay: step.replay.as_ref(),
         tool_calls,
         tool_results,
     })
