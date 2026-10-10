@@ -1454,6 +1454,7 @@ fn apply_change(
     work: Work,
 ) {
     let saves_ultrafast = change.saves_ultrafast();
+    let turns_ultrafast_off = matches!(change, ModelChange::WithdrawUltrafast);
     let (fast_before, ultrafast_before) = (state.fast_mode(), state.ultrafast_requested());
     let Outcome::Changed { effort } = change_model(state, change, models, work) else {
         return;
@@ -1461,7 +1462,9 @@ fn apply_change(
     state.config_pending = true;
     let ultrafast = state.ultrafast_requested();
     if let Some(persistence) = persistence.as_mut()
-        && ((state.fast_mode() && !fast_before) || (ultrafast_before && !ultrafast))
+        && (turns_ultrafast_off
+            || (state.fast_mode() && !fast_before)
+            || (ultrafast_before && !ultrafast))
     {
         persistence.withdraw_launch_ultrafast();
     }
@@ -2652,35 +2655,21 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_saved_ultra_request_comes_back_with_its_session_and_turning_it_off_is_saved() {
-        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
-        let mut harness = Harness::start_saved(&server).await;
-        chat(&mut harness, &["first question"]).await;
+    async fn leave_a_session_saved_with_ultra(
+        harness: &mut Harness,
+    ) -> (String, std::path::PathBuf) {
+        chat(harness, &["first question"]).await;
         let id = saved_sessions(&harness.home)[0]["id"]
             .as_str()
             .unwrap()
             .to_owned();
-        let resume = async |harness: &mut Harness| {
-            harness.command("/new");
-            harness
-                .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
-                .await;
-            harness.send(UiCommand::ResumeSession { id: id.clone() });
-            harness
-                .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
-                .await;
-        };
         let manifest = harness
             .home
             .path()
             .join("data/sessions")
             .join(&id)
             .join("session.json");
-        harness.command("/new");
-        harness
-            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
-            .await;
+        start_new_session(harness).await;
         let saved = fs::read_to_string(&manifest).unwrap();
         fs::write(
             &manifest,
@@ -2690,7 +2679,29 @@ mod tests {
             ),
         )
         .unwrap();
-        resume(&mut harness).await;
+        (id, manifest)
+    }
+
+    async fn start_new_session(harness: &mut Harness) {
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+    }
+
+    async fn resume_session(harness: &mut Harness, id: &str) {
+        harness.send(UiCommand::ResumeSession { id: id.to_owned() });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_saved_ultra_request_comes_back_with_its_session_and_turning_it_off_is_saved() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        let (id, manifest) = leave_a_session_saved_with_ultra(&mut harness).await;
+        resume_session(&mut harness, &id).await;
         let requested = |on: &str| (NoticeTone::Neutral, format!("requested: {on}"));
         assert_eq!(
             ultrafast_notice(&mut harness, "/ultrafast").await,
@@ -2705,10 +2716,32 @@ mod tests {
                 .unwrap()
                 .contains("ultrafast_mode")
         );
-        resume(&mut harness).await;
+        start_new_session(&mut harness).await;
+        resume_session(&mut harness, &id).await;
         assert_eq!(
             ultrafast_notice(&mut harness, "/ultrafast").await,
             requested("off")
+        );
+    }
+
+    #[tokio::test]
+    async fn turning_ultra_off_while_it_is_off_keeps_a_resumed_sessions_saved_request_off() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        let (id, manifest) = leave_a_session_saved_with_ultra(&mut harness).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast off").await,
+            (NoticeTone::Neutral, "requested off".to_owned())
+        );
+        resume_session(&mut harness, &id).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: off".to_owned())
+        );
+        assert!(
+            fs::read_to_string(&manifest)
+                .unwrap()
+                .contains("\"ultrafast_mode\":true")
         );
     }
 
