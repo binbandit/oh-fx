@@ -18,7 +18,7 @@ pub(crate) fn close_interrupted_turn(history: &mut Vec<ChatMessage>, range: Rang
     if let Some(ChatMessage::Assistant {
         content,
         tool_calls,
-        ..
+        provider_replay: None,
     }) = messages.last_mut()
         && tool_calls.is_empty()
     {

@@ -2854,45 +2854,6 @@ async fn interrupted_tool_steps_drop_their_replay_when_a_call_is_dropped() {
     );
 }
 
-#[tokio::test]
-async fn an_interrupted_summary_keeps_the_replay_only_answer() {
-    let provider = FakeProvider::new(vec![
-        tool_reply(&[("call-1", "{}")]),
-        tool_reply(&[("call-2", "{}")]),
-        with_replay(text_reply(""), "silent"),
-    ]);
-    let mut agent = new_agent(provider, vec![echo_tool()]);
-    let cancel = CancellationToken::new();
-    let trigger = cancel.clone();
-    let mut usage_reports = 0;
-    let report = agent
-        .run_turn(
-            "go",
-            &mut |event| {
-                if matches!(event, UiEvent::UsageReported { .. }) {
-                    usage_reports += 1;
-                    if usage_reports == 3 {
-                        trigger.cancel();
-                    }
-                }
-            },
-            &cancel,
-        )
-        .await;
-    assert_eq!(report.outcome, TurnOutcome::Interrupted);
-    assert_eq!(
-        agent.history[agent.history.len() - 2..],
-        [
-            ChatMessage::Assistant {
-                content: Some(String::new()),
-                tool_calls: Vec::new(),
-                provider_replay: Some(replay("silent")),
-            },
-            ChatMessage::user(SUMMARIZE_PROMPT),
-        ]
-    );
-}
-
 mod approvals;
 mod capabilities;
 mod compaction;
@@ -2912,6 +2873,7 @@ mod response_language;
 mod response_restart;
 mod reviews;
 mod shell_retries;
+mod silent_summary;
 mod skills;
 mod steering;
 mod stop;
