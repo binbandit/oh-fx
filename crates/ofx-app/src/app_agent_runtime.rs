@@ -13,7 +13,7 @@ use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, HookScope, HookView, ModelCatalog, ModelControls,
     ModelOption, Notice, NoticeTone, ProviderError, QuestionRequest, ReasoningEffort,
     RecoveredTurn, ResumeRefusal, SessionCursor, SessionScope, SkillBinding, StatuslineItem,
-    StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
+    StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -79,6 +79,7 @@ pub(crate) struct ControllerState {
     last_reply: Option<Arc<str>>,
     history_turns: usize,
     context_to_compact: bool,
+    web_searches: Vec<Option<ToolResultStatus>>,
     session_title: SessionTitle,
     statusline: StatuslineToggles,
     mcp: Option<McpHost>,
@@ -293,6 +294,7 @@ impl ControllerState {
             processing: work != Work::Idle,
             stream_active: work == Work::Turn,
             queued: self.worker.waiting_texts().len(),
+            web_searches: self.web_searches.clone(),
             rings: self.rings,
         };
         start_trace(&self.emit, Arc::clone(&self.clipboard), facts);
@@ -584,6 +586,7 @@ impl Controller {
             last_reply: None,
             history_turns: 0,
             context_to_compact: false,
+            web_searches: Vec::new(),
             mcp,
             shown_controls: setup_controls,
             sign_in: None,
@@ -1074,6 +1077,7 @@ impl Controller {
         self.state.last_reply = self.agent.last_assistant_reply();
         self.state.history_turns = self.agent.history_turns();
         self.state.context_to_compact = self.agent.has_context_to_compact();
+        self.state.web_searches = self.agent.retained_web_searches();
     }
 
     fn forget_tracked_changes(&self) {
