@@ -8,7 +8,7 @@ note = "Native turn/tool dispatch and a reusable child-agent host exist; the int
 upstream = "src/core/app/app_auth_runtime.zig"
 status = "partial"
 modules = ["crates/oh-fx/src/login_command.rs", "crates/oh-fx/src/provider_command.rs", "crates/ofx-app/src/app_agent_runtime/sign_out.rs", "crates/ofx-app/src/app_agent_runtime/provider_switch.rs"]
-note = "CLI login/logout/provider commands, in-shell /logout, the Codex sign-in started from the provider column with its post-sign-in switch and notices, and prompts held while signed out exist; the source inventory refresh, the setup hub and onboarding, the Vercel and Grok shell sign-ins and credential repair prompts are absent."
+note = "CLI login/logout/provider commands, in-shell /logout, the Codex sign-in started from the provider column with its post-sign-in switch and notices, and prompts held while signed out exist, with the Codex sign-in trace lines as docs/differences/trace.md records; the source inventory refresh, the setup hub and onboarding, the Vercel and Grok shell sign-ins and credential repair prompts are absent."
 
 [[file]]
 upstream = "src/core/app/app_bootstrap_runtime.zig"

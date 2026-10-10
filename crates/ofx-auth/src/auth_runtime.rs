@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use ofx_config::ProviderId;
 use ofx_contract::valid_credential_account_id;
+use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
 
 use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode};
@@ -95,6 +96,9 @@ fn classify_grok_credential_failure(
     }
 }
 
+const AUTH: &str = "auth";
+const CHATGPT_SOURCE: &str = "chatgpt_subscription";
+
 const fn preparation_error(reason: CredentialFailureReason) -> Option<PreparationError> {
     match reason {
         CredentialFailureReason::InvalidCredential => None,
@@ -161,6 +165,10 @@ pub async fn prepare_chatgpt_credential(
         Ok(Some(access)) => access,
         Ok(None) => return Ok(None),
         Err(error) => {
+            trace_log!(
+                AUTH,
+                "credential preparation failed provider=codex source={CHATGPT_SOURCE} err={error}"
+            );
             return match preparation_error(classify_credential_failure(error)) {
                 Some(normalized) => Err(normalized),
                 None => Ok(None),
@@ -179,10 +187,23 @@ pub async fn refresh_chatgpt_credential(
     expected_account_id: &str,
     cancel: &CancellationToken,
 ) -> Result<Option<ChatGptAccess>, ChatGptError> {
-    let Some(access) = load_chatgpt_credential(oauth, mode, cancel).await? else {
+    let loaded = load_chatgpt_credential(oauth, mode, cancel)
+        .await
+        .inspect_err(|error| {
+            trace_log!(
+                AUTH,
+                "credential refresh provider failed source={CHATGPT_SOURCE} mode={} err={error}",
+                mode.name()
+            );
+        })?;
+    let Some(access) = loaded else {
         return Ok(None);
     };
     if access.account_id() != expected_account_id {
+        trace_log!(
+            AUTH,
+            "credential refresh rejected stage=account_changed source={CHATGPT_SOURCE}"
+        );
         return Err(ChatGptError::ChatGptAccountChanged);
     }
     Ok(Some(access))

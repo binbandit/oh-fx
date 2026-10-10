@@ -8,6 +8,7 @@ use crate::secret::Secret;
 use crate::subscription_access::now_ms;
 
 use crate::subscription_session::DeleteOutcome;
+use ofx_trace::trace_log;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -111,6 +112,7 @@ use sign_in::GrokSignIn;
 #[cfg(test)]
 mod tests;
 
+const AUTH: &str = "auth";
 const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 const BROWSER_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
@@ -181,7 +183,13 @@ impl GrokOAuth {
                 .await
                 .is_err(),
             Ok(None) => false,
-            Err(_) => true,
+            Err(error) => {
+                trace_log!(
+                    AUTH,
+                    "Grok logout could not load the saved credential err={error}"
+                );
+                true
+            }
         };
         Ok(GrokLogoutResult {
             deletion: mutation.delete()?,
@@ -226,6 +234,11 @@ impl GrokOAuth {
             .execute(Method::PostForm, &self.endpoints.token_url, form.as_str())
             .await?;
         if !response.accepted {
+            trace_log!(
+                AUTH,
+                "Grok OAuth request rejected url={}",
+                self.endpoints.token_url
+            );
             return Err(GrokError::GrokOAuthRequestFailed);
         }
         let token = oauth::parse_browser_token_set(&response.body)?;
@@ -252,6 +265,11 @@ impl GrokOAuth {
         if response.accepted {
             Ok(())
         } else {
+            trace_log!(
+                AUTH,
+                "Grok OAuth request rejected url={}",
+                self.endpoints.revoke_url
+            );
             Err(GrokError::GrokOAuthRequestFailed)
         }
     }

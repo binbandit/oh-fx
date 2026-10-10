@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 use ofx_contract::parse_strict_json_value;
 use ofx_contract::valid_credential_account_id;
+use ofx_trace::trace_log;
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
@@ -16,6 +17,7 @@ const SCHEMA_VERSION: i64 = 1;
 const MAX_AUTH_FILE_BYTES: usize = 64 * 1024;
 pub(crate) const MUTATION_LOCK_WAIT: Duration = Duration::from_secs(2);
 const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
+const AUTH: &str = "auth";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionError {
@@ -34,6 +36,7 @@ pub(crate) enum SessionError {
 
 pub(crate) trait SessionPolicy {
     type Error;
+    const LABEL: &'static str;
     const AUTH_FILE_NAME: &'static str;
     const LOCK_FILE_NAME: &'static str;
     const VALIDATE_ACCOUNT_ON_WRITE: bool;
@@ -162,19 +165,28 @@ impl<P: SessionPolicy> SessionStore<P> {
     }
 
     pub(crate) fn load_unlocked(&self) -> Result<Option<Session>, P::Error> {
-        match PrivateDir::open_existing_private(&self.directory) {
-            Ok(Some(directory)) => load_from_dir::<P>(&directory),
-            Ok(None) => Ok(None),
-            Err(error) => Err(storage_error::<P>(error)),
+        match self.open_existing()? {
+            Some(directory) => load_from_dir::<P>(&directory),
+            None => Ok(None),
         }
     }
 
     pub(crate) async fn begin_existing_mutation(&self) -> Result<Option<Mutation<P>>, P::Error> {
-        match PrivateDir::open_existing_private(&self.directory) {
-            Ok(Some(directory)) => lock_mutation::<P>(directory).await.map(Some),
-            Ok(None) => Ok(None),
-            Err(error) => Err(storage_error::<P>(error)),
+        match self.open_existing()? {
+            Some(directory) => lock_mutation::<P>(directory).await.map(Some),
+            None => Ok(None),
         }
+    }
+
+    fn open_existing(&self) -> Result<Option<PrivateDir>, P::Error> {
+        PrivateDir::open_existing_private(&self.directory).map_err(|error| {
+            trace_log!(
+                AUTH,
+                "{} session load failed step=open_profile err={error}",
+                P::LABEL
+            );
+            storage_error::<P>(error)
+        })
     }
 
     pub(crate) async fn begin_mutation(&self) -> Result<Mutation<P>, P::Error> {
@@ -207,13 +219,41 @@ fn load_from_dir<P: SessionPolicy>(directory: &PrivateDir) -> Result<Option<Sess
     let bytes = match directory.read_private(P::AUTH_FILE_NAME, MAX_AUTH_FILE_BYTES) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return Ok(None),
-        Err(DurableError::InsecureFile) => return Err(P::error(SessionError::InsecureAuthFile)),
-        Err(error) => return Err(storage_error::<P>(error)),
+        Err(DurableError::InsecureFile) => {
+            trace_log!(
+                AUTH,
+                "{} session load failed step=permissions err=InsecureAuthFile",
+                P::LABEL
+            );
+            return Err(P::error(SessionError::InsecureAuthFile));
+        }
+        Err(error) => {
+            trace_log!(
+                AUTH,
+                "{} session load failed step=open_file err={error}",
+                P::LABEL
+            );
+            return Err(storage_error::<P>(error));
+        }
     };
-    parse(&bytes).map_err(P::error).map(Some)
+    parse(&bytes)
+        .map_err(|error| {
+            trace_log!(
+                AUTH,
+                "{} session load failed step=parse err={error:?}",
+                P::LABEL
+            );
+            P::error(error)
+        })
+        .map(Some)
 }
 
-fn storage_error<P: SessionPolicy>(_: DurableError) -> P::Error {
+fn storage_error<P: SessionPolicy>(error: DurableError) -> P::Error {
+    trace_log!(
+        AUTH,
+        "credential storage operation failed file={} err={error}",
+        P::AUTH_FILE_NAME
+    );
     P::error(SessionError::CredentialStorageUnavailable)
 }
 

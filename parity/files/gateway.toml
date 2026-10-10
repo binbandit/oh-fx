@@ -47,7 +47,7 @@ note = "Excluded JavaScript host FFI entrypoint; this ledger targets the native 
 upstream = "src/gateway/openai_codex.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex.rs"]
-note = "Responses transport, admission once its credential headers are built, the 30-second connection timeout with an unlimited response-head wait, replay with its provider_replay_omitted trace line, and tool-start and streamed tool input events are implemented; provisional tool status rows are tracked separately by OH-6."
+note = "Responses transport, admission once its credential headers are built, the 30-second connection timeout with an unlimited response-head wait, replay with its provider_replay_omitted trace line, the login refresh and authenticated replay reported to the agent for its trace lines, and tool-start and streamed tool input events are implemented; provisional tool status rows are tracked separately by OH-6."
 
 [[file]]
 upstream = "src/gateway/openai_codex_models.zig"

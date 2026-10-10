@@ -334,7 +334,7 @@ impl CodexCredentials for SubscriptionCredentials {
         mode: CodexRefresh,
         account_id: &'a str,
         cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<CodexAccess>> {
+    ) -> BoxFuture<'a, Result<Option<CodexAccess>, String>> {
         let mode = match mode {
             CodexRefresh::IfNeeded => RefreshMode::IfNeeded,
             CodexRefresh::Force => RefreshMode::Force,
@@ -343,11 +343,12 @@ impl CodexCredentials for SubscriptionCredentials {
             let Some(detached) = &self.detached else {
                 return refresh_chatgpt_credential(&self.oauth, mode, account_id, cancel)
                     .await
-                    .ok()
-                    .flatten()
-                    .map(codex_access);
+                    .map(|access| access.map(codex_access))
+                    .map_err(|error| error.to_string());
             };
-            let running = detached.start()?;
+            let Some(running) = detached.start() else {
+                return Ok(None);
+            };
             let (finished, refreshed) = oneshot::channel();
             let oauth = Arc::clone(&self.oauth);
             let account_id = account_id.to_owned();
@@ -355,12 +356,15 @@ impl CodexCredentials for SubscriptionCredentials {
                 let never = CancellationToken::new();
                 let access = refresh_chatgpt_credential(&oauth, mode, &account_id, &never).await;
                 drop(running);
-                let _ = finished.send(access.ok().flatten());
+                let _ = finished.send(access.map_err(|error| error.to_string()));
             });
             tokio::select! {
                 biased;
-                refreshed = refreshed => refreshed.ok().flatten().map(codex_access),
-                () = cancel.cancelled() => None,
+                refreshed = refreshed => match refreshed {
+                    Ok(access) => access.map(|access| access.map(codex_access)),
+                    Err(_) => Ok(None),
+                },
+                () = cancel.cancelled() => Ok(None),
             }
         })
     }

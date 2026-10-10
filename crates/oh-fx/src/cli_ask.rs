@@ -3026,8 +3026,8 @@ mod tests {
             _mode: ofx_gateway::CodexRefresh,
             _account_id: &'a str,
             _cancel: &'a CancellationToken,
-        ) -> ofx_contract::BoxFuture<'a, Option<ofx_gateway::CodexAccess>> {
-            Box::pin(async { None })
+        ) -> ofx_contract::BoxFuture<'a, Result<Option<ofx_gateway::CodexAccess>, String>> {
+            Box::pin(async { Ok(None) })
         }
     }
 

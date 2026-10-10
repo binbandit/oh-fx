@@ -7,6 +7,7 @@ use crate::model_response_recovery::{DEFAULT_MAX_PROVIDER_ATTEMPTS, Strategy, To
 
 const AGENT: &str = "agent";
 const GATEWAY: &str = "gateway";
+const AUTH: &str = "auth";
 const SAFE_DETAIL_BYTES: usize = 512;
 const DETAIL_PREVIEW_BYTES: usize = 240;
 
@@ -139,6 +140,44 @@ fn route_failure(
         recovering.retries(),
         preview(&safe, DETAIL_PREVIEW_BYTES),
     );
+}
+
+pub(super) fn credential_refreshed(context: TraceContext, source: &str, forced: bool) {
+    trace_event!(
+        GATEWAY,
+        "credential_refreshed",
+        context,
+        "source={source} mode={}",
+        refresh_mode(forced)
+    );
+}
+
+pub(super) fn credential_refresh_failed(
+    context: TraceContext,
+    source: &str,
+    forced: bool,
+    error: &str,
+) {
+    trace_event!(
+        GATEWAY,
+        "credential_refresh_failed",
+        context,
+        "source={source} mode={} err={error}",
+        refresh_mode(forced)
+    );
+}
+
+pub(super) fn request_replayed(context: TraceContext, attempt: usize) {
+    trace_event!(
+        AUTH,
+        "authenticated_request_replayed",
+        context,
+        "semantic_attempt={attempt}"
+    );
+}
+
+const fn refresh_mode(forced: bool) -> &'static str {
+    if forced { "force" } else { "if_needed" }
 }
 
 pub(super) fn recovery_fast_fallback(context: TraceContext, failed_route: &str, selected: &str) {

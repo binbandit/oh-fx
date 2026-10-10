@@ -19,19 +19,31 @@ const FAR_FUTURE_MS: i64 = 4_102_444_800_000;
 const TOOL_STEP_GOLDEN: &str = include_str!("golden/codex_tool_step.json");
 const AFTER_TOOL_GOLDEN: &str = include_str!("golden/codex_after_tool.json");
 
+type RefreshReply = Result<Option<(String, i64)>, String>;
+
 #[derive(Default)]
 struct FakeCredentials {
-    replies: Mutex<VecDeque<Option<(String, i64)>>>,
+    replies: Mutex<VecDeque<RefreshReply>>,
     calls: Mutex<Vec<(CodexRefresh, String)>>,
 }
 
 impl FakeCredentials {
     fn replying(replies: impl IntoIterator<Item = Option<(&'static str, i64)>>) -> Arc<Self> {
+        Self::answering(replies.into_iter().map(Ok))
+    }
+
+    fn answering(
+        replies: impl IntoIterator<Item = Result<Option<(&'static str, i64)>, &'static str>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             replies: Mutex::new(
                 replies
                     .into_iter()
-                    .map(|reply| reply.map(|(token, after)| (token.to_owned(), after)))
+                    .map(|reply| {
+                        reply
+                            .map(|access| access.map(|(token, after)| (token.to_owned(), after)))
+                            .map_err(str::to_owned)
+                    })
                     .collect(),
             ),
             calls: Mutex::default(),
@@ -49,7 +61,7 @@ impl CodexCredentials for FakeCredentials {
         mode: CodexRefresh,
         account_id: &'a str,
         _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<CodexAccess>> {
+    ) -> BoxFuture<'a, Result<Option<CodexAccess>, String>> {
         self.calls
             .lock()
             .expect("calls lock")
@@ -59,9 +71,11 @@ impl CodexCredentials for FakeCredentials {
             .lock()
             .expect("replies lock")
             .pop_front()
-            .flatten();
+            .unwrap_or(Ok(None));
         Box::pin(async move {
-            reply.map(|(token, after)| CodexAccess::new(token, ACCOUNT.to_owned(), after))
+            reply.map(|access| {
+                access.map(|(token, after)| CodexAccess::new(token, ACCOUNT.to_owned(), after))
+            })
         })
     }
 }
@@ -343,7 +357,7 @@ async fn an_unauthorized_response_refreshes_once_and_replays_the_request() {
     ]);
     let credentials = FakeCredentials::replying([Some((FRESH_TOKEN, FAR_FUTURE_MS))]);
     let codex = provider(&server, Arc::clone(&credentials), FAR_FUTURE_MS);
-    let (result, _) = run(&codex, &[], &user("Hello."), &[]).await;
+    let (result, events) = run(&codex, &[], &user("Hello."), &[]).await;
     assert_eq!(
         result.expect("replay succeeds").content.as_deref(),
         Some("after refresh")
@@ -356,6 +370,64 @@ async fn an_unauthorized_response_refreshes_once_and_replays_the_request() {
     assert_codex_headers(&requests[0], TOKEN);
     assert_codex_headers(&requests[1], FRESH_TOKEN);
     assert_eq!(requests[0].body, requests[1].body);
+    assert_eq!(
+        auth_events(&events),
+        [
+            StreamEvent::CredentialRefreshed {
+                source: "chatgpt_subscription",
+                forced: true,
+            },
+            StreamEvent::RequestReplayed,
+        ]
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::RequestReplayed));
+}
+
+#[tokio::test]
+async fn a_replay_that_fails_again_is_still_reported_as_replayed() {
+    let server = FakeServer::start([
+        Reply::status(401, r#"{"error":{"code":"token_expired"}}"#),
+        Reply::status(503, r#"{"error":{"code":"overloaded"}}"#),
+    ]);
+    let credentials = FakeCredentials::replying([Some((FRESH_TOKEN, FAR_FUTURE_MS))]);
+    let codex = provider(&server, credentials, FAR_FUTURE_MS);
+    let (result, events) = run(&codex, &[], &user("Hello."), &[]).await;
+    assert_eq!(result.expect_err("still failing").status, Some(503));
+    assert_eq!(events.last(), Some(&StreamEvent::RequestReplayed));
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_forced_refresh_reports_its_error_name_and_skips_the_replay() {
+    let server = FakeServer::start([Reply::status(401, r#"{"error":{"code":"token_expired"}}"#)]);
+    let credentials = FakeCredentials::answering([Err("CredentialRefreshRejected")]);
+    let codex = provider(&server, credentials, FAR_FUTURE_MS);
+    let (result, events) = run(&codex, &[], &user("Hello."), &[]).await;
+    assert_eq!(result.expect_err("unauthorized").status, Some(401));
+    assert_eq!(
+        auth_events(&events),
+        [StreamEvent::CredentialRefreshFailed {
+            source: "chatgpt_subscription",
+            forced: true,
+            error: "CredentialRefreshRejected".to_owned(),
+        }]
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+fn auth_events(events: &[StreamEvent]) -> Vec<StreamEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                StreamEvent::CredentialRefreshed { .. }
+                    | StreamEvent::CredentialRefreshFailed { .. }
+                    | StreamEvent::RequestReplayed
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 #[tokio::test]
@@ -364,7 +436,8 @@ async fn a_rejected_refresh_reports_the_unauthorized_response_without_the_token(
     let server = FakeServer::start([Reply::status(401, body)]);
     let credentials = FakeCredentials::replying([None]);
     let codex = provider(&server, credentials, FAR_FUTURE_MS);
-    let (result, _) = run(&codex, &[], &user("Hello."), &[]).await;
+    let (result, events) = run(&codex, &[], &user("Hello."), &[]).await;
+    assert_eq!(auth_events(&events), []);
     let error = result.expect_err("unauthorized");
     assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
     assert_eq!(error.status, Some(401));
@@ -406,10 +479,18 @@ async fn an_expired_access_token_is_refreshed_before_the_request() {
     ]);
     let credentials = FakeCredentials::replying([Some((FRESH_TOKEN, FAR_FUTURE_MS))]);
     let codex = provider(&server, Arc::clone(&credentials), 0);
-    run(&codex, &[], &user("Hello."), &[])
-        .await
-        .0
-        .expect("completes");
+    let (result, events) = run(&codex, &[], &user("Hello."), &[]).await;
+    result.expect("completes");
+    assert_eq!(
+        events[..2],
+        [
+            StreamEvent::CredentialRefreshed {
+                source: "chatgpt_subscription",
+                forced: false,
+            },
+            StreamEvent::Admitted,
+        ]
+    );
     assert_eq!(
         credentials.calls(),
         [(CodexRefresh::IfNeeded, ACCOUNT.to_owned())]
