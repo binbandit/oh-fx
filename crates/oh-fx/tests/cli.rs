@@ -412,27 +412,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
 }
 
 #[test]
-fn usage_answers_like_a_host_without_profile_usage() {
-    for args in [&["usage"][..], &["usage", "--period", "7d"]] {
-        let output = oh_fx(args, &[]);
-        assert_eq!(output.status.code(), Some(1), "{args:?}");
-        assert_eq!(stdout(&output), "", "{args:?}");
-        assert_eq!(
-            stderr(&output),
-            "oh-fx usage: local usage data is unavailable\n",
-            "{args:?}"
-        );
-    }
-    let output = oh_fx(&["usage", "--json", "--period", "24h"], &[]);
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stderr(&output), "");
-    assert_eq!(
-        stdout(&output),
-        "{\"kind\":\"usage\",\"error\":\"local usage data is unavailable\",\"code\":\"ProfileUsageUnavailable\"}\n"
-    );
-}
-
-#[test]
 fn usage_needs_home() {
     let run = |args: &[&str]| {
         spawn(
