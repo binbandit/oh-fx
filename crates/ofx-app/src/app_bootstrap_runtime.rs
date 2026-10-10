@@ -11,7 +11,10 @@ use ofx_agent::{
     Agent, AgentConfig, Approvals, ChildStore, MeteredProvider, ProjectContext, QuestionRequests,
     Questions, RuntimeContext, SkillContextProvider,
 };
-use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
+use ofx_auth::{
+    CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, GatewaySource, HOST_MANAGED_AUTH_MESSAGE,
+    MISSING_GATEWAY_CREDENTIAL_MESSAGE, gateway_env_credential, host_managed_auth,
+};
 use ofx_config::{
     ConfigDiagnostic, ConnectionError, ContextLimitOverride, ContextLimits, ProfilePaths,
     ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
@@ -25,7 +28,8 @@ use ofx_contract::{
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
     CODEX_TITLE_MODEL, ChatCompletionsProvider, ChatCompletionsReviewTransport,
-    CodexReviewTransport,
+    CodexReviewTransport, GATEWAY_TITLE_MODEL, GatewayCredential, GatewayEndpoints,
+    GatewayProvider, GatewayReviewTransport,
 };
 use ofx_http::ClientError;
 use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError};
@@ -64,6 +68,8 @@ type McpTools = (Option<Arc<McpRuntime>>, Vec<Arc<dyn Tool>>);
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
 const CODEX_SOURCE_REPAIR: &str = "Reconnect Codex through /login to repair this source.";
+const GATEWAY_SOURCE_REPAIR: &str = "Run /provider to repair this source.";
+const HOST_MANAGED_SOURCE_LABEL: &str = "host managed";
 
 #[derive(Clone)]
 pub struct Profile {
@@ -94,6 +100,8 @@ pub enum ConnectError {
     InvalidConnection(ClientError),
     #[error("{0}")]
     Codex(#[from] CodexUnavailable),
+    #[error("{MISSING_GATEWAY_CREDENTIAL_MESSAGE}")]
+    MissingGatewayCredential,
     #[error("InvalidModel")]
     InvalidModel(Vec<u8>),
     #[error("{0}")]
@@ -104,6 +112,8 @@ pub enum ConnectError {
 pub enum CredentialSource {
     Configured,
     Codex,
+    Gateway(GatewaySource),
+    HostManaged,
 }
 
 impl CredentialSource {
@@ -111,13 +121,15 @@ impl CredentialSource {
         match self {
             Self::Configured => CONFIGURED_SOURCE_LABEL,
             Self::Codex => CHATGPT_SOURCE_LABEL,
+            Self::Gateway(source) => source.variable(),
+            Self::HostManaged => HOST_MANAGED_SOURCE_LABEL,
         }
     }
 
     pub const fn relogin(self) -> Option<&'static str> {
         match self {
-            Self::Configured => None,
             Self::Codex => Some(CHATGPT_RELOGIN_MESSAGE),
+            Self::Configured | Self::Gateway(_) | Self::HostManaged => None,
         }
     }
 
@@ -129,6 +141,8 @@ impl CredentialSource {
         match self {
             Self::Configured => CONFIGURED_SOURCE_REPAIR,
             Self::Codex => CODEX_SOURCE_REPAIR,
+            Self::Gateway(_) => GATEWAY_SOURCE_REPAIR,
+            Self::HostManaged => HOST_MANAGED_AUTH_MESSAGE,
         }
     }
 }
@@ -158,6 +172,7 @@ pub struct AgentSetup {
     prompt_history: bool,
     configured_model: Option<String>,
     models: ModelSource,
+    selection: ProviderId,
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     account_id: Option<String>,
@@ -199,6 +214,7 @@ pub(crate) struct Route {
     reviewer: Arc<dyn ReviewTransport>,
     title_model: Option<&'static str>,
     models: ModelSource,
+    selection: ProviderId,
     connection: Option<ProviderDefinition>,
     model: String,
     configured_model: Option<String>,
@@ -294,6 +310,13 @@ impl Profile {
         self.paths.as_ref().map(|paths| paths.cache.as_path())
     }
 
+    pub(crate) fn routes(&self, provider: &ProviderId) -> bool {
+        let lookup = |name: &str| env::var(name).ok();
+        self.settings.routes(provider)
+            || (*provider == ProviderId::Gateway
+                && (host_managed_auth() || gateway_env_credential(&lookup).is_some()))
+    }
+
     pub fn resume_selection(
         &mut self,
         provider: &ProviderId,
@@ -323,7 +346,7 @@ impl Profile {
 
     async fn prepare(
         &self,
-        launch: Launch<'_>,
+        mut launch: Launch<'_>,
         interactive: bool,
         cancel: &CancellationToken,
     ) -> Result<AgentSetup, ConnectError> {
@@ -341,12 +364,7 @@ impl Profile {
             .as_mut()
             .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
             .unwrap_or_default();
-        let config = self.agent_config(
-            &route,
-            launch.system_prompt,
-            launch.reasoning_effort,
-            launch.fast_mode,
-        );
+        let config = self.agent_config(&route, &mut launch);
         let permission_mode = LivePermissionMode::from(launch.permission_mode);
         let additional_roots = LiveAdditionalRoots::from(self.additional_roots());
         let change_tracker = interactive.then(ChangeTracker::default);
@@ -395,6 +413,7 @@ impl Profile {
             configured_model: route.configured_model,
             models: route.models,
             login: route.login,
+            selection: route.selection,
             connection: route.connection,
             source: route.source,
             account_id: route.account_id,
@@ -462,26 +481,20 @@ impl Profile {
         ))
     }
 
-    fn agent_config(
-        &self,
-        route: &Route,
-        system_prompt: Option<String>,
-        reasoning_effort: Option<String>,
-        fast_mode: Option<bool>,
-    ) -> AgentConfig {
+    fn agent_config(&self, route: &Route, launch: &mut Launch<'_>) -> AgentConfig {
         let lookup = |name: &str| env::var(name).ok();
         AgentConfig {
-            system_prompt: system_prompt.unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
+            system_prompt: launch
+                .system_prompt
+                .take()
+                .unwrap_or_else(|| GATEWAY_SYSTEM_PROMPT.to_owned()),
             max_output_tokens: output_tokens(route.connection.as_ref(), &route.model),
             step_limit: self.settings.max_agent_steps(&lookup),
             model: route.model.clone(),
-            reasoning_effort,
-            fast_mode: fast_mode.unwrap_or_else(|| {
-                self.settings.fast_mode_for(
-                    &connection_provider(route.connection.as_ref()),
-                    &route.model,
-                )
-            }),
+            reasoning_effort: launch.reasoning_effort.take(),
+            fast_mode: launch
+                .fast_mode
+                .unwrap_or_else(|| self.settings.fast_mode_for(&route.selection, &route.model)),
             ultrafast_mode: false,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         }
@@ -536,6 +549,14 @@ impl Profile {
         cancel: &CancellationToken,
     ) -> Result<Route, ConnectError> {
         let lookup = |name: &str| env::var(name).ok();
+        if self.settings.gateway_selected(&lookup)? {
+            let model = select_model(requested, |model| {
+                Ok(self.settings.selected_gateway_model(model, &lookup))
+            })?
+            .map_err(ConnectError::InvalidModel)?;
+            let configured_model = self.settings.selected_gateway_model(None, &lookup);
+            return gateway_route(model, configured_model, endpoints.gateway, &lookup);
+        }
         if self.settings.codex_selected(&lookup)? {
             return self
                 .codex_route(
@@ -618,6 +639,7 @@ impl Profile {
             title_model: Some(CODEX_TITLE_MODEL),
             provider,
             models: ModelSource::Codex(Arc::clone(codex_login)),
+            selection: ProviderId::Codex,
             connection: None,
             model,
             configured_model,
@@ -726,6 +748,7 @@ fn connection_route(
         reviewer: Arc::new(reviewer),
         title_model: None,
         models: ModelSource::Connection(definition),
+        selection: ProviderId::Configured(connection.id().to_owned()),
         connection: Some(connection.clone()),
         model: model.map_err(ConnectError::InvalidModel)?,
         configured_model,
@@ -737,9 +760,46 @@ fn connection_route(
     })
 }
 
-fn connection_provider(connection: Option<&ProviderDefinition>) -> ProviderId {
-    connection.map_or(ProviderId::Codex, |connection| {
-        ProviderId::Configured(connection.id().to_owned())
+fn gateway_route(
+    model: String,
+    configured_model: String,
+    endpoints: GatewayEndpoints,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Route, ConnectError> {
+    let (source, secret) = if host_managed_auth() {
+        (CredentialSource::HostManaged, None)
+    } else {
+        let credential =
+            gateway_env_credential(lookup).ok_or(ConnectError::MissingGatewayCredential)?;
+        (
+            CredentialSource::Gateway(credential.source),
+            Some(credential.secret.to_string()),
+        )
+    };
+    let uses_tls = uses_tls(&endpoints.chat);
+    let gateway = Arc::new(
+        GatewayProvider::new(
+            GatewayCredential::new(secret, None),
+            &user_agent(),
+            endpoints,
+        )
+        .map_err(ConnectError::InvalidConnection)?,
+    );
+    let reviewer = GatewayReviewTransport::new(Arc::clone(&gateway), None);
+    Ok(Route {
+        provider: gateway,
+        reviewer: Arc::new(reviewer),
+        title_model: Some(GATEWAY_TITLE_MODEL),
+        models: ModelSource::Unavailable,
+        selection: ProviderId::Gateway,
+        connection: None,
+        model,
+        configured_model: Some(configured_model),
+        source,
+        account_id: None,
+        subscription: None,
+        uses_tls,
+        login: Login::Ready,
     })
 }
 
@@ -771,11 +831,18 @@ impl AgentSetup {
             CredentialSource::Codex => RouteCredential::chatgpt_subscription(
                 self.account_id.as_deref().unwrap_or_default(),
             ),
+            CredentialSource::Gateway(GatewaySource::VercelOidcToken) => {
+                RouteCredential::vercel_oidc_token()
+            }
+            CredentialSource::Gateway(GatewaySource::AiGatewayApiKey) => {
+                RouteCredential::ai_gateway_api_key()
+            }
+            CredentialSource::HostManaged => RouteCredential::host_managed(),
         }
     }
 
     pub fn provider(&self) -> ProviderId {
-        connection_provider(self.connection.as_ref())
+        self.selection.clone()
     }
 
     pub fn provider_binding(&self) -> Option<[u8; 32]> {
@@ -838,6 +905,7 @@ impl AgentSetup {
     ) -> StatusSnapshot<'a> {
         StatusSnapshot {
             model,
+            selection: &self.selection,
             connection: self.connection.as_ref(),
             source: self.source,
             permission_mode: self.permission_mode.get(),

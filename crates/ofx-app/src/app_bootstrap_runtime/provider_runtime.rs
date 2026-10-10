@@ -109,7 +109,7 @@ impl AgentSetup {
     pub(crate) fn routes(&self, provider: &ProviderId) -> bool {
         self.switchboard
             .as_ref()
-            .is_some_and(|switchboard| switchboard.profile.settings.routes(provider))
+            .is_some_and(|switchboard| switchboard.profile.routes(provider))
     }
 
     pub(crate) fn switch_target(&self, provider: ProviderId) -> Result<SwitchTarget, Notice> {
@@ -221,6 +221,7 @@ impl AgentSetup {
         self.title_model = route.title_model;
         self.login = route.login;
         self.models = route.models;
+        self.selection = route.selection;
         self.connection = route.connection;
         self.source = route.source;
         self.account_id = route.account_id;
@@ -248,6 +249,7 @@ impl Route {
             title_model: Some(CODEX_TITLE_MODEL),
             provider,
             models: ModelSource::Unavailable,
+            selection: ProviderId::Codex,
             connection: None,
             model,
             configured_model,

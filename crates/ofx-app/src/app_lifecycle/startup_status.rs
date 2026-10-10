@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ofx_auth::{
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, StoredLogin, codex_login_saved, grok_login_saved,
-    provider_route_name, stored_codex_login,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredLogin,
+    codex_login_saved, gateway_env_credential, grok_login_saved, provider_route_name,
+    stored_codex_login,
 };
 use ofx_cli::OutputFormat;
 use ofx_config::{
@@ -83,23 +84,27 @@ impl StatusSources<'_> {
     ) -> Result<StatusReport, SelectionError> {
         let lookup = self.lookup;
         let provider = settings.selected_provider(lookup)?;
-        let (model, connection) = if provider == ProviderId::Codex {
-            (settings.selected_codex_model(None, lookup)?, None)
-        } else {
-            let connection = settings.selected_connection(lookup)?;
-            (
-                settings.selected_model(connection, None, lookup)?,
-                Some(connection),
-            )
+        let (model, connection) = match provider {
+            ProviderId::Codex => (settings.selected_codex_model(None, lookup)?, None),
+            ProviderId::Gateway => (settings.selected_gateway_model(None, lookup), None),
+            _ => {
+                let connection = settings.selected_connection(lookup)?;
+                (
+                    settings.selected_model(connection, None, lookup)?,
+                    Some(connection),
+                )
+            }
         };
         let mcp = self.mcp(Some(settings), &workspace_root);
         Ok(StatusReport {
             model,
             model_origin: settings.model_origin(&provider, lookup),
-            model_source: connection.map_or_else(
-                || provider_route_name(&provider).to_owned(),
-                |connection| connection.id().to_owned(),
-            ),
+            model_source: (provider != ProviderId::Gateway).then(|| {
+                connection.map_or_else(
+                    || provider_route_name(&provider).to_owned(),
+                    |connection| connection.id().to_owned(),
+                )
+            }),
             connection: connection.map(|connection| connection.id().to_owned()),
             provider_endpoint: connection.map(|connection| connection.base_url().to_owned()),
             auth: self.auth(&provider, connection),
@@ -134,13 +139,16 @@ impl StatusSources<'_> {
     ) -> AuthStatus {
         if self.host_managed {
             let logins = SavedLogins {
+                gateway: true,
                 codex: true,
                 grok: false,
             };
             return active(Credential::HostManaged, logins);
         }
         let data = self.paths.map(|paths| paths.data.clone());
+        let gateway = gateway_env_credential(self.lookup).map(|credential| credential.source);
         let logins = SavedLogins {
+            gateway: gateway.is_some() && matches!(provider, ProviderId::Codex | ProviderId::Grok),
             codex: data.clone().is_some_and(codex_login_saved),
             grok: data.clone().is_some_and(grok_login_saved),
         };
@@ -150,6 +158,12 @@ impl StatusSources<'_> {
                     missing(error.to_string(), logins)
                 }
                 _ => active(Credential::Connection, logins),
+            };
+        }
+        if *provider == ProviderId::Gateway {
+            return match gateway {
+                Some(source) => active(Credential::Gateway(source), logins),
+                None => missing(MISSING_GATEWAY_CREDENTIAL_MESSAGE.to_owned(), logins),
             };
         }
         if *provider != ProviderId::Codex {

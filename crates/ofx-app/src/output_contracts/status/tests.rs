@@ -25,7 +25,7 @@ fn report(auth: AuthStatus, mcp: LocalConfigInspection) -> StatusReport {
     StatusReport {
         model: "model-a".to_owned(),
         model_origin: "default",
-        model_source: "local".to_owned(),
+        model_source: Some("local".to_owned()),
         connection: Some("local".to_owned()),
         provider_endpoint: None,
         auth,
@@ -69,7 +69,7 @@ fn the_json_snapshot_keeps_raw_values_and_wire_labels() {
         help: None,
         logins: SavedLogins {
             codex: true,
-            grok: false,
+            ..SavedLogins::default()
         },
     };
     let json = report(
@@ -90,7 +90,7 @@ fn an_active_connection_is_listed_before_the_codex_login() {
         help: None,
         logins: SavedLogins {
             codex: true,
-            grok: false,
+            ..SavedLogins::default()
         },
     };
     let status = report(auth, inspection(ProfileConfigDiagnostic::Clear));
@@ -103,5 +103,46 @@ fn an_active_connection_is_listed_before_the_codex_login() {
         status
             .render(OutputFormat::Json)
             .contains(",\"connected_providers\":[\"local\",\"codex\"],")
+    );
+}
+
+#[test]
+fn the_gateway_lists_before_the_codex_login_and_its_own_route_names_neither_line() {
+    let auth = AuthStatus {
+        active: Some(Credential::Codex { expired: false }),
+        help: None,
+        logins: SavedLogins {
+            gateway: true,
+            codex: true,
+            grok: true,
+        },
+    };
+    let mut status = report(auth, inspection(ProfileConfigDiagnostic::Clear));
+    assert!(
+        status
+            .render(OutputFormat::Text)
+            .contains("\n[status] connected_providers=Vercel AI Gateway, Codex, Grok\n")
+    );
+    assert!(
+        status
+            .render(OutputFormat::Json)
+            .contains(",\"connected_providers\":[\"vercel-ai-gateway\",\"codex\",\"grok\"],")
+    );
+    status.model_source = None;
+    status.connection = None;
+    status.auth = AuthStatus {
+        active: Some(Credential::Gateway(GatewaySource::AiGatewayApiKey)),
+        help: None,
+        logins: SavedLogins::default(),
+    };
+    let text = status.render(OutputFormat::Text);
+    assert!(
+        text.starts_with("[status] model=model-a\n[status] model_origin=default\n[status] auth=AI_GATEWAY_API_KEY\n[status] auth_refreshable=false\n[status] permission_mode=full access\n"),
+        "{text}"
+    );
+    let json = status.render(OutputFormat::Json);
+    assert!(
+        json.starts_with("{\"kind\":\"status\",\"model\":\"model-a\",\"model_origin\":\"default\",\"auth\":\"AI_GATEWAY_API_KEY\",\"auth_refreshable\":false,"),
+        "{json}"
     );
 }

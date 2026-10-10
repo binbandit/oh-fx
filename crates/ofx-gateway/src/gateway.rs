@@ -15,6 +15,7 @@ use crate::vercel_protocol::{
     RequestError, build_request, build_review_request, replay_source, select_replay_parts,
 };
 
+pub const GATEWAY_TITLE_MODEL: &str = "openai/gpt-5.6-luna";
 const CHAT_URL: &str = "https://ai-gateway.vercel.sh/v4/ai/language-model";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 

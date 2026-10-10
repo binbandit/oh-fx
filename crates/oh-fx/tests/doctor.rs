@@ -6,7 +6,9 @@ use std::process::{Command, Output, Stdio};
 use ofx_testkit::{FakeServer, Reply, chat_text_events};
 use serde_json::{Value, json};
 
-const GATEWAY_UNAVAILABLE: &str = "the gateway provider is not available in oh-fx yet; add a connection under \"providers\" in ~/.config/oh-fx/settings.json and select it with \"provider\" or OH_FX_PROVIDER";
+const GATEWAY_MISSING: &str = "oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.";
+const GATEWAY_STARTUP: &str =
+    "resolved model=spacexai/grok-4.7, permission_mode=auto, agent_step_limit=0";
 const MCP_EMPTY_TEXT: &str = "[doctor] mcp_connection_check=not_checked\n[doctor] mcp_servers=0 mcp_configuration_issues=0\n";
 const MCP_EMPTY_JSON: &str = r#""mcp":{"connection_check":"not_checked","servers":[],"configuration_issues":[],"inspection_error":null}"#;
 
@@ -121,17 +123,40 @@ fn a_fresh_profile_reports_what_is_missing() {
     assert_eq!(
         stdout,
         format!(
-            "[doctor] ok=1 warn=5 fail=2\n[doctor] workspace={workspace}\n[doctor] model=\n[doctor] auth=missing\n[doctor] auth_refreshable=false\n[doctor] permission_mode=auto\n[doctor] agent_step_limit=0\n{MCP_EMPTY_TEXT}[ok] workspace: using workspace {workspace}\n[warn] config: no config files found; using defaults and env overrides\n[fail] auth: {GATEWAY_UNAVAILABLE}\n[fail] startup: {GATEWAY_UNAVAILABLE}\n[warn] state: durable state is not initialized\n[warn] sessions: no saved sessions yet\n[warn] git: not a git repository; pr/issue workflows will be limited\n[warn] gh: GitHub CLI not found in PATH; publish workflows unavailable\n"
+            "[doctor] ok=2 warn=5 fail=1\n[doctor] workspace={workspace}\n[doctor] model=spacexai/grok-4.7\n[doctor] auth=missing\n[doctor] auth_refreshable=false\n[doctor] permission_mode=auto\n[doctor] agent_step_limit=0\n{MCP_EMPTY_TEXT}[ok] workspace: using workspace {workspace}\n[warn] config: no config files found; using defaults and env overrides\n[fail] auth: {GATEWAY_MISSING}\n[ok] startup: {GATEWAY_STARTUP}\n[warn] state: durable state is not initialized\n[warn] sessions: no saved sessions yet\n[warn] git: not a git repository; pr/issue workflows will be limited\n[warn] gh: GitHub CLI not found in PATH; publish workflows unavailable\n"
         )
     );
-    let detail = GATEWAY_UNAVAILABLE.replace('"', "\\\"");
     assert_eq!(
         home.doctor(&["--json"], &[]),
         format!(
-            r#"{{"kind":"doctor","ok_count":1,"warn_count":5,"fail_count":2,"workspace":"{workspace}","model":"","auth":"missing","auth_refreshable":false,"permission_mode":"auto","agent_step_limit":0,"checks":[{{"name":"workspace","status":"ok","detail":"using workspace {workspace}"}},{{"name":"config","status":"warn","detail":"no config files found; using defaults and env overrides"}},{{"name":"auth","status":"fail","detail":"{detail}"}},{{"name":"startup","status":"fail","detail":"{detail}"}},{{"name":"state","status":"warn","detail":"durable state is not initialized"}},{{"name":"sessions","status":"warn","detail":"no saved sessions yet"}},{{"name":"git","status":"warn","detail":"not a git repository; pr/issue workflows will be limited"}},{{"name":"gh","status":"warn","detail":"GitHub CLI not found in PATH; publish workflows unavailable"}}],{MCP_EMPTY_JSON}}}
+            r#"{{"kind":"doctor","ok_count":2,"warn_count":5,"fail_count":1,"workspace":"{workspace}","model":"spacexai/grok-4.7","auth":"missing","auth_refreshable":false,"permission_mode":"auto","agent_step_limit":0,"checks":[{{"name":"workspace","status":"ok","detail":"using workspace {workspace}"}},{{"name":"config","status":"warn","detail":"no config files found; using defaults and env overrides"}},{{"name":"auth","status":"fail","detail":"{GATEWAY_MISSING}"}},{{"name":"startup","status":"ok","detail":"{GATEWAY_STARTUP}"}},{{"name":"state","status":"warn","detail":"durable state is not initialized"}},{{"name":"sessions","status":"warn","detail":"no saved sessions yet"}},{{"name":"git","status":"warn","detail":"not a git repository; pr/issue workflows will be limited"}},{{"name":"gh","status":"warn","detail":"GitHub CLI not found in PATH; publish workflows unavailable"}}],{MCP_EMPTY_JSON}}}
 "#
         )
     );
+}
+
+#[test]
+fn a_gateway_key_in_the_environment_is_the_active_source() {
+    let home = Home::new();
+    for (variable, value) in [
+        ("AI_GATEWAY_API_KEY", "vck-0123456789"),
+        ("VERCEL_OIDC_TOKEN", "oidc-0123456789"),
+    ] {
+        let stdout = home.doctor(&[], &[(variable, value)]);
+        assert!(
+            stdout.contains(&format!(
+                "\n[doctor] model=spacexai/grok-4.7\n[doctor] auth={variable}\n[doctor] auth_refreshable=false\n"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "\n[ok] auth: {variable} is configured; refreshable=false\n[ok] startup: {GATEWAY_STARTUP}\n"
+            )),
+            "{stdout}"
+        );
+        assert!(!stdout.contains(value), "{stdout}");
+    }
 }
 
 #[test]
@@ -241,7 +266,10 @@ fn configuration_and_mcp_problems_become_checks() {
         ),
         "{stdout}"
     );
-    assert!(stdout.contains("\n[doctor] model=\n"), "{stdout}");
+    assert!(
+        stdout.contains("\n[doctor] model=spacexai/grok-4.7\n"),
+        "{stdout}"
+    );
 }
 
 #[test]

@@ -150,7 +150,7 @@ fn select(
 ) -> Result<Option<String>, ResumeFailure> {
     let preferences = &session.metadata().preferences;
     let provider = preferences.provider.id();
-    if !profile.settings().routes(provider) {
+    if !profile.routes(provider) {
         return Ok(Some(provider.label().to_owned()));
     }
     profile

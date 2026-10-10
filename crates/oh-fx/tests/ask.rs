@@ -319,9 +319,13 @@ fn unselected_and_unknown_providers_explain_themselves() {
     let home = Home::with_settings(&json!({}));
     let output = home.ask(&["ask", "hello"], &[]);
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "oh-fx ask: oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.\n"
+    );
+    let output = home.ask(&["ask", "hello"], &[("OH_FX_PROVIDER", "grok")]);
     assert!(
-        stderr(&output)
-            .starts_with("oh-fx ask: the gateway provider is not available in oh-fx yet;")
+        stderr(&output).starts_with("oh-fx ask: the grok provider is not available in oh-fx yet;")
     );
     let output = home.ask(&["ask", "hello"], &[("OH_FX_PROVIDER", "nope")]);
     assert_eq!(stderr(&output), "oh-fx: UnknownConfiguredProvider\n");
