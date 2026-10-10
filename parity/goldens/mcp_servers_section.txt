@@ -1,0 +1,5 @@
+Configured MCP servers visible to this model turn are listed below.
+A listed server is not a reason to use MCP. Use capability_search only when the task clearly needs a capability not already available locally. Pass the task and an optional exact server name. Call tools advertised after search directly. Use mcp_select_tool when a relevant result is not yet callable. Use returned identities and refine the query when needed.
+<mcp_servers>
+  <none />
+</mcp_servers>

@@ -76,6 +76,18 @@ const AUDITED_ONLY: &[(&str, &str)] = &[(
 )];
 const PERMISSION_TOOL: &str = r#"[{"type":"function","name":"permission_decision","description":"Return bounded safety advice for one exact fx action.","inputSchema":{"type":"object","properties":{"decision":{"type":"string","enum":["clear","caution"],"description":"Clear this exact action, or return a safety caution."},"rationale":{"type":"string","description":"Optional brief reason without secrets or raw file contents."}},"additionalProperties":false,"required":["decision"]}}]"#;
 const READ_FILE_TOOL: &str = r#"{"type":"function","name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}"#;
+const MODEL_CATALOG: &str = r#"const max_prompt_bytes: usize = 4 * 1024;
+const header =
+    "Configured servers.\n" ++
+    "<mcp_servers>\n";
+const footer = "</mcp_servers>\n";
+const empty_entry = "  <none />\n";
+
+pub fn renderChangeNotice() void {
+    const change_header = "Changed:\n";
+    const change_footer = "Current.\n";
+}
+"#;
 const SOURCES: &[(&str, &str)] = &[
     (SYSTEM_SOURCE, "system\n"),
     (
@@ -85,6 +97,7 @@ const SOURCES: &[(&str, &str)] = &[
     (CLASSIFIER_SOURCE, CLASSIFIER),
     (WRITER_SOURCE, WRITER),
     (TOOLS_SOURCE, TOOLS),
+    (MODEL_CATALOG_SOURCE, MODEL_CATALOG),
 ];
 const GOLDENS: &[(&str, &str)] = &[
     ("system_prompt.md", "system\n"),
@@ -95,6 +108,11 @@ const GOLDENS: &[(&str, &str)] = &[
     ),
     ("permission_decision_tool.json", PERMISSION_TOOL),
     ("read_file_tool.json", READ_FILE_TOOL),
+    (
+        "mcp_servers_section.txt",
+        "Configured servers.\n<mcp_servers>\n  <none />\n</mcp_servers>\n",
+    ),
+    ("mcp_servers_change_notice.txt", "Changed:\nCurrent.\n"),
 ];
 
 fn setup_git(directory: &Path, args: &[&str]) -> String {
@@ -509,6 +527,33 @@ fn read_file_extraction_matches_the_writer_and_rejects_changed_grammar() {
         assert!(read_file::extract(&source, 1024).is_err());
     }
     assert!(read_file::extract(TOOLS, 600).is_err());
+}
+
+#[test]
+fn mcp_servers_extraction_joins_its_literals_and_rejects_changed_grammar() {
+    assert_eq!(
+        mcp_servers::section(MODEL_CATALOG).unwrap(),
+        "Configured servers.\n<mcp_servers>\n  <none />\n</mcp_servers>\n"
+    );
+    assert_eq!(
+        mcp_servers::change_notice(MODEL_CATALOG).unwrap(),
+        "Changed:\nCurrent.\n"
+    );
+    for source in [
+        String::new(),
+        format!("{MODEL_CATALOG}\n{MODEL_CATALOG}"),
+        MODEL_CATALOG.replace("const footer = ", "const trailer = "),
+        MODEL_CATALOG.replace("\"<mcp_servers>\\n\";", "other;"),
+        MODEL_CATALOG.replace("\"<mcp_servers>\\n\";", "\"<mcp_servers>\\t\";"),
+        MODEL_CATALOG.replace("\"<mcp_servers>\\n\";", "\"<mcp_servers>\\n\" ++"),
+        MODEL_CATALOG.replace("\"Changed:\\n\"", "\"\""),
+        MODEL_CATALOG.replace("\"Current.\\n\";", "\"say \\\"hi\\\"\";"),
+    ] {
+        assert!(
+            mcp_servers::section(&source).is_err() || mcp_servers::change_notice(&source).is_err(),
+            "{source}"
+        );
+    }
 }
 
 #[test]

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use ofx_text::encode_terminal_safe;
@@ -11,6 +12,7 @@ use crate::health::{
     SubscriptionState, capability_count, classify, observed_connection, retry_delay,
 };
 use crate::mcp_contract::{McpServerConfig, TransportType};
+use crate::model_catalog::{ServerSummary, classify_availability};
 use crate::operation_control::monotonic_millis;
 use crate::server_connection::McpClient;
 use crate::server_lifecycle::{Lifecycle, Server};
@@ -24,24 +26,7 @@ const FAILED_WITHOUT_DETAIL: &str =
 
 pub(crate) fn snapshot_server(server: &Server) -> ServerSnapshot {
     let config = &server.config;
-    let (connection, client, last_error) = match server.lifecycle() {
-        Lifecycle::Idle
-            if decide_startup(config, StartupPhase::All) == StartupDecision::Disabled =>
-        {
-            (ConnectionState::Disabled, None, None)
-        }
-        Lifecycle::Idle => (ConnectionState::Disconnected, None, None),
-        Lifecycle::Starting => (ConnectionState::Connecting, None, None),
-        Lifecycle::Failed(message) => (ConnectionState::Failed, None, Some(message)),
-        Lifecycle::Ready(client) => {
-            let running = (config.transport == TransportType::Stdio).then(|| client.is_running());
-            (
-                observed_connection(ConnectionState::Ready, running),
-                Some(client),
-                None,
-            )
-        }
-    };
+    let (connection, client, last_error) = observe(server);
     let failure = health_failure(config.required, connection, last_error);
     let mut snapshot = ServerSnapshot {
         configured_name: safe(&config.name, NAME_BYTES),
@@ -67,6 +52,40 @@ pub(crate) fn snapshot_server(server: &Server) -> ServerSnapshot {
         describe_connection(&mut snapshot, &client, &server.features);
     }
     snapshot
+}
+
+pub(crate) fn model_summary(server: &Server) -> ServerSummary {
+    let (connection, client, _) = observe(server);
+    ServerSummary {
+        name: server.config.name.clone(),
+        availability: classify_availability(connection),
+        tool_count: client
+            .filter(|_| connection == ConnectionState::Ready)
+            .map(|client| client.tool_catalog().tools.len()),
+        always_loaded: true,
+    }
+}
+
+fn observe(server: &Server) -> (ConnectionState, Option<Arc<McpClient>>, Option<String>) {
+    let config = &server.config;
+    match server.lifecycle() {
+        Lifecycle::Idle
+            if decide_startup(config, StartupPhase::All) == StartupDecision::Disabled =>
+        {
+            (ConnectionState::Disabled, None, None)
+        }
+        Lifecycle::Idle => (ConnectionState::Disconnected, None, None),
+        Lifecycle::Starting => (ConnectionState::Connecting, None, None),
+        Lifecycle::Failed(message) => (ConnectionState::Failed, None, Some(message)),
+        Lifecycle::Ready(client) => {
+            let running = (config.transport == TransportType::Stdio).then(|| client.is_running());
+            (
+                observed_connection(ConnectionState::Ready, running),
+                Some(client),
+                None,
+            )
+        }
+    }
 }
 
 pub(crate) fn health_failure(
@@ -216,7 +235,7 @@ mod tests {
         let server = Server::new(
             config.clone(),
             crate::server_transport::ConnectOptions::default(),
-            std::sync::Arc::default(),
+            Arc::default(),
         );
         let snapshot = snapshot_server(&server);
         assert_eq!(snapshot.configured_name, "tool\\x1b");
@@ -229,7 +248,7 @@ mod tests {
         let disabled = Server::new(
             config,
             crate::server_transport::ConnectOptions::default(),
-            std::sync::Arc::default(),
+            Arc::default(),
         );
         let snapshot = snapshot_server(&disabled);
         assert_eq!(snapshot.connection, ConnectionState::Disabled);

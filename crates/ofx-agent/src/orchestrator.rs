@@ -11,18 +11,18 @@ use ofx_contract::{
     AutoCompactPercent, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
     DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
-    FinishReason, GatedAction, HookScope, HookView, LogFailure, ModelCapabilities,
-    ModelFailureDiagnostic, ModelProvider, ModelRecoveryAction, ModelRecoveryCause,
-    ModelRecoveryRequiredAction, ModelRequest, PathAccess, PermissionGate, PreparedCall,
-    ProviderError, ProviderErrorKind, ProviderOptions, RecordedOutput, RecoveredTurn,
-    RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed,
-    RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent,
-    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic,
-    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput,
-    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome,
-    TurnStop, UiEvent, Usage, bound_model_output, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
-    tool_review_held_json,
+    FinishReason, GatedAction, HookScope, HookView, LogFailure, McpServersCatalog,
+    McpServersSection, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
+    ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ModelRequest, PathAccess,
+    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
+    RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure, ReviewHold,
+    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
+    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
+    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
+    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    TurnPresentationOutcome, TurnStop, UiEvent, Usage, bound_model_output,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -271,6 +271,7 @@ pub struct Agent {
     offered_specs: Vec<ToolSpec>,
     tool_guidance: String,
     dynamic: Option<DynamicToolSet>,
+    mcp_servers: Option<Arc<dyn McpServersCatalog>>,
     mode: Option<ActiveMode>,
     context: Arc<dyn RuntimeContext>,
     permissions: Arc<dyn PermissionGate>,
@@ -319,6 +320,7 @@ impl Agent {
             offered_specs,
             tool_guidance,
             dynamic: None,
+            mcp_servers: None,
             mode: None,
             context,
             permissions,
@@ -365,6 +367,12 @@ impl Agent {
     pub fn with_permission_prompts(mut self, approvals: Approvals) -> Self {
         self.approvals = Some(approvals);
         self.reviews_fall_back_to_approval = false;
+        self
+    }
+
+    #[must_use]
+    pub fn with_mcp_servers(mut self, catalog: Arc<dyn McpServersCatalog>) -> Self {
+        self.mcp_servers = Some(catalog);
         self
     }
 
@@ -716,8 +724,9 @@ impl Agent {
                 self.resolve_capabilities(cancel).await?;
             }
             self.refresh_dynamic_tools(turn.id, events);
+            let servers = self.mcp_servers_section(turn.id, events);
             let context = self.context.runtime_context().await;
-            let instructions = self.instructions(&skills, &context);
+            let instructions = self.instructions(&skills, &context, &servers);
             let messages = self.request_messages(turn);
             let request = self.turn_request(turn, &instructions, &messages, events);
             let (measured, body) = self.measure(turn, &request).unzip();
@@ -816,12 +825,28 @@ impl Agent {
         }
     }
 
-    fn instructions<'a>(&'a self, skills: &'a SkillContext, context: &'a [String]) -> Vec<&'a str> {
+    fn mcp_servers_section(&self, turn_id: TurnId, events: EventSink<'_>) -> McpServersSection {
+        let Some(catalog) = &self.mcp_servers else {
+            return McpServersSection::default();
+        };
+        let mut section = catalog.section();
+        if let Some(text) = section.notice.take() {
+            events(UiEvent::ContextNotice { turn_id, text });
+        }
+        section
+    }
+
+    fn instructions<'a>(
+        &'a self,
+        skills: &'a SkillContext,
+        context: &'a [String],
+        servers: &'a McpServersSection,
+    ) -> Vec<&'a str> {
         let deltas = self
             .project
             .as_ref()
             .map_or(0, |project| project.deltas.len());
-        let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 6);
+        let mut instructions: Vec<&str> = Vec::with_capacity(context.len() + deltas + 8);
         if !self.config.system_prompt.is_empty() {
             instructions.push(&self.config.system_prompt);
         }
@@ -835,6 +860,10 @@ impl Agent {
             instructions.extend(project.snapshot.as_deref());
             instructions.extend(project.deltas.iter().map(String::as_str));
         }
+        if !servers.text.is_empty() {
+            instructions.push(&servers.text);
+        }
+        instructions.extend(servers.change_notice.as_deref());
         if !skills.explicit.is_empty() {
             instructions.push(&skills.explicit);
         }

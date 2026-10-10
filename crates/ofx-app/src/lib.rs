@@ -20,6 +20,7 @@ mod file_mention_runtime;
 mod herdr;
 mod hooks;
 mod mcp_commands;
+mod mcp_model_catalog;
 mod model_cache_runtime;
 mod modes;
 mod native;

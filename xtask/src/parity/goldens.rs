@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 mod compaction;
+mod mcp_servers;
 mod permission_tool;
 mod read_file;
 mod review_policy;
@@ -14,6 +15,7 @@ const SYSTEM_SOURCE: &str = "src/builtins/system_prompt.md";
 const COMPACTION_SOURCE: &str = "src/core/compactor/summarize.zig";
 const CLASSIFIER_SOURCE: &str = "src/core/permissions/auto_classifier.zig";
 const TOOLS_SOURCE: &str = "src/builtins/tools.zig";
+const MODEL_CATALOG_SOURCE: &str = "src/core/mcp/model_catalog.zig";
 const WRITER_SOURCE: &str = "src/core/tooling/model_tool_schema.zig";
 const TOOL_SPECS_SOURCE: &str = "src/core/tooling/tool_specs.zig";
 const AUDITED: &[(&str, &str)] = &[
@@ -55,6 +57,16 @@ const EXTRACTORS: &[Extractor] = &[
         golden: "read_file_tool.json",
         sources: &[TOOLS_SOURCE, WRITER_SOURCE],
         extract: read_file,
+    },
+    Extractor {
+        golden: "mcp_servers_section.txt",
+        sources: &[MODEL_CATALOG_SOURCE],
+        extract: mcp_servers_section,
+    },
+    Extractor {
+        golden: "mcp_servers_change_notice.txt",
+        sources: &[MODEL_CATALOG_SOURCE],
+        extract: mcp_servers_change_notice,
     },
 ];
 
@@ -107,6 +119,14 @@ fn permission_tool(sources: &Sources) -> Result<String, String> {
 fn read_file(sources: &Sources) -> Result<String, String> {
     let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
     read_file::extract(source(sources, TOOLS_SOURCE)?, limit)
+}
+
+fn mcp_servers_section(sources: &Sources) -> Result<String, String> {
+    mcp_servers::section(source(sources, MODEL_CATALOG_SOURCE)?)
+}
+
+fn mcp_servers_change_notice(sources: &Sources) -> Result<String, String> {
+    mcp_servers::change_notice(source(sources, MODEL_CATALOG_SOURCE)?)
 }
 
 fn derive(
