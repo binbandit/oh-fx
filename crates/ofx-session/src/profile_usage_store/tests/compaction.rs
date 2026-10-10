@@ -4,6 +4,7 @@ use super::*;
 use crate::profile_usage_runtime::ProfileUsage;
 use crate::profile_usage_store::compaction::COMPACTION_THRESHOLD_BYTES;
 use crate::session_log::now_ms;
+use crate::usage_recovery::UsageRecovery;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const NOW: i64 = 1_775_045_467_000;
@@ -301,7 +302,7 @@ fn completeness_of(ledger: &str) -> UsageCompleteness {
     fixture.write(ledger.as_bytes());
     ProfileUsage::open(&fixture.data())
         .unwrap()
-        .report(UsageScope::Days30, NOW)
+        .report(UsageScope::Days30, NOW, &UsageRecovery::default())
         .unwrap()
         .completeness
 }
