@@ -1,6 +1,6 @@
+use ofx_contract::parse_strict_json_value;
 use ofx_jsonrpc::RpcError;
-use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::error::McpError;
 use crate::features::common::{
@@ -268,14 +268,9 @@ pub(crate) fn validate_arguments_json(
     if arguments_json.len() > limits.arguments_json_bytes {
         return Err(McpError::InvalidArguments);
     }
-    let Members(members) =
-        serde_json::from_str(arguments_json).map_err(|_| McpError::InvalidArguments)?;
-    let mut arguments = Map::with_capacity(members.len());
-    for (name, value) in members {
-        if arguments.insert(name, value).is_some() {
-            return Err(McpError::InvalidArguments);
-        }
-    }
+    let Ok(Value::Object(arguments)) = parse_strict_json_value(arguments_json.as_bytes()) else {
+        return Err(McpError::InvalidArguments);
+    };
     if arguments.len() > limits.arguments {
         return Err(McpError::InvalidArguments);
     }
@@ -299,32 +294,6 @@ pub(crate) fn validate_arguments_json(
     validate_json_depth(&arguments, limits.common.json_depth)
         .map_err(|_| McpError::InvalidArguments)?;
     Ok(arguments)
-}
-
-struct Members(Vec<(String, Value)>);
-
-impl<'de> Deserialize<'de> for Members {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_map(MembersVisitor)
-    }
-}
-
-struct MembersVisitor;
-
-impl<'de> Visitor<'de> for MembersVisitor {
-    type Value = Members;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a JSON object")
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Members, A::Error> {
-        let mut members = Vec::new();
-        while let Some(member) = access.next_entry()? {
-            members.push(member);
-        }
-        Ok(Members(members))
-    }
 }
 
 #[cfg(test)]

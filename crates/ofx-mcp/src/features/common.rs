@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use ofx_contract::parse_strict_json_value;
 use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
@@ -255,7 +256,8 @@ fn list_result_error(error: McpError) -> McpError {
 }
 
 pub(crate) fn parse_envelope(response: &str, limits: Limits) -> Result<Value, McpError> {
-    let value: Value = serde_json::from_str(response).map_err(|_| McpError::InvalidEnvelope)?;
+    let value =
+        parse_strict_json_value(response.as_bytes()).map_err(|_| McpError::InvalidEnvelope)?;
     validate_json_depth(&value, limits.json_depth)?;
     validate_json_rpc_response_envelope(&value).map_err(|_| McpError::InvalidEnvelope)?;
     Ok(value)
@@ -618,6 +620,16 @@ mod tests {
             parse_envelope(r#"{"jsonrpc":"1.0","id":1,"result":{}}"#, limits),
             Err(McpError::InvalidEnvelope)
         );
+        for duplicate in [
+            r#"{"jsonrpc":"2.0","id":1,"id":1,"result":{}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"items":[{"type":"text","text":"a","text":"b"}]}}"#,
+        ] {
+            assert_eq!(
+                parse_envelope(duplicate, limits),
+                Err(McpError::InvalidEnvelope),
+                "{duplicate}"
+            );
+        }
         let failure = parse_envelope(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}"#,
             limits,
