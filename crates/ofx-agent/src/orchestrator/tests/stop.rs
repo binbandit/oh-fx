@@ -34,8 +34,8 @@ fn stopped(
     (agent, seen, entries)
 }
 
-fn verify() -> Result<StopAction, HookHandlerError> {
-    Ok(StopAction::ContinueOnce("verify the answer".to_owned()))
+fn verify() -> impl Fn() -> Result<StopAction, HookHandlerError> + Send + Sync + 'static {
+    || Ok(StopAction::ContinueOnce("verify the answer".to_owned()))
 }
 
 fn turn(steps: &[&str], end: &str) -> Logged {
@@ -88,7 +88,8 @@ async fn a_continuation_runs_once_and_the_answers_join_while_the_history_keeps_b
         text_reply("final"),
         text_reply("follow-up"),
     ]);
-    let (mut agent, seen, entries) = stopped(new_agent(Arc::clone(&provider), Vec::new()), verify);
+    let (mut agent, seen, entries) =
+        stopped(new_agent(Arc::clone(&provider), Vec::new()), verify());
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(report.final_text, "candidate\nfinal");
@@ -143,7 +144,7 @@ async fn both_answers_keep_their_own_replay() {
         with_replay(text_reply("candidate"), "first"),
         with_replay(text_reply("final"), "last"),
     ]);
-    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify);
+    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify());
     run(&mut agent, "go").await;
     assert_eq!(
         *entries.lock().unwrap(),
@@ -168,7 +169,7 @@ async fn a_continuation_without_budget_finishes_with_the_candidate() {
         Arc::new(ArgumentGate),
         config,
     );
-    let (mut agent, seen, entries) = stopped(agent, verify);
+    let (mut agent, seen, entries) = stopped(agent, verify());
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(*seen.lock().unwrap(), [("candidate".to_owned(), 1, false)]);
@@ -230,7 +231,7 @@ async fn a_later_stream_failure_keeps_the_candidate_and_saves_the_partial_reply(
             failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
         ),
     ]);
-    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify);
+    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify());
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(
@@ -251,7 +252,7 @@ async fn a_later_silent_failure_keeps_the_candidate_with_an_empty_reply() {
             failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
         ),
     ]);
-    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify);
+    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify());
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
     assert_eq!(
@@ -271,7 +272,7 @@ async fn an_interruption_after_the_continuation_keeps_the_candidate_and_the_part
             text: "PARTIAL".to_owned(),
         }]),
     ]);
-    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify);
+    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify());
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
     let report = agent
@@ -312,7 +313,7 @@ async fn the_step_limit_after_a_continuation_keeps_the_candidate_and_the_tool_st
         Arc::new(ArgumentGate),
         config,
     );
-    let (mut agent, _, entries) = stopped(agent, verify);
+    let (mut agent, _, entries) = stopped(agent, verify());
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.failure, Some(TurnFailure::StepLimitReached));
     let entries = entries.lock().unwrap().clone();
@@ -322,10 +323,7 @@ async fn the_step_limit_after_a_continuation_keeps_the_candidate_and_the_tool_st
     assert_eq!(steps.len(), 2);
     assert_eq!(steps[0], standalone("candidate", false));
     assert!(steps[1].contains(r#"calls=["call-1"]"#), "{}", steps[1]);
-    assert_eq!(
-        *end,
-        format!("replied {:?} replay=false", STEP_LIMIT_NOTICE)
-    );
+    assert_eq!(*end, format!("replied {STEP_LIMIT_NOTICE:?} replay=false"));
 }
 
 #[tokio::test]
@@ -353,7 +351,7 @@ async fn a_pause_after_the_continuation_saves_the_candidate_in_its_checkpoint() 
             failure(ProviderErrorKind::ConnectivityLost, "ConnectionFailed"),
         ),
     ]);
-    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify);
+    let (mut agent, _, entries) = stopped(new_agent(provider, Vec::new()), verify());
     let pause = agent.recovery_pause();
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
