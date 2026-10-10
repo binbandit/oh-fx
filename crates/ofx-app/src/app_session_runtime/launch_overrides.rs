@@ -44,8 +44,8 @@ mod tests {
             provider: SavedProvider::new(ProviderId::Gateway, None).unwrap(),
             model: "saved-model".to_owned(),
             effort: ReasoningEffort::parse("high").unwrap(),
-            fast_mode: true,
-            ultrafast_mode: false,
+            fast_mode: false,
+            ultrafast_mode: true,
         }
     }
 
@@ -62,22 +62,22 @@ mod tests {
             RestoredPreferences {
                 model: "saved-model".to_owned(),
                 reasoning_effort: Some("high".to_owned()),
-                fast_mode: true,
-                ultrafast_mode: false,
+                fast_mode: false,
+                ultrafast_mode: true,
             }
         );
         let flags = LaunchOverrides {
             model: Some("flag-model".to_owned()),
             effort: Some(ReasoningEffort::Auto),
-            fast_mode: Some(false),
-            ultrafast_mode: None,
+            fast_mode: Some(true),
+            ultrafast_mode: Some(false),
         };
         assert_eq!(
             flags.restore(&saved()),
             RestoredPreferences {
                 model: "flag-model".to_owned(),
                 reasoning_effort: None,
-                fast_mode: false,
+                fast_mode: true,
                 ultrafast_mode: false,
             }
         );

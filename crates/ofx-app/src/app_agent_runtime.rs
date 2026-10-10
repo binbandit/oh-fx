@@ -2653,6 +2653,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_saved_ultra_request_comes_back_with_its_session_and_turning_it_off_is_saved() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        chat(&mut harness, &["first question"]).await;
+        let id = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let resume = async |harness: &mut Harness| {
+            harness.command("/new");
+            harness
+                .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+                .await;
+            harness.send(UiCommand::ResumeSession { id: id.clone() });
+            harness
+                .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+                .await;
+        };
+        let manifest = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&id)
+            .join("session.json");
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+        let saved = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            saved.replace(
+                "\"fast_mode\":false,",
+                "\"fast_mode\":false,\"ultrafast_mode\":true,",
+            ),
+        )
+        .unwrap();
+        resume(&mut harness).await;
+        let requested = |on: &str| (NoticeTone::Neutral, format!("requested: {on}"));
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            requested("on")
+        );
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast off").await,
+            (NoticeTone::Neutral, "requested off".to_owned())
+        );
+        assert!(
+            !fs::read_to_string(&manifest)
+                .unwrap()
+                .contains("ultrafast_mode")
+        );
+        resume(&mut harness).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            requested("off")
+        );
+    }
+
+    #[tokio::test]
     async fn an_ultra_request_from_launch_lasts_until_turned_off_or_the_model_changes() {
         let server = FakeServer::start([]);
         let home = tempfile::tempdir().unwrap();
