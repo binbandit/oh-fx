@@ -1,11 +1,12 @@
+mod file_presentation;
 mod frame_decode;
 mod history_codec;
 
 use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
 use ofx_contract::{
-    CommandProcessPresentation, ProviderReplay, ReplaySource, ToolArgumentIntegrity,
-    ToolExecutionProvenance, ToolResultStatus, TurnSummary,
+    CommandProcessPresentation, ProviderReplay, ReplaySource, SavedFileChange,
+    ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus, TurnSummary,
 };
 use serde::Serialize;
 
@@ -14,6 +15,7 @@ use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
+use file_presentation::CommittedFilePresentation;
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
 pub(crate) use history_codec::{decode_history_envelope, encode_history_envelope};
@@ -181,7 +183,7 @@ pub struct ToolResultEvent {
     #[serde(default)]
     pub permission_feedback: Vec<String>,
     #[serde(default)]
-    committed_file_presentation: Null,
+    committed_file_presentation: Option<Box<CommittedFilePresentation>>,
     #[serde(default)]
     command_replay_ref: Option<String>,
     #[serde(default)]
@@ -215,12 +217,18 @@ impl ToolResultEvent {
             review_feedback: False,
             created_at_ms: 0,
             permission_feedback: Vec::new(),
-            committed_file_presentation: Null,
+            committed_file_presentation: None,
             command_replay_ref: None,
             command_replay_bytes: None,
             command_process_presentation: None,
             terminal_action_presentation: Null,
         }
+    }
+
+    pub fn file_change(&self) -> Option<SavedFileChange> {
+        self.committed_file_presentation
+            .as_deref()
+            .map(CommittedFilePresentation::saved_change)
     }
 }
 
@@ -649,6 +657,10 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
                     .permission_feedback
                     .iter()
                     .all(|feedback| feedback.len() <= MAX_TEXT_BYTES)
+                && result
+                    .committed_file_presentation
+                    .as_deref()
+                    .is_none_or(CommittedFilePresentation::is_valid)
                 && is_valid_replay(
                     result.command_replay_ref.as_deref(),
                     result.command_replay_bytes,

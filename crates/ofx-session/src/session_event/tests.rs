@@ -1,5 +1,5 @@
 use ofx_config::ProviderId;
-use ofx_contract::{TurnSummary, TurnTokenProgress};
+use ofx_contract::{FileChangeStats, TurnSummary, TurnTokenProgress};
 
 use super::*;
 
@@ -955,6 +955,101 @@ fn command_replays_reject_what_upstream_rejects() {
     unpaired.command_replay_bytes = None;
     assert_eq!(
         encode_conversation_frame(1, 1, &ConversationEvent::ToolResult(unpaired)),
+        Err(SessionError::InvalidConversationEvent)
+    );
+}
+
+const EDIT_PRESENTATION: &str = "{\"path\":\"src/lib.rs\",\"kind\":\"edited\",\"lines\":[{\"kind\":\"context\",\"old_line\":1,\"new_line\":1,\"text\":\"fn main() {\"},{\"kind\":\"deletion\",\"old_line\":2,\"new_line\":null,\"text\":\"    old();\"},{\"kind\":\"addition\",\"old_line\":null,\"new_line\":2,\"text\":\"    new();\"},{\"kind\":\"addition\",\"old_line\":null,\"new_line\":3,\"text\":\"    more();\"},{\"kind\":\"elision\",\"old_line\":null,\"new_line\":null,\"text\":\"\"}],\"additions\":2,\"deletions\":1,\"truncated\":false,\"previous_content\":null,\"after_content\":null,\"lifecycle_id\":{\"turn_id\":4,\"call_id\":\"call-edit\"},\"content_handle\":\"diff-0011223344556677-8899aabbccddeeff.json\"}";
+const WRITE_PRESENTATION: &str = "{\"path\":\"notes.md\",\"kind\":\"added\",\"lines\":[{\"kind\":\"addition\",\"old_line\":null,\"new_line\":1,\"text\":\"# Notes\"},{\"kind\":\"notice\",\"old_line\":null,\"new_line\":null,\"text\":\"1 more line\"}],\"additions\":2,\"deletions\":0,\"truncated\":true,\"previous_content\":null,\"after_content\":\"# Notes\\nmore\\n\",\"lifecycle_id\":null,\"content_handle\":null}";
+
+fn presentation_frame(tool: &str, presentation: &str) -> String {
+    format!(
+        "{{\"schema_version\":3,\"seq\":2,\"timestamp_ms\":3,\"event\":{{\"tool_result\":{{\"call_id\":\"call-edit\",\"tool_name\":\"{tool}\",\"status\":\"success\",\"artifact_ref\":\"result.txt\",\"tool_image_handle\":null,\"output_bytes\":6,\"stored_bytes\":6,\"completeness\":\"complete\",\"preview\":\"edited\",\"provider_native\":false,\"created_at_ms\":7,\"permission_feedback\":[],\"committed_file_presentation\":{presentation},\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}}}}}\n"
+    )
+}
+
+#[test]
+fn committed_file_presentations_from_upstream_frames_round_trip_byte_for_byte() {
+    for (tool, presentation, path, stats) in [
+        ("edit_file", EDIT_PRESENTATION, "src/lib.rs", (2, 1)),
+        ("write_file", WRITE_PRESENTATION, "notes.md", (2, 0)),
+    ] {
+        let frame = presentation_frame(tool, presentation);
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(2, 3, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+        let ConversationEvent::ToolResult(result) = envelope.event else {
+            panic!("a tool result");
+        };
+        assert_eq!(
+            result.file_change(),
+            Some(SavedFileChange {
+                path: path.to_owned(),
+                stats: FileChangeStats::from_lines(stats.0, stats.1),
+            })
+        );
+    }
+    let sparse = presentation_frame(
+        "edit_file",
+        "{\"path\":\"a\",\"kind\":\"edited\",\"lines\":[{\"kind\":\"context\",\"text\":\"x\"}],\"additions\":0,\"deletions\":0,\"truncated\":false}",
+    );
+    let ConversationEvent::ToolResult(result) = decode(&sparse).unwrap() else {
+        panic!("a tool result");
+    };
+    assert_eq!(
+        encode(2, &ConversationEvent::ToolResult(result)),
+        presentation_frame(
+            "edit_file",
+            "{\"path\":\"a\",\"kind\":\"edited\",\"lines\":[{\"kind\":\"context\",\"old_line\":null,\"new_line\":null,\"text\":\"x\"}],\"additions\":0,\"deletions\":0,\"truncated\":false,\"previous_content\":null,\"after_content\":null,\"lifecycle_id\":null,\"content_handle\":null}",
+        )
+        .replace("\"seq\":2,\"timestamp_ms\":3", "\"seq\":2,\"timestamp_ms\":1")
+    );
+}
+
+#[test]
+fn committed_file_presentations_reject_what_upstream_rejects() {
+    let handle = "\"content_handle\":\"diff-0011223344556677-8899aabbccddeeff.json\"";
+    let refused = [
+        EDIT_PRESENTATION.replace("\"previous_content\":null", "\"previous_content\":\"old\""),
+        EDIT_PRESENTATION.replace("\"after_content\":null", "\"after_content\":\"new\""),
+        EDIT_PRESENTATION.replace(handle, "\"content_handle\":\"result-1.txt\""),
+        EDIT_PRESENTATION.replace(handle, "\"content_handle\":\"diff-1.txt\""),
+        EDIT_PRESENTATION.replace(handle, "\"content_handle\":\"\""),
+        EDIT_PRESENTATION.replace("\"src/lib.rs\"", "\"\""),
+        EDIT_PRESENTATION.replace("\"kind\":\"edited\"", "\"kind\":\"deleted\""),
+        EDIT_PRESENTATION.replace("\"kind\":\"elision\"", "\"kind\":\"insert\""),
+        EDIT_PRESENTATION.replace("\"old_line\":2", "\"old_line\":4294967296"),
+        EDIT_PRESENTATION.replace("\"old_line\":2", "\"old_line\":-2"),
+        EDIT_PRESENTATION.replace("\"additions\":2", "\"additions\":-2"),
+        EDIT_PRESENTATION.replace("\"truncated\":false", "\"truncated\":0"),
+        EDIT_PRESENTATION.replace("\"call_id\":\"call-edit\"", "\"call_id\":\"\""),
+        EDIT_PRESENTATION.replace(",\"call_id\":\"call-edit\"", ""),
+        EDIT_PRESENTATION.replace("\"turn_id\":4,", ""),
+        EDIT_PRESENTATION.replace("\"truncated\":false,", ""),
+        EDIT_PRESENTATION.replace("\"path\":\"src/lib.rs\",", ""),
+        EDIT_PRESENTATION.replace(",\"text\":\"\"}", "}"),
+        EDIT_PRESENTATION.replace("{\"path\"", "{\"extra\":1,\"path\""),
+        WRITE_PRESENTATION.replace("\"lines\":[", "\"lines\":[[],"),
+        "[]".to_owned(),
+        "\"src/lib.rs\"".to_owned(),
+    ];
+    for presentation in refused {
+        let frame = presentation_frame("edit_file", &presentation);
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
+        );
+    }
+    let mut oversized = decode(&presentation_frame("write_file", WRITE_PRESENTATION)).unwrap();
+    let ConversationEvent::ToolResult(result) = &mut oversized else {
+        panic!("a tool result");
+    };
+    if let Some(presentation) = result.committed_file_presentation.as_mut() {
+        presentation.after_content = Some("x".repeat(MAX_TEXT_BYTES + 1));
+    }
+    assert_eq!(
+        encode_conversation_frame(1, 1, &oversized),
         Err(SessionError::InvalidConversationEvent)
     );
 }
