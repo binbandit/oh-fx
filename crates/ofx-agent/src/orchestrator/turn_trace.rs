@@ -1,4 +1,6 @@
-use ofx_contract::{Completion, FinishReason, ProviderError, ToolCallId};
+use ofx_contract::{
+    Completion, FinishReason, ProviderError, ToolCall, ToolCallId, ToolOutput, ToolResultStatus,
+};
 use ofx_trace::{TraceContext, keyless_json_preview, trace_event, trace_log};
 
 use super::{Stop, TurnFailure};
@@ -12,6 +14,7 @@ const OUTPUT_TRUNCATED: &str = "OutputTruncated";
 const CONTENT_FILTERED: &str = "ContentFiltered";
 const INCOMPLETE_STREAM: &str = "IncompleteStream";
 const PROVIDER_FINISH_ERROR: &str = "ProviderError";
+const PANICKED: &str = "Panicked";
 
 #[derive(Debug, Default)]
 pub(super) struct ToolTrail {
@@ -375,6 +378,85 @@ fn interrupt_reason(interrupted: &Interrupted<'_>) -> &'static str {
     } else {
         "no_assistant_output"
     }
+}
+
+pub(super) fn tool_call(context: TraceContext, call: &ToolCall) {
+    trace_event!(
+        TOOL,
+        "tool_call",
+        context,
+        "call_id={} name={}",
+        call.id.as_str(),
+        call.name
+    );
+}
+
+pub(super) fn tool_execution_start(context: TraceContext, call: &ToolCall) {
+    for name in ["before_tool_execution", "execution_start"] {
+        trace_event!(
+            TOOL,
+            name,
+            context,
+            "call_id={} name={}",
+            call.id.as_str(),
+            call.name
+        );
+    }
+}
+
+pub(super) fn result_kind(output: &ToolOutput) -> &'static str {
+    if output.status == ToolResultStatus::Failure {
+        "error"
+    } else if output.file_change.is_some() {
+        "diff"
+    } else {
+        "model_output"
+    }
+}
+
+pub(super) fn tool_execution_result(
+    context: TraceContext,
+    call: &ToolCall,
+    kind: &str,
+    panicked: bool,
+    model_output_bytes: usize,
+) {
+    for name in ["after_tool_execution", "execution_result"] {
+        if panicked {
+            trace_event!(
+                TOOL,
+                name,
+                context,
+                "call_id={} name={} result_kind={kind} err={PANICKED} model_output_bytes={model_output_bytes}",
+                call.id.as_str(),
+                call.name
+            );
+        } else {
+            trace_event!(
+                TOOL,
+                name,
+                context,
+                "call_id={} name={} result_kind={kind} model_output_bytes={model_output_bytes}",
+                call.id.as_str(),
+                call.name
+            );
+        }
+    }
+}
+
+pub(super) fn provider_result(context: TraceContext, call: &ToolCall, model_output_bytes: usize) {
+    trace_event!(
+        TOOL,
+        "execution_result",
+        context,
+        "call_id={} name={} result_kind=provider_executed model_output_bytes={model_output_bytes}",
+        call.id.as_str(),
+        call.name
+    );
+}
+
+pub(super) fn parallel_group(context: TraceContext, name: &str, kind: &str, count: usize) {
+    trace_event!(TOOL, name, context, "kind={kind} count={count}");
 }
 
 const fn finish_reason_label(reason: FinishReason) -> &'static str {
