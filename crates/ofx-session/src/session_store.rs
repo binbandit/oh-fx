@@ -9,7 +9,7 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
-use crate::fx_sessions::{FxSessions, Imported, import_from_fx};
+use crate::fx_sessions::{FxSessions, Imported, import_from_fx, remembered_session_id, resumed_at};
 use crate::session_catalog_cache::{CatalogIndex, CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
@@ -25,7 +25,7 @@ use crate::session_log::{
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
-    ResumablePage, ResumeContinuation, SessionSummary, listed_page_from_summaries,
+    ResumablePage, ResumeContinuation, SessionSource, SessionSummary, listed_page_from_summaries,
     resumable_page_from_summaries, sort_summaries_newest_first,
 };
 
@@ -38,6 +38,12 @@ const MAX_LATEST_SELECTION_RETRIES: usize = 3;
 pub enum ResumeTarget {
     Last,
     Id(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RememberedSession {
+    pub id: String,
+    pub source: SessionSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,23 +245,16 @@ impl SessionStore {
     }
 
     pub fn resume_latest(&self) -> Result<WritableSession, SessionError> {
-        let sessions = self
-            .writable_sessions()
+        self.writable_sessions()
             .map_err(|_| SessionError::SessionNotFound)?;
-        let scan = self.scan_summaries()?;
+        let fx = self.fx_home.as_deref().map(FxSessions::open);
+        let scan = self.scan_with(fx.as_ref())?;
         let mut vanished = 0;
         for summary in &scan.summaries {
             if summary.workspace_root != self.workspace_root {
                 continue;
             }
-            let opened =
-                resume_session(sessions, &summary.id, self.lock_deadline).and_then(|session| {
-                    if session.metadata().workspace_root == self.workspace_root {
-                        Ok(session)
-                    } else {
-                        Err(SessionError::SessionTargetChanged)
-                    }
-                });
+            let opened = self.open_latest_candidate(summary);
             match opened {
                 Ok(session) => return Ok(session),
                 Err(SessionError::SessionNotFound | SessionError::SessionTargetChanged) => {
@@ -271,6 +270,26 @@ impl SessionStore {
             Err(SessionError::NoReadableSessions)
         } else {
             Err(SessionError::NoSavedSessions)
+        }
+    }
+
+    pub(crate) fn open_latest_candidate(
+        &self,
+        summary: &SessionSummary,
+    ) -> Result<WritableSession, SessionError> {
+        let session = match summary.source {
+            SessionSource::Fx => self.open_importing(&summary.id, self.lock_deadline)?,
+            SessionSource::OhFx => resume_session(
+                self.writable_sessions()
+                    .map_err(|_| SessionError::SessionNotFound)?,
+                &summary.id,
+                self.lock_deadline,
+            )?,
+        };
+        if session.metadata().workspace_root == self.workspace_root {
+            Ok(session)
+        } else {
+            Err(SessionError::SessionTargetChanged)
         }
     }
 
@@ -320,7 +339,7 @@ impl SessionStore {
     }
 
     pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
-        let scan = self.scan_summaries()?;
+        let scan = self.scan_with(None)?;
         Ok(self.catalog_of(scan))
     }
 
@@ -332,9 +351,7 @@ impl SessionStore {
     }
 
     pub fn catalog_with_fx(&self, fx: &FxSessions) -> Result<SessionCatalog, SessionError> {
-        let names = self.session_names()?;
-        let mut scan = self.scan_names(&names);
-        fx.merge_into(&mut scan.summaries, &names);
+        let scan = self.scan_with(Some(fx))?;
         Ok(self.catalog_of(scan))
     }
 
@@ -346,7 +363,29 @@ impl SessionStore {
         }
     }
 
-    pub fn remembered_session_id(&self) -> Result<Option<String>, SessionError> {
+    pub fn remembered_session(&self) -> Result<Option<RememberedSession>, SessionError> {
+        let own = self.remembered_session_id()?;
+        let fx = self.fx_home.as_deref().and_then(|home| {
+            remembered_session_id(home, &self.workspace_root).map(|id| (home, id))
+        });
+        let (id, source) = match (own, fx) {
+            (Some(own), Some((home, fx)))
+                if own != fx && self.resumed_at(home, &fx) > self.resumed_at(home, &own) =>
+            {
+                (fx, SessionSource::Fx)
+            }
+            (Some(own), _) => (own, SessionSource::OhFx),
+            (None, Some((_, fx))) => (fx, SessionSource::Fx),
+            (None, None) => return Ok(None),
+        };
+        Ok(Some(RememberedSession { id, source }))
+    }
+
+    fn resumed_at(&self, home: &Path, id: &str) -> Option<i64> {
+        resumed_at(home, self.sessions.as_ref()?, id)
+    }
+
+    pub(crate) fn remembered_session_id(&self) -> Result<Option<String>, SessionError> {
         let Some(data) = &self.data else {
             return Ok(None);
         };
@@ -391,9 +430,13 @@ impl SessionStore {
         }
     }
 
-    fn scan_summaries(&self) -> Result<CatalogScan, SessionError> {
+    fn scan_with(&self, fx: Option<&FxSessions>) -> Result<CatalogScan, SessionError> {
         let names = self.session_names()?;
-        Ok(self.scan_names(&names))
+        let mut scan = self.scan_names(&names);
+        if let Some(fx) = fx {
+            fx.merge_into(&mut scan.summaries, &names);
+        }
+        Ok(scan)
     }
 
     fn session_names(&self) -> Result<Vec<String>, SessionError> {
@@ -434,11 +477,11 @@ fn layout_error(error: ofx_config::DurableError) -> SessionError {
     }
 }
 
-fn remembered_file_name(workspace_root: &str) -> String {
+pub(crate) fn remembered_file_name(workspace_root: &str) -> String {
     lowercase_hex(&Sha256::digest(workspace_root.as_bytes()))
 }
 
-fn read_remembered_session(
+pub(crate) fn read_remembered_session(
     directory: &PrivateDir,
     name: &str,
 ) -> Result<Option<String>, SessionError> {

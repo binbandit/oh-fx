@@ -47,6 +47,6 @@ pub use session_log::{
     CompactedHistory, PendingRecovery, SavedHistory, SavedSession, SavedTurn, SessionDisposal,
     WritableSession,
 };
-pub use session_store::{ListScope, ResumeTarget, SessionCatalog, SessionStore};
+pub use session_store::{ListScope, RememberedSession, ResumeTarget, SessionCatalog, SessionStore};
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource, SessionSummary};
 pub use session_title_generation::{TitleGate, TitleRequest, generate_title, prompt_excerpt};

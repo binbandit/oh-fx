@@ -154,6 +154,51 @@ impl Home {
         )
     }
 
+    fn save_in_fx(&self, id: &str, updated_at_ms: i64) -> PathBuf {
+        let fx = self.root.join(".fx");
+        let session = fx.join("sessions").join(id);
+        fs::create_dir_all(&session).expect("create an fx session");
+        for directory in [fx.clone(), fx.join("sessions"), session.clone()] {
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                .expect("make an fx folder private");
+        }
+        let workspace = fs::canonicalize(&self.workspace).expect("canonical workspace");
+        let manifest = json!({
+            "schema_version": 4,
+            "id": id,
+            "origin_workspace_root": workspace,
+            "workspace_root": workspace,
+            "created_at_ms": 1,
+            "updated_at_ms": updated_at_ms,
+            "conversation_language": "en",
+            "provider": "gateway",
+            "model": "openai/gpt-5",
+            "effort": "auto",
+            "fast_mode": false,
+            "title": "Started in fx",
+            "subagent_child": false,
+        });
+        let events = [
+            frame(1, &json!({"user": {"text": "asked in fx", "images": [], "work_id": null}})),
+            frame(
+                2,
+                &json!({"assistant": {"text": "answered in fx", "provider_replay": null, "standalone_response": false}}),
+            ),
+            frame(3, &json!({"turn_completed": {"files": [], "turn_summary": null}})),
+        ]
+        .concat();
+        for (name, bytes) in [
+            ("session.json", manifest.to_string().into_bytes()),
+            ("events.jsonl", events),
+            ("session.lock", Vec::new()),
+        ] {
+            fs::write(session.join(name), bytes).expect("write an fx session file");
+            fs::set_permissions(session.join(name), fs::Permissions::from_mode(0o600))
+                .expect("make an fx file private");
+        }
+        session
+    }
+
     fn append(&self, id: &str, bytes: &[u8]) {
         OpenOptions::new()
             .append(true)
@@ -569,6 +614,59 @@ fn resume_targets_reopen_a_session_by_id_or_the_latest_and_remember_it() {
         ]
         .concat()
     );
+}
+
+#[test]
+fn continue_reopens_the_newer_of_the_sessions_oh_fx_and_fx_remember_here() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Saved here."])),
+        Reply::sse(&chat_text_events(&["Continued from fx."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"asked in oh-fx\r");
+    wait(&session, "Saved here.");
+    exit(session);
+    let own = home.only_session();
+    let pointer = fs::read_dir(home.root.join("data/oh-fx/continue"))
+        .expect("list oh-fx's continue folder")
+        .next()
+        .expect("oh-fx remembers its session")
+        .expect("a continue entry")
+        .file_name();
+    let fx = home.save_in_fx("fx0123456789", 4_102_444_800_000);
+    let untouched = fs::read(fx.join("events.jsonl")).expect("read fx's log");
+    let fx_continue = home.root.join(".fx/continue");
+    fs::create_dir(&fx_continue).expect("create fx's continue folder");
+    fs::set_permissions(&fx_continue, fs::Permissions::from_mode(0o700))
+        .expect("make fx's continue folder private");
+    fs::write(fx_continue.join(&pointer), "fx0123456789\n").expect("point fx at its session");
+    fs::set_permissions(
+        fx_continue.join(&pointer),
+        fs::Permissions::from_mode(0o600),
+    )
+    .expect("make fx's pointer private");
+
+    let session = home.shell(&["-c"], "session resumed: Started in fx");
+    wait(&session, "answered in fx");
+    wait(&session, "saved with the gateway provider");
+    session.send(b"keep going\r");
+    wait(&session, "Continued from fx.");
+    exit(session);
+    assert_eq!(home.remembered(), Some("fx0123456789".to_owned()));
+    assert_eq!(
+        chat(&server.requests()[1]),
+        [
+            turn("asked in fx", "answered in fx"),
+            vec![("user".to_owned(), "keep going".to_owned())]
+        ]
+        .concat()
+    );
+    assert_eq!(
+        fs::read(fx.join("events.jsonl")).expect("read fx's log"),
+        untouched
+    );
+    assert_eq!(kinds(&home.frames(&own)).len(), 3);
 }
 
 #[test]
