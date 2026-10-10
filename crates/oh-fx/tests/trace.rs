@@ -21,14 +21,14 @@ struct Launched {
 }
 
 fn launch(clipboard_exit: i32) -> (tempfile::TempDir, Launched) {
-    let home = tempfile::tempdir().unwrap();
-    let root = home.path().canonicalize().unwrap();
+    let home = tempfile::tempdir().expect("prepare the trace test");
+    let root = home.path().canonicalize().expect("prepare the trace test");
     let workspace = root.join("workspace");
     let config = root.join("config/oh-fx");
     let bin = root.join("bin");
     let reports = root.join("reports");
     for path in [&workspace, &config, &bin, &reports] {
-        fs::create_dir_all(path).unwrap();
+        fs::create_dir_all(path).expect("prepare the trace test");
     }
     for tool in ["pbcopy", "xclip"] {
         let script = bin.join(tool);
@@ -36,10 +36,12 @@ fn launch(clipboard_exit: i32) -> (tempfile::TempDir, Launched) {
             &script,
             format!("#!/bin/sh\ncat > \"$OH_FX_TRACE_TEST_COPY\"\nexit {clipboard_exit}\n"),
         )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        .expect("prepare the trace test");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))
+            .expect("prepare the trace test");
     }
-    fs::write(workspace.join("trace.log"), format!("{EARLIER_LINE}\n")).unwrap();
+    fs::write(workspace.join("trace.log"), format!("{EARLIER_LINE}\n"))
+        .expect("prepare the trace test");
     let server = FakeServer::start([]);
     fs::write(
         config.join("settings.json"),
@@ -54,7 +56,7 @@ fn launch(clipboard_exit: i32) -> (tempfile::TempDir, Launched) {
         })
         .to_string(),
     )
-    .unwrap();
+    .expect("prepare the trace test");
     let copied = root.join("copied");
     let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
     command
@@ -73,10 +75,10 @@ fn launch(clipboard_exit: i32) -> (tempfile::TempDir, Launched) {
         .env("OH_FX_TRACE_LOG", "trace.log")
         .env("OH_FX_TRACE_TEST_COPY", &copied)
         .process_group(0);
-    let session = PtySession::spawn(command, 24, 400).unwrap();
+    let session = PtySession::spawn(command, 24, 400).expect("prepare the trace test");
     session
         .wait_for(WAIT, |screen| screen.contains("Run /help for commands"))
-        .unwrap();
+        .expect("prepare the trace test");
     (
         home,
         Launched {
@@ -91,8 +93,8 @@ fn launch(clipboard_exit: i32) -> (tempfile::TempDir, Launched) {
 
 fn saved_report(reports: &Path) -> PathBuf {
     let entries: Vec<PathBuf> = fs::read_dir(reports)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
+        .expect("prepare the trace test")
+        .map(|entry| entry.expect("prepare the trace test").path())
         .collect();
     assert_eq!(entries.len(), 1, "{entries:?}");
     entries[0].clone()
@@ -100,7 +102,13 @@ fn saved_report(reports: &Path) -> PathBuf {
 
 fn quit(launched: &mut Launched) {
     launched.session.send(b"/quit\r");
-    assert!(launched.session.wait_exit(WAIT).unwrap().success());
+    assert!(
+        launched
+            .session
+            .wait_exit(WAIT)
+            .expect("prepare the trace test")
+            .success()
+    );
     assert!(launched.server.requests().is_empty());
 }
 
