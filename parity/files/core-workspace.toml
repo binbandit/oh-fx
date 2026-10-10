@@ -19,8 +19,8 @@ note = "Symbolic branch and gitdir/worktree metadata reads, absent detached/malf
 [[file]]
 upstream = "src/core/workspace/diagnostics.zig"
 status = "partial"
-modules = ["crates/ofx-trace/src/ring.rs", "crates/ofx-agent/src/compactor/trace.rs", "crates/ofx-agent/src/tool_call_metrics.rs"]
-note = "The bounded ring the diagnostic rings share, the compaction, tool-call and network snapshots with the tool-call and network lifetime statistics and the network turn rollups, and their session reset exist; the render and model-catalog rings are unimplemented."
+modules = ["crates/ofx-trace/src/ring.rs", "crates/ofx-agent/src/compactor/trace.rs", "crates/ofx-agent/src/tool_call_metrics.rs", "crates/ofx-trace/src/network_metrics.rs", "crates/ofx-agent/src/trace_rings.rs"]
+note = "The bounded ring the diagnostic rings share, the compaction, tool-call and network snapshots with the tool-call and network lifetime statistics and the network turn rollups, and their session reset exist, handed to the agent and `/trace` together as `TraceRings`, which tests replace with rings they own; the render and model-catalog rings are unimplemented."
 
 [[file]]
 upstream = "src/core/workspace/directory_completion_job.zig"
