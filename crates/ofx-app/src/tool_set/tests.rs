@@ -17,12 +17,13 @@ use ofx_contract::{
     ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
+use ofx_mcp::McpFeatures;
 use ofx_permissions::PermissionPolicy;
 use ofx_tools::SubagentTool;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use super::{ToolHooks, ask_tools, with_subagent};
+use super::{ToolHooks, ask_tools, with_features, with_subagent};
 
 const OUTSIDE_THE_APPROVED_TREE: &str = r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"read_file failed","details":{"field":"path","path":"../link/data.txt","error":"PathOutsideWorkspace"},"suggestion":"Run glob_files to discover matching paths, or check the path relative to the workspace."}}"#;
 
@@ -884,7 +885,7 @@ impl SubagentProvider for NoChildren {
 }
 
 #[test]
-fn delegation_places_subagent_after_shell_as_upstream_orders_its_tools() {
+fn subagent_and_mcp_features_take_their_places_in_upstreams_tool_order() {
     let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
     let tools = ask_tools(
         Path::new("/"),
@@ -896,6 +897,8 @@ fn delegation_places_subagent_after_shell_as_upstream_orders_its_tools() {
         ToolHooks::default(),
     );
     let subagent: Arc<dyn Tool> = Arc::new(SubagentTool::new(Arc::new(NoChildren)));
+    let features: Arc<dyn Tool> = Arc::new(McpFeatures::new(None));
+    let tools = with_features(tools, &features);
     let names = |tools: &[Arc<dyn Tool>]| -> Vec<String> {
         tools.iter().map(|tool| tool.spec().name.clone()).collect()
     };
@@ -911,6 +914,7 @@ fn delegation_places_subagent_after_shell_as_upstream_orders_its_tools() {
             "subagent",
             "capability_search",
             "skill",
+            "mcp_features",
             "ask_user_question",
             "web_fetch",
             "web_search",

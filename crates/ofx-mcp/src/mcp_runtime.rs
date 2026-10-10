@@ -1266,6 +1266,53 @@ done
     }
 
     #[tokio::test]
+    async fn a_runtime_is_installed_once_a_published_load_has_servers_or_project_errors() {
+        let state = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let runtime = runtime(Vec::new());
+        assert!(!runtime.installed());
+        runtime
+            .reconcile(load(Vec::new()), true, true, &cancel)
+            .await
+            .unwrap();
+        assert!(!runtime.installed());
+        let broken = McpServerConfig {
+            required: true,
+            restart_limit: 0,
+            ..config("broken", "exit 3", state.path())
+        };
+        assert!(matches!(
+            runtime
+                .reconcile(load(vec![broken]), true, true, &cancel)
+                .await,
+            Ok(ReloadOutcome::RetainedRequiredFailure(_))
+        ));
+        assert!(!runtime.installed());
+        runtime
+            .reconcile(
+                load(vec![config("one", SERVER, state.path())]),
+                true,
+                true,
+                &cancel,
+            )
+            .await
+            .unwrap();
+        assert!(runtime.installed());
+        runtime
+            .reconcile(load(Vec::new()), true, true, &cancel)
+            .await
+            .unwrap();
+        assert!(runtime.installed());
+        let mut diagnosed = load(Vec::new());
+        diagnosed.workspace_diagnostics = vec![WorkspaceDiagnostic::new(
+            WorkspaceDiagnosticCause::InvalidJson,
+        )];
+        let reported = McpRuntime::new(diagnosed, ConnectOptions::default(), Vec::new(), limits());
+        assert!(reported.installed());
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
     async fn health_reports_connected_servers_and_project_configuration_errors() {
         let state = tempfile::tempdir().unwrap();
         let runtime = runtime(Vec::new());
