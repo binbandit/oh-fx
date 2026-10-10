@@ -341,7 +341,7 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
     assert_eq!(
         run(&tool, r#"{"action":"resource_list","server":"fixture"}"#).await,
         success(format!(
-            r#"{ENVELOPE},"action":"resource_list","server":"fixture","items":[{{"server":"fixture","identity":"memory://plan","name":"plan","title":"Plan","description":"The plan","mimeType":"text/markdown","template":false}},{{"server":"fixture","identity":"memory://denied","name":"denied","template":false}}]}}"#
+            r#"{ENVELOPE},"action":"resource_list","server":"fixture","items":[{{"server":"fixture","identity":"memory://denied","name":"denied","template":false}},{{"server":"fixture","identity":"memory://plan","name":"plan","title":"Plan","description":"The plan","mimeType":"text/markdown","template":false}}]}}"#
         ))
     );
     assert_eq!(

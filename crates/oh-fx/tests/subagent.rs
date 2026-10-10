@@ -184,6 +184,7 @@ fn ask_delegates_a_task_to_a_temporary_child_and_returns_its_reply() {
         "subagent",
         "capability_search",
         "skill",
+        "mcp_features",
         "ask_user_question",
         "web_fetch",
     ];
@@ -338,6 +339,7 @@ fn ask_without_a_saved_session_offers_no_subagent() {
             "shell",
             "capability_search",
             "skill",
+            "mcp_features",
             "ask_user_question",
             "web_fetch",
         ]

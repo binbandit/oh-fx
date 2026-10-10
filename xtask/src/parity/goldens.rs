@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 mod compaction;
+mod mcp_features;
 mod mcp_servers;
 mod permission_tool;
 mod read_file;
@@ -72,6 +73,11 @@ const EXTRACTORS: &[Extractor] = &[
         sources: &[MODEL_CATALOG_SOURCE],
         extract: mcp_servers_change_notice,
     },
+    Extractor {
+        golden: "mcp_features_tool.json",
+        sources: &[TOOLS_SOURCE, WRITER_SOURCE],
+        extract: mcp_features,
+    },
 ];
 
 pub(super) fn run(options: &[&str]) -> Result<(), String> {
@@ -131,6 +137,11 @@ fn mcp_servers_section(sources: &Sources) -> Result<String, String> {
 
 fn mcp_servers_change_notice(sources: &Sources) -> Result<String, String> {
     mcp_servers::change_notice(source(sources, MODEL_CATALOG_SOURCE)?)
+}
+
+fn mcp_features(sources: &Sources) -> Result<String, String> {
+    let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
+    mcp_features::extract(source(sources, TOOLS_SOURCE)?, limit)
 }
 
 fn derive(

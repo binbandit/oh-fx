@@ -397,7 +397,10 @@ mod tests {
                 title: Some("Review".to_owned()),
                 description: Some("Review code".to_owned()),
                 arguments: vec![
-                    argument("focus", true),
+                    PromptArgument {
+                        description: Some("Area".to_owned()),
+                        ..argument("focus", true)
+                    },
                     argument("depth", false),
                     argument("style", false)
                 ],
