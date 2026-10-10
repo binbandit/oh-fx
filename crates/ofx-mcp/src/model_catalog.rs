@@ -83,8 +83,8 @@ pub fn render_model_catalog(servers: &[ServerSummary]) -> CatalogSection {
 
 fn render_with_limit(servers: &[ServerSummary], limit: usize) -> CatalogSection {
     if servers.is_empty() {
-        let text = if fits(limit, &[HEADER, EMPTY_ENTRY, FOOTER]) {
-            [HEADER, EMPTY_ENTRY, FOOTER].concat()
+        let text = if entries_fit(limit, &[], Some(EMPTY_ENTRY)) {
+            join(&[], Some(EMPTY_ENTRY))
         } else {
             String::new()
         };
@@ -152,14 +152,6 @@ fn entries_fit(limit: usize, entries: &[String], marker: Option<&str>) -> bool {
     .into_iter()
     .try_fold(limit, usize::checked_sub)
     .is_some()
-}
-
-fn fits(limit: usize, parts: &[&str]) -> bool {
-    parts
-        .iter()
-        .map(|part| part.len())
-        .try_fold(limit, usize::checked_sub)
-        .is_some()
 }
 
 fn join(entries: &[String], marker: Option<&str>) -> String {

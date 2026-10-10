@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_contract::{McpServersCatalog, McpServersSection};
@@ -10,7 +9,6 @@ use ofx_mcp::{
 pub(crate) struct McpServers {
     runtime: Option<Arc<McpRuntime>>,
     baseline: Option<Mutex<Option<Vec<BaselineEntry>>>>,
-    claimed: Mutex<HashSet<String>>,
 }
 
 impl McpServers {
@@ -18,7 +16,6 @@ impl McpServers {
         Self {
             runtime,
             baseline: reports_changes.then(Mutex::default),
-            claimed: Mutex::default(),
         }
     }
 
@@ -50,9 +47,7 @@ impl McpServersCatalog for McpServers {
         McpServersSection {
             text: rendered.text,
             change_notice: self.change_notice(&servers),
-            notice: rendered
-                .notice
-                .filter(|notice| lock(&self.claimed).insert(notice.clone())),
+            notice: rendered.notice,
         }
     }
 }

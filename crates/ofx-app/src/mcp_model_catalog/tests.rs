@@ -3,10 +3,9 @@ use super::*;
 #[test]
 fn without_a_runtime_the_section_says_there_are_no_servers() {
     let section = McpServers::new(None, true).section();
-    assert!(
-        section
-            .text
-            .ends_with("<mcp_servers>\n  <none />\n</mcp_servers>\n")
+    assert_eq!(
+        section.text,
+        include_str!("../../../../parity/goldens/mcp_servers_section.txt")
     );
     assert_eq!(section.change_notice, None);
     assert_eq!(section.notice, None);

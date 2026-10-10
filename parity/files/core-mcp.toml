@@ -197,7 +197,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, model catalogs, deferred ask connections and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, permission-filtered tool counts and the on-demand and authentication inputs of the model catalog, deferred ask connections and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -293,7 +293,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"

@@ -21,6 +21,10 @@ const TOOL_SPECS_SOURCE: &str = "src/core/tooling/tool_specs.zig";
 const AUDITED: &[(&str, &str)] = &[
     (WRITER_SOURCE, "6e5a3896a53ed14111ba21a181a7cc43b899407b"),
     (
+        MODEL_CATALOG_SOURCE,
+        "da6e95b665aa811275719fd4f16d197974d1971a",
+    ),
+    (
         TOOL_SPECS_SOURCE,
         "34f8e7b7542a9481d7676e2343f8ca16b76da95e",
     ),
