@@ -143,6 +143,17 @@ impl ProviderReplay {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageAttachment {
+    pub id: u64,
+    pub path: String,
+    pub media_type: String,
+    pub snapshot_path: Option<String>,
+    pub snapshot_sha256: Option<String>,
+    pub inline_data: Option<Vec<u8>>,
+    pub source_ref: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatMessage {
     System {

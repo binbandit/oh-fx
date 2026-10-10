@@ -826,6 +826,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofx-images"
+version = "0.1.0"
+dependencies = [
+ "ofx-contract",
+ "rustix",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "ofx-jsonrpc"
 version = "0.1.0"
 dependencies = [
@@ -1050,6 +1060,7 @@ dependencies = [
  "ofx-gateway",
  "ofx-github",
  "ofx-http",
+ "ofx-images",
  "ofx-mcp",
  "ofx-session",
  "ofx-shell",

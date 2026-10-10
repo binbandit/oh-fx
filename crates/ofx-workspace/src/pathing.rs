@@ -84,7 +84,15 @@ fn resolve_workspace_or_external_path_with_home(
     resolve_path(workspace_root, input_path, home, PathScope::External)
 }
 
-pub(crate) fn resolve_workspace_or_external_literal_path(
+pub fn resolve_workspace_or_external_literal_path(
+    workspace_root: &Path,
+    path: &str,
+) -> Result<PathBuf, PathError> {
+    let home = env::var_os("HOME");
+    resolve_workspace_or_external_literal_path_with_home(workspace_root, path, home.as_deref())
+}
+
+pub(crate) fn resolve_workspace_or_external_literal_path_with_home(
     workspace_root: &Path,
     path: &str,
     home: Option<&OsStr>,
