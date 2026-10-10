@@ -63,11 +63,15 @@ const AUTO_MODE_APPROVAL_HINT: &str = "human approval is required for this actio
 const BLANK_TEXT: [char; 4] = [' ', '\t', '\r', '\n'];
 const UNSAVED_RECOVERY: &str =
     "This run was started with --no-save, so its recovery context cannot be resumed after exit.";
-const APPLIED_LIMITS: [ContextLimitName; 6] = [
+const APPLIED_LIMITS: [ContextLimitName; 10] = [
     ContextLimitName::SkillDescriptionBytes,
     ContextLimitName::SkillCatalogBytes,
     ContextLimitName::SkillChunkBytes,
     ContextLimitName::SkillFileBytes,
+    ContextLimitName::McpDescriptionBytes,
+    ContextLimitName::McpSearchResultBytes,
+    ContextLimitName::McpServerInstructionsBytes,
+    ContextLimitName::McpSelectedSchemaBytes,
     ContextLimitName::ProjectInstructionFileBytes,
     ContextLimitName::ProjectInstructionsTotalBytes,
 ];

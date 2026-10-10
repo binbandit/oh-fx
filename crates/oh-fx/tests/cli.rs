@@ -225,7 +225,7 @@ fn unknown_commands_print_the_plain_help_on_stderr() {
 fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
     for (args, feature) in [
         (
-            &["--context-limit", "mcp_description_bytes=1"][..],
+            &["--context-limit", "image_adapter_output_bytes=1"][..],
             "--context-limit",
         ),
         (&["--provider", "local"], "--provider"),
@@ -634,7 +634,12 @@ fn invalid_command_arguments_fail_before_the_availability_check() {
 fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
     for (args, feature) in [
         (
-            &["--context-limit", "mcp_description_bytes=1", "ask", "hi"][..],
+            &[
+                "--context-limit",
+                "image_adapter_output_bytes=1",
+                "ask",
+                "hi",
+            ][..],
             "--context-limit",
         ),
         (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
@@ -650,7 +655,7 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
     }
     let output = oh_fx(
         &[
-            "--context-limit=mcp_description_bytes=1",
+            "--context-limit=image_adapter_output_bytes=1",
             "ask",
             "--json",
             "hi",
