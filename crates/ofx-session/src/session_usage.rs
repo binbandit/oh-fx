@@ -25,6 +25,8 @@ const RICH_SCHEMA_VERSION: u64 = 3;
 const SUPPORTED_SCHEMAS: [u64; 2] = [2, 3];
 const SNAPSHOT_FIELDS: usize = 23;
 const MODEL_FIELDS: usize = 10;
+const LEGACY_SNAPSHOT_FIELDS: usize = 18;
+const LEGACY_MODEL_FIELDS: usize = 8;
 const PROVIDER_PENDING_FIELDS: usize = 8;
 const PLAIN_PENDING_FIELDS: usize = 4;
 
@@ -202,7 +204,12 @@ impl UsageSnapshot {
     }
 
     pub(crate) fn validate(&self) -> Result<(), UsageSnapshotError> {
+        self.validate_contract(false).map(|_| ())
+    }
+
+    fn validate_contract(&self, allow_legacy_cache: bool) -> Result<bool, UsageSnapshotError> {
         let invalid = UsageSnapshotError::Invalid;
+        let mut cache_totals_valid = true;
         if self.next_sequence == 0 || self.settled_through_sequence >= self.next_sequence {
             return Err(invalid);
         }
@@ -228,8 +235,6 @@ impl UsageSnapshot {
                 || model.first_sequence == 0
                 || model.first_sequence >= self.next_sequence
                 || !valid_cost(model.total_cost)
-                || model.cache_read_tokens > model.input_tokens
-                || model.cache_write_tokens > model.input_tokens
                 || model
                     .reasoning_tokens
                     .is_some_and(|reasoning| reasoning > model.output_tokens)
@@ -237,6 +242,14 @@ impl UsageSnapshot {
                 return Err(invalid);
             }
             totals.add(model).ok_or(invalid)?;
+            if model.cache_read_tokens > model.input_tokens
+                || model.cache_write_tokens > model.input_tokens
+            {
+                if !allow_legacy_cache {
+                    return Err(invalid);
+                }
+                cache_totals_valid = false;
+            }
             identifier_bytes = identifier_bytes
                 .checked_add(model.model.len())
                 .ok_or(UsageSnapshotError::CapacityExceeded)?;
@@ -290,7 +303,7 @@ impl UsageSnapshot {
         if identifier_bytes > MAX_IDENTIFIER_BYTES {
             return Err(UsageSnapshotError::CapacityExceeded);
         }
-        Ok(())
+        Ok(cache_totals_valid)
     }
 
     pub(crate) fn write_rich(&self, out: &mut String) -> Result<(), UsageSnapshotError> {
@@ -349,9 +362,21 @@ impl UsageSnapshot {
     }
 
     pub(crate) fn parse_rich(value: &Json<'_>) -> Result<Self, UsageSnapshotError> {
-        let snapshot = parse_versioned(value).ok_or(UsageSnapshotError::Invalid)??;
+        let snapshot = parse_fields(value).ok_or(UsageSnapshotError::Invalid)??;
         snapshot.validate()?;
         Ok(snapshot)
+    }
+
+    pub(crate) fn parse_legacy(value: &Json<'_>) -> Result<Self, UsageSnapshotError> {
+        let snapshot = parse_fields(value).ok_or(UsageSnapshotError::Invalid)??;
+        let unversioned = value
+            .as_object()
+            .is_some_and(|object| object.len() == LEGACY_SNAPSHOT_FIELDS);
+        if snapshot.validate_contract(unversioned)? {
+            Ok(snapshot)
+        } else {
+            Ok(Self::empty(Availability::Legacy))
+        }
     }
 }
 
@@ -379,11 +404,24 @@ impl ModelAggregate {
         );
     }
 
-    fn parse(value: &Json<'_>) -> Option<Self> {
+    fn parse(value: &Json<'_>, legacy: bool) -> Option<Self> {
         let object = value.as_object()?;
-        if object.len() != MODEL_FIELDS {
+        if object.len()
+            != if legacy {
+                LEGACY_MODEL_FIELDS
+            } else {
+                MODEL_FIELDS
+            }
+        {
             return None;
         }
+        let optional = |key: &str| {
+            if legacy {
+                Some(None)
+            } else {
+                or_null(object.get(key)?, |value| value.as_u64().map(Some))
+            }
+        };
         Some(Self {
             model: object.get("model")?.as_str()?.to_owned(),
             first_sequence: object.get("first_sequence")?.as_u64()?,
@@ -392,12 +430,8 @@ impl ModelAggregate {
             output_tokens: object.get("output_tokens")?.as_u64()?,
             cache_read_tokens: object.get("cache_read_tokens")?.as_u64()?,
             cache_write_tokens: object.get("cache_write_tokens")?.as_u64()?,
-            reasoning_tokens: or_null(object.get("reasoning_tokens")?, |value| {
-                value.as_u64().map(Some)
-            })?,
-            request_count: or_null(object.get("request_count")?, |value| {
-                value.as_u64().map(Some)
-            })?,
+            reasoning_tokens: optional("reasoning_tokens")?,
+            request_count: optional("request_count")?,
             billable_web_search_calls: object.get("billable_web_search_calls")?.as_u64()?,
         })
     }
@@ -563,22 +597,38 @@ fn accumulate(total: &mut Option<u64>, count: Option<u64>) -> Option<()> {
     Some(())
 }
 
-fn parse_versioned(value: &Json<'_>) -> Option<Result<UsageSnapshot, UsageSnapshotError>> {
+fn parse_fields(value: &Json<'_>) -> Option<Result<UsageSnapshot, UsageSnapshotError>> {
     let object = value.as_object()?;
-    let schema_version = object.get("schema_version")?.as_u64()?;
-    if object.len() != SNAPSHOT_FIELDS || !SUPPORTED_SCHEMAS.contains(&schema_version) {
-        return None;
+    let legacy = object.len() == LEGACY_SNAPSHOT_FIELDS;
+    if !legacy {
+        let schema_version = object.get("schema_version")?.as_u64()?;
+        if object.len() != SNAPSHOT_FIELDS || !SUPPORTED_SCHEMAS.contains(&schema_version) {
+            return None;
+        }
     }
     let models = object.get("models")?.as_array()?;
     let pending = object.get("pending")?.as_array()?;
     if models.len() > MAX_MODELS || pending.len() > MAX_PENDING_GENERATIONS {
         return Some(Err(UsageSnapshotError::CapacityExceeded));
     }
-    let backlog = object.get("publication_backlog")?.as_array()?;
-    let incidents = object.get("incidents")?.as_array()?;
-    if backlog.len() > MAX_PUBLICATION_BACKLOG || incidents.len() > MAX_USAGE_INCIDENTS {
-        return None;
-    }
+    let list = |key: &str, limit: usize| {
+        if legacy {
+            return Some(&[][..]);
+        }
+        object
+            .get(key)?
+            .as_array()
+            .filter(|items| items.len() <= limit)
+    };
+    let backlog = list("publication_backlog", MAX_PUBLICATION_BACKLOG)?;
+    let incidents = list("incidents", MAX_USAGE_INCIDENTS)?;
+    let optional = |key: &str| {
+        if legacy {
+            Some(None)
+        } else {
+            or_null(object.get(key)?, |value| value.as_u64().map(Some))
+        }
+    };
     Some(Ok(UsageSnapshot {
         billing: Availability::parse(object.get("billing")?.as_str()?)?,
         api_duration_complete: object.get("api_duration_complete")?.as_bool()?,
@@ -593,18 +643,14 @@ fn parse_versioned(value: &Json<'_>) -> Option<Result<UsageSnapshot, UsageSnapsh
         output_tokens: object.get("output_tokens")?.as_u64()?,
         cache_read_tokens: object.get("cache_read_tokens")?.as_u64()?,
         cache_write_tokens: object.get("cache_write_tokens")?.as_u64()?,
-        reasoning_tokens: or_null(object.get("reasoning_tokens")?, |value| {
-            value.as_u64().map(Some)
-        })?,
-        request_count: or_null(object.get("request_count")?, |value| {
-            value.as_u64().map(Some)
-        })?,
+        reasoning_tokens: optional("reasoning_tokens")?,
+        request_count: optional("request_count")?,
         billable_web_search_calls: object.get("billable_web_search_calls")?.as_u64()?,
         lines_added: object.get("lines_added")?.as_u64()?,
         lines_removed: object.get("lines_removed")?.as_u64()?,
         models: models
             .iter()
-            .map(ModelAggregate::parse)
+            .map(|model| ModelAggregate::parse(model, legacy))
             .collect::<Option<_>>()?,
         pending: pending
             .iter()
