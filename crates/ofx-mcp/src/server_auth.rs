@@ -1,15 +1,17 @@
 use std::sync::{Arc, Mutex as StateMutex, PoisonError};
 
 use ofx_http::ConnectionOptions;
-use reqwest::RequestBuilder;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::{RequestBuilder, Response, StatusCode};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
+use crate::auth_state::AuthState;
 use crate::error::McpError;
 use crate::mcp_auth::{
-    AuthorizationResult, ClientConfig, Credentials, authorize_interactive, now_ms,
+    AuthorizationResult, Challenge, ClientConfig, Credentials, IssuerMismatch,
+    authorize_interactive, collect_authenticate_header, now_ms, parse_challenge,
     refresh_credentials,
 };
 use crate::mcp_auth_store::{CredentialStore, GrantLookup};
@@ -24,12 +26,16 @@ const REFRESH_FAILED: &str = "MCP credential refresh failed.";
 const UNREADABLE_STORE: &str = "Stored MCP credentials could not be read securely.";
 
 pub(crate) struct HttpAuth {
+    server: String,
+    state: Arc<AuthState>,
     headers: Vec<HttpHeader>,
     stored: Option<StoredAuth>,
+    challenge: StateMutex<Option<String>>,
 }
 
 struct StoredAuth {
     server: String,
+    state: Arc<AuthState>,
     store: CredentialStore,
     http: reqwest::Client,
     credentials: Arc<Mutex<Credentials>>,
@@ -41,6 +47,7 @@ impl HttpAuth {
     pub(crate) async fn resolve(
         config: &McpServerConfig,
         store: Option<CredentialStore>,
+        state: &Arc<AuthState>,
         oauth_client: impl FnOnce() -> Result<reqwest::Client, McpError>,
         environment: &(dyn Fn(&str) -> Option<String> + Sync),
     ) -> Result<Self, StartupFailure> {
@@ -60,9 +67,11 @@ impl HttpAuth {
             environment,
             loaded.as_ref().map(|(_, credentials)| credentials),
         )?;
+        state.set_credentials_loaded(loaded.is_some());
         let stored = match loaded {
             Some((store, credentials)) => Some(StoredAuth {
                 server: config.name.clone(),
+                state: Arc::clone(state),
                 store,
                 http: oauth_client()?,
                 bearer: Arc::new(StateMutex::new(bearer_header(&credentials)?)),
@@ -71,7 +80,63 @@ impl HttpAuth {
             }),
             None => None,
         };
-        Ok(Self { headers, stored })
+        Ok(Self {
+            server: config.name.clone(),
+            state: Arc::clone(state),
+            headers,
+            stored,
+            challenge: StateMutex::new(None),
+        })
+    }
+
+    pub(crate) fn reject(&self, response: &Response) -> Result<(), McpError> {
+        let status = response.status();
+        if status.is_redirection() {
+            return Err(McpError::RedirectNotAllowed);
+        }
+        let header = collect_authenticate_header(response.headers());
+        if status == StatusCode::UNAUTHORIZED
+            || (status == StatusCode::FORBIDDEN && header.is_some())
+        {
+            *self
+                .challenge
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = header;
+            return Err(McpError::McpAuthenticationRequired);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authentication_message(&self) -> String {
+        if let Some(failure) = self.failure() {
+            return failure;
+        }
+        let header = self
+            .challenge
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let challenge = header
+            .as_deref()
+            .and_then(parse_challenge)
+            .unwrap_or_default();
+        self.state.store_pending(challenge);
+        format!(
+            "Authentication required. Run /mcp auth {} --open, or configure bearer_token_env.",
+            self.server
+        )
+    }
+
+    pub(crate) fn startup_failure(&self, failure: StartupFailure) -> StartupFailure {
+        if failure.message.is_some() {
+            return failure;
+        }
+        let message = if failure.error == McpError::McpAuthenticationRequired {
+            Some(self.authentication_message())
+        } else {
+            self.failure()
+        };
+        StartupFailure::explained(failure.error, message)
     }
 
     pub(crate) async fn apply(&self, builder: RequestBuilder) -> Result<RequestBuilder, McpError> {
@@ -128,20 +193,26 @@ impl StoredAuth {
         if !credentials.needs_refresh(now_ms()) {
             return bearer_header(&credentials);
         }
+        let generation = self.state.generation();
         if credentials.refresh_token.is_none() {
             self.fail(CREDENTIALS_EXPIRED);
+            self.state.mark_reauthentication_required(generation);
             return Err(McpError::McpAuthenticationRequired);
         }
         let refreshed = match refresh_credentials(&self.http, &credentials).await {
             Ok(refreshed) => refreshed,
             Err(error) => {
                 self.fail(REFRESH_FAILED);
+                if error == McpError::McpRefreshRejected {
+                    self.state.mark_reauthentication_required(generation);
+                }
                 return Err(error);
             }
         };
         let installing = Installing {
             store: self.store.clone(),
             server: self.server.clone(),
+            state: Arc::clone(&self.state),
             bearer: Arc::clone(&self.bearer),
             failure: Arc::clone(&self.failure),
         };
@@ -173,6 +244,7 @@ impl StoredAuth {
 struct Installing {
     store: CredentialStore,
     server: String,
+    state: Arc<AuthState>,
     bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
 }
@@ -196,6 +268,7 @@ impl Installing {
         *credentials = refreshed;
         *self.bearer.lock().unwrap_or_else(PoisonError::into_inner) = header.clone();
         *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.state.credentials_installed();
         Ok(header)
     }
 }
@@ -251,15 +324,16 @@ fn resolve_headers(
     Ok(headers)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthenticationOutcome {
     Authenticated { repaired_entries: usize },
-    IssuerMismatch,
+    IssuerMismatch(IssuerMismatch),
 }
 
 pub(crate) async fn authenticate(
     config: &McpServerConfig,
     options: &ConnectOptions,
+    challenge: &Challenge,
     open_url: &(dyn Fn(&str) -> bool + Sync),
     cancel: &CancellationToken,
     environment: &(dyn Fn(&str) -> Option<String> + Sync),
@@ -314,6 +388,7 @@ pub(crate) async fn authenticate(
         &http,
         config.remote_url()?,
         &client,
+        challenge,
         previous_scope,
         open_url,
         cancel,
@@ -321,7 +396,9 @@ pub(crate) async fn authenticate(
     .await?
     {
         AuthorizationResult::Credentials(credentials) => credentials,
-        AuthorizationResult::IssuerMismatch => return Ok(AuthenticationOutcome::IssuerMismatch),
+        AuthorizationResult::IssuerMismatch(mismatch) => {
+            return Ok(AuthenticationOutcome::IssuerMismatch(mismatch));
+        }
     };
     let saved = tokio::task::spawn_blocking(move || store.save(&lookup, &credentials))
         .await

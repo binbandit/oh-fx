@@ -6,13 +6,16 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::auth_state::AuthState;
 use crate::catalog_freshness::Freshness;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
-use crate::server_transport::{ConnectOptions, StartupFailure, startup_failure_message};
+use crate::server_transport::{
+    ConnectOptions, StartupFailure, startup_deadline, startup_failure_message,
+};
 use crate::timing::{spawn, timeout_at};
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
@@ -89,6 +92,7 @@ impl From<McpError> for CallFailure {
 pub(crate) struct Server {
     pub(crate) config: McpServerConfig,
     pub(crate) features: FeatureCatalogs,
+    pub(crate) auth: Arc<AuthState>,
     options: ConnectOptions,
     state: Mutex<State>,
     recovery: tokio::sync::Mutex<()>,
@@ -105,6 +109,7 @@ impl Server {
         Self {
             config,
             features: FeatureCatalogs::default(),
+            auth: Arc::default(),
             options,
             state: Mutex::new(State::Waiting),
             recovery: tokio::sync::Mutex::new(()),
@@ -150,16 +155,21 @@ impl Server {
             *state = State::Starting;
         }
         let _starting = StartAttempt(self);
-        self.connect(McpClient::connect(&self.config, &self.options))
-            .await
-            .map_err(|failure| {
-                let timeout_ms = self.config.startup_timeout_ms;
-                self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
-                match failure.error {
-                    McpError::McpRequestTimedOut => McpError::McpConnectionTimedOut,
-                    error => error,
-                }
-            })
+        self.connect(McpClient::connect_until(
+            &self.config,
+            &self.options,
+            startup_deadline(&self.config),
+            &self.auth,
+        ))
+        .await
+        .map_err(|failure| {
+            let timeout_ms = self.config.startup_timeout_ms;
+            self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
+            match failure.error {
+                McpError::McpRequestTimedOut => McpError::McpConnectionTimedOut,
+                error => error,
+            }
+        })
     }
 
     fn abandon_start(&self) {
@@ -305,6 +315,7 @@ impl Server {
                 &self.config,
                 &self.options,
                 deadline,
+                &self.auth,
             )))
             .await
         {

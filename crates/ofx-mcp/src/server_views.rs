@@ -26,7 +26,8 @@ const FAILED_WITHOUT_DETAIL: &str =
 pub(crate) fn snapshot_server(server: &Server) -> ServerSnapshot {
     let config = &server.config;
     let (connection, client, last_error) = observe(server);
-    let failure = health_failure(config.required, connection, last_error);
+    let authentication = server.auth.authentication(config);
+    let failure = health_failure(config, connection, authentication, last_error);
     let mut snapshot = ServerSnapshot {
         configured_name: safe(&config.name, NAME_BYTES),
         source: config.source,
@@ -38,7 +39,7 @@ pub(crate) fn snapshot_server(server: &Server) -> ServerSnapshot {
         negotiated_version: None,
         protocol_version: None,
         connection,
-        authentication: authentication(config),
+        authentication,
         counts: CapabilityCounts::default(),
         cache_freshness: CacheFreshness::Unavailable,
         subscription: SubscriptionState::Unavailable,
@@ -59,7 +60,11 @@ pub(crate) fn model_summary(server: &Server, deferred_pending: bool) -> ServerSu
         && decide_startup(&server.config, StartupPhase::AskStartup) == StartupDecision::Deferred;
     ServerSummary {
         name: server.config.name.clone(),
-        availability: classify_availability(connection, deferred_for_ask),
+        availability: classify_availability(
+            connection,
+            server.auth.authentication(&server.config),
+            deferred_for_ask,
+        ),
         tool_count: client
             .filter(|_| connection == ConnectionState::Ready)
             .map(|client| client.tool_catalog().tools.len()),
@@ -89,12 +94,17 @@ fn observe(server: &Server) -> (ConnectionState, Option<Arc<McpClient>>, Option<
 }
 
 pub(crate) fn health_failure(
-    required: bool,
+    config: &McpServerConfig,
     connection: ConnectionState,
+    authentication: AuthenticationState,
     last_error: Option<String>,
 ) -> Option<String> {
-    match classify(connection) {
-        Status::Disabled => required.then(|| DISABLED_REQUIRED.to_owned()),
+    match classify(connection, authentication) {
+        Status::Disabled => config.required.then(|| DISABLED_REQUIRED.to_owned()),
+        Status::NeedsAuth => Some(format!(
+            "Authentication is required or the saved credentials lack access; run /mcp auth {} --open and check server permissions.",
+            safe(&config.name, NAME_BYTES)
+        )),
         Status::Failed => Some(last_error.unwrap_or_else(|| FAILED_WITHOUT_DETAIL.to_owned())),
         Status::Connecting | Status::Ready | Status::Unavailable => None,
     }
@@ -187,14 +197,6 @@ fn cache_freshness(metadata: SnapshotMetadata, now_ms: u64, invalidated: bool) -
     }
 }
 
-fn authentication(config: &McpServerConfig) -> AuthenticationState {
-    if config.auth.is_some() || config.bearer_token_env.is_some() || !config.header_env.is_empty() {
-        AuthenticationState::Configured
-    } else {
-        AuthenticationState::None
-    }
-}
-
 fn safe(text: &str, limit: usize) -> String {
     encode_terminal_safe(text.as_bytes(), limit).text
 }
@@ -205,22 +207,64 @@ mod tests {
 
     #[test]
     fn failures_follow_the_classified_connection() {
+        let config = |required| McpServerConfig {
+            required,
+            ..McpServerConfig::remote("plain", TransportType::Http, "https://mcp.example/mcp")
+        };
+        let none = AuthenticationState::None;
         assert_eq!(
-            health_failure(true, ConnectionState::Disabled, None).as_deref(),
+            health_failure(&config(true), ConnectionState::Disabled, none, None).as_deref(),
             Some(DISABLED_REQUIRED)
         );
-        assert_eq!(health_failure(false, ConnectionState::Disabled, None), None);
         assert_eq!(
-            health_failure(false, ConnectionState::Failed, Some("boom".to_owned())).as_deref(),
+            health_failure(&config(false), ConnectionState::Disabled, none, None),
+            None
+        );
+        assert_eq!(
+            health_failure(
+                &config(false),
+                ConnectionState::Failed,
+                none,
+                Some("boom".to_owned())
+            )
+            .as_deref(),
             Some("boom")
         );
         assert_eq!(
-            health_failure(false, ConnectionState::Failed, None).as_deref(),
+            health_failure(&config(false), ConnectionState::Failed, none, None).as_deref(),
             Some(FAILED_WITHOUT_DETAIL)
         );
         assert_eq!(
-            health_failure(true, ConnectionState::Disconnected, None),
+            health_failure(&config(true), ConnectionState::Disconnected, none, None),
             None
+        );
+        for connection in [
+            ConnectionState::Failed,
+            ConnectionState::Ready,
+            ConnectionState::Disconnected,
+        ] {
+            assert_eq!(
+                health_failure(
+                    &config(false),
+                    connection,
+                    AuthenticationState::Required,
+                    Some("Authentication required.".to_owned())
+                )
+                .as_deref(),
+                Some(
+                    "Authentication is required or the saved credentials lack access; run /mcp auth plain --open and check server permissions."
+                )
+            );
+        }
+        assert_eq!(
+            health_failure(
+                &config(true),
+                ConnectionState::Disabled,
+                AuthenticationState::Required,
+                None
+            )
+            .as_deref(),
+            Some(DISABLED_REQUIRED)
         );
     }
 

@@ -7,6 +7,7 @@ use serde_json::Value;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 
+use crate::auth_state::AuthState;
 use crate::catalog_freshness::SnapshotMetadata;
 use crate::error::McpError;
 use crate::feature_catalog::Invalidation;
@@ -14,8 +15,7 @@ use crate::features::tools::ToolCatalog;
 use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
-    ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse,
-    connect_stdio, startup_deadline,
+    ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
 };
 use crate::transport::{McpTransport, ShutdownMode, Transport};
 
@@ -53,17 +53,20 @@ pub(crate) struct McpClient {
 }
 
 impl McpClient {
+    #[cfg(test)]
     pub(crate) async fn connect(
         config: &McpServerConfig,
         options: &ConnectOptions,
     ) -> Result<Self, StartupFailure> {
-        Self::connect_until(config, options, startup_deadline(config)).await
+        let deadline = crate::server_transport::startup_deadline(config);
+        Self::connect_until(config, options, deadline, &Arc::default()).await
     }
 
     pub(crate) async fn connect_until(
         config: &McpServerConfig,
         options: &ConnectOptions,
         deadline: Instant,
+        auth: &Arc<AuthState>,
     ) -> Result<Self, StartupFailure> {
         if config.source == ConfigSource::Workspace
             && config.workspace_admission != Some(WorkspaceAdmission::Approved)
@@ -72,8 +75,8 @@ impl McpClient {
         }
         let connected = match config.transport {
             TransportType::Stdio => connect_stdio(config, options, deadline).await?,
-            TransportType::Http => connect_http(config, options, deadline).await?,
-            TransportType::Sse => connect_sse(config, options, deadline).await?,
+            TransportType::Http => connect_http(config, options, deadline, auth).await?,
+            TransportType::Sse => connect_sse(config, options, deadline, auth).await?,
         };
         Ok(Self::from_connected(config, connected))
     }

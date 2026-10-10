@@ -27,10 +27,23 @@ pub(crate) struct AuthorizationMetadata {
     pub(crate) authorization_response_iss_parameter_supported: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuerMismatchSource {
+    AuthorizationMetadata,
+    AuthorizationResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuerMismatch {
+    pub source: IssuerMismatchSource,
+    pub expected: String,
+    pub returned: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataOutcome {
     Metadata(Box<AuthorizationMetadata>),
-    IssuerMismatch,
+    IssuerMismatch(IssuerMismatch),
 }
 
 impl AuthorizationMetadata {
@@ -124,7 +137,11 @@ pub(crate) fn parse_authorization_metadata(
     };
     let issuer = required_string(&object, "issuer")?;
     if !issuers_match(issuer, expected_issuer) {
-        return Ok(MetadataOutcome::IssuerMismatch);
+        return Ok(MetadataOutcome::IssuerMismatch(IssuerMismatch {
+            source: IssuerMismatchSource::AuthorizationMetadata,
+            expected: expected_issuer.to_owned(),
+            returned: issuer.to_owned(),
+        }));
     }
     Ok(MetadataOutcome::Metadata(Box::new(AuthorizationMetadata {
         authorization_endpoint: required_url(&object, "authorization_endpoint")?,
@@ -170,7 +187,17 @@ fn without_trailing_slash(issuer: &str) -> &str {
 pub(crate) async fn discover_resource_metadata(
     http: &reqwest::Client,
     resource: &str,
+    challenged: Option<&str>,
 ) -> Result<ResourceMetadata, McpError> {
+    if let Some(url) = challenged {
+        validate_oauth_url_for_resource(url, resource)?;
+        let response = request(http, Method::GET, url, Payload::Empty, None).await?;
+        if response.status != StatusCode::OK {
+            return Err(McpError::ProtectedResourceMetadataUnavailable);
+        }
+        validate_json_content_type(response.content_type.as_deref())?;
+        return parse_resource_metadata(&response.body, resource);
+    }
     for url in protected_resource_metadata_urls(resource)? {
         let Ok(response) = request(http, Method::GET, &url, Payload::Empty, None).await else {
             continue;

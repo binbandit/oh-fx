@@ -55,7 +55,7 @@ pub(crate) fn auth(name: &str) -> ExitCode {
                 Err(_) => crate::write_failed(),
             }
         }
-        Ok(AuthenticationOutcome::IssuerMismatch) => {
+        Ok(AuthenticationOutcome::IssuerMismatch(_)) => {
             failed(&McpError::McpAuthorizationIssuerMismatch.to_string())
         }
         Err(error) => failed(&message(&error)),

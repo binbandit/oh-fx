@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use ofx_text::write_scalar;
 
-use crate::health::{ConnectionState, Status, classify};
+use crate::health::{AuthenticationState, ConnectionState, Status, classify};
 
 const MAX_PROMPT_BYTES: usize = 4 * 1024;
 const HEADER: &str = concat!(
@@ -20,6 +20,7 @@ const MAX_CHANGE_NOTICE_TRANSITIONS: usize = 8;
 pub enum Availability {
     Ready,
     Discovering,
+    AuthenticationRequired,
     Disabled,
     Failed,
     Unavailable,
@@ -31,6 +32,7 @@ impl Availability {
         match self {
             Self::Ready => "ready",
             Self::Discovering => "discovering",
+            Self::AuthenticationRequired => "authentication_required",
             Self::Disabled => "disabled",
             Self::Failed => "failed",
             Self::Unavailable => "unavailable",
@@ -69,15 +71,20 @@ impl From<&ServerSummary> for BaselineEntry {
 
 pub(crate) fn classify_availability(
     connection: ConnectionState,
+    authentication: AuthenticationState,
     deferred_for_ask: bool,
 ) -> Availability {
-    if deferred_for_ask && connection == ConnectionState::Disconnected {
+    if deferred_for_ask
+        && connection == ConnectionState::Disconnected
+        && authentication != AuthenticationState::Required
+    {
         return Availability::AvailableOnDemand;
     }
-    match classify(connection) {
+    match classify(connection, authentication) {
         Status::Disabled => Availability::Disabled,
         Status::Connecting => Availability::Discovering,
         Status::Ready => Availability::Ready,
+        Status::NeedsAuth => Availability::AuthenticationRequired,
         Status::Failed => Availability::Failed,
         Status::Unavailable => Availability::Unavailable,
     }

@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use crate::auth_state::AuthState;
 use crate::error::McpError;
 use crate::features::tools::{CatalogBuilder, Limits, Listing};
 use crate::legacy_http_sse::{LegacySseClient, SSE_PROTOCOL_VERSION, validate_initialize_response};
@@ -342,12 +343,13 @@ pub(crate) async fn connect_http(
     config: &McpServerConfig,
     options: &ConnectOptions,
     deadline: Instant,
+    state: &Arc<AuthState>,
 ) -> Result<Connected, StartupFailure> {
     validate_startup_mode(
         &config.env,
         env::var(PROTOCOL_VERSION_ENVIRONMENT).ok().as_deref(),
     )?;
-    let (endpoint, notifications) = http_endpoint(config, options).await?;
+    let (endpoint, notifications) = http_endpoint(config, options, state).await?;
     let auth = Arc::clone(&endpoint.auth);
     let preferred = HttpVersion::PREFERRED;
     let body = build_legacy_initialize_request(
@@ -362,15 +364,16 @@ pub(crate) async fn connect_http(
     let (client, response) = timeout_at(deadline, initialize)
         .await
         .map_err(|_| McpError::McpRequestTimedOut)?
-        .map_err(|error| StartupFailure::explained(error, auth.failure()))?;
+        .map_err(|error| auth.startup_failure(error.into()))?;
     let started = Started {
         info: server_info(&response, client.version().as_str()),
         wire: client.version().wire(),
         transport: Transport::Http(client),
         notifications,
     };
-    let connected =
-        finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error).await?;
+    let connected = finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error)
+        .await
+        .map_err(|failure| auth.startup_failure(failure))?;
     if let Transport::Http(client) = &connected.transport
         && wants_notification_stream(connected.info.capabilities)
     {
@@ -382,6 +385,7 @@ pub(crate) async fn connect_http(
 async fn http_endpoint(
     config: &McpServerConfig,
     options: &ConnectOptions,
+    state: &Arc<AuthState>,
 ) -> Result<(HttpEndpoint, mpsc::UnboundedReceiver<Value>), StartupFailure> {
     let url = config.remote_url().map_err(McpError::from)?;
     validate_endpoint(url).map_err(McpError::from)?;
@@ -394,8 +398,10 @@ async fn http_endpoint(
         .map_err(|_| McpError::HttpClientUnavailable)
     };
     let store = options.profile_data.as_deref().map(CredentialStore::new);
-    let auth =
-        HttpAuth::resolve(config, store, || client(false), &|name| env::var(name).ok()).await?;
+    let auth = HttpAuth::resolve(config, store, state, || client(false), &|name| {
+        env::var(name).ok()
+    })
+    .await?;
     let (sender, notifications) = mpsc::unbounded_channel();
     let endpoint = HttpEndpoint {
         http: client(ConnectionOptions::default().follow_redirects)?,
@@ -410,12 +416,13 @@ pub(crate) async fn connect_sse(
     config: &McpServerConfig,
     options: &ConnectOptions,
     deadline: Instant,
+    state: &Arc<AuthState>,
 ) -> Result<Connected, StartupFailure> {
-    let (endpoint, notifications) = http_endpoint(config, options).await?;
+    let (endpoint, notifications) = http_endpoint(config, options, state).await?;
     let auth = Arc::clone(&endpoint.auth);
     let client = LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline)
         .await
-        .map_err(|error| StartupFailure::explained(error, auth.failure()))?;
+        .map_err(|error| auth.startup_failure(error.into()))?;
     let transport = Transport::Sse(client);
     let started = Started {
         info: initialize_sse(&transport, options, deadline).await,
@@ -423,7 +430,9 @@ pub(crate) async fn connect_sse(
         wire: None,
         notifications,
     };
-    finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error).await
+    finish_startup(started, HTTP_INITIALIZED_NOTIFICATION, deadline, same_error)
+        .await
+        .map_err(|failure| auth.startup_failure(failure))
 }
 
 async fn initialize_sse(
