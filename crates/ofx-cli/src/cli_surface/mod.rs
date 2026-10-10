@@ -16,7 +16,10 @@ use crate::cli_replay::{ReplayArgs, parse_replay};
 use crate::command_specs::TopLevelKind;
 
 pub(crate) use arg_stream::{ArgStream, ValueForm, non_blank, requests_json};
-pub use command_args::{OutputFormat, SessionListArgs, UsageArgs, WorkspaceAction, WorkspaceArgs};
+pub use command_args::{
+    OutputFormat, SessionAction, SessionArgs, SessionListArgs, SessionTarget, UsageArgs,
+    WorkspaceAction, WorkspaceArgs,
+};
 pub(crate) use failure::Report;
 pub use failure::{CliError, command_failure_json};
 pub use launch_modifiers::LaunchModifiers;
@@ -70,7 +73,7 @@ pub enum Command {
     Provider(ProviderId),
     Doctor(OutputFormat),
     Teams,
-    Session(OutputFormat),
+    Session(SessionArgs),
     Sessions(SessionListArgs),
     Credits(OutputFormat),
     Usage(UsageArgs),
@@ -112,7 +115,7 @@ impl Command {
             | Self::Permissions(format)
             | Self::Models(format)
             | Self::Doctor(format)
-            | Self::Session(format)
+            | Self::Session(SessionArgs { format, .. })
             | Self::Sessions(SessionListArgs { format, .. })
             | Self::Credits(format)
             | Self::Usage(UsageArgs { format, .. })

@@ -390,7 +390,8 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
     for (args, kind) in [
         (&["models", "--json"][..], "models"),
         (&["balance", "--json"], "credits"),
-        (&["session", "last", "--json"], "session"),
+        (&["session", "x", "--json"], "session"),
+        (&["session", "--id", "last", "--json"], "session"),
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
     ] {
@@ -506,7 +507,7 @@ fn full_disk_writes_follow_each_upstream_path() {
         (&["status", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (&["sessions", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (
-            &["session", "last", "--json"],
+            &["session", "migrate", "x", "--json"],
             "oh-fx: session is not available yet\noh-fx: WriteFailed\n",
         ),
         (&["replay", "--json"], ""),

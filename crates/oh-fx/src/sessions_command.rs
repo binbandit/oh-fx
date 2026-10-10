@@ -9,11 +9,22 @@ use ofx_cli::{
     Command, LaunchModifiers, OutputFormat, SessionListArgs, TopLevelKind, command_failure_json,
 };
 use ofx_config::ProfilePaths;
-use ofx_session::{FxSessions, ListScope, SessionStore};
+use ofx_session::{FxSessions, ListScope, SessionError, SessionStore};
 
-enum Failure {
+pub(crate) enum Failure {
     Lookup(String),
     Fatal(&'static str),
+}
+
+impl From<SessionError> for Failure {
+    fn from(error: SessionError) -> Self {
+        Self::Lookup(error.to_string())
+    }
+}
+
+pub(crate) struct SavedSessions {
+    pub(crate) store: SessionStore,
+    pub(crate) fx: FxSessions,
 }
 
 pub(crate) fn run(args: &SessionListArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -21,15 +32,18 @@ pub(crate) fn run(args: &SessionListArgs, modifiers: &LaunchModifiers) -> ExitCo
         return crate::unavailable_command(&Command::Sessions(args.clone()));
     }
     crate::auto_upgrade::announce_and_schedule();
-    let failure = match list(args) {
-        Ok(text) => {
-            return crate::print(
-                text.as_bytes(),
-                crate::command_write_failure(TopLevelKind::Sessions),
-            );
-        }
+    answer(TopLevelKind::Sessions, args.format, list(args))
+}
+
+pub(crate) fn answer(
+    kind: TopLevelKind,
+    format: OutputFormat,
+    result: Result<String, Failure>,
+) -> ExitCode {
+    let failure = match result {
+        Ok(text) => return crate::print(text.as_bytes(), crate::command_write_failure(kind)),
         Err(Failure::Lookup(code)) => match session_lookup_message(&code) {
-            Some(message) => return report(args.format, &code, message),
+            Some(message) => return report(kind, format, &code, message),
             None => code,
         },
         Err(Failure::Fatal(code)) => code.to_owned(),
@@ -38,15 +52,15 @@ pub(crate) fn run(args: &SessionListArgs, modifiers: &LaunchModifiers) -> ExitCo
     ExitCode::FAILURE
 }
 
-fn report(format: OutputFormat, code: &str, message: &str) -> ExitCode {
+fn report(kind: TopLevelKind, format: OutputFormat, code: &str, message: &str) -> ExitCode {
     if matches!(format, OutputFormat::Json) {
         return crate::fail(
-            &command_failure_json(TopLevelKind::Sessions, message, code),
-            crate::command_write_failure(TopLevelKind::Sessions),
+            &command_failure_json(kind, message, code),
+            crate::command_write_failure(kind),
         );
     }
     let command = if code == "HomeNotSet" {
-        "sessions"
+        kind.token()
     } else {
         "session"
     };
@@ -54,7 +68,7 @@ fn report(format: OutputFormat, code: &str, message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn list(args: &SessionListArgs) -> Result<String, Failure> {
+pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
     let home_not_set = || Failure::Lookup("HomeNotSet".to_owned());
     let home = env::var_os("HOME")
         .map(PathBuf::from)
@@ -66,10 +80,17 @@ fn list(args: &SessionListArgs) -> Result<String, Failure> {
     let workspace_root = workspace_root
         .to_str()
         .ok_or(Failure::Fatal("InvalidWorkspaceRoot"))?;
-    let store = SessionStore::open_read_only(&paths.data, workspace_root)
-        .map_err(|error| Failure::Lookup(error.to_string()))?;
-    let catalog = store
-        .catalog_with_fx(&FxSessions::open(&home))
+    Ok(SavedSessions {
+        store: SessionStore::open_read_only(&paths.data, workspace_root)?,
+        fx: FxSessions::open(&home),
+    })
+}
+
+fn list(args: &SessionListArgs) -> Result<String, Failure> {
+    let saved = open_saved_sessions()?;
+    let catalog = saved
+        .store
+        .catalog_with_fx(&saved.fx)
         .map_err(|_| Failure::Fatal("SessionStoreUnavailable"))?;
     let page = catalog.listed_page(args.scope, args.cursor.as_ref(), args.limit);
     let next_cursor = page
