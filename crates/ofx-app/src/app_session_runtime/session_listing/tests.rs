@@ -32,6 +32,7 @@ fn saved(data: &Path, workspace: &str, prompt: &str) -> String {
                     text: "done",
                     provider_replay: None,
                 },
+                images: &[],
             },
             &preferences().provider,
         )

@@ -1,9 +1,14 @@
 use ofx_config::EMERGENCY_CEILING_BYTES;
-use ofx_contract::{CommandProcessPresentation, HistoryStep, RecoveryPoint, RecoveryProgress};
+use ofx_contract::{
+    CommandProcessPresentation, HistoryStep, RecoveryPoint, RecoveryProgress, ToolImages,
+};
 use serde::Serialize;
 
+use super::presentation::{FilePresentationWire, ReplayWire};
+use super::tool_images::ToolImageWire;
+use super::user_images::ImageWire;
 use super::{CHECKPOINT_VERSION, EXECUTION_SCHEMA_VERSION, RouteCredential};
-use crate::fixed_field::{False, NoItems, Null};
+use crate::fixed_field::Null;
 use crate::process_presentation;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
@@ -23,6 +28,7 @@ pub(crate) struct CheckpointSource<'a> {
 pub(crate) struct SavedOutput {
     pub(crate) handle: Option<String>,
     pub(crate) preview: Option<String>,
+    pub(crate) stored_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -52,7 +58,7 @@ struct CheckpointWire<'a> {
 #[derive(Serialize)]
 struct UserWire<'a> {
     text: &'a str,
-    images: NoItems,
+    images: Vec<ImageWire<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     work_id: Option<&'a str>,
 }
@@ -79,7 +85,7 @@ struct CallWire<'a> {
     id: &'a str,
     name: &'a str,
     arguments_json: &'a str,
-    provider_result: Null,
+    provider_result: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -91,17 +97,21 @@ struct ResultWire<'a> {
     output_handle: Option<&'a str>,
     preview: Option<&'a str>,
     output_bytes: usize,
-    stored_output_bytes: usize,
+    stored_output_bytes: u64,
     truncated: bool,
-    provider_native: False,
+    provider_native: bool,
     review_feedback: bool,
     created_at_ms: i64,
     permission_feedback: &'a [&'a str],
-    committed_file_presentation: Null,
-    command_output_replay: Null,
+    committed_file_presentation: Option<FilePresentationWire<'a>>,
+    command_output_replay: Option<ReplayWire<'a>>,
     #[serde(with = "process_presentation::checkpoint")]
     command_process_presentation: Option<CommandProcessPresentation>,
     terminal_action_presentation: Null,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_image_handle: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_images: Option<Vec<ToolImageWire<'a>>>,
 }
 
 #[derive(Serialize)]
@@ -129,7 +139,7 @@ pub(crate) fn encode_recovery_file(
         turn_id: point.turn_id.get(),
         user: UserWire {
             text: point.turn.user,
-            images: NoItems,
+            images: point.turn.images.iter().map(ImageWire::from).collect(),
             work_id: source.work_id,
         },
         assistant_source: point.source,
@@ -203,7 +213,7 @@ fn step_wire<'a>(
                 id: call.id.as_str(),
                 name: &call.name,
                 arguments_json: &call.arguments,
-                provider_result: Null,
+                provider_result: call.provider_result.as_deref(),
             })
             .collect(),
         tool_results: step
@@ -213,6 +223,8 @@ fn step_wire<'a>(
             .map(|(position, result)| {
                 let saved = outputs.get(position);
                 let handle = saved.and_then(|saved| saved.handle.as_deref());
+                let persisted = result.persisted;
+                let tool_images = persisted.map(|persisted| &persisted.tool_images);
                 ResultWire {
                     tool_call_id: result.call_id,
                     tool_name: result.tool_name,
@@ -221,16 +233,32 @@ fn step_wire<'a>(
                     output_handle: handle,
                     preview: saved.and_then(|saved| saved.preview.as_deref()),
                     output_bytes: result.output_bytes,
-                    stored_output_bytes: result.output.len(),
-                    truncated: false,
-                    provider_native: False,
+                    stored_output_bytes: saved
+                        .map_or(result.output.len() as u64, |saved| saved.stored_bytes),
+                    truncated: persisted.is_some_and(|persisted| persisted.truncated),
+                    provider_native: persisted.is_some_and(|persisted| persisted.provider_native),
                     review_feedback: result.review_feedback,
-                    created_at_ms: source.created_at_ms,
+                    created_at_ms: persisted
+                        .map_or(source.created_at_ms, |persisted| persisted.created_at_ms),
                     permission_feedback: &result.permission_feedback,
-                    committed_file_presentation: Null,
-                    command_output_replay: Null,
+                    committed_file_presentation: persisted
+                        .and_then(|persisted| persisted.committed_file_presentation.as_ref())
+                        .map(FilePresentationWire::from),
+                    command_output_replay: persisted
+                        .and_then(|persisted| persisted.command_output_replay.as_ref())
+                        .map(ReplayWire::from),
                     command_process_presentation: result.process,
                     terminal_action_presentation: Null,
+                    tool_image_handle: match tool_images {
+                        Some(ToolImages::Stored(handle)) => Some(handle),
+                        _ => None,
+                    },
+                    tool_images: match tool_images {
+                        Some(ToolImages::Inline(images)) => {
+                            Some(images.iter().map(ToolImageWire::from).collect())
+                        }
+                        _ => None,
+                    },
                 }
             })
             .collect(),

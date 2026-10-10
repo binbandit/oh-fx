@@ -1,10 +1,10 @@
 use ofx_config::{PrivateDir, ProviderId};
 use ofx_contract::{
-    HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, ToolArgumentIntegrity, TurnEnd,
-    TurnStop,
+    HistorySteering, HistoryStep, HistoryTurn, ProviderReplay, StepResult, ToolArgumentIntegrity,
+    ToolImages, TurnEnd, TurnStop,
 };
 
-use crate::result_store::{make_handle, preview, store_result};
+use crate::result_store::{make_handle, preview, store_result, store_tool_images};
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{
@@ -41,10 +41,16 @@ pub(crate) fn turn_events(
         return Err(SessionError::InvalidConversationEvent);
     }
     let mut steering = steering.iter().peekable();
-    let user = match artifacts.work_id {
+    let mut user = match artifacts.work_id {
         Some(work_id) => UserEvent::for_work(turn.user, work_id),
         None => UserEvent::new(turn.user),
     };
+    user.images = turn
+        .images
+        .iter()
+        .map(TryFrom::try_from)
+        .collect::<Result<_, _>>()
+        .map_err(|_| SessionError::InvalidConversationEvent)?;
     let mut events = vec![ConversationEvent::User(user)];
     for (index, step) in steps.iter().enumerate() {
         let position = written.tool_steps + index;
@@ -136,33 +142,71 @@ fn step_events(
         events.push(ConversationEvent::ToolCall(event));
     }
     for result in &step.tool_results {
+        events.push(ConversationEvent::ToolResult(result_event(
+            artifacts, result,
+        )?));
+    }
+    Ok(())
+}
+
+fn result_event(
+    artifacts: &TurnArtifacts<'_>,
+    result: &StepResult<'_>,
+) -> Result<ToolResultEvent, SessionError> {
+    let persisted = result.persisted;
+    let kept_preview = persisted.and_then(|persisted| persisted.preview.clone());
+    let kept = persisted.and_then(|persisted| {
+        let handle = persisted.output_handle.clone()?;
+        Some((handle, persisted.stored_output_bytes))
+    });
+    let (handle, stored_bytes) = if let Some(kept) = kept {
+        kept
+    } else {
         let handle = make_handle(result.call_id, result.tool_name, result.output);
         store_result(artifacts.dir, &handle, result.output)?;
         let stored_bytes = u64::try_from(result.output.len())
             .map_err(|_| SessionError::InvalidConversationEvent)?;
-        let output_bytes = u64::try_from(result.output_bytes)
-            .map_err(|_| SessionError::InvalidConversationEvent)?;
-        let mut event = ToolResultEvent::new(
-            result.call_id,
-            result.tool_name,
-            result.status,
-            handle,
-            stored_bytes,
-            ArtifactCompleteness::Complete,
-        );
-        event.output_bytes = Some(output_bytes);
-        event.preview = Some(preview(result.output).to_owned());
-        event.created_at_ms = artifacts.timestamp_ms;
-        event.command_process_presentation = result.process;
-        event.review_feedback = result.review_feedback;
-        event.permission_feedback = result
-            .permission_feedback
-            .iter()
-            .map(|feedback| (*feedback).to_owned())
-            .collect();
-        events.push(ConversationEvent::ToolResult(event));
+        (handle, stored_bytes)
+    };
+    let output_bytes =
+        u64::try_from(result.output_bytes).map_err(|_| SessionError::InvalidConversationEvent)?;
+    let completeness = if persisted.is_some_and(|persisted| persisted.truncated) {
+        ArtifactCompleteness::Partial
+    } else {
+        ArtifactCompleteness::Complete
+    };
+    let mut event = ToolResultEvent::new(
+        result.call_id,
+        result.tool_name,
+        result.status,
+        handle,
+        stored_bytes,
+        completeness,
+    );
+    event.output_bytes = Some(output_bytes);
+    event.preview = Some(kept_preview.unwrap_or_else(|| preview(result.output).to_owned()));
+    event.created_at_ms = artifacts.timestamp_ms;
+    event.command_process_presentation = result.process;
+    event.review_feedback = result.review_feedback;
+    event.permission_feedback = result
+        .permission_feedback
+        .iter()
+        .map(|feedback| (*feedback).to_owned())
+        .collect();
+    if let Some(persisted) = persisted {
+        event.keep(persisted);
+        event.tool_image_handle = match &persisted.tool_images {
+            ToolImages::None => None,
+            ToolImages::Stored(handle) => Some(handle.clone()),
+            ToolImages::Inline(images) => Some(store_tool_images(
+                artifacts.dir,
+                result.call_id,
+                result.tool_name,
+                images,
+            )?),
+        };
     }
-    Ok(())
+    Ok(event)
 }
 
 pub(crate) fn saved_replay(

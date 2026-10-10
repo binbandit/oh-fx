@@ -126,6 +126,7 @@ impl Agent {
         let logged = match (parsed, ending) {
             (Some(parsed), Ending::Replied) => HistoryTurn {
                 user: parsed.user,
+                images: &turn.images,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
                 steering: parsed.logged_steering(),
                 files,
@@ -136,6 +137,7 @@ impl Agent {
             },
             (Some(parsed), Ending::Stopped(reason)) => HistoryTurn {
                 user: parsed.user,
+                images: &turn.images,
                 steps: logged_steps(&parsed.steps, &turn.raw_outputs),
                 steering: parsed.logged_steering(),
                 files,
@@ -146,6 +148,7 @@ impl Agent {
             },
             _ => HistoryTurn {
                 user: prompt,
+                images: &turn.images,
                 steps: Vec::new(),
                 steering: Vec::new(),
                 files: &[],
@@ -231,10 +234,11 @@ impl Agent {
     }
 }
 
-fn turn_so_far<'a>(history: &'a [ChatMessage], turn: &Turn) -> HistoryTurn<'a> {
+fn turn_so_far<'a>(history: &'a [ChatMessage], turn: &'a Turn) -> HistoryTurn<'a> {
     let parsed = history_turn(history, turn.start, history.len());
     HistoryTurn {
         user: parsed.user,
+        images: &turn.images,
         steps: logged_steps(&parsed.steps, &turn.raw_outputs),
         steering: parsed.logged_steering(),
         files: &[],

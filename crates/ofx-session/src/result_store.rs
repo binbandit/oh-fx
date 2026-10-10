@@ -1,7 +1,10 @@
 use ofx_config::PrivateDir;
+use ofx_contract::ToolImage;
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
+use crate::image_data::MAX_RESULT_FRAME_BYTES;
+use crate::session_codec::recovery_checkpoint::ToolImageWire;
 use crate::session_error::SessionError;
 
 pub(crate) const PREVIEW_BYTES: usize = 4 * 1024;
@@ -10,6 +13,7 @@ pub(crate) const RESULT_UNAVAILABLE: &str =
 pub(crate) const STORED_TEXT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const TOOL_RESULTS_DIR: &str = "tool-results";
 const HANDLE_PREFIX: &str = "result-";
+const IMAGE_HANDLE_PREFIX: &str = "image-";
 const HANDLE_SUFFIX: &str = ".txt";
 const MAX_HANDLE_BYTES: usize = 160;
 const MAX_TOOL_PART_BYTES: usize = 48;
@@ -43,6 +47,25 @@ pub(crate) fn store_result(
     let results = session.open_or_create_child(TOOL_RESULTS_DIR)?;
     results.replace(handle, text.as_bytes())?;
     Ok(())
+}
+
+pub(crate) fn store_tool_images(
+    session: &PrivateDir,
+    tool_call_id: &str,
+    tool_name: &str,
+    images: &[ToolImage],
+) -> Result<String, SessionError> {
+    let wire: Vec<ToolImageWire<'_>> = images.iter().map(ToolImageWire::from).collect();
+    let text = serde_json::to_string(&wire).map_err(|_| SessionError::InvalidConversationEvent)?;
+    if text.len() > MAX_RESULT_FRAME_BYTES {
+        return Err(SessionError::InvalidConversationEvent);
+    }
+    let handle = format!(
+        "{IMAGE_HANDLE_PREFIX}{}",
+        make_handle(tool_call_id, tool_name, &text)
+    );
+    store_result(session, &handle, &text)?;
+    Ok(handle)
 }
 
 struct ResultReader {

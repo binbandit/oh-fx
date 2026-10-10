@@ -2,7 +2,7 @@ use ofx_config::ProviderId;
 use ofx_contract::{
     ChatMessage, HistorySteering, HistoryStep, HistoryTurn, ModelRecoveryAction,
     ModelRecoveryCause, RecordedOutput, RecoveryPoint, RecoveryProgress, RecoveryToolState,
-    ReplaySource, StepResult, ToolCallId, TurnId, TurnSummary, TurnTokenProgress,
+    ReplaySource, StepResult, ToolCallId, ToolImages, TurnId, TurnSummary, TurnTokenProgress,
 };
 
 use super::*;
@@ -13,6 +13,7 @@ const IDENTITY: &str = "abababababababababababababababababababababababababababab
 fn checkpoint() -> RecoveryCheckpoint {
     RecoveryCheckpoint {
         user: "fix the build".to_owned(),
+        images: Vec::new(),
         work_id: None,
         assistant_source: "Looking at".to_owned(),
         execution: SavedExecution {
@@ -25,14 +26,21 @@ fn checkpoint() -> RecoveryCheckpoint {
                     tool_name: "read_file".to_owned(),
                     status: ToolResultStatus::Success,
                     output: "fn main() {}".to_owned(),
-                    output_handle: None,
-                    preview: None,
                     output_bytes: 12,
-                    stored_output_bytes: 12,
-                    truncated: false,
                     process: None,
                     review_feedback: false,
                     permission_feedback: Vec::new(),
+                    persisted: PersistedResult {
+                        output_handle: None,
+                        preview: None,
+                        stored_output_bytes: 12,
+                        truncated: false,
+                        created_at_ms: 5,
+                        provider_native: false,
+                        committed_file_presentation: None,
+                        command_output_replay: None,
+                        tool_images: ToolImages::None,
+                    },
                 }],
             }],
             files: vec![FileEvidence {
@@ -280,17 +288,7 @@ fn checkpoints_upstream_rejects_or_oh_fx_cannot_hold_are_invalid() {
             "\"turn_summary\":null",
             "\"turn_summary\":{\"started_at_ms\":1}",
         ),
-        base.replace("\"provider_result\":null", "\"provider_result\":\"r\""),
-        base.replace("\"provider_native\":false", "\"provider_native\":true"),
         base.replace("\"review_feedback\":false", "\"review_feedback\":true"),
-        base.replace(
-            "\"command_output_replay\":null",
-            "\"command_output_replay\":{\"kind\":\"unavailable\"}",
-        ),
-        base.replace(
-            "\"terminal_action_presentation\":null",
-            "\"terminal_action_presentation\":null,\"tool_image_handle\":\"i\"",
-        ),
         base.replace("\"status\":\"success\",\"output\"", "\"status\":\"done\",\"output\""),
         base.replace("\"action\":\"read\"", "\"action\":\"peek\""),
         base.replace("\"cause\":\"response_interrupted\"", "\"cause\":\"bored\""),
@@ -562,6 +560,11 @@ fn a_continuation_keeps_each_restored_results_raw_size_and_process() {
             whole_file: false,
             process: Some(CommandProcessPresentation::ExitCode(3)),
             review_feedback: false,
+            persisted: Some(Box::new(
+                checkpoint().execution.tool_steps[0].tool_results[0]
+                    .persisted
+                    .clone()
+            )),
         }]
     );
 }
@@ -589,6 +592,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                     process: None,
                     review_feedback: false,
                     permission_feedback: Vec::new(),
+                    persisted: None,
                 }],
             }],
             steering: vec![HistorySteering {
@@ -601,6 +605,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                 text: "",
                 provider_replay: None,
             },
+            images: &[],
         },
         source: "Looking at",
         cause: ModelRecoveryCause::RateLimited,
@@ -626,6 +631,7 @@ fn a_recovery_point_is_written_in_upstream_recovery_json_form() {
         outputs: vec![vec![SavedOutput {
             handle: None,
             preview: None,
+            stored_bytes: 12,
         }]],
         files: vec![FileEvidence {
             path: "a.rs".to_owned(),
@@ -710,6 +716,7 @@ fn a_paused_point_and_a_spilled_output_are_written_as_upstream_writes_them() {
         outputs: vec![vec![SavedOutput {
             handle: Some("result-read_file-1-2.txt".to_owned()),
             preview: Some("fn".to_owned()),
+            stored_bytes: 12,
         }]],
         files: Vec::new(),
         work_id: None,
@@ -740,6 +747,7 @@ fn a_commands_process_presentation_is_written_and_read_in_upstreams_checkpoint_f
         outputs: vec![vec![SavedOutput {
             handle: None,
             preview: None,
+            stored_bytes: 12,
         }]],
         files: Vec::new(),
         work_id: None,
@@ -798,6 +806,7 @@ fn approval_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
         outputs: vec![vec![SavedOutput {
             handle: None,
             preview: None,
+            stored_bytes: 12,
         }]],
         files: vec![FileEvidence {
             path: "a.rs".to_owned(),
@@ -928,6 +937,7 @@ fn review_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
         outputs: vec![vec![SavedOutput {
             handle: None,
             preview: None,
+            stored_bytes: 4,
         }]],
         files: Vec::new(),
         work_id: None,
@@ -989,6 +999,7 @@ fn a_child_turns_work_id_is_read_and_written_in_upstreams_checkpoint_form() {
         outputs: vec![vec![SavedOutput {
             handle: None,
             preview: None,
+            stored_bytes: 12,
         }]],
         files: Vec::new(),
         work_id: Some("work-1"),
@@ -1010,3 +1021,5 @@ fn a_child_turns_work_id_is_read_and_written_in_upstreams_checkpoint_form() {
         Some("work-1")
     );
 }
+
+mod upstream_fields;

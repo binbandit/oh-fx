@@ -226,6 +226,7 @@ async fn a_continued_turn_keeps_its_checkpoints_evidence_and_adds_its_own() {
             tool_state: RecoveryToolState::Confirmed,
             strategy: RecoveryStrategy::ContinueAfterTool,
             fast_mode: false,
+            images: Vec::new(),
         };
         let report = agent
             .continue_turn(recovered, &mut |_| {}, &CancellationToken::new())

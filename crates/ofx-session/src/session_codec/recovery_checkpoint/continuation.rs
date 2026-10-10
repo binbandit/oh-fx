@@ -35,6 +35,7 @@ impl RecoveryCheckpoint {
             outputs,
             files: self.execution.files.into_iter().map(Into::into).collect(),
             prompt: self.user,
+            images: self.images,
             source: self.assistant_source,
             source_presented: false,
             cause: self.cause,
@@ -92,6 +93,7 @@ fn messages(
                 whole_file: false,
                 process: result.process,
                 review_feedback: result.review_feedback,
+                persisted: Some(Box::new(result.persisted)),
             });
             feedback.extend(
                 result

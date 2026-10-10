@@ -158,6 +158,7 @@ async fn a_continued_turn_derives_its_tool_note_again_from_its_saved_evidence() 
         tool_state: RecoveryToolState::Uncertain,
         strategy: RecoveryStrategy::ReconcileTool,
         fast_mode: false,
+        images: Vec::new(),
     };
     let report = agent
         .continue_turn(recovered, &mut |_| {}, &CancellationToken::new())
@@ -257,6 +258,7 @@ async fn a_continued_turn_takes_its_tool_evidence_from_the_saved_tool_state() {
         tool_state: RecoveryToolState::Uncertain,
         strategy: RecoveryStrategy::RetryRequest,
         fast_mode: false,
+        images: Vec::new(),
     };
     let report = agent
         .continue_turn(recovered, &mut |_| {}, &CancellationToken::new())

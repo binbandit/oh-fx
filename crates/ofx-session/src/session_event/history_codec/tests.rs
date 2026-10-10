@@ -519,8 +519,10 @@ fn history_snapshot_codec_keeps_command_replays_in_upstream_layout() {
 
 #[test]
 fn history_snapshot_codec_keeps_file_presentations_in_upstream_layout() {
+    use ofx_contract::{FilePresentationKind, FilePresentationLineKind};
+
     use crate::session_event::file_presentation::{
-        CommittedFilePresentation, LifecycleId, LineKind, PresentationKind, PresentationLine,
+        CommittedFilePresentation, LifecycleId, PresentationLine,
     };
 
     let mut result = ToolResultEvent::new(
@@ -533,9 +535,9 @@ fn history_snapshot_codec_keeps_file_presentations_in_upstream_layout() {
     );
     result.committed_file_presentation = Some(Box::new(CommittedFilePresentation {
         path: "a".to_owned(),
-        kind: PresentationKind::Edited,
+        kind: FilePresentationKind::Edited,
         lines: vec![PresentationLine {
-            kind: LineKind::Addition,
+            kind: FilePresentationLineKind::Addition,
             old_line: None,
             new_line: Some(2),
             text: "x".to_owned(),

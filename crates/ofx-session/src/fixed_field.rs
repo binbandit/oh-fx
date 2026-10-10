@@ -46,8 +46,6 @@ macro_rules! fixed_field {
 }
 
 fixed_field!(Null, Value::Null, Json::Null);
-fixed_field!(NoItems, Value::Array(Vec::new()), Json::Array(items) if items.is_empty());
-fixed_field!(False, Value::Bool(false), Json::Bool(false));
 
 #[cfg(test)]
 mod tests {
@@ -56,13 +54,9 @@ mod tests {
     #[test]
     fn fixed_fields_write_upstream_defaults_and_accept_nothing_else() {
         assert_eq!(serde_json::to_string(&Null).unwrap(), "null");
-        assert_eq!(serde_json::to_string(&NoItems).unwrap(), "[]");
-        assert_eq!(serde_json::to_string(&False).unwrap(), "false");
         assert!(serde_json::from_str::<Null>("null").is_ok());
         assert!(serde_json::from_str::<Null>("\"x\"").is_err());
-        assert!(serde_json::from_str::<NoItems>("[]").is_ok());
-        assert!(serde_json::from_str::<NoItems>("[1]").is_err());
-        assert!(serde_json::from_str::<False>("true").is_err());
+        assert!(serde_json::from_str::<Null>("false").is_err());
     }
 
     fn accepts_what_it_writes<T: FixedField + Serialize>(value: &T) -> bool {
@@ -73,7 +67,5 @@ mod tests {
     #[test]
     fn fixed_fields_accept_exactly_what_they_write() {
         assert!(accepts_what_it_writes(&Null));
-        assert!(accepts_what_it_writes(&NoItems));
-        assert!(accepts_what_it_writes(&False));
     }
 }

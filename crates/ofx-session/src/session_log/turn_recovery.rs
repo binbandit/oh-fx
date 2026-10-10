@@ -148,11 +148,25 @@ pub(crate) fn save_checkpoint(
 }
 
 fn spilled_output(dir: &PrivateDir, result: &StepResult<'_>) -> SavedOutput {
+    let persisted = result.persisted;
+    let kept_preview = persisted.and_then(|persisted| persisted.preview.clone());
+    let fresh_preview = || preview(result.output).to_owned();
+    if let Some(persisted) = persisted
+        && let Some(handle) = &persisted.output_handle
+    {
+        let shown = !result.output.is_empty();
+        return SavedOutput {
+            handle: Some(handle.clone()),
+            preview: kept_preview.or_else(|| shown.then(fresh_preview)),
+            stored_bytes: persisted.stored_output_bytes,
+        };
+    }
+    let size = result.output.len();
     let inline = SavedOutput {
         handle: None,
-        preview: None,
+        preview: kept_preview.clone(),
+        stored_bytes: persisted.map_or(size as u64, |persisted| persisted.stored_output_bytes),
     };
-    let size = result.output.len();
     if size <= PREVIEW_BYTES || size > STORED_TEXT_MAX_BYTES {
         return inline;
     }
@@ -162,7 +176,8 @@ fn spilled_output(dir: &PrivateDir, result: &StepResult<'_>) -> SavedOutput {
     }
     SavedOutput {
         handle: Some(handle),
-        preview: Some(preview(result.output).to_owned()),
+        preview: kept_preview.or_else(|| Some(fresh_preview())),
+        stored_bytes: size as u64,
     }
 }
 

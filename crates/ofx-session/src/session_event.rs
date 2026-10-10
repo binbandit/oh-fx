@@ -6,8 +6,8 @@ mod image_attachment;
 use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
 use ofx_contract::{
-    CommandProcessPresentation, ProviderReplay, ReplaySource, SavedFileChange,
-    ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus, TurnSummary,
+    CommandOutputReplay, CommandProcessPresentation, PersistedResult, ProviderReplay, ReplaySource,
+    SavedFileChange, ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus, TurnSummary,
 };
 use serde::Serialize;
 
@@ -17,9 +17,11 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
 use file_presentation::CommittedFilePresentation;
+pub(crate) use file_presentation::has_one_content_source;
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
 pub(crate) use history_codec::{decode_history_envelope, encode_history_envelope};
+pub(crate) use image_attachment::snapshot_locator;
 use image_attachment::{ImageAttachment, are_valid_images};
 
 pub(crate) const CONVERSATION_SCHEMA_VERSION: u8 = 3;
@@ -231,6 +233,23 @@ impl ToolResultEvent {
         self.committed_file_presentation
             .as_deref()
             .map(CommittedFilePresentation::saved_change)
+    }
+
+    pub(crate) fn keep(&mut self, persisted: &PersistedResult) {
+        self.created_at_ms = persisted.created_at_ms;
+        self.provider_native = persisted.provider_native;
+        self.committed_file_presentation = persisted
+            .committed_file_presentation
+            .as_ref()
+            .map(|presentation| Box::new(presentation.into()));
+        if let Some(CommandOutputReplay::Available {
+            handle,
+            framed_bytes,
+        }) = &persisted.command_output_replay
+        {
+            self.command_replay_ref = Some(handle.clone());
+            self.command_replay_bytes = Some(*framed_bytes);
+        }
     }
 }
 

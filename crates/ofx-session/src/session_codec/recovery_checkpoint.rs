@@ -1,29 +1,37 @@
 mod continuation;
+mod durable;
 mod encode;
+mod presentation;
 mod route_credential;
+mod tool_images;
+mod tool_steps;
+#[cfg(test)]
+pub(crate) mod upstream_fixture;
+mod user_images;
 
 use std::cmp::Ordering;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use ofx_config::{EMERGENCY_CEILING_BYTES, PrivateDir};
 use ofx_contract::{
     CommandProcessPresentation, HistoryEntry, HistorySteering, HistoryStep, HistoryTurn,
-    ModelRecoveryCause, ProviderReplay, RecoveryStrategy, RecoveryToolState, StepResult,
-    ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
+    ImageAttachment, ModelRecoveryCause, PersistedResult, ProviderReplay, RecoveryStrategy,
+    RecoveryToolState, StepResult, ToolCall, ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
 };
 
-use crate::fixed_field::{False, FixedField, NoItems, Null};
+use crate::fixed_field::FixedField;
 use crate::json_fields::{Fields, Json, parse_json, string};
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
-use crate::session_event::{FileEvidence, WireTag, are_valid_files, saved_replay};
-use crate::{process_presentation, turn_summary};
+use crate::session_event::{FileEvidence, WireTag, are_valid_files};
+use crate::turn_summary;
+use durable::durable_text;
+use tool_steps::tool_step;
 
 pub(crate) use encode::{CheckpointSource, SavedOutput, encode_recovery_file};
 use route_credential::CREDENTIAL_IDENTITY_BYTES;
 pub use route_credential::RouteCredential;
+pub(crate) use tool_images::ToolImageWire;
 
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;
 const CHECKPOINT_VERSION: u64 = 2;
@@ -71,6 +79,7 @@ const CREDENTIAL_SOURCES: [&str; 8] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryCheckpoint {
     user: String,
+    images: Vec<ImageAttachment>,
     work_id: Option<String>,
     assistant_source: String,
     execution: SavedExecution,
@@ -114,14 +123,11 @@ struct SavedToolResult {
     tool_name: String,
     status: ToolResultStatus,
     output: String,
-    output_handle: Option<String>,
-    preview: Option<String>,
     output_bytes: usize,
-    stored_output_bytes: u64,
-    truncated: bool,
     process: Option<CommandProcessPresentation>,
     review_feedback: bool,
     permission_feedback: Vec<String>,
+    persisted: PersistedResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +149,7 @@ impl RecoveryCheckpoint {
     pub(crate) fn interrupted_turn(&self) -> HistoryTurn<'_> {
         HistoryTurn {
             user: &self.user,
+            images: &self.images,
             steps: self
                 .execution
                 .tool_steps
@@ -239,6 +246,7 @@ impl SavedToolStep {
                         .iter()
                         .map(String::as_str)
                         .collect(),
+                    persisted: Some(&result.persisted),
                 })
                 .collect(),
         }
@@ -247,22 +255,25 @@ impl SavedToolStep {
 
 impl SavedToolResult {
     fn restore_output(&mut self, dir: &PrivateDir) {
-        let Some(handle) = &self.output_handle else {
+        let persisted = &mut self.persisted;
+        let Some(handle) = &persisted.output_handle else {
             return;
         };
-        let inline = u64::try_from(self.output.len()).ok() == Some(self.stored_output_bytes);
-        if !self.truncated && inline {
+        let inline = u64::try_from(self.output.len()).ok() == Some(persisted.stored_output_bytes);
+        if !persisted.truncated && inline {
             return;
         }
-        self.output = if self.truncated {
+        self.output = if persisted.truncated {
             format_stored_result_output(
                 handle,
-                self.preview.as_deref().unwrap_or_default(),
-                self.stored_output_bytes,
+                persisted.preview.as_deref().unwrap_or_default(),
+                persisted.stored_output_bytes,
             )
+        } else if let Some(output) = read_for_replay(dir, handle, persisted.stored_output_bytes) {
+            output
         } else {
-            read_for_replay(dir, handle, self.stored_output_bytes)
-                .unwrap_or_else(|| RESULT_UNAVAILABLE.to_owned())
+            persisted.truncated = true;
+            RESULT_UNAVAILABLE.to_owned()
         };
     }
 }
@@ -292,7 +303,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         .unsigned("version")
         .filter(|version| *version == CHECKPOINT_VERSION)?;
     fields.unsigned("turn_id")?;
-    let (user, work_id) = user_turn(fields.required("user")?)?;
+    let (user, images, work_id) = user_turn(fields.required("user")?)?;
     let assistant_source = durable_text(fields.required("assistant_source")?)?;
     let execution = execution(fields.required("execution")?)?;
     let cause = one_of(&fields.required("cause")?, &CAUSES)?;
@@ -319,6 +330,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         .find(|known| known.as_str() == cause),
         tool_state,
         user,
+        images,
         work_id,
         assistant_source,
         execution,
@@ -368,15 +380,15 @@ fn strategy(
     }
 }
 
-fn user_turn(value: Json<'_>) -> Option<(String, Option<String>)> {
+fn user_turn(value: Json<'_>) -> Option<(String, Vec<ImageAttachment>, Option<String>)> {
     let mut fields = Fields::new(value)?;
     let text = durable_text(fields.required("text")?).filter(|text| !text.is_empty())?;
-    fixed::<NoItems>(&mut fields, "images")?;
+    let images = user_images::read(fields.required("images")?)?;
     let work_id = match fields.required("work_id") {
         None => None,
         Some(value) => Some(string(value).filter(|work_id| is_valid_work_id(work_id))?),
     };
-    fields.finish((text, work_id))
+    fields.finish((text, images, work_id))
 }
 
 fn is_valid_work_id(work_id: &str) -> bool {
@@ -410,77 +422,6 @@ fn execution(value: Json<'_>) -> Option<SavedExecution> {
         steering,
         turn_summary,
     })
-}
-
-fn tool_step(value: Json<'_>) -> Option<SavedToolStep> {
-    let mut fields = Fields::new(value)?;
-    let assistant = fields.present_or_null("assistant", |value| durable_text(value).map(Some))?;
-    let step = SavedToolStep {
-        assistant,
-        provider_replay: fields.present_or_null("provider_replay", |value| {
-            saved_replay(value).map(|replay| Some(replay.into_provider_replay()))
-        })?,
-        tool_calls: list(fields.required("tool_calls")?, tool_call)?,
-        tool_results: list(fields.required("tool_results")?, tool_result)?,
-    };
-    let answers_its_calls = step.tool_results.iter().enumerate().all(|(index, result)| {
-        let called = step
-            .tool_calls
-            .iter()
-            .any(|call| call.id.as_str() == result.tool_call_id && call.name == result.tool_name);
-        let repeated = step.tool_results[..index]
-            .iter()
-            .any(|seen| seen.tool_call_id == result.tool_call_id);
-        called && !repeated
-    });
-    answers_its_calls.then_some(())?;
-    fields.finish(step)
-}
-
-fn tool_call(value: Json<'_>) -> Option<ToolCall> {
-    let mut fields = Fields::new(value)?;
-    let id = durable_text(fields.required("id")?)?;
-    let name = durable_text(fields.required("name")?)?;
-    let mut arguments = durable_text(fields.required("arguments_json")?)?;
-    fixed::<Null>(&mut fields, "provider_result")?;
-    if ToolArgumentIntegrity::classify_function_input(&arguments)
-        == ToolArgumentIntegrity::MalformedJson
-    {
-        "{}".clone_into(&mut arguments);
-    }
-    fields.finish(ToolCall::new(id, name, arguments))
-}
-
-fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {
-    let mut fields = Fields::new(value)?;
-    let result = SavedToolResult {
-        tool_call_id: durable_text(fields.required("tool_call_id")?)?,
-        tool_name: durable_text(fields.required("tool_name")?)?,
-        status: tag(&fields.required("status")?)?,
-        output: durable_text(fields.required("output")?)?,
-        output_handle: fields
-            .present_or_null("output_handle", |value| durable_text(value).map(Some))?,
-        preview: fields.present_or_null("preview", |value| durable_text(value).map(Some))?,
-        output_bytes: usize::try_from(fields.unsigned("output_bytes")?).ok()?,
-        stored_output_bytes: fields.unsigned("stored_output_bytes")?,
-        truncated: fields.flag("truncated")?,
-        process: fields.present_or_null("command_process_presentation", |value| {
-            process_presentation::checkpoint::read(value).map(Some)
-        })?,
-        review_feedback: fields.flag("review_feedback")?,
-        permission_feedback: list(fields.required("permission_feedback")?, durable_text)?,
-    };
-    fixed::<False>(&mut fields, "provider_native")?;
-    (!result.review_feedback || result.status == ToolResultStatus::Failure).then_some(())?;
-    fields.signed("created_at_ms")?;
-    for presentation in [
-        "committed_file_presentation",
-        "command_output_replay",
-        "terminal_action_presentation",
-    ] {
-        fixed::<Null>(&mut fields, presentation)?;
-    }
-    fields.finish(result)
 }
 
 fn file_evidence(value: Json<'_>) -> Option<FileEvidence> {
@@ -542,22 +483,6 @@ fn lowercase_digest(hex: &str) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
         *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
     }
     Some(digest)
-}
-
-fn durable_text(value: Json<'_>) -> Option<String> {
-    match value {
-        Json::String(text) => Some(text.into_owned()),
-        Json::Object(entries) => match entries.entries() {
-            [
-                (encoding, Json::String(scheme)),
-                (data, Json::String(encoded)),
-            ] if encoding == "encoding" && scheme == "base64" && data == "data" => {
-                String::from_utf8(STANDARD.decode(encoded.as_bytes()).ok()?).ok()
-            }
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 fn list<T>(value: Json<'_>, item: impl Fn(Json<'_>) -> Option<T>) -> Option<Vec<T>> {

@@ -8,6 +8,7 @@ mod ids;
 mod model_capabilities;
 mod modes;
 mod permission_gate;
+mod persisted_result;
 mod session_picker;
 mod settings_catalog;
 mod skill_menu;
@@ -44,6 +45,11 @@ pub use permission_gate::{
     Admission, ApprovalAnswer, ApprovalDecision, ApprovalScope, CommandProfile, CommandRequest,
     FileChange, FileMutation, FileMutationState, GatedAction, PathAccess, PermissionGate,
     ProposedFileChange, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, SessionGrant,
+};
+pub use persisted_result::{
+    CommandOutputReplay, CommittedFilePresentation, FilePresentationKind, FilePresentationLine,
+    FilePresentationLineKind, ImageAttachment, PersistedResult, ToolImage, ToolImages,
+    ToolLifecycleId,
 };
 pub use session_picker::{ResumeRefusal, SessionCursor, SessionPage, SessionRow, SessionScope};
 pub use settings_catalog::{

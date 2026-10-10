@@ -1,4 +1,6 @@
-use ofx_contract::{FileChangeStats, SavedFileChange};
+use ofx_contract::{
+    FileChangeStats, FilePresentationKind, FilePresentationLineKind, SavedFileChange,
+};
 use serde::Serialize;
 
 use super::{MAX_TEXT_BYTES, WireTag, is_valid_identity, is_valid_path, wire_tag};
@@ -6,26 +8,11 @@ use super::{MAX_TEXT_BYTES, WireTag, is_valid_identity, is_valid_path, wire_tag}
 const CONTENT_HANDLE_PREFIX: &str = "diff-";
 const CONTENT_HANDLE_SUFFIX: &str = ".json";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PresentationKind {
-    Added,
-    Edited,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LineKind {
-    Context,
-    Addition,
-    Deletion,
-    Elision,
-    Notice,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize), serde(deny_unknown_fields))]
 pub(crate) struct PresentationLine {
     #[serde(with = "wire_tag")]
-    pub(crate) kind: LineKind,
+    pub(crate) kind: FilePresentationLineKind,
     #[cfg_attr(test, serde(default))]
     pub(crate) old_line: Option<u32>,
     #[cfg_attr(test, serde(default))]
@@ -45,7 +32,7 @@ pub(crate) struct LifecycleId {
 pub(crate) struct CommittedFilePresentation {
     pub(crate) path: String,
     #[serde(with = "wire_tag")]
-    pub(crate) kind: PresentationKind,
+    pub(crate) kind: FilePresentationKind,
     pub(crate) lines: Vec<PresentationLine>,
     pub(crate) additions: u64,
     pub(crate) deletions: u64,
@@ -88,16 +75,51 @@ impl CommittedFilePresentation {
     }
 
     fn has_one_content_source(&self) -> bool {
-        self.content_handle.as_deref().is_none_or(|handle| {
-            self.previous_content.is_none()
-                && self.after_content.is_none()
-                && handle.starts_with(CONTENT_HANDLE_PREFIX)
-                && handle.ends_with(CONTENT_HANDLE_SUFFIX)
-        })
+        has_one_content_source(
+            self.content_handle.as_deref(),
+            self.previous_content.is_some() || self.after_content.is_some(),
+        )
     }
 }
 
-impl WireTag for PresentationKind {
+pub(crate) fn has_one_content_source(content_handle: Option<&str>, inline: bool) -> bool {
+    content_handle.is_none_or(|handle| {
+        !inline
+            && handle.starts_with(CONTENT_HANDLE_PREFIX)
+            && handle.ends_with(CONTENT_HANDLE_SUFFIX)
+    })
+}
+
+impl From<&ofx_contract::CommittedFilePresentation> for CommittedFilePresentation {
+    fn from(presentation: &ofx_contract::CommittedFilePresentation) -> Self {
+        Self {
+            path: presentation.path.clone(),
+            kind: presentation.kind,
+            lines: presentation
+                .lines
+                .iter()
+                .map(|line| PresentationLine {
+                    kind: line.kind,
+                    old_line: line.old_line,
+                    new_line: line.new_line,
+                    text: line.text.clone(),
+                })
+                .collect(),
+            additions: presentation.additions,
+            deletions: presentation.deletions,
+            truncated: presentation.truncated,
+            previous_content: presentation.previous_content.clone(),
+            after_content: presentation.after_content.clone(),
+            lifecycle_id: presentation.lifecycle_id.as_ref().map(|id| LifecycleId {
+                turn_id: id.turn_id,
+                call_id: id.call_id.clone(),
+            }),
+            content_handle: presentation.content_handle.clone(),
+        }
+    }
+}
+
+impl WireTag for FilePresentationKind {
     const ALL: &'static [Self] = &[Self::Added, Self::Edited];
 
     fn tag(self) -> &'static str {
@@ -108,7 +130,7 @@ impl WireTag for PresentationKind {
     }
 }
 
-impl WireTag for LineKind {
+impl WireTag for FilePresentationLineKind {
     const ALL: &'static [Self] = &[
         Self::Context,
         Self::Addition,

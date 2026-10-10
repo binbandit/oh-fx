@@ -1,6 +1,7 @@
 mod fixed_field;
 mod fx_sessions;
 mod history_snapshot;
+mod image_data;
 mod json_fields;
 mod process_presentation;
 mod prompt_history_store;

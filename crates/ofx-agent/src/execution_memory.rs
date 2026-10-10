@@ -315,12 +315,13 @@ pub(crate) fn partial_view(call_id: ToolCallId, bytes: usize) -> RecordedOutput 
         whole_file: false,
         process: None,
         review_feedback: false,
+        persisted: None,
     }
 }
 
 pub(crate) fn logged_steps<'a>(
     steps: &[ToolStep<'a>],
-    raw_outputs: &[RecordedOutput],
+    raw_outputs: &'a [RecordedOutput],
 ) -> Vec<HistoryStep<'a>> {
     let kept = steps.iter().map(|step| step.results.len()).sum::<usize>();
     let mut recorded = raw_outputs
@@ -355,6 +356,7 @@ pub(crate) fn logged_steps<'a>(
                         },
                         model_view_covers_full_file: raw.is_some_and(|raw| raw.whole_file),
                         permission_feedback: result.feedback.clone(),
+                        persisted: raw.and_then(|raw| raw.persisted.as_deref()),
                     }
                 })
                 .collect(),

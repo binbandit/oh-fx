@@ -1036,6 +1036,7 @@ fn replied_turn(user: &str) -> HistoryTurn<'_> {
             text: "ok",
             provider_replay: None,
         },
+        images: &[],
     }
 }
 
@@ -1106,6 +1107,7 @@ fn a_turn_left_unsaved_keeps_its_prompt_language_for_the_next_commit() {
                     reason: TurnStop::Failed,
                     partial: "",
                 },
+                images: &[],
             },
             &provider,
         )

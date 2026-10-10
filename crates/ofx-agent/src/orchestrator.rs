@@ -11,17 +11,17 @@ use ofx_contract::{
     AutoCompactPercent, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
     DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
-    FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
-    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure,
-    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
-    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
-    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    TurnStop, UiEvent, Usage, bound_model_output, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
-    tool_review_held_json,
+    FinishReason, GatedAction, ImageAttachment, LogFailure, ModelCapabilities,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryAction, ModelRecoveryCause,
+    ModelRecoveryRequiredAction, ModelRequest, PathAccess, PermissionGate, PreparedCall,
+    ProviderError, ProviderErrorKind, ProviderOptions, RecordedOutput, RecoveredTurn,
+    RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed,
+    RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent,
+    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnStop, UiEvent, Usage,
+    bound_model_output, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -200,6 +200,7 @@ struct Turn {
     fast_notice_shown: bool,
     compaction: TurnCompaction,
     raw_outputs: Vec<RecordedOutput>,
+    images: Vec<ImageAttachment>,
     earlier_files: EarlierEvidence,
     reviews: TurnReviews,
     language: TurnLanguage,
@@ -524,6 +525,7 @@ impl Agent {
             fast_notice_shown: false,
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
+            images: Vec::new(),
             earlier_files: EarlierEvidence::default(),
             reviews: TurnReviews::default(),
             language: self.turn_language(prompt),
@@ -560,6 +562,7 @@ impl Agent {
         }
         self.history.extend(recovered.messages);
         turn.raw_outputs = recovered.outputs;
+        turn.images = recovered.images;
         turn.fast_mode = recovered.fast_mode;
         turn.recovery = Some(recovered.strategy);
         turn.recovery_cause = recovered.cause;
@@ -1378,6 +1381,7 @@ impl Agent {
                 whole_file: shown_whole && !truncated,
                 process: output.process,
                 review_feedback: review_hold,
+                persisted: None,
             });
             let content = if escalates {
                 escalate_repeated_failure(turn, call, status, model_output)

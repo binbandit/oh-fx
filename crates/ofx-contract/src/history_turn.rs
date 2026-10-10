@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::file_evidence::FileEvidence;
 use crate::ids::{ToolCallId, TurnId};
+use crate::persisted_result::{ImageAttachment, PersistedResult};
 use crate::types::{
     ChatMessage, CommandProcessPresentation, ModelRecoveryAction, ModelRecoveryCause,
     ProviderReplay, ToolCall, ToolResultStatus,
@@ -21,6 +22,7 @@ pub struct StepResult<'a> {
     pub process: Option<CommandProcessPresentation>,
     pub review_feedback: bool,
     pub permission_feedback: Vec<&'a str>,
+    pub persisted: Option<&'a PersistedResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,7 @@ pub struct HistorySteering<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryTurn<'a> {
     pub user: &'a str,
+    pub images: &'a [ImageAttachment],
     pub steps: Vec<HistoryStep<'a>>,
     pub steering: Vec<HistorySteering<'a>>,
     pub files: &'a [FileEvidence],
@@ -82,11 +85,13 @@ pub struct RecordedOutput {
     pub whole_file: bool,
     pub process: Option<CommandProcessPresentation>,
     pub review_feedback: bool,
+    pub persisted: Option<Box<PersistedResult>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredTurn {
     pub prompt: String,
+    pub images: Vec<ImageAttachment>,
     pub messages: Vec<ChatMessage>,
     pub files: Vec<FileEvidence>,
     pub outputs: Vec<RecordedOutput>,

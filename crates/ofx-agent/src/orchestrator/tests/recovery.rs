@@ -44,6 +44,7 @@ fn recovered(strategy: RecoveryStrategy) -> RecoveredTurn {
         },
         strategy,
         fast_mode: false,
+        images: Vec::new(),
     }
 }
 
@@ -123,6 +124,7 @@ async fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_pro
             whole_file: false,
             process: Some(CommandProcessPresentation::ExitCode(3)),
             review_feedback: false,
+            persisted: None,
         }],
         ..recovered(RecoveryStrategy::ContinueAfterTool)
     };

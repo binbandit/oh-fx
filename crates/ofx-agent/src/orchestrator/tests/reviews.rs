@@ -471,6 +471,7 @@ async fn a_continued_turn_keeps_its_saved_holds_out_of_later_review_evidence() {
         whole_file: false,
         process: None,
         review_feedback,
+        persisted: None,
     };
     let recovered = RecoveredTurn {
         prompt: "go".to_owned(),
@@ -491,6 +492,7 @@ async fn a_continued_turn_keeps_its_saved_holds_out_of_later_review_evidence() {
         tool_state: RecoveryToolState::Confirmed,
         strategy: RecoveryStrategy::ContinueAfterTool,
         fast_mode: false,
+        images: Vec::new(),
     };
     let report = agent
         .continue_turn(recovered, &mut |_| {}, &CancellationToken::new())

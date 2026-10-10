@@ -57,6 +57,7 @@ fn replied(user: &str) -> HistoryTurn<'_> {
             text: "done",
             provider_replay: None,
         },
+        images: &[],
     }
 }
 
@@ -261,6 +262,7 @@ fn a_childs_reply_is_found_by_the_work_it_answered() {
                     reason: TurnStop::Failed,
                     partial: "half an answer",
                 },
+                images: &[],
             },
             &provider,
         )
@@ -301,6 +303,7 @@ fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_fi
                 review_feedback: false,
                 permission_feedback: Vec::new(),
                 model_view_covers_full_file: false,
+                persisted: None,
             }],
         }],
         steering: Vec::new(),
@@ -309,6 +312,7 @@ fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_fi
             text: "",
             provider_replay: None,
         },
+        images: &[],
     };
     child.begin_work("old-work");
     child

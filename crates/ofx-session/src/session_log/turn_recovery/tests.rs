@@ -495,6 +495,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
                 process: None,
                 review_feedback: false,
                 permission_feedback: Vec::new(),
+                persisted: None,
             }],
         }],
         steering: Vec::new(),
@@ -503,6 +504,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
             text: "fixed",
             provider_replay: None,
         },
+        images: &[],
     };
     resumed.record_turn(&finished, &provider).unwrap();
     assert!(!fixture.path(RECOVERY_FILE).exists());
@@ -544,12 +546,14 @@ fn continued_turn<'a>(
                     process: None,
                     review_feedback: false,
                     permission_feedback: Vec::new(),
+                    persisted: None,
                 }],
             })
             .collect(),
         steering: Vec::new(),
         files: &[],
         end,
+        images: &[],
     }
 }
 
@@ -689,6 +693,7 @@ fn standalone_turn<'a>(
         steering: Vec::new(),
         files: &[],
         end,
+        images: &[],
     }
 }
 
@@ -857,6 +862,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
                 process: None,
                 review_feedback: false,
                 permission_feedback: Vec::new(),
+                persisted: None,
             });
             messages.next();
         }
@@ -873,6 +879,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
         steering: Vec::new(),
         files: &[],
         end,
+        images: &[],
     }
 }
 
@@ -901,6 +908,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                     process: None,
                     review_feedback: false,
                     permission_feedback: Vec::new(),
+                    persisted: None,
                 }],
             }],
             steering: Vec::new(),
@@ -909,6 +917,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                 text: "",
                 provider_replay: None,
             },
+            images: &[],
         },
         source: "",
         cause: ModelRecoveryCause::ProviderUnavailable,
@@ -954,6 +963,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
             text: "fixed",
             provider_replay: None,
         },
+        images: &[],
     };
     resumed.record_turn(&finished, &provider).unwrap();
     assert!(!fixture.path(RECOVERY_FILE).exists());
@@ -1081,11 +1091,13 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
                     review_feedback: false,
                     permission_feedback: Vec::new(),
                     model_view_covers_full_file: true,
+                    persisted: None,
                 }],
             }],
             steering: Vec::new(),
             files: &files,
             end: replied(""),
+            images: &[],
         },
         source: "",
         cause: ModelRecoveryCause::ProviderUnavailable,
@@ -1153,6 +1165,7 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
                 review_feedback: false,
                 model_view_covers_full_file: false,
                 permission_feedback: Vec::new(),
+                persisted: None,
             }],
         }],
         steering: Vec::new(),
@@ -1161,6 +1174,7 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
             text: "",
             provider_replay: None,
         },
+        images: &[],
     };
     let mut session = fixture.resume().unwrap();
     session.settle_open_recovery().unwrap();
@@ -1267,11 +1281,13 @@ fn a_paused_turn_keeps_its_approval_feedback_when_committed() {
                     review_feedback: false,
                     model_view_covers_full_file: false,
                     permission_feedback: vec![FEEDBACK],
+                    persisted: None,
                 }],
             }],
             steering: Vec::new(),
             files: &[],
             end: replied(""),
+            images: &[],
         };
         let mut session = fixture.resume().unwrap();
         session
@@ -1361,11 +1377,13 @@ fn a_paused_turn_keeps_its_review_feedback_when_committed() {
                 review_feedback: true,
                 model_view_covers_full_file: false,
                 permission_feedback: Vec::new(),
+                persisted: None,
             }],
         }],
         steering: Vec::new(),
         files: &[],
         end: replied(""),
+        images: &[],
     };
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
@@ -1410,6 +1428,7 @@ fn a_paused_child_turn_keeps_its_work_id_when_committed() {
             steering: Vec::new(),
             files: &[],
             end: replied(""),
+            images: &[],
         },
         source: "Half",
         cause: ModelRecoveryCause::ConnectivityLost,
@@ -1490,6 +1509,7 @@ fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() 
                 steering: Vec::new(),
                 files: &[],
                 end: replied("Moved on."),
+                images: &[],
             },
             &provider,
         )
@@ -1557,6 +1577,7 @@ fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is
                 steering: Vec::new(),
                 files: &[],
                 end: replied("Moved on."),
+                images: &[],
             },
             &provider,
         )

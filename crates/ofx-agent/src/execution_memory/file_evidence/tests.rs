@@ -11,6 +11,7 @@ fn result(call: &ToolCall, status: ToolResultStatus, whole: bool) -> StepResult<
         review_feedback: false,
         permission_feedback: Vec::new(),
         model_view_covers_full_file: whole,
+        persisted: None,
     }
 }
 

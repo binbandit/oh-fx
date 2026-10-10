@@ -112,6 +112,7 @@ fn result<'a>(call: &'a ToolCall, output: &'a str, status: ToolResultStatus) -> 
         process: None,
         review_feedback: false,
         permission_feedback: Vec::new(),
+        persisted: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn simple_turn<'a>(user: &'a str, reply: &'a str) -> HistoryTurn<'a> {
         steering: Vec::new(),
         files: &[],
         end: replied(reply),
+        images: &[],
     }
 }
 
@@ -196,6 +198,7 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
             text: "done",
             provider_replay: Some(&codex),
         },
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -289,6 +292,7 @@ fn approval_feedback_is_saved_on_its_result_and_follows_every_result_of_its_step
         steering: Vec::new(),
         files: &[],
         end: replied("done"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -331,6 +335,7 @@ fn standalone_steps_and_empty_replies_follow_upstream_boundaries() {
         steering: Vec::new(),
         files: &[],
         end: replied(""),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -370,6 +375,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                     reason: TurnStop::Cancelled,
                     partial: "half",
                 },
+                images: &[],
             },
             &gateway(),
         )
@@ -385,6 +391,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                     reason: TurnStop::Failed,
                     partial: "",
                 },
+                images: &[],
             },
             &gateway(),
         )
@@ -404,6 +411,7 @@ fn interrupted_turns_restore_with_upstream_closing_messages() {
                     reason: TurnStop::Failed,
                     partial: "",
                 },
+                images: &[],
             },
             &gateway(),
         )
@@ -461,6 +469,7 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
         steering: Vec::new(),
         files: &[],
         end: replied(""),
+        images: &[],
     };
     let cut = HistoryCut {
         turns: 1,
@@ -487,6 +496,7 @@ fn a_mid_turn_checkpoint_covers_the_cut_and_the_rest_of_the_turn_follows_it() {
         steering: Vec::new(),
         files: &[],
         end: replied("done"),
+        images: &[],
     };
     session.record_turn(&rest, &gateway()).unwrap();
     assert!(!session.turn_open());
@@ -622,6 +632,7 @@ fn a_crash_after_a_mid_turn_checkpoint_closes_the_turn_on_resume() {
         steering: Vec::new(),
         files: &[],
         end: replied(""),
+        images: &[],
     };
     let cut = HistoryCut {
         turns: 0,
@@ -690,6 +701,7 @@ fn restored_results_fall_back_when_their_artifact_is_missing_or_changed() {
         steering: Vec::new(),
         files: &[],
         end: replied("ok"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -727,6 +739,7 @@ fn replays_are_saved_only_with_a_provider_identity_that_reads_back() {
                 text: "a",
                 provider_replay: Some(replay),
             },
+            images: &[],
         };
         session.record_turn(&turn, provider).unwrap();
     }
@@ -881,6 +894,7 @@ fn provider_executed_calls_are_saved_and_restored_with_their_provenance() {
         steering: Vec::new(),
         files: &[],
         end: replied("found"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -1020,6 +1034,7 @@ fn a_turn_whose_results_cannot_be_stored_after_a_checkpoint_blocks_every_later_s
         steering: Vec::new(),
         files: &[],
         end: replied("two"),
+        images: &[],
     };
     assert!(session.record_turn(&second, &gateway()).is_err());
     assert!(session.turn_open());
@@ -1084,6 +1099,7 @@ fn saved_tool_results_read_back_whole_from_their_preview_or_their_artifact() {
         steering: Vec::new(),
         files: &[],
         end: replied("done"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -1127,6 +1143,7 @@ fn saved_results_larger_than_replay_limit_keep_the_complete_sidecar() {
         steering: Vec::new(),
         files: &[],
         end: replied("done"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -1307,6 +1324,7 @@ fn steering_is_saved_at_its_step_boundary_and_restored_as_plain_user_text() {
         steering: vec![steering("first", "Looking", 0), steering("second", "", 1)],
         files: &[],
         end: replied("done"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -1360,6 +1378,7 @@ fn a_turn_that_only_took_steering_is_saved() {
             reason: TurnStop::Failed,
             partial: "",
         },
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -1408,6 +1427,7 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
         steering: vec![steering("between", "", 1), steering("after", "", 2)],
         files: &[],
         end: replied(""),
+        images: &[],
     };
     for (cut, kept) in [
         (
@@ -1444,6 +1464,7 @@ fn a_mid_turn_checkpoint_counts_the_steering_it_covers() {
             steering: Vec::new(),
             files: &[],
             end: replied("done"),
+            images: &[],
         };
         let retained_steps = active.steps[cut.tool_steps..].to_vec();
         let retained_steering = active.steering[cut.steering..]
@@ -1563,6 +1584,7 @@ fn a_restored_turn_sends_its_file_evidence_after_its_steps_and_before_later_stee
         steering: vec![steering("first", "", 0), steering("second", "", 1)],
         files: &gathered_files(),
         end: replied("done"),
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
@@ -1598,6 +1620,7 @@ fn an_interrupted_turn_restores_its_file_evidence_before_its_closing_messages() 
             reason: TurnStop::Failed,
             partial: "",
         },
+        images: &[],
     };
     session.record_turn(&turn, &gateway()).unwrap();
     drop(session);
