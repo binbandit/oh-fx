@@ -30,7 +30,7 @@ impl McpClient {
             let mut settled = pin!(self.tools_settled.notified());
             settled.as_mut().enable();
             let refreshed = self.refresh_tools(deadline).await;
-            if !refreshed.in_flight {
+            if !refreshed.in_flight || !self.tools_invalidation.pending() {
                 return Ok(refreshed);
             }
             if timeout_at(deadline, settled).await.is_err() {

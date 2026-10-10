@@ -30,7 +30,8 @@ while IFS= read -r line; do
       if [ -f "$STATE/fail" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"unavailable"}}\n' "$id"
       elif [ -f "$STATE/slow" ]; then
-        ( sleep 1; reply "$id" "$result" ) &
+        delay=$(cat "$STATE/slow")
+        ( sleep "${delay:-1}"; reply "$id" "$result" ) &
       else
         reply "$id" "$result"
       fi ;;
@@ -299,7 +300,33 @@ async fn a_call_is_refused_while_a_change_notification_waits_for_its_list() {
 }
 
 #[tokio::test]
-async fn a_call_whose_deadline_passes_while_a_list_is_in_flight_never_reaches_the_server() {
+async fn a_call_goes_ahead_with_the_last_list_while_a_list_with_no_change_pending_is_in_flight() {
+    let state = tempfile::tempdir().unwrap();
+    let server = started(state.path()).await;
+    let alpha = advertised(&server);
+    let client = ready_client(&server);
+    write(state.path(), "slow", "3");
+    client.request_tool_refresh();
+    let refreshing = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+        })
+    };
+    while lists(state.path()) < 2 {
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert!(call(&server, &alpha).await);
+    assert_eq!(lines(state.path(), "calls"), 1);
+    assert_eq!(health(&server).0, CacheFreshness::Refreshing);
+    refreshing.abort();
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn a_call_whose_deadline_passes_while_a_change_is_being_listed_never_reaches_the_server() {
     let state = tempfile::tempdir().unwrap();
     let server = started_with_operation_timeout(state.path(), 50).await;
     let alpha = advertised(&server);
@@ -317,6 +344,13 @@ async fn a_call_whose_deadline_passes_while_a_list_is_in_flight_never_reaches_th
     while lists(state.path()) < 2 {
         sleep(Duration::from_millis(5)).await;
     }
+    write(state.path(), "notify", "");
+    assert!(call_directly(&client, &alpha).await);
+    let notified = Instant::now() + Duration::from_secs(5);
+    while !client.tools_invalidation.pending() && Instant::now() < notified {
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert!(client.tools_invalidation.pending());
     let timed_out = server.call(&alpha, "{}", CallOptions::default()).await;
     assert!(matches!(
         timed_out,
@@ -324,7 +358,7 @@ async fn a_call_whose_deadline_passes_while_a_list_is_in_flight_never_reaches_th
     ));
     refreshing.await.unwrap();
     assert!(call_directly(&client, &alpha).await);
-    assert_eq!(lines(state.path(), "calls"), 1);
+    assert_eq!(lines(state.path(), "calls"), 2);
     server.stop(ShutdownMode::Immediate).await;
 }
 
@@ -341,8 +375,8 @@ async fn a_call_whose_own_list_uses_up_its_deadline_never_reaches_the_server() {
         timed_out,
         Err(CallFailure::Mcp(McpError::McpRequestTimedOut))
     ));
-    assert_eq!(lists(state.path()), 2);
     assert!(call_directly(&client, &alpha).await);
+    assert_eq!(lists(state.path()), 2);
     assert_eq!(lines(state.path(), "calls"), 1);
     server.stop(ShutdownMode::Immediate).await;
 }
