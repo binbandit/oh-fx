@@ -95,6 +95,8 @@ fn trace_ids_increase_from_one_call_to_the_next() {
     assert_eq!(next_turn_id(), first + 1);
     let step = next_step_id();
     assert_eq!(next_step_id(), step + 1);
+    let subagent = next_subagent_id();
+    assert_eq!(next_subagent_id(), subagent + 1);
 }
 
 #[test]
