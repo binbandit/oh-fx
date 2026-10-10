@@ -5,6 +5,7 @@ use std::iter;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
@@ -2384,27 +2385,39 @@ enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput, bool),
     Admitted(Box<dyn PreparedCall>, ToolContext),
-    Running(JoinHandle<(ToolOutput, i64)>, i64),
+    Running(JoinHandle<Finished>, i64),
     Unstarted,
 }
 
+type Finished = (ToolOutput, i64, u64);
+
 impl Dispatched {
-    fn start(self, cancel: &CancellationToken) -> Self {
+    fn start(self, cancel: &CancellationToken, finishes: &Arc<AtomicU64>) -> Self {
         match self {
             Self::Admitted(prepared, _) if cancel.is_cancelled() => {
                 discard(prepared);
                 Self::Unstarted
             }
-            Self::Admitted(prepared, context) => Self::Running(
-                tokio::spawn(async move {
-                    let output = prepared.execute(context).await;
-                    (output, ofx_trace::timestamp_ms())
-                }),
-                ofx_trace::timestamp_ms(),
-            ),
+            Self::Admitted(prepared, context) => {
+                let finishes = Arc::clone(finishes);
+                Self::Running(
+                    tokio::spawn(async move {
+                        let output = prepared.execute(context).await;
+                        let order = finishes.fetch_add(1, Ordering::SeqCst);
+                        (output, ofx_trace::timestamp_ms(), order)
+                    }),
+                    ofx_trace::timestamp_ms(),
+                )
+            }
             other => other,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct Grace {
+    deadline: Instant,
+    cancelled_at: u64,
 }
 
 struct Settled<'c> {
@@ -2860,10 +2873,11 @@ async fn settle_group<'c>(
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Vec<Settled<'c>> {
+    let finishes = Arc::new(AtomicU64::new(0));
     let dispatched: Vec<_> = dispatched
         .into_iter()
         .map(|(call, dispatched, feedback)| {
-            let started = dispatched.start(cancel);
+            let started = dispatched.start(cancel, &finishes);
             if matches!(started, Dispatched::Running(..)) {
                 turn_trace::tool_execution_start(trace, call);
             }
@@ -2877,7 +2891,7 @@ async fn settle_group<'c>(
     if let Some(kind) = parallel.filter(|_| running > 0) {
         turn_trace::parallel_group(trace, "parallel_tool_group_start", kind.name(), running);
     }
-    let mut grace_deadline = None;
+    let mut grace = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched, feedback) in dispatched {
         let mut ran = None;
@@ -2896,7 +2910,7 @@ async fn settle_group<'c>(
                 (Some(output), true, false, review_hold)
             }
             Dispatched::Running(mut task, started_at_ms) => {
-                let settling = settle(call, &mut task, cancel, &mut grace_deadline);
+                let settling = settle(call, &mut task, (cancel, &finishes), &mut grace);
                 let joined = forward_child_statuses(turn_id, settling, reported, events).await;
                 ran = Some(Ran {
                     started_at_ms,
@@ -3076,24 +3090,27 @@ async fn forward_child_statuses<T>(
 
 async fn settle(
     call: &ToolCall,
-    task: &mut JoinHandle<(ToolOutput, i64)>,
-    cancel: &CancellationToken,
-    grace_deadline: &mut Option<Instant>,
+    task: &mut JoinHandle<Finished>,
+    (cancel, finishes): (&CancellationToken, &AtomicU64),
+    grace: &mut Option<Grace>,
 ) -> Option<Joined> {
-    let deadline = if let Some(deadline) = *grace_deadline {
-        deadline
+    let current = if let Some(current) = *grace {
+        current
     } else {
         tokio::select! {
             biased;
             joined = &mut *task => {
-                return Some(settled_output(call, joined, false));
+                return Some(settled_output(call, joined, None));
             }
             () = cancel.cancelled() => {}
         }
-        *grace_deadline.insert(Instant::now() + TOOL_CANCEL_GRACE)
+        *grace.insert(Grace {
+            deadline: Instant::now() + TOOL_CANCEL_GRACE,
+            cancelled_at: finishes.fetch_add(1, Ordering::SeqCst),
+        })
     };
-    if let Ok(joined) = tokio::time::timeout_at(deadline, &mut *task).await {
-        return Some(settled_output(call, joined, true));
+    if let Ok(joined) = tokio::time::timeout_at(current.deadline, &mut *task).await {
+        return Some(settled_output(call, joined, Some(current.cancelled_at)));
     }
     task.abort();
     None
@@ -3101,15 +3118,15 @@ async fn settle(
 
 fn settled_output(
     call: &ToolCall,
-    joined: Result<(ToolOutput, i64), JoinError>,
-    cancelled: bool,
+    joined: Result<Finished, JoinError>,
+    cancelled_at: Option<u64>,
 ) -> Joined {
     match joined {
-        Ok((output, finished_at_ms)) => Joined {
+        Ok((output, finished_at_ms, finished)) => Joined {
             output,
             finished_at_ms,
             panicked: false,
-            cancelled,
+            cancelled: cancelled_at.is_some_and(|cancelled_at| finished > cancelled_at),
         },
         Err(error) => {
             if let Ok(payload) = error.try_into_panic() {
@@ -3119,7 +3136,7 @@ fn settled_output(
                 output: panicked(&call.name),
                 finished_at_ms: ofx_trace::timestamp_ms(),
                 panicked: true,
-                cancelled,
+                cancelled: cancelled_at.is_some(),
             }
         }
     }
