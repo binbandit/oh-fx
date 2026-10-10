@@ -1,3 +1,4 @@
+mod ask_images;
 mod ask_session;
 mod auto_upgrade;
 mod cli_ask;
