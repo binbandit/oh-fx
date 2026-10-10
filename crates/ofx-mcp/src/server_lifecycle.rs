@@ -278,12 +278,18 @@ impl Server {
         client: &Arc<McpClient>,
         snapshot: Snapshot<T>,
     ) -> bool {
+        self.while_current(client, || self.features.publish(snapshot))
+            .is_some()
+    }
+
+    pub(crate) fn while_current<R>(
+        &self,
+        client: &Arc<McpClient>,
+        action: impl FnOnce() -> R,
+    ) -> Option<R> {
         let state = lock(&self.state);
-        if !matches!(&*state, State::Ready(connection) if Arc::ptr_eq(&connection.client, client)) {
-            return false;
-        }
-        self.features.publish(snapshot);
-        true
+        matches!(&*state, State::Ready(connection) if Arc::ptr_eq(&connection.client, client))
+            .then(action)
     }
 
     fn ready_client(&self) -> Option<Arc<McpClient>> {

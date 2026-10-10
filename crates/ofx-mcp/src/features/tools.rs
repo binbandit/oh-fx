@@ -5,6 +5,7 @@ use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
 use crate::error::McpError;
+use crate::features::common::is_valid_base64;
 use crate::json_number::{non_negative_u64, ttl_milliseconds};
 use crate::mcp_contract::validate_json_rpc_response_envelope;
 
@@ -647,42 +648,6 @@ fn bounded_clone(value: &Value, max_bytes: usize) -> Result<Value, McpError> {
     Ok(value.clone())
 }
 
-fn is_valid_base64(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if !bytes.len().is_multiple_of(4) {
-        return false;
-    }
-    let padding = bytes.iter().rev().take_while(|byte| **byte == b'=').count();
-    if padding > 2 {
-        return false;
-    }
-    let data = bytes.get(..bytes.len() - padding).unwrap_or_default();
-    let Some(indices) = data
-        .iter()
-        .map(|byte| base64_index(*byte))
-        .collect::<Option<Vec<u8>>>()
-    else {
-        return false;
-    };
-    match (padding, indices.last()) {
-        (1, Some(last)) => last.trailing_zeros() >= 2,
-        (2, Some(last)) => last.trailing_zeros() >= 4,
-        (0, _) => true,
-        _ => false,
-    }
-}
-
-fn base64_index(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -1207,15 +1172,5 @@ mod tests {
             ),
             Err(McpError::InvalidCallResult)
         );
-    }
-
-    #[test]
-    fn base64_validation_requires_canonical_padding() {
-        for valid in ["", "AA==", "AAA=", "AAAA", "QUJD"] {
-            assert!(is_valid_base64(valid), "{valid}");
-        }
-        for invalid in ["A", "A===", "AB==", "AAB=", "AA=A", "A..A", "AAAA=", "===="] {
-            assert!(!is_valid_base64(invalid), "{invalid}");
-        }
     }
 }

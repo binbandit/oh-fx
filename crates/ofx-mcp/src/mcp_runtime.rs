@@ -12,7 +12,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::feature_operations::{PromptSummary, ResourceSummary};
+use crate::feature_operations::{PromptSummary, ResourceReadFailure, ResourceSummary};
+use crate::features::common::ResourceContent;
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
 use crate::native_config::NativeConfigLoad;
@@ -190,6 +191,15 @@ impl McpRuntime {
     ) -> Result<Vec<ResourceSummary>, McpError> {
         let (server, deadline) = self.feature_server(server_name).await?;
         server.list_resources(include_templates, deadline).await
+    }
+
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<Arc<[ResourceContent]>, ResourceReadFailure> {
+        let (server, deadline) = self.feature_server(server_name).await?;
+        server.read_resource(uri, deadline).await
     }
 
     pub async fn list_prompts(&self, server_name: &str) -> Result<Vec<PromptSummary>, McpError> {
@@ -514,6 +524,7 @@ mod tests {
     use super::*;
     use crate::catalog_freshness::SnapshotMetadata;
     use crate::feature_catalog::Snapshot;
+    use crate::features::common::ResourceData;
     use crate::features::resources::Resource;
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
     use crate::project_config::WorkspaceDiagnosticCause;
@@ -1705,6 +1716,244 @@ done
         }
         assert_eq!(requests(state.path()), "prompts\n");
         assert_eq!(runtime.snapshot_health().servers[0].counts.prompts, None);
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    const READ_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"resources\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+    *'"method":"resources/list"'*)
+      echo resources >> "$STATE/catalogs"
+      if [ -f "$STATE/broken" ]; then
+        reply "$id" '{"resources":[{"uri":"memory://bad"}]}'
+      else
+        reply "$id" '{"resources":[{"uri":"memory://notes","name":"notes"}]}'
+      fi ;;
+    *'"method":"resources/templates/list"'*)
+      echo templates >> "$STATE/catalogs"
+      if [ -f "$STATE/templates.json" ]; then
+        reply "$id" "$(cat "$STATE/templates.json")"
+      else
+        reply "$id" '{"resourceTemplates":[{"uriTemplate":"memory://items/{id}","name":"item"}]}'
+      fi ;;
+    *'"method":"resources/read"'*)
+      uri=$(printf '%s' "$line" | sed -n 's/.*"uri":"\([^"]*\)".*/\1/p')
+      echo "read $uri" >> "$STATE/requests"
+      if [ -f "$STATE/crash" ]; then exit 0; fi
+      ttl=""
+      if [ -f "$STATE/ttl" ]; then ttl=',"ttlMs":1'; fi
+      text=$(cat "$STATE/version" 2>/dev/null || echo v1)
+      case "$uri" in
+        memory://items/denied)
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32002,"message":"denied","data":{"uri":"%s"}}}\n' "$id" "$uri" ;;
+        memory://items/*) reply "$id" "{\"contents\":[{\"uri\":\"$uri\",\"text\":\"item\"}]}" ;;
+        *) reply "$id" "{\"contents\":[{\"uri\":\"$uri\",\"mimeType\":\"text/plain\",\"text\":\"$text\"}]$ttl}" ;;
+      esac
+      if [ -f "$STATE/notify" ]; then
+        rm "$STATE/notify"
+        touch "$STATE/broken"
+        printf '{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}\n'
+      fi ;;
+  esac
+done
+"#;
+
+    fn texts(contents: &[ResourceContent]) -> Vec<(&str, Option<&str>, &str)> {
+        contents
+            .iter()
+            .map(|content| {
+                let ResourceData::Text(text) = &content.data else {
+                    panic!("not a text resource");
+                };
+                (
+                    content.uri.as_str(),
+                    content.mime_type.as_deref(),
+                    text.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    async fn read_text(runtime: &McpRuntime, uri: &str) -> String {
+        let contents = runtime.read_resource("fixture", uri).await.unwrap();
+        texts(&contents)[0].2.to_owned()
+    }
+
+    #[tokio::test]
+    async fn resource_reads_cache_match_templates_and_name_their_failures() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![
+            config("fixture", READ_SERVER, state.path()),
+            config("tools", SERVER, state.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        let notes = runtime
+            .read_resource("fixture", "memory://notes")
+            .await
+            .unwrap();
+        assert_eq!(
+            texts(&notes),
+            [("memory://notes", Some("text/plain"), "v1")]
+        );
+        let lists = || std::fs::read_to_string(state.path().join("catalogs")).unwrap();
+        assert_eq!(lists(), "resources\n");
+        assert_eq!(
+            runtime
+                .read_resource("fixture", "memory://notes")
+                .await
+                .unwrap(),
+            notes
+        );
+        assert_eq!(read_text(&runtime, "memory://items/7").await, "item");
+        assert_eq!(lists(), "resources\ntemplates\n");
+        let failure = |error| Err(ResourceReadFailure::Error(error));
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://other").await,
+            failure(McpError::McpResourceNotFound)
+        );
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://items/a/b").await,
+            failure(McpError::McpResourceNotFound)
+        );
+        assert_eq!(
+            runtime
+                .read_resource("fixture", "memory://items/denied")
+                .await,
+            Err(ResourceReadFailure::Diagnostic(
+                r#"MCP protocol error -32002: denied; data={"uri":"memory://items/denied"}"#
+                    .to_owned()
+            ))
+        );
+        assert_eq!(
+            runtime.read_resource("missing", "memory://notes").await,
+            failure(McpError::McpServerNotFound)
+        );
+        assert_eq!(
+            runtime.read_resource("tools", "memory://notes").await,
+            failure(McpError::McpResourcesUnsupported)
+        );
+        assert_eq!(
+            requests(state.path()),
+            "read memory://notes\nread memory://items/7\nread memory://items/denied\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn expired_reads_fall_back_to_the_last_contents_when_the_server_goes_away() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("ttl"), "").unwrap();
+        let runtime = runtime(vec![McpServerConfig {
+            restart_limit: 0,
+            ..config("fixture", READ_SERVER, state.path())
+        }]);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(state.path().join("crash"), "").unwrap();
+        std::fs::write(state.path().join("version"), "v2").unwrap();
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
+        assert!(matches!(
+            runtime.current()[0].lifecycle(),
+            Lifecycle::Failed(_)
+        ));
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://items/7").await,
+            Err(ResourceReadFailure::Error(McpError::McpConnectionClosed))
+        );
+        assert_eq!(
+            requests(state.path()),
+            "read memory://notes\nread memory://notes\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_restarted_server_reads_afresh() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", READ_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
+        std::fs::write(state.path().join("crash"), "").unwrap();
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://items/1").await,
+            Err(ResourceReadFailure::Error(McpError::McpConnectionClosed))
+        );
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
+        std::fs::remove_file(state.path().join("crash")).unwrap();
+        std::fs::write(state.path().join("version"), "v2").unwrap();
+        assert_eq!(read_text(&runtime, "memory://items/2").await, "item");
+        assert_eq!(runtime.current()[0].restarts(), 1);
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v2");
+        assert_eq!(
+            requests(state.path()),
+            "read memory://notes\nread memory://items/1\nread memory://items/2\nread memory://notes\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_list_change_whose_refresh_fails_refuses_reads_until_the_catalog_settles() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("notify"), "").unwrap();
+        let runtime = runtime(vec![config("fixture", READ_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v1");
+        until_resources_invalidated(&runtime).await;
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://notes").await,
+            Err(ResourceReadFailure::Error(
+                McpError::McpFeatureCatalogChanged
+            ))
+        );
+        std::fs::remove_file(state.path().join("broken")).unwrap();
+        std::fs::write(state.path().join("version"), "v2").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(read_text(&runtime, "memory://notes").await, "v2");
+        assert_eq!(
+            requests(state.path()),
+            "read memory://notes\nread memory://notes\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn template_catalog_failures_surface_instead_of_not_found() {
+        let state = tempfile::tempdir().unwrap();
+        let templates = state.path().join("templates.json");
+        std::fs::write(
+            &templates,
+            r#"{"resourceTemplates":[],"nextCursor":"again"}"#,
+        )
+        .unwrap();
+        let runtime = runtime(vec![config("fixture", READ_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let failure = |error| Err(ResourceReadFailure::Error(error));
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://missing").await,
+            failure(McpError::DuplicateCursor)
+        );
+        let bounded = format!("memory://{{value}}{}b", "a".repeat(2047));
+        std::fs::write(
+            &templates,
+            serde_json::json!({"resourceTemplates": [{"uriTemplate": bounded, "name": "bounded"}]})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime
+                .read_resource("fixture", &format!("memory://{}", "a".repeat(4096)))
+                .await,
+            failure(McpError::McpResourceTemplateMatchLimitExceeded)
+        );
+        assert_eq!(requests(state.path()), "");
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 }

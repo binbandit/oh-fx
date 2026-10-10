@@ -14,7 +14,7 @@ use crate::server_lifecycle::{Lifecycle, Server};
 use crate::timing::timeout_at;
 use crate::transport::{McpTransport, TransportRequest};
 
-const FEATURE_RESPONSE_FRAME_CAP_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const FEATURE_RESPONSE_FRAME_CAP_BYTES: usize = 4 * 1024 * 1024;
 
 impl Server {
     pub(crate) async fn feature_catalog<T: FeatureCatalog>(
