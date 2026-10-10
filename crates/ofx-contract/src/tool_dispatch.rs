@@ -108,7 +108,7 @@ pub struct ToolOutput {
     pub file_change: Option<FileChangeStats>,
     pub model_view_covers_full_file: Option<bool>,
     pub dynamic_tools: Option<Box<DynamicToolChange>>,
-    pub images: Vec<ToolImage>,
+    pub images: Box<[ToolImage]>,
 }
 
 impl ToolOutput {
@@ -123,7 +123,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
-            images: Vec::new(),
+            images: Box::default(),
         }
     }
 
@@ -138,7 +138,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
-            images: Vec::new(),
+            images: Box::default(),
         }
     }
 
@@ -213,7 +213,7 @@ impl ToolOutput {
 
     #[must_use]
     pub fn with_images(mut self, images: Vec<ToolImage>) -> Self {
-        self.images = images;
+        self.images = images.into_boxed_slice();
         self
     }
 }
