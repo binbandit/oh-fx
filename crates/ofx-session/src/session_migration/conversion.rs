@@ -86,20 +86,20 @@ impl LegacySession {
             };
             log.append(batch)?;
         }
-        let recovery = match self.recovery {
-            Some(checkpoint) => {
-                let seq = u64::try_from(log.events.len())
-                    .map_err(|_| SessionError::ConversationSequenceOverflow)?;
-                let file = recovery_file(&checkpoint, seq)?;
-                results.extend(
-                    file.spilled
-                        .into_iter()
-                        .map(|(handle, text)| StoredResult { handle, text }),
-                );
-                Some(file.bytes)
-            }
+        let seq = u64::try_from(log.events.len())
+            .map_err(|_| SessionError::ConversationSequenceOverflow)?;
+        let file = match &self.recovery {
+            Some(checkpoint) => recovery_file(checkpoint, seq)?,
             None => None,
         };
+        let recovery = file.map(|file| {
+            results.extend(
+                file.spilled
+                    .into_iter()
+                    .map(|(handle, text)| StoredResult { handle, text }),
+            );
+            file.bytes
+        });
         Ok(Converted {
             metadata,
             events: log.events,

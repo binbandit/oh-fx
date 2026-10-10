@@ -142,6 +142,68 @@ fn a_version_one_checkpoint_names_its_route_without_a_credential() {
 }
 
 #[test]
+fn a_checkpoint_keeps_its_steering_and_turn_summary() {
+    let fixture = Fixture::new();
+    let later = checkpoint_007("ok").replace(
+        "\"schema_version\":4,\"tool_steps\":[{\"assistant\":\"Checking.\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"run_command\",\"arguments_json\":\"{\\\"command\\\":\\\"cargo test\\\"}\",\"provider_result\":null}],\"tool_results\":[",
+        "\"schema_version\":7,\"tool_steps\":[{\"assistant\":\"Checking.\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"run_command\",\"arguments_json\":\"{\\\"command\\\":\\\"cargo test\\\"}\",\"provider_result\":null}],\"tool_results\":[",
+    ).replace(
+        "\"files\":[]}",
+        "\"files\":[],\"steering\":[{\"text\":\"also lint\",\"assistant_prefix\":\"\",\"after_tool_step_count\":1}],\"turn_summary\":{\"started_at_ms\":5,\"completed_at_ms\":9,\"thinking_duration_ms\":1,\"turn_duration_ms\":4,\"token_progress\":{\"input_tokens\":12,\"output_tokens\":3,\"input_exact\":true,\"output_exact\":false}}}",
+    );
+    assert_ne!(later, checkpoint_007("ok"));
+    let log =
+        LegacyLog::started_007("legacy-steered").frame("recovery_checkpoint_set", &set(&later));
+    written(&fixture, &log);
+    let checkpoint = read_checkpoint(&copy_dir(&fixture, "legacy-steered"), 0)
+        .unwrap()
+        .unwrap();
+    let summary = checkpoint.turn_summary().unwrap();
+    assert_eq!(
+        (
+            summary.started_at_ms,
+            summary.turn_duration_ms,
+            summary.token_progress.input_tokens
+        ),
+        (5, 4, 12)
+    );
+    assert!(
+        checkpoint
+            .transcript()
+            .entries
+            .contains(&HistoryEntry::User("also lint".to_owned())),
+        "{:?}",
+        checkpoint.transcript().entries
+    );
+}
+
+#[test]
+fn a_checkpoint_too_large_to_save_is_left_out_as_upstream_leaves_it() {
+    let fixture = Fixture::new();
+    let control_bytes = 11_250_000;
+    let oversized = checkpoint_007("MARK")
+        .replace(
+            "\"output\":\"MARK\"",
+            &format!(
+                "\"output\":{{\"encoding\":\"base64\",\"data\":\"{}\"}}",
+                "AQEB".repeat(control_bytes / 3)
+            ),
+        )
+        .replace(
+            "\"output_bytes\":4,\"stored_output_bytes\":4",
+            &format!("\"output_bytes\":{control_bytes},\"stored_output_bytes\":{control_bytes}"),
+        );
+    let log = LegacyLog::started_007("legacy-oversized")
+        .turn(&reply_007("first", "done"))
+        .frame("recovery_checkpoint_set", &set(&oversized));
+    let (events, _) = written(&fixture, &log);
+    assert_eq!(prompts(&events), ["first"]);
+    let copy = fixture.root.path().join("copies/legacy-oversized");
+    assert!(copy.join("events.jsonl").exists());
+    assert!(!copy.join("recovery.json").exists());
+}
+
+#[test]
 fn a_replaced_state_can_carry_the_recovery_it_left_open() {
     let fixture = Fixture::new();
     let state = state_007(

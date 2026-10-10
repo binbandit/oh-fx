@@ -1,10 +1,10 @@
-use ofx_contract::CommandProcessPresentation;
+use ofx_config::EMERGENCY_CEILING_BYTES;
+use ofx_contract::{CommandProcessPresentation, TurnSummary};
 use serde::Serialize;
 
 use super::durable_turn::{SavedResult, Steering, Step};
 use super::legacy_checkpoint::Continuable;
 use crate::fixed_field::{False, NoItems, Null};
-use crate::process_presentation;
 use crate::result_store::{PREVIEW_BYTES, STORED_TEXT_MAX_BYTES, make_handle, preview};
 use crate::session_codec::SavedProvider;
 use crate::session_codec::recovery_checkpoint::{
@@ -12,6 +12,7 @@ use crate::session_codec::recovery_checkpoint::{
 };
 use crate::session_error::SessionError;
 use crate::session_event::{FileEvidence, WireTag};
+use crate::{process_presentation, turn_summary};
 
 pub(super) struct RecoveryFile {
     pub(super) bytes: Vec<u8>,
@@ -58,7 +59,8 @@ struct ExecutionWire<'a> {
     tool_steps: Vec<StepWire<'a>>,
     files: &'a [FileEvidence],
     steering: Vec<SteeringWire<'a>>,
-    turn_summary: Null,
+    #[serde(serialize_with = "turn_summary::serialize")]
+    turn_summary: Option<TurnSummary>,
 }
 
 #[derive(Serialize)]
@@ -117,10 +119,10 @@ struct AuthorityWire<'a> {
 pub(super) fn recovery_file(
     checkpoint: &Continuable,
     conversation_seq: u64,
-) -> Result<RecoveryFile, SessionError> {
+) -> Result<Option<RecoveryFile>, SessionError> {
     let invalid = SessionError::InvalidRecoveryCheckpoint;
     let execution = &checkpoint.execution;
-    if checkpoint.work_id.is_some() || execution.turn_summary.is_some() {
+    if checkpoint.work_id.is_some() {
         return Err(invalid);
     }
     let mut spilled = Vec::new();
@@ -145,7 +147,7 @@ pub(super) fn recovery_file(
                 tool_steps,
                 files: &execution.files,
                 steering: execution.steering.iter().map(steering_wire).collect(),
-                turn_summary: Null,
+                turn_summary: execution.turn_summary,
             },
             cause: checkpoint.cause,
             action: checkpoint.action,
@@ -165,10 +167,14 @@ pub(super) fn recovery_file(
             outstanding_reservation: checkpoint.outstanding_reservation,
         },
     };
+    let encoded = serde_json::to_vec(&file.checkpoint).map_err(|_| invalid)?;
+    if encoded.len() > EMERGENCY_CEILING_BYTES {
+        return Ok(None);
+    }
     let mut bytes = serde_json::to_vec(&file).map_err(|_| invalid)?;
     bytes.push(b'\n');
     decode_recovery_file(&bytes, conversation_seq)?.ok_or(invalid)?;
-    Ok(RecoveryFile { bytes, spilled })
+    Ok(Some(RecoveryFile { bytes, spilled }))
 }
 
 fn step_wire<'a>(step: &'a Step, spilled: &mut Vec<(String, String)>) -> Option<StepWire<'a>> {
