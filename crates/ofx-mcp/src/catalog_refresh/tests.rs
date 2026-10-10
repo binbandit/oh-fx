@@ -30,8 +30,15 @@ while IFS= read -r line; do
       if [ -f "$STATE/fail" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"unavailable"}}\n' "$id"
       elif [ -f "$STATE/slow" ]; then
-        delay=$(cat "$STATE/slow")
-        ( sleep "${delay:-1}"; reply "$id" "$result" ) &
+        held=$(cat "$STATE/slow")
+        (
+          if [ "$held" = held ]; then
+            while [ ! -f "$STATE/release" ]; do sleep 0.01; done
+          else
+            sleep 1
+          fi
+          reply "$id" "$result"
+        ) &
       else
         reply "$id" "$result"
       fi ;;
@@ -72,6 +79,22 @@ fn lines(state: &Path, name: &str) -> usize {
 
 fn lists(state: &Path) -> usize {
     lines(state, "lists")
+}
+
+fn hold_listings(state: &Path) {
+    write(state, "slow", "held");
+}
+
+fn release_listings(state: &Path) {
+    write(state, "release", "");
+}
+
+async fn until_notified(client: &McpClient) {
+    let notified = Instant::now() + Duration::from_secs(5);
+    while !client.tools_invalidation.pending() && Instant::now() < notified {
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert!(client.tools_invalidation.pending());
 }
 
 async fn started(state: &Path) -> Arc<Server> {
@@ -305,7 +328,7 @@ async fn a_call_goes_ahead_with_the_last_list_while_a_list_with_no_change_pendin
     let server = started(state.path()).await;
     let alpha = advertised(&server);
     let client = ready_client(&server);
-    write(state.path(), "slow", "3");
+    hold_listings(state.path());
     client.request_tool_refresh();
     let refreshing = {
         let client = Arc::clone(&client);
@@ -321,7 +344,9 @@ async fn a_call_goes_ahead_with_the_last_list_while_a_list_with_no_change_pendin
     assert!(call(&server, &alpha).await);
     assert_eq!(lines(state.path(), "calls"), 1);
     assert_eq!(health(&server).0, CacheFreshness::Refreshing);
-    refreshing.abort();
+    release_listings(state.path());
+    refreshing.await.unwrap();
+    assert_eq!(health(&server).0, CacheFreshness::Fresh);
     server.stop(ShutdownMode::Immediate).await;
 }
 
@@ -331,7 +356,7 @@ async fn a_call_whose_deadline_passes_while_a_change_is_being_listed_never_reach
     let server = started_with_operation_timeout(state.path(), 50).await;
     let alpha = advertised(&server);
     let client = ready_client(&server);
-    write(state.path(), "slow", "");
+    hold_listings(state.path());
     client.request_tool_refresh();
     let refreshing = {
         let client = Arc::clone(&client);
@@ -346,16 +371,13 @@ async fn a_call_whose_deadline_passes_while_a_change_is_being_listed_never_reach
     }
     write(state.path(), "notify", "");
     assert!(call_directly(&client, &alpha).await);
-    let notified = Instant::now() + Duration::from_secs(5);
-    while !client.tools_invalidation.pending() && Instant::now() < notified {
-        sleep(Duration::from_millis(5)).await;
-    }
-    assert!(client.tools_invalidation.pending());
+    until_notified(&client).await;
     let timed_out = server.call(&alpha, "{}", CallOptions::default()).await;
     assert!(matches!(
         timed_out,
         Err(CallFailure::Mcp(McpError::McpRequestTimedOut))
     ));
+    release_listings(state.path());
     refreshing.await.unwrap();
     assert!(call_directly(&client, &alpha).await);
     assert_eq!(lines(state.path(), "calls"), 2);
@@ -387,7 +409,7 @@ async fn a_change_notified_while_a_list_is_in_flight_is_listed_once_that_list_en
     let server = started(state.path()).await;
     let alpha = advertised(&server);
     let client = ready_client(&server);
-    write(state.path(), "slow", "");
+    hold_listings(state.path());
     client.request_tool_refresh();
     let refreshing = {
         let client = Arc::clone(&client);
@@ -401,18 +423,22 @@ async fn a_change_notified_while_a_list_is_in_flight_is_listed_once_that_list_en
     while lists(state.path()) < 2 {
         sleep(Duration::from_millis(5)).await;
     }
-    std::fs::remove_file(state.path().join("slow")).unwrap();
     write(state.path(), "name", "beta");
     write(state.path(), "notify", "");
     assert!(call_directly(&client, &alpha).await);
+    until_notified(&client).await;
+    release_listings(state.path());
     assert!(!refreshing.await.unwrap());
+    assert!(listed_beta(&client).await);
+    assert_eq!(lists(state.path()), 3);
+    assert_eq!(health(&server).0, CacheFreshness::Fresh);
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+async fn listed_beta(client: &McpClient) -> bool {
     let listed = Instant::now() + Duration::from_secs(5);
     while client.tool_catalog().tools[0].name != "beta" && Instant::now() < listed {
         sleep(Duration::from_millis(10)).await;
     }
-    assert_eq!(client.tool_catalog().tools[0].name, "beta");
-    assert_eq!(lists(state.path()), 3);
-    assert!(!client.tools_invalidation.pending());
-    assert_eq!(health(&server).0, CacheFreshness::Fresh);
-    server.stop(ShutdownMode::Immediate).await;
+    client.tool_catalog().tools[0].name == "beta" && !client.tools_invalidation.pending()
 }
