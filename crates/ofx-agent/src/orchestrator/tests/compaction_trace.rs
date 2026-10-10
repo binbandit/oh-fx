@@ -4,7 +4,7 @@ use super::compaction::{chat, chat_replies, metered, spoken_tool_reply, unmetere
 use super::*;
 use crate::compactor::{CompactionError, CompactionEvent, CompactionTraceKind};
 
-fn traced(agent: &mut Agent) -> &'static Ring<CompactionEvent> {
+pub(super) fn traced(agent: &mut Agent) -> &'static Ring<CompactionEvent> {
     let ring: &'static Ring<CompactionEvent> = Box::leak(Box::new(Ring::new(64)));
     agent.compaction_trace = ring;
     ring
