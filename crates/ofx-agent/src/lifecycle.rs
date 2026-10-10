@@ -10,7 +10,22 @@ use tokio_util::sync::CancellationToken;
 pub(crate) enum ToolPreparation {
     Unchanged,
     Rewritten(String),
-    Blocked(String),
+    Blocked(String, HookBlock),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HookBlock {
+    Blocked,
+    FailedClosed,
+}
+
+impl HookBlock {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Blocked => "lifecycle_block",
+            Self::FailedClosed => "lifecycle_failed_closed",
+        }
+    }
 }
 
 pub(crate) struct LifecycleContext {
@@ -65,12 +80,14 @@ impl LifecycleContext {
             Ok(Ok(PreToolUseOutcome::Rewritten(arguments))) => {
                 ToolPreparation::Rewritten(arguments)
             }
-            Ok(Ok(PreToolUseOutcome::Blocked(reason))) => {
-                ToolPreparation::Blocked(pre_tool_use_blocked_json(&call.name, &reason))
-            }
-            Ok(Err(_)) | Err(_) => {
-                ToolPreparation::Blocked(pre_tool_use_failed_closed_json(&call.name))
-            }
+            Ok(Ok(PreToolUseOutcome::Blocked(reason))) => ToolPreparation::Blocked(
+                pre_tool_use_blocked_json(&call.name, &reason),
+                HookBlock::Blocked,
+            ),
+            Ok(Err(_)) | Err(_) => ToolPreparation::Blocked(
+                pre_tool_use_failed_closed_json(&call.name),
+                HookBlock::FailedClosed,
+            ),
         })
     }
 
