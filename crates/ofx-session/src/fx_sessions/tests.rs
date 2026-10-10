@@ -537,6 +537,31 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
 }
 
 #[test]
+fn fx_sessions_holding_file_presentations_are_listed() {
+    let home = Home::new();
+    home.store("/work");
+    let edited = Saved {
+        id: "fx-edited",
+        workspace: "/work",
+        title: None,
+        prompts: &[],
+        modified_s: 100,
+    };
+    let presentation = "{\"path\":\"src/lib.rs\",\"kind\":\"edited\",\"lines\":[{\"kind\":\"deletion\",\"old_line\":1,\"new_line\":null,\"text\":\"old\"},{\"kind\":\"addition\",\"old_line\":null,\"new_line\":1,\"text\":\"new\"}],\"additions\":1,\"deletions\":1,\"truncated\":false,\"previous_content\":\"old\\n\",\"after_content\":\"new\\n\",\"lifecycle_id\":{\"turn_id\":1,\"call_id\":\"call-1\"},\"content_handle\":null}";
+    let log = shell_turn("null", "null")
+        .replace("\"tool_name\":\"shell\"", "\"tool_name\":\"edit_file\"")
+        .replace(
+            "\"committed_file_presentation\":null",
+            &format!("\"committed_file_presentation\":{presentation}"),
+        );
+    edited.write_files(&home.fx_sessions(), &edited.manifest(), &log);
+
+    let page = home.listed("/work", ListScope::AllWorkspaces);
+    assert_eq!(ids(&page), ["fx-edited"]);
+    assert_eq!(page.summaries[0].history_len, 1);
+}
+
+#[test]
 fn fx_subagent_children_are_not_listed() {
     let home = Home::new();
     let child = Saved {
