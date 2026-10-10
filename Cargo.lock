@@ -716,6 +716,7 @@ dependencies = [
  "ofx-contract",
  "ofx-http",
  "ofx-testkit",
+ "ofx-trace",
  "reqwest",
  "rustix",
  "serde_json",

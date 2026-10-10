@@ -7,6 +7,7 @@ use crate::browser_callback::{
 };
 use crate::oauth::{pkce_challenge, random_url_safe_secret};
 use crate::secret::Secret;
+use ofx_trace::trace_log;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -160,13 +161,18 @@ impl GrokSignIn {
             Err(error) => Err(error),
         };
         if let Some(callback) = accepted {
-            let _ = callback
-                .respond(if saved.is_ok() {
-                    Response::Ok
-                } else {
-                    Response::Failed
-                })
-                .await;
+            let outcome = if saved.is_ok() {
+                Response::Ok
+            } else {
+                Response::Failed
+            };
+            if let Err(error) = callback.respond(outcome).await {
+                trace_log!(
+                    super::AUTH,
+                    "Grok completion response failed err={:?}",
+                    error.kind()
+                );
+            }
         }
         saved
     }

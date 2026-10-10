@@ -7,6 +7,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ofx_contract::CODEX_ORIGINATOR;
+use ofx_trace::trace_log;
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,7 @@ use crate::secret::Secret;
 use crate::session_presence::Presence;
 use crate::url_opener;
 
+const AUTH: &str = "auth";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const ISSUER_URL: &str = "https://auth.openai.com";
@@ -130,6 +132,15 @@ impl From<OAuthError> for ChatGptError {
 pub enum RefreshMode {
     IfNeeded,
     Force,
+}
+
+impl RefreshMode {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::IfNeeded => "if_needed",
+            Self::Force => "force",
+        }
+    }
 }
 
 pub type ChatGptAccess = crate::subscription_access::SubscriptionAccess;
@@ -313,7 +324,13 @@ impl ChatGptOAuth {
         } else {
             Response::Failed
         };
-        let _ = accepted.respond(outcome).await;
+        if let Err(error) = accepted.respond(outcome).await {
+            trace_log!(
+                AUTH,
+                "Codex completion response failed err={:?}",
+                error.kind()
+            );
+        }
         saved
     }
 
@@ -334,6 +351,11 @@ impl ChatGptOAuth {
             .execute(Method::PostForm, &self.endpoints.token_url, form.as_str())
             .await?;
         if !response.accepted {
+            trace_log!(
+                AUTH,
+                "ChatGPT OAuth request rejected url={}",
+                self.endpoints.token_url
+            );
             return Err(ChatGptError::ChatGptOAuthRequestFailed);
         }
         Ok(oauth::parse_browser_token_set(&response.body)?)
@@ -354,8 +376,10 @@ impl ChatGptOAuth {
         let token = match self.request_refresh_token(&payload, cancel).await {
             Ok(token) => token,
             Err(
-                ChatGptError::CredentialRefreshRejected | ChatGptError::InvalidChatGptOAuthResponse,
+                error @ (ChatGptError::CredentialRefreshRejected
+                | ChatGptError::InvalidChatGptOAuthResponse),
             ) => {
+                trace_log!(AUTH, "retiring terminal Codex session reason={error}");
                 mutation.retire()?;
                 return Err(ChatGptError::CredentialRefreshRejected);
             }
@@ -364,6 +388,7 @@ impl ChatGptOAuth {
         let replacement = match refresh_replacement(token, session, now_ms()) {
             Ok(replacement) => replacement,
             Err(error) => {
+                trace_log!(AUTH, "retiring unusable Codex refresh reason={error}");
                 mutation.retire()?;
                 return Err(if error == ChatGptError::ChatGptAccountChanged {
                     error
@@ -372,8 +397,14 @@ impl ChatGptOAuth {
                 });
             }
         };
-        if mutation.save(&replacement).is_err() {
-            let _ = mutation.retire();
+        if let Err(error) = mutation.save(&replacement) {
+            trace_log!(
+                AUTH,
+                "retiring Codex session after refresh save failed err={error}"
+            );
+            if let Err(cleanup) = mutation.retire() {
+                trace_log!(AUTH, "Codex session retirement failed err={cleanup}");
+            }
             return Err(ChatGptError::CredentialRefreshPersistenceUncertain);
         }
         Ok(replacement)
@@ -400,6 +431,7 @@ impl ChatGptOAuth {
                 .map_err(|_| ChatGptError::Cancelled)??,
         };
         if !response.accepted {
+            trace_log!(AUTH, "Codex refresh request rejected");
             return Err(if chatgpt_refresh_requires_sign_in(&response.body) {
                 ChatGptError::CredentialRefreshRejected
             } else {
@@ -586,7 +618,14 @@ fn classify_browser_callback(
 ) -> ParseResult<Secret, ChatGptError> {
     match parse_browser_callback_target(target, expected_state) {
         Ok(code) => ParseResult::Accepted(code),
-        Err(CallbackError::Invalid | CallbackError::StateMismatch) => ParseResult::Unrelated,
+        Err(CallbackError::StateMismatch) => {
+            trace_log!(
+                AUTH,
+                "ChatGPT callback ignored: state belongs to another attempt"
+            );
+            ParseResult::Unrelated
+        }
+        Err(CallbackError::Invalid) => ParseResult::Unrelated,
         Err(CallbackError::Denied) => ParseResult::Failed(ChatGptError::ChatGptAuthorizationFailed),
     }
 }

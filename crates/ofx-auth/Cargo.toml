@@ -12,6 +12,7 @@ getrandom.workspace = true
 ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-http.workspace = true
+ofx-trace.workspace = true
 reqwest.workspace = true
 rustix = { workspace = true, features = ["event"] }
 serde_json.workspace = true

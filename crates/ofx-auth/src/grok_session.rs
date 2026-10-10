@@ -10,6 +10,7 @@ const MUTATION_LOCK_FILE_NAME: &str = "grok-auth.lock";
 pub(crate) struct GrokPolicy;
 impl SessionPolicy for GrokPolicy {
     type Error = GrokError;
+    const LABEL: &'static str = "Grok";
     const AUTH_FILE_NAME: &'static str = AUTH_FILE_NAME;
     const LOCK_FILE_NAME: &'static str = "grok-auth.lock";
     const VALIDATE_ACCOUNT_ON_WRITE: bool = true;
