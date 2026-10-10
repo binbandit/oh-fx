@@ -1,4 +1,6 @@
-use ofx_contract::{DeliveryOutcome, INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT};
+use ofx_contract::{
+    DeliveryOutcome, INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, ProviderBilling,
+};
 
 use super::turn_log::{Accounted, MemoryLog, logged, logged_turn};
 use super::*;
@@ -32,6 +34,65 @@ async fn each_admitted_request_is_begun_and_settled_and_committed_lines_are_reco
             Accounted::Begun(2),
             Accounted::Finished(2, DeliveryOutcome::PossiblyBilledWithoutIdentity),
         ]
+    );
+}
+
+fn billed(generation_id: &str) -> ProviderBilling {
+    ProviderBilling {
+        generation_id: generation_id.to_owned(),
+        created_at_ms: 1,
+        model: "codex/test-model".to_owned(),
+        total_cost: 0.0,
+        input_tokens: 10,
+        output_tokens: 2,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: None,
+        billable_web_search_calls: 0,
+    }
+}
+
+#[tokio::test]
+async fn a_completion_with_exact_billing_settles_with_its_generation() {
+    let mut exact = completion(Some("done"), Vec::new(), FinishReason::Stop);
+    exact.billing = Some(Box::new(billed("resp_exact")));
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
+        Script::Reply(Vec::new(), exact),
+    ]);
+    let (mut agent, accounted) = accounting_agent(provider, MemoryLog::default());
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        *accounted.lock().unwrap(),
+        [
+            Accounted::Begun(1),
+            Accounted::Finished(1, DeliveryOutcome::PossiblyBilledWithoutIdentity),
+            Accounted::Begun(2),
+            Accounted::Exact(2, "resp_exact".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_exact_settlement_that_cannot_be_saved_fails_the_turn() {
+    let mut exact = completion(Some("never kept"), Vec::new(), FinishReason::Stop);
+    exact.billing = Some(Box::new(billed("resp_unsaved")));
+    let provider = FakeProvider::new(vec![Script::Reply(Vec::new(), exact)]);
+    let log = MemoryLog {
+        refused_settlement: Some("SessionPersistenceUncertain"),
+        ..MemoryLog::default()
+    };
+    let (mut agent, accounted) = accounting_agent(provider, log);
+    let (report, _) = run(&mut agent, "hi").await;
+    assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(
+        report.failure.map(|failure| failure.code().to_owned()),
+        Some("SessionPersistenceUncertain".to_owned())
+    );
+    assert_eq!(
+        accounted.lock().unwrap().last(),
+        Some(&Accounted::Exact(1, "resp_unsaved".to_owned()))
     );
 }
 

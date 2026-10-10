@@ -247,6 +247,20 @@ impl Usage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderBilling {
+    pub generation_id: String,
+    pub created_at_ms: i64,
+    pub model: String,
+    pub total_cost: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: Option<u64>,
+    pub billable_web_search_calls: u64,
+}
+
 fn add_known(total: Option<u64>, step: Option<u64>) -> Option<u64> {
     match (total, step) {
         (Some(total), Some(step)) => Some(total.saturating_add(step)),

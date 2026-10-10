@@ -43,7 +43,7 @@ impl ReviewTransport for Recording {
             .unwrap()
             .push(serde_json::from_str(&body).unwrap());
         Box::pin(async {
-            ReviewTransportOutcome::Completion(Completion {
+            ReviewTransportOutcome::Completion(Box::new(Completion {
                 content: None,
                 tool_calls: vec![ToolCall::new(
                     "review",
@@ -52,8 +52,9 @@ impl ReviewTransport for Recording {
                 )],
                 finish_reason: FinishReason::ToolCalls,
                 usage: Usage::default(),
+                billing: None,
                 provider_replay: None,
-            })
+            }))
         })
     }
 }
@@ -268,7 +269,7 @@ impl ReviewTransport for SwitchingMidReview {
     ) -> BoxFuture<'a, ReviewTransportOutcome> {
         self.mode.set(PermissionMode::Yolo);
         Box::pin(async {
-            ReviewTransportOutcome::Completion(Completion {
+            ReviewTransportOutcome::Completion(Box::new(Completion {
                 content: None,
                 tool_calls: vec![ToolCall::new(
                     "review",
@@ -277,8 +278,9 @@ impl ReviewTransport for SwitchingMidReview {
                 )],
                 finish_reason: FinishReason::ToolCalls,
                 usage: Usage::default(),
+                billing: None,
                 provider_replay: None,
-            })
+            }))
         })
     }
 }

@@ -1,9 +1,10 @@
 use std::time::Instant;
 
 use ofx_config::DurableError;
-use ofx_contract::{DeliveryOutcome, FileChangeStats, RequestTicket};
+use ofx_contract::{DeliveryOutcome, FileChangeStats, ProviderBilling, RequestTicket};
 
 use super::{WritableSession, now_ms};
+use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_usage::ReserveFailure;
 use crate::session_usage_sidecar;
@@ -31,11 +32,21 @@ impl WritableSession {
         ticket: RequestTicket,
         outcome: DeliveryOutcome,
     ) -> Result<(), SessionError> {
-        let elapsed = ticket.started_at.elapsed().as_millis();
-        let duration_ms = u64::try_from(elapsed).unwrap_or(u64::MAX);
         let now = now_ms();
         self.usage
-            .finish(ticket.sequence, duration_ms, outcome, now);
+            .finish(ticket.sequence, elapsed_ms(ticket), outcome, now);
+        self.checkpoint_usage_for_continuation(now)
+    }
+
+    pub(crate) fn finish_exact_request(
+        &mut self,
+        ticket: RequestTicket,
+        billing: &ProviderBilling,
+        provider: &SavedProvider,
+    ) -> Result<(), SessionError> {
+        let now = now_ms();
+        self.usage
+            .finish_exact(ticket.sequence, elapsed_ms(ticket), provider, billing, now);
         self.checkpoint_usage_for_continuation(now)
     }
 
@@ -69,4 +80,8 @@ impl WritableSession {
         let snapshot = self.usage.snapshot(now);
         session_usage_sidecar::write(&self.owned.dir, &self.metadata.id, &snapshot)
     }
+}
+
+fn elapsed_ms(ticket: RequestTicket) -> u64 {
+    u64::try_from(ticket.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
 }

@@ -302,7 +302,7 @@ async fn openai_codex_sse_maps_text_reasoning_tools_and_usage() {
         completion.tool_calls[0].arguments,
         r#"{"path":"README.md"}"#
     );
-    assert_eq!(completion.usage.input_tokens, Some(10));
+    assert_eq!(completion.usage.input, Some(10));
     assert!(
         completion
             .provider_state
@@ -310,6 +310,57 @@ async fn openai_codex_sse_maps_text_reasoning_tools_and_usage() {
             .is_some_and(|state| state.contains(r#""encrypted_content":"opaque""#))
     );
     assert_eq!(completion.finish, ResponsesFinish::ToolCalls);
+}
+
+#[tokio::test]
+async fn a_completed_response_reports_its_exact_subscription_usage() {
+    let completed = |response: &str| {
+        format!(r#"{{"type":"response.completed","response":{{"status":"completed"{response}}}}}"#)
+    };
+    let usage = r#","usage":{"input_tokens":17,"output_tokens":7,"input_tokens_details":{"cached_tokens":5},"output_tokens_details":{"reasoning_tokens":3}}"#;
+    let server = FakeServer::start([
+        Reply::sse(&[completed(&format!(r#","id":"resp_exact"{usage}"#))]),
+        Reply::sse(&[completed(usage)]),
+        Reply::sse(&[completed(
+            r#","id":"resp_partial","usage":{"input_tokens":17}"#,
+        )]),
+    ]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let cancel = CancellationToken::new();
+    let mut sink = |_: StreamEvent| {};
+    let question = [ChatMessage::user("hi")];
+    let mut billings = Vec::new();
+    for _ in 0..3 {
+        let completion = codex
+            .stream(&request(&question, &[], &[]), &mut sink, &cancel)
+            .await
+            .unwrap();
+        billings.push(completion.billing);
+    }
+    let exact = billings[0].clone().unwrap();
+    assert_eq!(exact.generation_id, "resp_exact");
+    assert_eq!(exact.model, "codex/gpt-5.6-sol");
+    assert!(exact.total_cost.abs() < f64::EPSILON);
+    assert_eq!(
+        (
+            exact.input_tokens,
+            exact.output_tokens,
+            exact.cache_read_tokens,
+            exact.cache_write_tokens,
+            exact.reasoning_tokens,
+        ),
+        (17, 7, 5, 0, Some(3))
+    );
+    assert!(exact.created_at_ms > 0);
+    assert_eq!(billings[1..], [None, None]);
 }
 
 #[tokio::test]

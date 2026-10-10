@@ -124,7 +124,7 @@ Each file in [`differences/`](differences/) records the deliberate differences f
 - [Web tools](differences/tool-web.md): `web_fetch` and `web_search`.
 - [Trace log](differences/trace.md): the trace log's variables and paths, and the `/trace` report.
 - [Upgrades and releases](differences/upgrade.md): self-upgrade and the release stream.
-- [Usage](differences/usage.md): the profile usage ledger and `oh-fx usage`.
+- [Usage](differences/usage.md): session usage, exact provider usage, the profile usage ledger and `oh-fx usage`.
 
 ## Parity tracking
 

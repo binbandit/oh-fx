@@ -1,6 +1,10 @@
-use ofx_contract::{DeliveryOutcome, FileChangeStats, UsageCompleteness, UsageIncident};
+use ofx_contract::{
+    DeliveryOutcome, FileChangeStats, ProviderBilling, UsageCompleteness, UsageIncident,
+};
 
+use super::exact::exact_fact;
 use super::{Availability, UsageSnapshot};
+use crate::session_codec::SavedProvider;
 
 const MAX_ACTIVE_INVOCATIONS: usize = 64;
 
@@ -65,6 +69,44 @@ impl Usage {
         outcome: DeliveryOutcome,
         now_ms: i64,
     ) -> bool {
+        let finished = self.release(sequence, duration_ms);
+        if finished && outcome != DeliveryOutcome::Unbilled {
+            self.state.billing = Availability::Incomplete;
+            self.record_incident(now_ms);
+        }
+        finished
+    }
+
+    pub(crate) fn finish_exact(
+        &mut self,
+        sequence: u64,
+        duration_ms: u64,
+        provider: &SavedProvider,
+        billing: &ProviderBilling,
+        now_ms: i64,
+    ) {
+        let Some(fact) = exact_fact(provider, billing) else {
+            self.finish(
+                sequence,
+                duration_ms,
+                DeliveryOutcome::PossiblyBilledWithoutIdentity,
+                now_ms,
+            );
+            return;
+        };
+        if !self.release(sequence, duration_ms) {
+            return;
+        }
+        let staged = self
+            .state
+            .observe_exact(sequence, &fact.id, provider.id(), now_ms)
+            .and_then(|()| self.state.stage_publication(fact));
+        if staged.is_err() {
+            self.mark_billing_incomplete(now_ms);
+        }
+    }
+
+    fn release(&mut self, sequence: u64, duration_ms: u64) -> bool {
         if sequence == 0 || sequence >= self.state.next_sequence {
             self.fail_api_duration();
             return false;
@@ -78,13 +120,6 @@ impl Usage {
             return false;
         };
         self.state.api_duration_ms = api_duration_ms;
-        match outcome {
-            DeliveryOutcome::Unbilled => {}
-            DeliveryOutcome::PossiblyBilledWithoutIdentity | DeliveryOutcome::AmbiguousDelivery => {
-                self.state.billing = Availability::Incomplete;
-                self.record_incident(now_ms);
-            }
-        }
         if self.active.is_empty() {
             self.state.settled_through_sequence = self.state.next_sequence - 1;
         }

@@ -7,6 +7,7 @@ use ofx_contract::{
 use ofx_text::lowercase_hex;
 
 mod accounting;
+mod exact;
 
 pub(crate) use accounting::{ReserveFailure, Usage};
 
@@ -236,7 +237,6 @@ impl UsageSnapshot {
             Availability::Pending if self.pending.is_empty() => return Err(invalid),
             _ => {}
         }
-        let mut identifier_bytes = 0_usize;
         let mut totals = Sums::starting(self);
         for (index, model) in self.models.iter().enumerate() {
             if !valid_model(&model.model)
@@ -258,9 +258,6 @@ impl UsageSnapshot {
                 }
                 cache_totals_valid = false;
             }
-            identifier_bytes = identifier_bytes
-                .checked_add(model.model.len())
-                .ok_or(UsageSnapshotError::CapacityExceeded)?;
             let earlier = &self.models[..index];
             if earlier.iter().any(|prior| prior.model == model.model)
                 || earlier
@@ -275,16 +272,6 @@ impl UsageSnapshot {
         }
         for (index, pending) in self.pending.iter().enumerate() {
             pending.validate(self.next_sequence)?;
-            for length in [
-                pending.id.len(),
-                pending.origin.len(),
-                pending.team.as_ref().map_or(0, String::len),
-                pending.account_id.as_ref().map_or(0, String::len),
-            ] {
-                identifier_bytes = identifier_bytes
-                    .checked_add(length)
-                    .ok_or(UsageSnapshotError::CapacityExceeded)?;
-            }
             if self.pending[..index]
                 .iter()
                 .any(|prior| prior.id == pending.id || prior.sequence == pending.sequence)
@@ -300,18 +287,34 @@ impl UsageSnapshot {
             {
                 return Err(invalid);
             }
-            identifier_bytes = identifier_bytes
-                .checked_add(fact.id.len())
-                .and_then(|bytes| bytes.checked_add(fact.model.len()))
-                .ok_or(UsageSnapshotError::CapacityExceeded)?;
         }
         if !self.incidents.iter().all(valid_incident) {
             return Err(invalid);
         }
-        if identifier_bytes > MAX_IDENTIFIER_BYTES {
+        if self.identifier_bytes() > MAX_IDENTIFIER_BYTES {
             return Err(UsageSnapshotError::CapacityExceeded);
         }
         Ok(cache_totals_valid)
+    }
+
+    fn identifier_bytes(&self) -> usize {
+        let models = self.models.iter().map(|model| model.model.len());
+        let pending = self.pending.iter().flat_map(|pending| {
+            [
+                pending.id.len(),
+                pending.origin.len(),
+                pending.team.as_ref().map_or(0, String::len),
+                pending.account_id.as_ref().map_or(0, String::len),
+            ]
+        });
+        let backlog = self
+            .publication_backlog
+            .iter()
+            .flat_map(|fact| [fact.id.len(), fact.model.len()]);
+        models
+            .chain(pending)
+            .chain(backlog)
+            .fold(0, usize::saturating_add)
     }
 
     pub(crate) fn write_rich(&self, out: &mut String) -> Result<(), UsageSnapshotError> {
