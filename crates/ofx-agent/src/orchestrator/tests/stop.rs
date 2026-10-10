@@ -1,6 +1,9 @@
 use std::sync::Mutex;
 
-use ofx_contract::{HookHandlerError, HookRuntime, HookScope, RecoveryProgress, StopAction};
+use ofx_contract::{
+    HookHandlerError, HookRuntime, HookScope, INTERRUPTED_BEFORE_COMPLETION,
+    INTERRUPTED_TURN_CONTEXT, RecoveryProgress, StopAction,
+};
 
 use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
@@ -234,6 +237,42 @@ async fn cancelling_during_the_hook_interrupts_and_keeps_the_candidate_as_a_step
 }
 
 #[tokio::test]
+async fn an_interruption_during_the_hook_closes_a_candidate_with_provider_state_on_its_own() {
+    let provider = FakeProvider::new(vec![
+        with_replay(text_reply("candidate"), "original"),
+        text_reply("next answer"),
+        text_reply("after"),
+    ]);
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    let (mut agent, _, _) = stopped(new_agent(Arc::clone(&provider), Vec::new()), move || {
+        trigger.cancel();
+        Ok(StopAction::ContinueOnce("ignored".to_owned()))
+    });
+    let report = agent.run_turn("go", &mut |_| {}, &cancel).await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    run(&mut agent, "next").await;
+    assert_eq!(
+        provider.requests()[1].messages,
+        [
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: Some("candidate".to_owned()),
+                tool_calls: Vec::new(),
+                provider_replay: Some(replay("original")),
+            },
+            ChatMessage::Assistant {
+                content: Some(INTERRUPTED_BEFORE_COMPLETION.to_owned()),
+                tool_calls: Vec::new(),
+                provider_replay: None,
+            },
+            ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
+            ChatMessage::user("next"),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_later_stream_failure_keeps_the_candidate_and_saves_the_partial_reply() {
     let provider = FakeProvider::new(vec![
         text_reply("candidate"),
@@ -353,6 +392,53 @@ async fn the_hook_waits_for_the_answer_after_the_silent_tool_summary() {
     run(&mut agent, "go").await;
     assert_eq!(*seen.lock().unwrap(), [("summary".to_owned(), 4, true)]);
     assert_eq!(provider.requests().len(), 4);
+}
+
+#[tokio::test]
+async fn the_next_request_leaves_out_the_summary_prompt_and_the_continuation() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", "{}")]),
+        tool_reply(&[("call-2", "{}")]),
+        text_reply(""),
+        text_reply("summary"),
+        text_reply("final"),
+        text_reply("next answer"),
+    ]);
+    let (mut agent, seen, _) = stopped(
+        new_agent(Arc::clone(&provider), vec![echo_tool()]),
+        verify(),
+    );
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.final_text, "summary\nfinal");
+    assert_eq!(*seen.lock().unwrap(), [("summary".to_owned(), 4, true)]);
+    run(&mut agent, "next").await;
+    let requests = provider.requests();
+    assert_eq!(
+        requests[3].messages.last(),
+        Some(&ChatMessage::user(SUMMARIZE_PROMPT))
+    );
+    assert_eq!(
+        requests[4].messages.last(),
+        Some(&ChatMessage::user(CONTINUED))
+    );
+    let mut expected = vec![ChatMessage::user("go")];
+    for id in ["call-1", "call-2"] {
+        expected.push(ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![echo_call(id, "{}")],
+            provider_replay: None,
+        });
+        expected.push(tool_message(id, "echo {}", ToolResultStatus::Success));
+    }
+    for answer in ["summary", "final"] {
+        expected.push(ChatMessage::Assistant {
+            content: Some(answer.to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: None,
+        });
+    }
+    expected.push(ChatMessage::user("next"));
+    assert_eq!(requests[5].messages, expected);
 }
 
 #[tokio::test(start_paused = true)]
