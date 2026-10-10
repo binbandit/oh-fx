@@ -223,6 +223,45 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_stdio_change_subscription_stays_active_after_its_process_ends() {
+        let script = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}'; exit 0 ;;
+  esac
+done
+"#;
+        let server = std::sync::Arc::new(Server::new(
+            McpServerConfig::stdio(
+                "fixture",
+                "/bin/sh",
+                vec!["-c".to_owned(), script.to_owned()],
+            ),
+            crate::server_transport::ConnectOptions::default(),
+            std::sync::Arc::default(),
+        ));
+        server.start().await;
+        let Lifecycle::Ready(client) = server.lifecycle() else {
+            panic!("the server is not ready");
+        };
+        for _ in 0..200 {
+            if !client.is_running() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let snapshot = snapshot_server(&server);
+        assert_eq!(snapshot.connection, ConnectionState::Failed);
+        assert_eq!(snapshot.subscription, SubscriptionState::Active);
+        server.stop(crate::transport::ShutdownMode::Immediate).await;
+    }
+
     #[test]
     fn idle_servers_report_disabled_or_disconnected_with_their_configuration() {
         let mut config = McpServerConfig::stdio("tool\u{1b}", "/bin/true", Vec::new());
