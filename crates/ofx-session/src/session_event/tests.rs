@@ -572,7 +572,6 @@ fn tool_results_keep_their_permission_feedback_in_order() {
 fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
     let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":";
     for event in [
-        "{\"user\":{\"text\":\"x\",\"images\":[{\"path\":\"/a.png\",\"media_type\":\"image/png\"}]}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"argument_integrity\":\"bogus\"}}",
         "{\"interrupted\":{\"reason\":\"stopped\"}}",
         "{\"turn_completed\":{\"files\":[{\"path\":\"a\",\"tool_call_id\":\"c\"}]}}",
@@ -1156,6 +1155,95 @@ fn compaction_cancellations_and_provisional_call_ids_are_refused_where_upstream_
             decode(&frame),
             Err(SessionError::InvalidConversationFrame),
             "{frame}"
+        );
+    }
+}
+
+const SHA: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+fn image_user(images: &str) -> String {
+    format!(
+        "{{\"user\":{{\"text\":\"what is in this screenshot?\",\"images\":[{images}],\"work_id\":null}}}}"
+    )
+}
+
+fn image(path: &str) -> String {
+    format!(
+        "{{\"id\":1,\"path\":\"{path}\",\"media_type\":\"image/png\",\"snapshot_path\":\"images/0011223344556677.png\",\"snapshot_sha256\":\"{SHA}\",\"inline_data\":null,\"source_ref\":null}}"
+    )
+}
+
+const IMAGE_RESULT: &str = "{\"tool_result\":{\"call_id\":\"call-shot\",\"tool_name\":\"read_image\",\"status\":\"success\",\"artifact_ref\":\"result-call-shot.txt\",\"tool_image_handle\":\"image-result-call-shot.json\",\"output_bytes\":12,\"stored_bytes\":12,\"completeness\":\"complete\",\"preview\":\"<path>a</path>\",\"provider_native\":false,\"created_at_ms\":7,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}";
+
+#[test]
+fn image_attachments_from_upstream_frames_round_trip_byte_for_byte() {
+    let two = format!(
+        "{},{}",
+        image("/shots/a.png"),
+        image("/shots/b.png").replace("\"id\":1", "\"id\":2")
+    );
+    for event in [
+        image_user(&image("/shots/a.png")),
+        image_user(&two),
+        IMAGE_RESULT.to_owned(),
+    ] {
+        let frame = upstream_frame(&event);
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(2, 3, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+    }
+    let ConversationEvent::User(user) = decode(&upstream_frame(&image_user(&two))).unwrap() else {
+        panic!("a user prompt");
+    };
+    assert_eq!(user.images.len(), 2);
+    assert_eq!(user.images[1].id, 2);
+    let sparse = image_user("{\"path\":\"/shots/a.png\",\"media_type\":\"image/png\"}");
+    assert_eq!(
+        encode(2, &decode(&upstream_frame(&sparse)).unwrap()),
+        upstream_frame(&image_user(
+            "{\"id\":0,\"path\":\"/shots/a.png\",\"media_type\":\"image/png\",\"snapshot_path\":null,\"snapshot_sha256\":null,\"inline_data\":null,\"source_ref\":null}"
+        ))
+        .replace("\"seq\":2,\"timestamp_ms\":3", "\"seq\":2,\"timestamp_ms\":1")
+    );
+}
+
+#[test]
+fn image_attachments_are_refused_where_upstream_refuses_them() {
+    let too_many = vec![image("/a.png"); 129].join(",");
+    let long_path = format!("/{}", "p".repeat(MAX_PATH_BYTES));
+    let mut invalid = vec![
+        image_user(&too_many),
+        image_user(&image("")),
+        image_user(&image(&long_path)),
+        image_user(&image("/a.png").replace("\"image/png\"", "\"\"")),
+        image_user(&image("/a.png").replace(
+            "\"image/png\"",
+            &format!("\"{}\"", "m".repeat(MAX_IDENTITY_BYTES + 1)),
+        )),
+        image_user(
+            &image("/a.png").replace("\"source_ref\":null", "\"source_ref\":null,\"extra\":1"),
+        ),
+        image_user(&image("/a.png").replace("\"path\":\"/a.png\",", "")),
+        image_user(&image("/a.png").replace("\"id\":1", "\"id\":-1")),
+        image_user(&image("/a.png").replace("\"id\":1", "\"id\":1.5")),
+        image_user(&image("/a.png").replace("\"inline_data\":null", "\"inline_data\":[1,2]")),
+        image_user("null"),
+    ];
+    invalid.extend(
+        [
+            "\"\"",
+            "1",
+            &format!("\"{}\"", "h".repeat(MAX_IDENTITY_BYTES + 1)),
+        ]
+        .iter()
+        .map(|handle| IMAGE_RESULT.replace("\"image-result-call-shot.json\"", handle)),
+    );
+    for event in invalid {
+        let frame = upstream_frame(&event);
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame:.300}"
         );
     }
 }

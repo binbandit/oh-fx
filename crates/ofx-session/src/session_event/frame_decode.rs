@@ -1,6 +1,7 @@
 use ofx_contract::{ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus};
 
 use super::file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
+use super::image_attachment::ImageAttachment;
 use super::{
     AssistantEvent, CONVERSATION_SCHEMA_VERSION, CancellationOrigin, ContextCheckpointEvent,
     ConversationEnvelope, ConversationEvent, FileEvidence, FileEvidenceAction, FinalToolIdentity,
@@ -61,7 +62,7 @@ fn event_from(value: Json<'_>) -> Option<ConversationEvent> {
 fn user(fields: &mut Fields<'_>) -> Option<UserEvent> {
     Some(UserEvent {
         text: fields.string("text")?,
-        images: fields.fixed("images")?,
+        images: fields.or("images", Vec::new(), |value| list(value, image_attachment))?,
         work_id: fields.nullable("work_id", |value| string(value).map(Some))?,
     })
 }
@@ -120,7 +121,7 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         tool_name: fields.string("tool_name")?,
         status: tag(&fields.required("status")?)?,
         artifact_ref: fields.string("artifact_ref")?,
-        tool_image_handle: fields.fixed("tool_image_handle")?,
+        tool_image_handle: fields.nullable("tool_image_handle", |value| string(value).map(Some))?,
         output_bytes: fields.nullable("output_bytes", |value| value.as_u64().map(Some))?,
         stored_bytes: fields.unsigned("stored_bytes")?,
         completeness: tag(&fields.required("completeness")?)?,
@@ -163,6 +164,20 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
             |value| tag(&value),
         )?,
     })
+}
+
+fn image_attachment(value: Json<'_>) -> Option<ImageAttachment> {
+    let mut fields = Fields::new(value)?;
+    let image = ImageAttachment {
+        id: fields.or("id", 0, |value| value.as_u64())?,
+        path: fields.string("path")?,
+        media_type: fields.string("media_type")?,
+        snapshot_path: fields.nullable("snapshot_path", |value| string(value).map(Some))?,
+        snapshot_sha256: fields.nullable("snapshot_sha256", |value| string(value).map(Some))?,
+        inline_data: fields.nullable("inline_data", |value| string(value).map(Some))?,
+        source_ref: fields.nullable("source_ref", |value| string(value).map(Some))?,
+    };
+    fields.finish(image)
 }
 
 fn file_presentation(value: Json<'_>) -> Option<CommittedFilePresentation> {

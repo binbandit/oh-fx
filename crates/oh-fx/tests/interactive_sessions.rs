@@ -2902,3 +2902,64 @@ fn a_turn_fx_cancelled_during_compaction_resumes_without_a_cancellation_line() {
     );
     assert_eq!(kinds(&frames)[7..], ["user", "assistant", "turn_completed"]);
 }
+
+#[test]
+fn a_session_holding_the_images_fx_saved_resumes_text_only_and_keeps_them() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Ready."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    home.append(
+        &id,
+        &[
+            frame(
+                4,
+                &json!({"user": {
+                    "text": "what is in this screenshot?",
+                    "images": [{
+                        "id": 1,
+                        "path": "/shots/a.png",
+                        "media_type": "image/png",
+                        "snapshot_path": "images/0011223344556677.png",
+                        "snapshot_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                        "inline_data": null,
+                        "source_ref": null
+                    }],
+                    "work_id": null
+                }}),
+            ),
+            frame(5, &json!({"assistant": {"text": "A login form."}})),
+            frame(6, &json!({"turn_completed": {"files": [], "turn_summary": null}})),
+        ]
+        .concat(),
+    );
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "A login form.");
+    assert!(
+        appears_in_order(&screen, &["┃ what is in this screenshot?", "A login form."]),
+        "{screen}"
+    );
+    session.send(b"next\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    let messages = chat(&server.requests()[1]);
+    assert!(
+        messages
+            .iter()
+            .any(|(role, content)| role == "user" && content == "what is in this screenshot?"),
+        "{messages:?}"
+    );
+    let frames = home.frames(&id);
+    assert_eq!(
+        frames[3]["event"]["user"]["images"][0]["snapshot_path"],
+        "images/0011223344556677.png"
+    );
+    assert_eq!(kinds(&frames)[6..], ["user", "assistant", "turn_completed"]);
+}

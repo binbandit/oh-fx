@@ -5,13 +5,14 @@ use ofx_contract::{
 };
 
 use super::file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
+use super::image_attachment::ImageAttachment;
 use super::{
     ArtifactCompleteness, AssistantEvent, CONVERSATION_SCHEMA_VERSION, ContextCheckpointEvent,
     ConversationEnvelope, ConversationEvent, FileEvidence, FileEvidenceAction, InterruptedEvent,
     SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
     TurnCompletedEvent, UserEvent, WireTag, validate_event_shape,
 };
-use crate::fixed_field::{NoItems, Null};
+use crate::fixed_field::Null;
 use crate::session_codec::SavedProvider;
 
 const PROVIDER_ID_BYTES: usize = 64;
@@ -114,8 +115,18 @@ impl Encoder<'_> {
         }
     }
 
-    fn empty(&mut self) {
-        self.int(0);
+    fn images(&mut self, images: &[ImageAttachment]) -> Option<()> {
+        self.int(u64::from(u32::try_from(images.len()).ok()?));
+        for image in images {
+            self.int(image.id);
+            self.text(&image.path)?;
+            self.text(&image.media_type)?;
+            self.optional_text(image.snapshot_path.as_deref())?;
+            self.optional_text(image.snapshot_sha256.as_deref())?;
+            self.optional_text(image.inline_data.as_deref())?;
+            self.optional_text(image.source_ref.as_deref())?;
+        }
+        Some(())
     }
 
     fn event(&mut self, event: &ConversationEvent) -> Option<()> {
@@ -123,7 +134,7 @@ impl Encoder<'_> {
             ConversationEvent::User(user) => {
                 self.byte(0);
                 self.text(&user.text)?;
-                self.empty();
+                self.images(&user.images)?;
                 self.optional_text(user.work_id.as_deref())
             }
             ConversationEvent::Assistant(assistant) => {
@@ -208,7 +219,7 @@ impl Encoder<'_> {
         self.text(&result.tool_name)?;
         self.tag(result.status)?;
         self.text(&result.artifact_ref)?;
-        self.absent();
+        self.optional_text(result.tool_image_handle.as_deref())?;
         self.optional_int(result.output_bytes);
         self.int(result.stored_bytes);
         self.tag(result.completeness)?;
@@ -389,15 +400,28 @@ impl<'a> Decoder<'a> {
         (self.byte()? == 0).then(T::default)
     }
 
-    fn no_items(&mut self) -> Option<NoItems> {
-        (self.int()? == 0).then_some(NoItems)
+    fn images(&mut self) -> Option<Vec<ImageAttachment>> {
+        let count = self.length()?;
+        let mut images = Vec::with_capacity(count.min(self.bytes.len()));
+        for _ in 0..count {
+            images.push(ImageAttachment {
+                id: self.int()?,
+                path: self.text()?,
+                media_type: self.text()?,
+                snapshot_path: self.optional_text().ok()?,
+                snapshot_sha256: self.optional_text().ok()?,
+                inline_data: self.optional_text().ok()?,
+                source_ref: self.optional_text().ok()?,
+            });
+        }
+        Some(images)
     }
 
     fn event(&mut self) -> Option<ConversationEvent> {
         Some(match self.byte()? {
             0 => ConversationEvent::User(UserEvent {
                 text: self.text()?,
-                images: self.no_items()?,
+                images: self.images()?,
                 work_id: self.optional_text().ok()?,
             }),
             1 => ConversationEvent::Assistant(self.assistant()?),
@@ -477,7 +501,7 @@ impl<'a> Decoder<'a> {
             tool_name: self.text()?,
             status: self.tag::<ToolResultStatus>()?,
             artifact_ref: self.text()?,
-            tool_image_handle: self.fixed::<Null>()?,
+            tool_image_handle: self.optional_text().ok()?,
             output_bytes: self.optional(Self::int).ok()?,
             stored_bytes: self.int()?,
             completeness: self.tag::<ArtifactCompleteness>()?,

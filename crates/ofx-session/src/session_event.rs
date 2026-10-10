@@ -1,6 +1,7 @@
 mod file_presentation;
 mod frame_decode;
 mod history_codec;
+mod image_attachment;
 
 use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
@@ -10,7 +11,7 @@ use ofx_contract::{
 };
 use serde::Serialize;
 
-use crate::fixed_field::{NoItems, Null};
+use crate::fixed_field::Null;
 use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
@@ -19,6 +20,7 @@ use file_presentation::CommittedFilePresentation;
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
 pub(crate) use history_codec::{decode_history_envelope, encode_history_envelope};
+use image_attachment::{ImageAttachment, are_valid_images};
 
 pub(crate) const CONVERSATION_SCHEMA_VERSION: u8 = 3;
 pub(crate) const EVENT_FRAME_MAX_BYTES: usize = EMERGENCY_CEILING_BYTES;
@@ -47,7 +49,7 @@ pub enum ConversationEvent {
 pub struct UserEvent {
     pub text: String,
     #[serde(default)]
-    images: NoItems,
+    pub(crate) images: Vec<ImageAttachment>,
     #[serde(default)]
     pub work_id: Option<String>,
 }
@@ -56,7 +58,7 @@ impl UserEvent {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            images: NoItems,
+            images: Vec::new(),
             work_id: None,
         }
     }
@@ -167,7 +169,7 @@ pub struct ToolResultEvent {
     pub status: ToolResultStatus,
     pub artifact_ref: String,
     #[serde(default)]
-    tool_image_handle: Null,
+    pub(crate) tool_image_handle: Option<String>,
     #[serde(default)]
     pub output_bytes: Option<u64>,
     pub stored_bytes: u64,
@@ -208,7 +210,7 @@ impl ToolResultEvent {
             tool_name: tool_name.into(),
             status,
             artifact_ref: artifact_ref.into(),
-            tool_image_handle: Null,
+            tool_image_handle: None,
             output_bytes: None,
             stored_bytes,
             completeness,
@@ -641,7 +643,9 @@ impl ConversationEnvelope {
 fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
     let valid = match event {
         ConversationEvent::User(user) => {
-            is_valid_text(&user.text) && user.work_id.as_deref().is_none_or(is_valid_identity)
+            is_valid_text(&user.text)
+                && are_valid_images(&user.images)
+                && user.work_id.as_deref().is_none_or(is_valid_identity)
         }
         ConversationEvent::Assistant(assistant) => {
             assistant.text.len() <= MAX_TEXT_BYTES
@@ -667,6 +671,10 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
                 && is_valid_identity(&result.call_id)
                 && is_valid_identity(&result.tool_name)
                 && is_valid_identity(&result.artifact_ref)
+                && result
+                    .tool_image_handle
+                    .as_deref()
+                    .is_none_or(is_valid_identity)
                 && result
                     .preview
                     .as_ref()

@@ -329,3 +329,48 @@ fn a_session_holding_an_upstream_compaction_cancellation_resumes_and_keeps_it() 
         restored.messages
     );
 }
+
+fn image_turn() -> Vec<String> {
+    vec![
+        "{\"user\":{\"text\":\"what is in this screenshot?\",\"images\":[{\"id\":1,\"path\":\"/shots/a.png\",\"media_type\":\"image/png\",\"snapshot_path\":\"images/0011223344556677.png\",\"snapshot_sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"inline_data\":null,\"source_ref\":null}],\"work_id\":null}}".to_owned(),
+        "{\"assistant\":{\"text\":\"A login form.\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}".to_owned(),
+    ]
+}
+
+#[test]
+fn a_session_holding_upstream_image_attachments_resumes_and_keeps_them() {
+    let fixture = Fixture::new();
+    let id = "fx-images";
+    let log = upstream_session(&fixture, id, &image_turn());
+    let images = fixture.dir(id).join("images");
+    fs::create_dir_all(&images).unwrap();
+    fs::write(images.join("0011223344556677.png"), b"\x89PNG").unwrap();
+
+    let mut session = fixture.resume(id).unwrap();
+    let history = session.take_history();
+    drop(session);
+    assert_eq!(reencoded(&history), log);
+    assert_eq!(fs::read_to_string(fixture.events(id)).unwrap(), log);
+    assert_eq!(
+        cache_coverage(&fixture, id),
+        Some(u64::try_from(log.len()).unwrap())
+    );
+
+    let edited = log.replacen("\"A login form.\"", "\"A login page.\"", 1);
+    fs::write(fixture.events(id), &edited).unwrap();
+    let mut cached = fixture.resume(id).unwrap();
+    assert_eq!(cached.take_history(), history);
+    drop(cached);
+    fs::write(fixture.events(id), &log).unwrap();
+    assert_eq!(
+        fs::read(images.join("0011223344556677.png")).unwrap(),
+        b"\x89PNG"
+    );
+
+    let restored = fixture.resume(id).unwrap().restored_history().unwrap();
+    assert_eq!(
+        restored.messages[0],
+        ChatMessage::user("what is in this screenshot?")
+    );
+}

@@ -653,3 +653,56 @@ fn history_snapshot_codec_keeps_compaction_cancellations_and_provisional_ids_in_
     unknown_identity[identity] = 4;
     assert!(decode_history_envelope(&unknown_identity).is_none());
 }
+
+#[test]
+fn history_snapshot_codec_keeps_image_attachments_in_upstream_layout() {
+    use crate::session_event::image_attachment::ImageAttachment;
+
+    let mut user = UserEvent::new("with image");
+    user.images = vec![ImageAttachment {
+        id: 7,
+        path: "/a.png".to_owned(),
+        media_type: "image/png".to_owned(),
+        snapshot_path: Some("images/a.png".to_owned()),
+        snapshot_sha256: None,
+        inline_data: None,
+        source_ref: Some("ref-1".to_owned()),
+    }];
+    let event = ConversationEvent::User(user);
+    let mut expected = Vec::new();
+    expected.extend(word(3));
+    expected.extend(word(1));
+    expected.extend(word(1));
+    expected.push(0);
+    expected.extend(text_bytes("with image"));
+    expected.extend(word(1));
+    expected.extend(word(7));
+    expected.extend(text_bytes("/a.png"));
+    expected.extend(text_bytes("image/png"));
+    expected.push(1);
+    expected.extend(text_bytes("images/a.png"));
+    expected.extend([0, 0, 1]);
+    expected.extend(text_bytes("ref-1"));
+    expected.push(0);
+    assert_eq!(encoded(&envelope(1, 1, event.clone())), expected);
+    round_trip(&envelope(1, 1, event));
+
+    let mut result = ToolResultEvent::new(
+        "c1",
+        "read_image",
+        ToolResultStatus::Success,
+        "a",
+        2,
+        ArtifactCompleteness::Unknown,
+    );
+    result.tool_image_handle = Some("image-result-c1.json".to_owned());
+    let event = ConversationEvent::ToolResult(result);
+    let bytes = encoded(&envelope(2, 5, event.clone()));
+    let mut handle = vec![1];
+    handle.extend(text_bytes("image-result-c1.json"));
+    assert!(
+        bytes.windows(handle.len()).any(|window| window == handle),
+        "{bytes:?}"
+    );
+    round_trip(&envelope(2, 5, event));
+}
