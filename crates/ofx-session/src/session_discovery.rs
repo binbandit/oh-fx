@@ -4,18 +4,25 @@ use ofx_config::PrivateDir;
 
 use crate::session_children::has_owner_marker;
 use crate::session_error::SessionError;
-use crate::session_event::{ConversationEvent, decode_conversation_frame};
+use crate::session_event::{ConversationEvent, ConversationState, decode_conversation_frame};
 use crate::session_log::managed_file::{Access, open_managed_file};
-use crate::session_log::{EVENTS_FILE, read_metadata};
+use crate::session_log::{EVENTS_FILE, read_checkpoint, read_metadata};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 
 const NANOS_PER_MILLI: i64 = 1_000_000;
 const MILLIS_PER_SECOND: i64 = 1_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Classification {
+    Listing,
+    Resume,
+}
+
 pub(crate) fn classify_session(
     sessions: &PrivateDir,
     id: &str,
+    classification: Classification,
 ) -> Result<Option<SessionSummary>, SessionError> {
     let dir = sessions
         .open_child(id)?
@@ -29,17 +36,34 @@ pub(crate) fn classify_session(
     let stat = file.metadata()?;
     let mut history_len: usize = 0;
     let mut has_checkpoint = false;
+    let mut state = ConversationState::default();
+    let mut open_turn_from: Option<u64> = None;
     let mut reader = LineReader::new(&file, 0, stat.len())?;
     while let LineRead::Line(line) = reader.next_line()? {
-        match decode_conversation_frame(&line)?.event {
-            ConversationEvent::ContextCheckpoint(_) => has_checkpoint = true,
+        let envelope = decode_conversation_frame(&line)?;
+        let seq = envelope.seq;
+        if classification == Classification::Resume {
+            state.apply(seq, envelope.timestamp_ms(), &envelope.event)?;
+        }
+        match envelope.event {
+            ConversationEvent::User(_) => open_turn_from = Some(seq.saturating_sub(1)),
+            ConversationEvent::ContextCheckpoint(_) => {
+                has_checkpoint = true;
+                if open_turn_from.is_some() {
+                    open_turn_from = Some(seq);
+                }
+            }
             ConversationEvent::TurnCompleted(_) | ConversationEvent::Interrupted(_) => {
+                open_turn_from = None;
                 history_len = history_len
                     .checked_add(1)
                     .ok_or(SessionError::InvalidSessionFormat)?;
             }
             _ => {}
         }
+    }
+    if classification == Classification::Resume {
+        read_checkpoint(&dir, open_turn_from.unwrap_or(state.last_seq()))?;
     }
     let updated_at_ms = if history_len == 0 && !has_checkpoint {
         metadata.updated_at_ms

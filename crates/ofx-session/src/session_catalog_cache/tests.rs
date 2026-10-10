@@ -11,6 +11,7 @@ use super::catalog_codec::MAGIC;
 use super::fingerprint::{Kind, Observed, Stamp};
 use super::*;
 use crate::session_codec::{SavedProvider, SessionMetadata, SessionPreferences};
+use crate::session_discovery::Classification;
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
 use crate::session_log::{LOCK_DEADLINE, resume_session, start_session};
 use crate::spawn_gate::make_fifo;
@@ -82,7 +83,12 @@ impl Sessions {
     }
 
     fn scan(&self, writable: bool) -> CatalogScan {
-        let mut scan = scan_catalog(&self.dir, &self.names(), writable);
+        let index = if writable {
+            CatalogIndex::Maintained
+        } else {
+            CatalogIndex::ReadOnly
+        };
+        let mut scan = scan_catalog(&self.dir, &self.names(), index, Classification::Listing);
         scan.summaries.sort_by(|a, b| a.id.cmp(&b.id));
         scan
     }
@@ -398,6 +404,31 @@ fn a_read_only_listing_reads_the_catalog_but_never_writes_it() {
         Sessions::titles(&sessions.scan(false)),
         [("alpha", Some("Renamed"))]
     );
+    assert_eq!(fs::read(sessions.path(CATALOG_FILE)).unwrap(), before);
+}
+
+#[test]
+fn a_bypassed_catalog_is_neither_trusted_nor_written() {
+    let sessions = Sessions::new();
+    sessions.seed("alpha", 1);
+    sessions.scan(true);
+    let mut crafted = sessions.cached().rows;
+    crafted[0].summary.as_mut().unwrap().title = Some("Cached title".to_owned());
+    sessions.write_catalog(&crafted);
+    let before = fs::read(sessions.path(CATALOG_FILE)).unwrap();
+    assert_eq!(
+        Sessions::titles(&sessions.scan(false)),
+        [("alpha", Some("Cached title"))]
+    );
+    for classification in [Classification::Listing, Classification::Resume] {
+        let scan = scan_catalog(
+            &sessions.dir,
+            &sessions.names(),
+            CatalogIndex::Bypassed,
+            classification,
+        );
+        assert_eq!(Sessions::titles(&scan), [("alpha", None)]);
+    }
     assert_eq!(fs::read(sessions.path(CATALOG_FILE)).unwrap(), before);
 }
 
