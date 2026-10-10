@@ -247,8 +247,7 @@ impl SessionStore {
     }
 
     pub fn resume_latest(&self) -> Result<WritableSession, SessionError> {
-        let sessions = self
-            .writable_sessions()
+        self.writable_sessions()
             .map_err(|_| SessionError::SessionNotFound)?;
         let fx = self.fx_home.as_deref().map(FxSessions::open);
         let scan = self.scan_with(fx.as_ref())?;
@@ -257,17 +256,7 @@ impl SessionStore {
             if summary.workspace_root != self.workspace_root {
                 continue;
             }
-            let opened = match summary.source {
-                SessionSource::Fx => self.resume(&summary.id),
-                SessionSource::OhFx => resume_session(sessions, &summary.id, self.lock_deadline)
-                    .and_then(|session| {
-                        if session.metadata().workspace_root == self.workspace_root {
-                            Ok(session)
-                        } else {
-                            Err(SessionError::SessionTargetChanged)
-                        }
-                    }),
-            };
+            let opened = self.open_latest_candidate(summary);
             match opened {
                 Ok(session) => return Ok(session),
                 Err(SessionError::SessionNotFound | SessionError::SessionTargetChanged) => {
@@ -283,6 +272,26 @@ impl SessionStore {
             Err(SessionError::NoReadableSessions)
         } else {
             Err(SessionError::NoSavedSessions)
+        }
+    }
+
+    pub(crate) fn open_latest_candidate(
+        &self,
+        summary: &SessionSummary,
+    ) -> Result<WritableSession, SessionError> {
+        let session = match summary.source {
+            SessionSource::Fx => self.open_importing(&summary.id, self.lock_deadline)?,
+            SessionSource::OhFx => resume_session(
+                self.writable_sessions()
+                    .map_err(|_| SessionError::SessionNotFound)?,
+                &summary.id,
+                self.lock_deadline,
+            )?,
+        };
+        if session.metadata().workspace_root == self.workspace_root {
+            Ok(session)
+        } else {
+            Err(SessionError::SessionTargetChanged)
         }
     }
 

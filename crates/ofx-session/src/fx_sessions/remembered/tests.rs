@@ -7,6 +7,7 @@ use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
 use super::super::tests::{Home, Saved, shell_turn_without_its_call, snapshot};
+use crate::fx_sessions::FxSessions;
 use crate::session_error::SessionError;
 use crate::session_store::{RememberedSession, SessionStore};
 use crate::session_summary_codec::SessionSource;
@@ -248,6 +249,39 @@ fn resume_last_opens_the_newest_session_of_this_workspace_in_either_store() {
 
     saved("own-newest", WORKSPACE, 4_102_444_800).write(&home.own_sessions());
     assert_eq!(importing(&home).resume_latest().unwrap().id(), "own-newest");
+}
+
+#[test]
+fn resume_last_skips_an_fx_session_moved_to_another_workspace_after_it_was_listed() {
+    let home = Home::new();
+    saved("fx-moving", WORKSPACE, 300).write(&home.fx_sessions());
+    let store = importing(&home);
+    let catalog = store
+        .catalog_with_fx(&FxSessions::open(home.path()))
+        .unwrap();
+    let listed = catalog
+        .summaries()
+        .iter()
+        .find(|summary| summary.id == "fx-moving")
+        .unwrap();
+    assert_eq!(listed.workspace_root, WORKSPACE);
+    saved("fx-moving", "/elsewhere", 300).write(&home.fx_sessions());
+    let before = snapshot(&home.fx_profile());
+
+    assert_eq!(
+        store.open_latest_candidate(listed).err(),
+        Some(SessionError::SessionTargetChanged)
+    );
+    let copy: serde_json::Value = serde_json::from_slice(
+        &fs::read(home.own_sessions().join("fx-moving").join("session.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(copy["workspace_root"], "/elsewhere");
+    assert_eq!(snapshot(&home.fx_profile()), before);
+    assert_eq!(
+        store.resume_latest().err(),
+        Some(SessionError::NoSavedSessions)
+    );
 }
 
 #[test]
