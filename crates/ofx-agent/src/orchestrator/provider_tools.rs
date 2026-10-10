@@ -1,10 +1,11 @@
+use std::collections::VecDeque;
 use std::mem;
 
 use ofx_contract::{
     ChatMessage, Completion, DEFAULT_MAX_TOOL_RESULT_BYTES, FinishReason, ProviderReplay,
-    ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolOutput, ToolResultStatus,
-    ToolSpec, is_provider_search_alias, is_tool_output_error, prepare_model_output,
-    provider_search_description,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolExecutionProvenance, ToolOutput,
+    ToolResultStatus, ToolSpec, is_provider_search_alias, is_tool_output_error,
+    prepare_model_output, provider_search_description,
 };
 
 use super::{
@@ -12,6 +13,7 @@ use super::{
     tool_started, turn_trace,
 };
 use crate::execution_memory::partial_view;
+use crate::tool_call_metrics::RING_CAPACITY;
 
 pub(super) fn may_run_at_provider(name: &str, specs: &[ToolSpec], executed: &[bool]) -> bool {
     is_provider_search_alias(name)
@@ -19,6 +21,38 @@ pub(super) fn may_run_at_provider(name: &str, specs: &[ToolSpec], executed: &[bo
             .iter()
             .zip(executed)
             .any(|(spec, executed)| *executed && spec.name == name)
+}
+
+pub(super) fn retained_web_searches(history: &[ChatMessage]) -> Vec<Option<ToolResultStatus>> {
+    let mut searches: VecDeque<(&ToolCallId, Option<ToolResultStatus>)> = VecDeque::new();
+    for message in history {
+        match message {
+            ChatMessage::Assistant { tool_calls, .. } => {
+                for call in tool_calls
+                    .iter()
+                    .filter(|call| provider_executed(call) && is_provider_search_alias(&call.name))
+                {
+                    if searches.len() == RING_CAPACITY {
+                        searches.pop_front();
+                    }
+                    searches.push_back((&call.id, None));
+                }
+            }
+            ChatMessage::Tool {
+                call_id, status, ..
+            } => {
+                if let Some(search) = searches
+                    .iter_mut()
+                    .rev()
+                    .find(|(id, settled)| *id == call_id && settled.is_none())
+                {
+                    search.1 = Some(*status);
+                }
+            }
+            ChatMessage::System { .. } | ChatMessage::User { .. } => {}
+        }
+    }
+    searches.into_iter().map(|(_, status)| status).collect()
 }
 
 pub(super) fn provider_executed(call: &ToolCall) -> bool {
@@ -142,3 +176,6 @@ impl Agent {
             .map_err(|error| Stop::failed(TurnFailure::Provider(error)))
     }
 }
+
+#[cfg(test)]
+mod tests;

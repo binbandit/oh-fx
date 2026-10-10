@@ -32,8 +32,12 @@ fn traced(calls: Vec<ToolCallMetric>) -> ToolCallTrace {
 }
 
 fn section(trace: &ToolCallTrace) -> String {
+    searched(trace, &[])
+}
+
+fn searched(trace: &ToolCallTrace, searches: &[Option<ToolResultStatus>]) -> String {
     let mut out = String::new();
-    write_section(&mut out, trace).unwrap();
+    write_section(&mut out, trace, searches).unwrap();
     out
 }
 
@@ -174,4 +178,32 @@ fn a_provider_search_alias_is_shown_as_web_search() {
     let report = section(&trace);
     assert!(report.contains(" name=web_search outcome=rejected "));
     assert!(!report.contains("exa_search"));
+}
+
+#[test]
+fn web_searches_show_only_their_status_under_the_neutral_name() {
+    let searches = [
+        Some(ToolResultStatus::Success),
+        Some(ToolResultStatus::Failure),
+        None,
+    ];
+    assert_eq!(
+        searched(&ToolCallTrace::default(), &searches),
+        "\n## Tool Calls\n### Local\n(none locally executed)\n### Web Search\nlast=3\nname=web_search status=ok\nname=web_search status=err\nname=web_search status=pending\n"
+    );
+}
+
+#[test]
+fn local_calls_without_web_searches_say_none_are_retained() {
+    let trace = traced(vec![call(
+        "read_file",
+        ToolCallOutcome::Succeeded,
+        "{}",
+        "text",
+    )]);
+    assert!(
+        section(&trace).ends_with("### Web Search\n(none retained)\n"),
+        "{}",
+        section(&trace)
+    );
 }
