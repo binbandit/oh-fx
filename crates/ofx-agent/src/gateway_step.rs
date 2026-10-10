@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 const OUTPUT_TRUNCATED: &str = "OutputTruncated";
 const CONTENT_FILTERED: &str = "ContentFiltered";
 const INCOMPLETE_STREAM: &str = "IncompleteStream";
+const STREAM_INTERRUPTED: &str = "StreamInterrupted";
 const PROVIDER_FINISH_ERROR: &str = "ProviderError";
 const COMPLETED_STATUS: u16 = 200;
 const PROVIDER_ERROR_STATUS: u16 = 520;
@@ -38,7 +39,7 @@ pub(crate) fn failure_settlement(error: &ProviderError) -> Settlement<'_> {
     match error.code.as_str() {
         OUTPUT_TRUNCATED => Settlement::Finished(LENGTH),
         CONTENT_FILTERED => Settlement::Finished(CONTENT_FILTER),
-        INCOMPLETE_STREAM => Settlement::Finished(MISSING_FINISH),
+        INCOMPLETE_STREAM | STREAM_INTERRUPTED => Settlement::Finished(MISSING_FINISH),
         PROVIDER_FINISH_ERROR if error.status.is_none() => Settlement::Finished(ERROR),
         _ if error.status.is_some() => Settlement::Answered(failure_status(error.kind)),
         code => Settlement::Failed(code),

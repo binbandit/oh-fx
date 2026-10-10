@@ -13,6 +13,7 @@ const NONE: &str = "none";
 const OUTPUT_TRUNCATED: &str = "OutputTruncated";
 const CONTENT_FILTERED: &str = "ContentFiltered";
 const INCOMPLETE_STREAM: &str = "IncompleteStream";
+const STREAM_INTERRUPTED: &str = "StreamInterrupted";
 const PROVIDER_FINISH_ERROR: &str = "ProviderError";
 const PANICKED: &str = "Panicked";
 const HTTP_ERROR: &str = "http_error";
@@ -430,7 +431,7 @@ fn provider_kind(error: &ProviderError) -> Option<&'static str> {
         OUTPUT_TRUNCATED => Some("provider_length"),
         CONTENT_FILTERED => Some("content_filter"),
         PROVIDER_FINISH_ERROR if error.status.is_none() => Some("provider_error"),
-        INCOMPLETE_STREAM => Some("stream_interrupted"),
+        INCOMPLETE_STREAM | STREAM_INTERRUPTED => Some("stream_interrupted"),
         _ => None,
     }
 }
