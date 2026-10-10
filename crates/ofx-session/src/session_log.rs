@@ -42,9 +42,10 @@ use managed_file::{
 };
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
+pub(crate) use turn_recovery::read_checkpoint;
 use turn_recovery::{
     Recovery, clear_recovery, commit_checkpoint, mark_recovery_asked, open_unfinished_turn,
-    read_checkpoint, recovery_was_asked, save_checkpoint,
+    recovery_was_asked, save_checkpoint,
 };
 use turn_restore::{complete_result_output, restored_history};
 

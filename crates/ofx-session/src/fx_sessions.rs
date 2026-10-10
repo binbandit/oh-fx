@@ -3,7 +3,8 @@ use std::path::Path;
 
 use ofx_config::PrivateDir;
 
-use crate::session_catalog_cache::scan_catalog;
+use crate::session_catalog_cache::{CatalogIndex, scan_catalog};
+use crate::session_discovery::Classification;
 use crate::session_log::managed_file::{has_private_dir_mode, session_directory_names};
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
@@ -42,7 +43,13 @@ impl FxSessions {
         let Ok(names) = session_directory_names(sessions) else {
             return Vec::new();
         };
-        let mut summaries = scan_catalog(sessions, &names, false).summaries;
+        let mut summaries = scan_catalog(
+            sessions,
+            &names,
+            CatalogIndex::Bypassed,
+            Classification::Resume,
+        )
+        .summaries;
         for summary in &mut summaries {
             summary.source = SessionSource::Fx;
         }
