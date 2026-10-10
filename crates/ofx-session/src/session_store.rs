@@ -13,7 +13,7 @@ use crate::fx_sessions::{FxSessions, Imported, import_from_fx, remembered_sessio
 use crate::session_catalog_cache::{CatalogIndex, CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
-use crate::session_discovery::Classification;
+use crate::session_discovery::{Classification, inspect_for_doctor};
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{
@@ -24,6 +24,7 @@ use crate::session_log::{
     load_archive, load_session, now_ms, resume_held_session, resume_session, start_session,
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
+use crate::session_store_types::DoctorInspection;
 use crate::session_summary_codec::{
     ResumablePage, ResumeContinuation, SessionSource, SessionSummary, listed_page_from_summaries,
     resumable_page_from_summaries, sort_summaries_newest_first,
@@ -337,6 +338,13 @@ impl SessionStore {
             Ok(Some(dir)) => load_archive(&dir, id, SessionError::SessionNotFound),
             Ok(None) => fx.archive(id),
             Err(_) => Err(SessionError::SessionNotFound),
+        }
+    }
+
+    pub fn inspect_for_doctor(&self, limit: usize) -> Result<DoctorInspection, SessionError> {
+        match &self.sessions {
+            Some(sessions) => inspect_for_doctor(sessions, limit),
+            None => Ok(DoctorInspection::default()),
         }
     }
 

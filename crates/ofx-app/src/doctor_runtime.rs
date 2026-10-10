@@ -7,7 +7,7 @@ use ofx_cli::OutputFormat;
 use ofx_config::{ProfilePaths, ProviderId, SelectionError, Settings};
 use ofx_contract::PermissionMode;
 use ofx_mcp::ProfileConfigDiagnostic;
-use ofx_session::SessionStore;
+use ofx_session::{DoctorDiagnostic, DoctorIssueKind, SessionStore};
 
 use crate::app_lifecycle::startup_status::StatusSources;
 use crate::output_contracts::doctor::{Check, CheckStatus, DoctorReport};
@@ -18,6 +18,7 @@ const PROJECT_SETTINGS: &str = ".oh-fx.json";
 const PROFILE_MCP: &str = "~/.config/oh-fx/mcp.json";
 const SESSIONS_DIRECTORY: &str = "sessions";
 const UNUSABLE_PROFILE: &str = "InvalidProfileConfiguration";
+const SESSION_DIAGNOSTICS_LIMIT: usize = 64;
 
 pub struct Doctor {
     report: DoctorReport,
@@ -282,14 +283,32 @@ impl Collection<'_> {
             );
             return;
         }
+        let sessions = paths.data.join(SESSIONS_DIRECTORY);
         self.push(
             "state",
             CheckStatus::Ok,
             format!(
                 "state dir ready at {} (per-session managed state created on demand)",
-                paths.data.join(SESSIONS_DIRECTORY).display()
+                sessions.display()
             ),
         );
+        if let Ok(inspection) = store.inspect_for_doctor(SESSION_DIAGNOSTICS_LIMIT) {
+            for diagnostic in &inspection.diagnostics {
+                let (status, detail) = session_diagnostic(diagnostic, &sessions);
+                self.push("session", status, detail);
+            }
+            if inspection.truncated {
+                let count = inspection.inspected_count;
+                self.push(
+                    "session",
+                    CheckStatus::Warn,
+                    format!(
+                        "session diagnostics truncated after {count} session director{} to keep doctor bounded",
+                        if count == 1 { "y" } else { "ies" }
+                    ),
+                );
+            }
+        }
         match store.catalog() {
             Ok(catalog) => match catalog.summaries().first() {
                 Some(latest) => self.push(
@@ -353,6 +372,35 @@ impl Collection<'_> {
     fn push(&mut self, name: &'static str, status: CheckStatus, detail: String) {
         self.checks.push(check(name, status, detail));
     }
+}
+
+fn session_diagnostic(diagnostic: &DoctorDiagnostic, sessions: &Path) -> (CheckStatus, String) {
+    let id = &diagnostic.session_id;
+    let sessions = sessions.display();
+    let (status, report_only, recovery) = match diagnostic.kind {
+        DoctorIssueKind::AuthorityTransitionPending => (
+            CheckStatus::Warn,
+            " report_only=true",
+            "rerun oh-fx doctor after active writers exit; cleanup is guarded".to_owned(),
+        ),
+        DoctorIssueKind::CanonicalStateInvalid => (
+            CheckStatus::Fail,
+            "",
+            format!("back up {sessions}, then inspect this session with oh-fx session {id} --json"),
+        ),
+        DoctorIssueKind::UnsafePath => (
+            CheckStatus::Fail,
+            "",
+            format!("back up {sessions} and avoid opening this session until the path is repaired"),
+        ),
+    };
+    (
+        status,
+        format!(
+            "session {id}: {}{report_only}; recovery={recovery}",
+            diagnostic.kind.name()
+        ),
+    )
 }
 
 fn mcp_check(diagnostic: &ProfileConfigDiagnostic) -> Option<Check> {

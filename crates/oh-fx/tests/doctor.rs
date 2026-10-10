@@ -1,6 +1,6 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use ofx_testkit::{FakeServer, Reply, chat_text_events};
@@ -331,4 +331,182 @@ fn doctor_refuses_the_v2_store() {
     let output = home.run(&["doctor"], &[("OH_FX_SESSIONS_V2", "1")]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(text(&output.stderr), "oh-fx: doctor is not available yet\n");
+}
+
+fn break_session(sessions: &Path, id: &str) {
+    let session = sessions.join(id);
+    fs::create_dir_all(&session).expect("create a session directory");
+    fs::write(session.join("session.json"), "{").expect("write a broken session");
+}
+
+fn session_checks(report: &Value) -> Vec<(String, String)> {
+    let mut checks: Vec<(String, String)> = report["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .iter()
+        .filter(|check| check["name"] == "session")
+        .map(|check| {
+            (
+                check["status"].as_str().expect("a status").to_owned(),
+                check["detail"].as_str().expect("a detail").to_owned(),
+            )
+        })
+        .collect();
+    checks.sort();
+    checks
+}
+
+#[test]
+fn damaged_sessions_are_reported_with_upstreams_recovery_guidance() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+    let home = Home::new();
+    home.write_settings(&local_settings(&server.base_url()));
+    let environment = [("LOCAL_KEY", "secret")];
+    let output = home.run(&["ask", "hello"], &environment);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let sessions = home.root.join("data/oh-fx/sessions");
+    let id = fs::read_dir(&sessions)
+        .expect("the sessions directory")
+        .next()
+        .expect("a session")
+        .expect("a session entry")
+        .file_name()
+        .into_string()
+        .expect("a UTF-8 id");
+    let elsewhere = home.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("create a directory");
+    symlink(&elsewhere, sessions.join(&id).join("tool-results")).expect("link tool results");
+    break_session(&sessions, "broken-session");
+    let pending = sessions.join("pending");
+    fs::create_dir_all(&pending).expect("create a session directory");
+    fs::write(pending.join("authority.pending.json"), "{}").expect("write a fence");
+
+    let shown = sessions.display();
+    let report: Value =
+        serde_json::from_str(&home.doctor(&["--json"], &environment)).expect("doctor JSON");
+    let mut expected = vec![
+        (
+            "fail".to_owned(),
+            format!("session {id}: unsafe_path; recovery=back up {shown} and avoid opening this session until the path is repaired"),
+        ),
+        (
+            "fail".to_owned(),
+            format!("session broken-session: canonical_state_invalid; recovery=back up {shown}, then inspect this session with oh-fx session broken-session --json"),
+        ),
+        (
+            "warn".to_owned(),
+            "session pending: authority_transition_pending report_only=true; recovery=rerun oh-fx doctor after active writers exit; cleanup is guarded".to_owned(),
+        ),
+    ];
+    expected.sort();
+    assert_eq!(session_checks(&report), expected);
+    let names: Vec<&str> = report["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .iter()
+        .map(|check| check["name"].as_str().expect("a name"))
+        .collect();
+    let state = names
+        .iter()
+        .position(|name| *name == "state")
+        .expect("a state check");
+    assert_eq!(
+        names[state + 1..state + 5],
+        ["session", "session", "session", "sessions"]
+    );
+    let text = home.doctor(&[], &environment);
+    assert!(
+        text.contains(&format!("\n[fail] session: session broken-session: canonical_state_invalid; recovery=back up {shown}, then inspect this session with oh-fx session broken-session --json\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "\n[ok] sessions: 1 saved session(s); latest={id}\n"
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn session_diagnostics_stop_after_sixty_four_session_directories() {
+    let home = Home::new();
+    let sessions = home.root.join("data/oh-fx/sessions");
+    fs::create_dir_all(&sessions).expect("create the sessions directory");
+    for directory in [home.root.join("data/oh-fx"), sessions.clone()] {
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("make the directory private");
+    }
+    for index in 0..65 {
+        break_session(&sessions, &format!("broken-{index:02}"));
+    }
+    let report: Value = serde_json::from_str(&home.doctor(&["--json"], &[])).expect("doctor JSON");
+    let checks = session_checks(&report);
+    assert_eq!(checks.len(), 65);
+    let invalid = checks
+        .iter()
+        .filter(|(status, detail)| {
+            status == "fail" && detail.contains(": canonical_state_invalid; ")
+        })
+        .count();
+    assert_eq!(invalid, 64);
+    assert!(
+        checks.contains(&(
+            "warn".to_owned(),
+            "session diagnostics truncated after 64 session directories to keep doctor bounded"
+                .to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_session_folder_open_to_others_or_a_linked_log_is_reported_unsafe() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["two"])),
+    ]);
+    let home = Home::new();
+    home.write_settings(&local_settings(&server.base_url()));
+    let environment = [("LOCAL_KEY", "secret")];
+    for prompt in ["first", "second"] {
+        let output = home.run(&["ask", prompt], &environment);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    }
+    let sessions = home.root.join("data/oh-fx/sessions");
+    let mut ids: Vec<String> = fs::read_dir(&sessions)
+        .expect("the sessions directory")
+        .map(|entry| {
+            entry
+                .expect("a session entry")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 id")
+        })
+        .collect();
+    ids.sort();
+    let [open, linked] = ids.as_slice() else {
+        panic!("two sessions: {ids:?}");
+    };
+    fs::set_permissions(sessions.join(open), fs::Permissions::from_mode(0o755))
+        .expect("open the session folder");
+    let log = sessions.join(linked).join("events.jsonl");
+    let moved = home.root.join("events.jsonl");
+    fs::rename(&log, &moved).expect("move the log");
+    symlink(&moved, &log).expect("link the log");
+
+    let shown = sessions.display();
+    let report: Value =
+        serde_json::from_str(&home.doctor(&["--json"], &environment)).expect("doctor JSON");
+    assert_eq!(
+        session_checks(&report),
+        [open, linked].map(|id| (
+            "fail".to_owned(),
+            format!("session {id}: unsafe_path; recovery=back up {shown} and avoid opening this session until the path is repaired"),
+        ))
+    );
+    let shown_session = home.run(&["session", linked], &environment);
+    assert_eq!(shown_session.status.code(), Some(1));
+    assert_eq!(
+        text(&shown_session.stderr),
+        "oh-fx session: record not found\n"
+    );
 }
