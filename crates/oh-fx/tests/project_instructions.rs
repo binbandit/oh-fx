@@ -343,7 +343,7 @@ fn limits_that_ask_cannot_apply_still_fail_as_not_available() {
             "--context-limit",
             "project_instruction_file_bytes=1",
             "--context-limit",
-            "mcp_description_bytes=off",
+            "image_adapter_output_bytes=off",
             "ask",
             "hi",
         ],
