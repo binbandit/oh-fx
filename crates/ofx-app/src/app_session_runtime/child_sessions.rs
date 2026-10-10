@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ofx_agent::{ChildRecord, ChildSettings, ChildStore, ResumedChild};
 use ofx_contract::{ConversationLog, LogFailure};
@@ -8,19 +8,27 @@ use super::SessionRoute;
 
 pub(super) struct SessionChildren {
     sessions: ChildSessions,
+    parent: Weak<Mutex<WritableSession>>,
     route: SessionRoute,
     language: String,
 }
 
 struct ChildSession {
     session: Arc<Mutex<WritableSession>>,
+    parent: Weak<Mutex<WritableSession>>,
     route: SessionRoute,
 }
 
 impl SessionChildren {
-    pub(super) fn new(sessions: ChildSessions, route: SessionRoute, language: String) -> Self {
+    pub(super) fn new(
+        sessions: ChildSessions,
+        parent: Weak<Mutex<WritableSession>>,
+        route: SessionRoute,
+        language: String,
+    ) -> Self {
         Self {
             sessions,
+            parent,
             route,
             language,
         }
@@ -62,6 +70,7 @@ impl ChildStore for SessionChildren {
             .map_err(failure)?;
         Ok(Arc::new(ChildSession {
             session: Arc::new(Mutex::new(session)),
+            parent: Weak::clone(&self.parent),
             route: self.route.clone(),
         }))
     }
@@ -78,6 +87,7 @@ impl ChildStore for SessionChildren {
         Ok(ResumedChild {
             record: Arc::new(ChildSession {
                 session: Arc::new(Mutex::new(session)),
+                parent: Weak::clone(&self.parent),
                 route: self.route.clone(),
             }),
             settings,
@@ -101,11 +111,14 @@ impl ChildRecord for ChildSession {
     }
 
     fn log(&self) -> Box<dyn ConversationLog> {
-        Box::new(SessionLog::new(
-            Arc::clone(&self.session),
-            self.route.provider.clone(),
-            self.route.credential,
-        ))
+        Box::new(
+            SessionLog::new(
+                Arc::clone(&self.session),
+                self.route.provider.clone(),
+                self.route.credential,
+            )
+            .accounting_in(Weak::clone(&self.parent)),
+        )
     }
 }
 
