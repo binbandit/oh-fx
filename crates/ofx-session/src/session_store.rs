@@ -10,9 +10,10 @@ use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
 use crate::fx_sessions::FxSessions;
-use crate::session_catalog_cache::{CatalogScan, catalog_file_exists, scan_catalog};
+use crate::session_catalog_cache::{CatalogIndex, CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
+use crate::session_discovery::Classification;
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{
@@ -355,7 +356,12 @@ impl SessionStore {
         let Some(sessions) = &self.sessions else {
             return CatalogScan::default();
         };
-        let mut scan = scan_catalog(sessions, names, self.writable);
+        let index = if self.writable {
+            CatalogIndex::Maintained
+        } else {
+            CatalogIndex::ReadOnly
+        };
+        let mut scan = scan_catalog(sessions, names, index, Classification::Listing);
         sort_summaries_newest_first(&mut scan.summaries);
         scan
     }

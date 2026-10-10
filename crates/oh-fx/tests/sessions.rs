@@ -307,6 +307,26 @@ fn save_in_fx(home: &Home, id: &str, workspace: &str, title: &str, prompts: &[&s
         .expect("date the fx log");
 }
 
+fn replay_command_output_in_fx(home: &Home, id: &str) {
+    let log = home.root.join(".fx/sessions").join(id).join("events.jsonl");
+    let call = "{\"tool_call\":{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\",\"argument_integrity\":\"valid\",\"provisional_id\":null,\"provider_result\":null,\"final_identity\":\"valid\",\"provenance\":\"fx_local\"}}";
+    let result = "{\"tool_result\":{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"status\":\"success\",\"artifact_ref\":\"result-shell-0011223344556677-8899aabbccddeeff.txt\",\"tool_image_handle\":null,\"output_bytes\":3,\"stored_bytes\":3,\"completeness\":\"complete\",\"preview\":\"a.txt\",\"provider_native\":false,\"created_at_ms\":2,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":\"fx-command-replay-00112233445566778899aabbccddeeff\",\"command_replay_bytes\":64,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}";
+    let mut events = String::new();
+    for (seq, event) in (1_u64..).zip([
+        "{\"user\":{\"text\":\"list files\",\"images\":[],\"work_id\":null}}",
+        call,
+        result,
+        "{\"assistant\":{\"text\":\"done\",\"provider_replay\":null,\"standalone_response\":false}}",
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}",
+    ]) {
+        let _ = writeln!(
+            events,
+            "{{\"schema_version\":3,\"seq\":{seq},\"timestamp_ms\":2,\"event\":{event}}}"
+        );
+    }
+    fs::write(&log, events).expect("write the replayed fx log");
+}
+
 fn fx_tree(home: &Home) -> Vec<(PathBuf, u64, i64, i64, u32)> {
     let mut entries = Vec::new();
     let mut pending = vec![home.root.join(".fx")];
@@ -342,6 +362,14 @@ fn sessions_fx_saved_are_listed_with_its_marker_and_left_untouched() {
         "Elsewhere in fx",
         &["three"],
     );
+    save_in_fx(
+        &home,
+        "fx-replayed",
+        "workspace",
+        "Replayed in fx",
+        &["four"],
+    );
+    replay_command_output_in_fx(&home, "fx-replayed");
     let before = fx_tree(&home);
 
     let stdout = home.sessions(&[]);
@@ -369,6 +397,7 @@ fn sessions_fx_saved_are_listed_with_its_marker_and_left_untouched() {
         sessions[1]["workspace_root"],
         home.root.join("elsewhere").display().to_string().as_str()
     );
+    assert!(!stdout.contains("fx-replayed"), "{stdout}");
     assert_eq!(fx_tree(&home), before);
 }
 

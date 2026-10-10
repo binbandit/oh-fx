@@ -5,10 +5,17 @@ use ofx_config::PrivateDir;
 
 use super::fingerprint::{Fingerprint, Seen, fingerprint, observe};
 use super::{CachedCatalog, Reuse, Row, RowSummary, save_catalog};
-use crate::session_discovery::classify_session;
+use crate::session_discovery::{Classification, classify_session};
 use crate::session_summary_codec::SessionSummary;
 
 const WORKERS: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CatalogIndex {
+    Maintained,
+    ReadOnly,
+    Bypassed,
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct CatalogScan {
@@ -40,14 +47,23 @@ struct Observations {
     changed: bool,
 }
 
-pub(crate) fn scan_catalog(sessions: &PrivateDir, names: &[String], writable: bool) -> CatalogScan {
-    let cached = CachedCatalog::load(sessions);
+pub(crate) fn scan_catalog(
+    sessions: &PrivateDir,
+    names: &[String],
+    index: CatalogIndex,
+    classification: Classification,
+) -> CatalogScan {
+    let cached = match index {
+        CatalogIndex::Bypassed => CachedCatalog::default(),
+        CatalogIndex::Maintained | CatalogIndex::ReadOnly => CachedCatalog::load(sessions),
+    };
     let next = AtomicUsize::new(0);
+    let observe = || observe_all(sessions, names, &next, &cached, classification);
     let mut observed = thread::scope(|scope| {
         let helpers: Vec<_> = (1..WORKERS.min(names.len()))
-            .map(|_| scope.spawn(|| observe_all(sessions, names, &next, &cached)))
+            .map(|_| scope.spawn(observe))
             .collect();
-        let mut observed = observe_all(sessions, names, &next, &cached);
+        let mut observed = observe();
         for helper in helpers {
             let found = helper
                 .join()
@@ -61,7 +77,9 @@ pub(crate) fn scan_catalog(sessions: &PrivateDir, names: &[String], writable: bo
     });
     let mut rows: Vec<Row> = observed.entries.iter().filter_map(Entry::row).collect();
     rows.append(&mut observed.kept);
-    if writable && (observed.changed || !cached.present || rows.len() != cached.count()) {
+    if index == CatalogIndex::Maintained
+        && (observed.changed || !cached.present || rows.len() != cached.count())
+    {
         save_catalog(sessions, rows);
     }
     CatalogScan {
@@ -79,6 +97,7 @@ fn observe_all(
     names: &[String],
     next: &AtomicUsize,
     cached: &CachedCatalog,
+    classification: Classification,
 ) -> Observations {
     let mut observed = Observations::default();
     while let Some(id) = names.get(next.fetch_add(1, Ordering::Relaxed)) {
@@ -101,7 +120,7 @@ fn observe_all(
         }
         let before = before.map(|seen| seen.fingerprint);
         let cached_row = cached.row(id);
-        let Ok(listed) = classify_session(sessions, id) else {
+        let Ok(listed) = classify_session(sessions, id, classification) else {
             observed.skipped_invalid += 1;
             match cached_row {
                 Some(row) if before == Some(row.fingerprint) => observed.kept.push(row.clone()),

@@ -13,7 +13,7 @@ use crate::session_log::managed_file::{Access, open_managed_file, permissions};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 
 use catalog_codec::{decode_catalog, encode_catalog};
-pub(crate) use catalog_scan::{CatalogScan, scan_catalog};
+pub(crate) use catalog_scan::{CatalogIndex, CatalogScan, scan_catalog};
 use fingerprint::{Fingerprint, fingerprint};
 
 const CATALOG_FILE: &str = ".resume-catalog";

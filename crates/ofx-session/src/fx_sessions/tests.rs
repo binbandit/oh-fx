@@ -52,12 +52,16 @@ impl Saved<'_> {
     }
 
     fn write_with(&self, sessions: &Path, manifest: &str) {
+        self.write_files(sessions, manifest, &self.events());
+    }
+
+    fn write_files(&self, sessions: &Path, manifest: &str, events: &str) {
         let dir = sessions.join(self.id);
         fs::create_dir_all(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         for (name, bytes) in [
             ("session.json", manifest.to_owned()),
-            ("events.jsonl", self.events()),
+            ("events.jsonl", events.to_owned()),
             ("session.lock", String::new()),
         ] {
             let path = dir.join(name);
@@ -239,7 +243,7 @@ fn an_oh_fx_session_folder_hides_the_fx_session_of_its_id_even_when_unreadable()
 }
 
 #[test]
-fn a_stale_fx_index_is_read_but_never_rewritten() {
+fn fx_index_is_ignored_and_never_rewritten() {
     let home = Home::new();
     for (id, modified_s) in [("fx-kept", 100), ("fx-removed", 200)] {
         Saved {
@@ -251,11 +255,26 @@ fn a_stale_fx_index_is_read_but_never_rewritten() {
         }
         .write(&home.fx_sessions());
     }
+    let orphan = Saved {
+        id: "fx-orphan-result",
+        workspace: "/work",
+        title: None,
+        prompts: &[],
+        modified_s: 250,
+    };
+    let without_call = shell_turn_without_its_call();
+    orphan.write_files(&home.fx_sessions(), &orphan.manifest(), &without_call);
     let fx_sessions = PrivateDir::open_existing(&home.fx_sessions())
         .unwrap()
         .unwrap();
     let names = session_directory_names(&fx_sessions).unwrap();
-    assert_eq!(scan_catalog(&fx_sessions, &names, true).summaries.len(), 2);
+    let indexed = scan_catalog(
+        &fx_sessions,
+        &names,
+        CatalogIndex::Maintained,
+        Classification::Listing,
+    );
+    assert_eq!(indexed.summaries.len(), 3);
     let index = home.fx_sessions().join(".resume-catalog");
     let indexed = fs::read(&index).unwrap();
     fs::remove_dir_all(home.fx_sessions().join("fx-removed")).unwrap();
@@ -381,34 +400,122 @@ fn a_missing_shared_or_linked_fx_folder_lists_nothing() {
     );
 }
 
+fn frame(seq: u64, event: &str) -> String {
+    format!("{{\"schema_version\":3,\"seq\":{seq},\"timestamp_ms\":2,\"event\":{event}}}\n")
+}
+
+fn shell_events(replay_ref: &str, replay_bytes: &str) -> Vec<String> {
+    let call = "{\"tool_call\":{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\",\"argument_integrity\":\"valid\",\"provisional_id\":null,\"provider_result\":null,\"final_identity\":\"valid\",\"provenance\":\"fx_local\"}}";
+    let result = format!(
+        "{{\"tool_result\":{{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"status\":\"success\",\"artifact_ref\":\"result-shell-0011223344556677-8899aabbccddeeff.txt\",\"tool_image_handle\":null,\"output_bytes\":3,\"stored_bytes\":3,\"completeness\":\"complete\",\"preview\":\"a.txt\",\"provider_native\":false,\"created_at_ms\":2,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":{replay_ref},\"command_replay_bytes\":{replay_bytes},\"command_process_presentation\":null,\"terminal_action_presentation\":null}}}}"
+    );
+    vec![
+        "{\"user\":{\"text\":\"list files\",\"images\":[],\"work_id\":null}}".to_owned(),
+        call.to_owned(),
+        result,
+        "{\"assistant\":{\"text\":\"done\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}".to_owned(),
+    ]
+}
+
+fn log_of(events: &[String]) -> String {
+    events
+        .iter()
+        .zip(1_u64..)
+        .map(|(event, seq)| frame(seq, event))
+        .collect()
+}
+
+fn shell_turn(replay_ref: &str, replay_bytes: &str) -> String {
+    log_of(&shell_events(replay_ref, replay_bytes))
+}
+
+fn shell_turn_without_its_call() -> String {
+    let mut events = shell_events("null", "null");
+    events.remove(1);
+    log_of(&events)
+}
+
 #[test]
-fn fx_sessions_oh_fx_cannot_read_are_left_out_and_not_counted() {
+fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
     let home = Home::new();
-    let readable = Saved {
-        id: "fx-readable",
+    home.store("/work");
+    let saved = |id| Saved {
+        id,
         workspace: "/work",
         title: None,
-        prompts: &["one"],
+        prompts: &[],
         modified_s: 100,
     };
-    readable.write(&home.fx_sessions());
-    let ultrafast = Saved {
-        id: "fx-ultrafast",
-        ..readable
-    };
-    let manifest = ultrafast.manifest().replace(
-        "\"fast_mode\":false,",
-        "\"fast_mode\":true,\"ultrafast_mode\":true,",
+    let plain = saved("fx-plain");
+    plain.write_files(
+        &home.fx_sessions(),
+        &plain.manifest(),
+        &shell_turn("null", "null"),
     );
-    ultrafast.write_with(&home.fx_sessions(), &manifest);
+    let replayed = saved("fx-replayed");
+    replayed.write_files(
+        &home.fx_sessions(),
+        &replayed.manifest(),
+        &shell_turn(
+            "\"fx-command-replay-00112233445566778899aabbccddeeff\"",
+            "64",
+        ),
+    );
+    let ultrafast = saved("fx-ultrafast");
+    ultrafast.write_files(
+        &home.fx_sessions(),
+        &ultrafast.manifest().replace(
+            "\"fast_mode\":false,",
+            "\"fast_mode\":true,\"ultrafast_mode\":true,",
+        ),
+        &shell_turn("null", "null"),
+    );
+    let without_call = shell_turn_without_its_call();
+    for (id, sessions) in [
+        ("fx-orphan-result", home.fx_sessions()),
+        ("own-orphan-result", home.own_sessions()),
+    ] {
+        let orphan = saved(id);
+        orphan.write_files(&sessions, &orphan.manifest(), &without_call);
+    }
+    let ahead = saved("fx-recovery-ahead");
+    ahead.write_files(
+        &home.fx_sessions(),
+        &ahead.manifest(),
+        &shell_turn("null", "null"),
+    );
+    let open_turn = saved("fx-open-turn-recovery");
+    let unfinished = log_of(&shell_events("null", "null")[..3]);
+    open_turn.write_files(&home.fx_sessions(), &open_turn.manifest(), &unfinished);
+    let open_turn_kept = saved("fx-open-turn");
+    open_turn_kept.write_files(&home.fx_sessions(), &open_turn_kept.manifest(), &unfinished);
+    for (id, recovery) in [
+        (
+            "fx-recovery-ahead",
+            "{\"conversation_seq\":9,\"checkpoint\":{}}",
+        ),
+        (
+            "fx-open-turn-recovery",
+            "{\"conversation_seq\":0,\"checkpoint\":{\"version\":2}}",
+        ),
+    ] {
+        let path = home.fx_sessions().join(id).join("recovery.json");
+        fs::write(&path, recovery).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     let catalog = home
         .store("/work")
         .catalog_with_fx(&FxSessions::open(home.path()))
         .unwrap();
+    let page = catalog.listed_page(ListScope::AllWorkspaces, None, 50);
     assert_eq!(
-        ids(&catalog.listed_page(ListScope::AllWorkspaces, None, 50)),
-        ["fx-readable"]
+        ids(&page),
+        ["own-orphan-result", "fx-plain", "fx-open-turn"]
     );
+    assert_eq!(page.summaries[1].history_len, 1);
+    assert_eq!(page.summaries[2].history_len, 0);
     assert_eq!(catalog.skipped_invalid(), 0);
 }
 
