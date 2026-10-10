@@ -18,7 +18,7 @@ impl ToolArgumentIntegrity {
         integrity
     }
 
-    fn classify_serialized(serialized: &str) -> Self {
+    pub fn classify_serialized(serialized: &str) -> Self {
         match scan(serialized.as_bytes()) {
             Ok(Keys::Unique(_)) => Self::Valid,
             Ok(Keys::Repeated) | Err(_) => Self::MalformedJson,

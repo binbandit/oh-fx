@@ -7,7 +7,7 @@ use ofx_contract::{
 use ofx_trace::TraceContext;
 use tokio_util::sync::CancellationToken;
 
-use super::{Agent, EventSink, LastReply, Stop, Turn, TurnFailure};
+use super::{Agent, EventSink, LastReply, Stop, Turn, TurnFailure, conversation_options};
 use crate::compactor::trace::{CompactionTraceKind, Optional};
 use crate::compactor::{
     self, Compacted, CompactionError, Correction, Size, Step, Summarizer, Tracer,
@@ -98,15 +98,15 @@ impl Agent {
         if self.resolve_capabilities(cancel).await.is_err() {
             return Err(CompactionError::Cancelled);
         }
-        let options = self
-            .capabilities
-            .as_ref()
-            .map_or_else(ProviderOptions::default, |known| {
+        let options = conversation_options(self.capabilities.as_ref().map_or_else(
+            ProviderOptions::default,
+            |known| {
                 known.model.provider_options(
                     self.config.reasoning_effort.as_deref(),
                     self.config.fast_mode,
                 )
-            });
+            },
+        ));
         let size = self.compaction_size(self.request_fixed_tokens);
         let trace = self.tracer(TraceContext {
             turn_id: ofx_trace::next_turn_id(),
