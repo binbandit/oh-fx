@@ -14,7 +14,7 @@ mod theme;
 mod transcript;
 
 pub use composer::file_completion_state::{FileMatch, IndexRevision, IndexState, MentionKind};
-pub use host::{Clipboard, ForegroundLifecycle, ForegroundState, SteeringQueue};
+pub use host::{Clipboard, ForegroundLifecycle, SteeringQueue};
 pub use shell::{
     DirectoryLister, FileMentionSource, Opening, PromptHistory, ShellOptions, SkillCatalogSource,
     SlashCommandSpec, UiEventReceiver, UiEventSender, run_shell, ui_channel,

@@ -9,11 +9,9 @@ use ofx_contract::{
 
 use super::ShellOptions;
 use super::test_shell::TestShell;
-use crate::host::{ForegroundLifecycle, ForegroundState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Report {
-    State(&'static str),
     Attention(HookScope, TurnId, AttentionKind),
 }
 
@@ -34,24 +32,10 @@ impl Reports {
             })
             .unwrap();
         options.hooks = hooks.freeze();
-        options.lifecycle = Some(Box::new(self.clone()));
     }
 
     fn take(&self) -> Vec<Report> {
         std::mem::take(&mut *self.0.lock().unwrap())
-    }
-}
-
-impl ForegroundLifecycle for Reports {
-    fn shutdown(&self) {}
-
-    fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
-        assert_eq!(status, None);
-        self.0.lock().unwrap().push(Report::State(match state {
-            ForegroundState::Idle => "idle",
-            ForegroundState::Working => "working",
-            ForegroundState::Blocked => "blocked",
-        }));
     }
 }
 
@@ -105,7 +89,7 @@ fn attention(turn: u64, kind: AttentionKind) -> Report {
 }
 
 #[test]
-fn foreground_observer_and_attention_hooks_ignore_invisible_prompts_and_unmatched_turns() {
+fn attention_hooks_ignore_invisible_prompts_and_turn_boundaries() {
     let reports = Reports::default();
     let mut test = TestShell::start_with(|options| reports.observe(options));
     test.deliver(question(99, 99));
@@ -133,10 +117,8 @@ fn foreground_observer_and_attention_hooks_ignore_invisible_prompts_and_unmatche
     assert_eq!(
         reports.take(),
         [
-            Report::State("working"),
             attention(1, AttentionKind::Permission),
             attention(1, AttentionKind::Question),
-            Report::State("idle"),
         ]
     );
 }
@@ -149,7 +131,7 @@ fn attention_hooks_run_only_when_a_prompt_becomes_active() {
     test.deliver(UiEvent::TurnStarted {
         turn_id: TurnId::new(1),
     });
-    reports.take();
+    assert!(reports.take().is_empty());
     test.deliver(approval(1, 1));
     test.deliver(approval(1, 2));
     test.deliver(question(1, 3));

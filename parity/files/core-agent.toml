@@ -122,7 +122,7 @@ note = "Interrupted execution memory closes live cancelled and failed partial te
 upstream = "src/core/agent/runtime/finalization.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
-note = "Turn completion, failed partial text and logging exist; retained candidate recovery, durable attention checkpoints and summary presentations are absent."
+note = "Turn completion with its PostTurnEnd checkpoint, failed partial text and logging exist; retained candidate recovery, durable attention checkpoints and summary presentations are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/gateway_step.zig"
@@ -145,8 +145,8 @@ note = "Cancelled partial turns, completed tool outputs and steering at its tool
 [[file]]
 upstream = "src/core/agent/runtime/lifecycle.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/approvals.rs", "crates/ofx-tui/src/shell/mod.rs"]
-note = "Prepared calls and cancellation lifecycle exist, and the interactive shell dispatches the AttentionRequired checkpoint; the PreToolUse, Stop and PostTurnEnd checkpoints, durable stop/attention checkpoints and transport publication authority are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/approvals.rs", "crates/ofx-agent/src/lifecycle.rs", "crates/ofx-tui/src/shell/mod.rs"]
+note = "Prepared calls and cancellation lifecycle exist, the turn loop dispatches the PostTurnEnd checkpoint on the blocking pool, and the interactive shell dispatches the AttentionRequired checkpoint; the PreToolUse and Stop checkpoints, durable stop/attention checkpoints and transport publication authority are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/model_response_recovery.zig"

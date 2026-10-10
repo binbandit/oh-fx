@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use ofx_agent::{
@@ -8,9 +8,9 @@ use ofx_agent::{
 };
 use ofx_config::ProviderDefinition;
 use ofx_contract::{
-    ActiveMode, ApprovalRequest, CapabilityResolver, DynamicTools, LiveAdditionalRoots,
-    LivePermissionMode, ModelProvider, ReasoningEffort, ReviewTransport, RootUserRequests,
-    SubagentProvider, Tool, TurnId,
+    ActiveMode, ApprovalRequest, CapabilityResolver, DynamicTools, HookScope, HookView,
+    LiveAdditionalRoots, LivePermissionMode, ModelProvider, ReasoningEffort, ReviewTransport,
+    RootUserRequests, SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_permissions::{
@@ -46,6 +46,7 @@ pub(crate) struct ChildFactory {
     pub(crate) permission_mode: LivePermissionMode,
     pub(crate) parent: Mutex<AgentConfig>,
     pub(crate) mode: Option<ActiveMode>,
+    pub(crate) hooks: OnceLock<HookView>,
 }
 
 pub(crate) struct ParentCatalog(Arc<dyn DynamicTools>);
@@ -95,6 +96,10 @@ impl Delegation {
 impl ChildFactory {
     pub(crate) fn follow(&self, config: &AgentConfig) {
         *self.parent_config() = config.clone();
+    }
+
+    pub(crate) fn attach_hooks(&self, hooks: HookView) {
+        let _ = self.hooks.set(hooks);
     }
 
     pub(crate) fn reroute(&self, route: ChildRoute) {
@@ -156,7 +161,11 @@ impl ChildAgents for ChildFactory {
             config,
         )
         .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>)
-        .with_capability_resolver(route.capabilities);
+        .with_capability_resolver(route.capabilities)
+        .with_lifecycle(
+            self.hooks.get().cloned().unwrap_or_default(),
+            HookScope::Subagent,
+        );
         if let Some(mcp) = &self.mcp {
             agent = agent.with_dynamic_tools(Arc::clone(mcp));
         }

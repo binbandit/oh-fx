@@ -3,6 +3,7 @@ mod approvals;
 mod assistant_stream;
 mod compactor;
 mod execution_memory;
+mod lifecycle;
 mod model_response_recovery;
 mod orchestrator;
 mod project_context;
