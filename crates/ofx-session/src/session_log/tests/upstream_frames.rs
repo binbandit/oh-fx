@@ -279,3 +279,53 @@ fn a_session_holding_upstream_review_feedback_resumes_and_keeps_it() {
         restored.messages
     );
 }
+
+fn compaction_cancelled_turn() -> Vec<String> {
+    vec![
+        "{\"user\":{\"text\":\"read the notes\",\"images\":[],\"work_id\":null}}".to_owned(),
+        "{\"assistant\":{\"text\":\"\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        "{\"tool_call\":{\"call_id\":\"toolu_01\",\"tool_name\":\"read_file\",\"arguments_json\":\"{\\\"path\\\":\\\"notes.md\\\"}\",\"argument_integrity\":\"valid\",\"provisional_id\":\"pending_1\",\"provider_result\":null,\"final_identity\":\"valid\",\"provenance\":\"fx_local\"}}".to_owned(),
+        "{\"tool_result\":{\"call_id\":\"toolu_01\",\"tool_name\":\"read_file\",\"status\":\"success\",\"artifact_ref\":\"result-toolu_01.txt\",\"tool_image_handle\":null,\"output_bytes\":5,\"stored_bytes\":5,\"completeness\":\"complete\",\"preview\":\"notes\",\"provider_native\":false,\"created_at_ms\":5,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}".to_owned(),
+        "{\"interrupted\":{\"reason\":\"cancelled\",\"partial_text\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_artifact_ref\":null,\"files\":[],\"turn_summary\":null,\"cancellation_origin\":\"compaction\"}}".to_owned(),
+    ]
+}
+
+#[test]
+fn a_session_holding_an_upstream_compaction_cancellation_resumes_and_keeps_it() {
+    let fixture = Fixture::new();
+    let id = "fx-compaction-cancelled";
+    let log = upstream_session(&fixture, id, &compaction_cancelled_turn());
+
+    let mut session = fixture.resume(id).unwrap();
+    let history = session.take_history();
+    drop(session);
+    assert_eq!(reencoded(&history), log);
+    assert_eq!(fs::read_to_string(fixture.events(id)).unwrap(), log);
+    assert_eq!(
+        cache_coverage(&fixture, id),
+        Some(u64::try_from(log.len()).unwrap())
+    );
+
+    let edited = log.replacen(
+        "\"text\":\"read the notes\"",
+        "\"text\":\"Read the notes\"",
+        1,
+    );
+    fs::write(fixture.events(id), &edited).unwrap();
+    let mut cached = fixture.resume(id).unwrap();
+    assert_eq!(cached.take_history(), history);
+    drop(cached);
+    fs::write(fixture.events(id), &log).unwrap();
+
+    let restored = fixture.resume(id).unwrap().restored_history().unwrap();
+    assert!(
+        restored.messages.contains(&ChatMessage::Tool {
+            call_id: ToolCallId::new("toolu_01"),
+            tool_name: "read_file".to_owned(),
+            content: "notes".to_owned(),
+            status: ToolResultStatus::Success,
+        }),
+        "{:?}",
+        restored.messages
+    );
+}

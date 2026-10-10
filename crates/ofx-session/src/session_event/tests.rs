@@ -1091,3 +1091,71 @@ fn committed_file_presentations_reject_what_upstream_rejects() {
         Err(SessionError::InvalidConversationEvent)
     );
 }
+
+const COMPACTION_CANCELLED: &str = "{\"interrupted\":{\"reason\":\"cancelled\",\"partial_text\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_artifact_ref\":null,\"files\":[],\"turn_summary\":null,\"cancellation_origin\":\"compaction\"}}";
+
+fn provisional_call(final_identity: &str) -> String {
+    format!(
+        "{{\"tool_call\":{{\"call_id\":\"toolu_01\",\"tool_name\":\"read_file\",\"arguments_json\":\"{{}}\",\"argument_integrity\":\"valid\",\"provisional_id\":\"pending_1\",\"provider_result\":null,\"final_identity\":\"{final_identity}\",\"provenance\":\"fx_local\"}}}}"
+    )
+}
+
+fn upstream_frame(event: &str) -> String {
+    format!("{{\"schema_version\":3,\"seq\":2,\"timestamp_ms\":3,\"event\":{event}}}\n")
+}
+
+#[test]
+fn compaction_cancellations_and_provisional_call_ids_from_upstream_frames_round_trip() {
+    let mut events = vec![COMPACTION_CANCELLED.to_owned()];
+    events.extend(["valid", "absent", "empty", "wrong_type"].map(provisional_call));
+    for event in events {
+        let frame = upstream_frame(&event);
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(2, 3, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+    }
+    let ConversationEvent::Interrupted(interrupted) =
+        decode(&upstream_frame(COMPACTION_CANCELLED)).unwrap()
+    else {
+        panic!("an interruption");
+    };
+    assert_eq!(
+        interrupted.cancellation_origin,
+        CancellationOrigin::Compaction
+    );
+    let turn = COMPACTION_CANCELLED.replace("\"compaction\"", "\"turn\"");
+    let written = COMPACTION_CANCELLED.replace(",\"cancellation_origin\":\"compaction\"", "");
+    assert_eq!(
+        encode(2, &decode(&upstream_frame(&turn)).unwrap()),
+        encode(2, &decode(&upstream_frame(&written)).unwrap())
+    );
+    assert!(!encode(2, &decode(&upstream_frame(&turn)).unwrap()).contains("cancellation_origin"));
+}
+
+#[test]
+fn compaction_cancellations_and_provisional_call_ids_are_refused_where_upstream_refuses_them() {
+    let long = "p".repeat(MAX_IDENTITY_BYTES + 1);
+    let mut invalid: Vec<String> = ["0", "null", "\"stopped\"", "\"Compaction\""]
+        .iter()
+        .map(|origin| COMPACTION_CANCELLED.replace("\"compaction\"", origin))
+        .collect();
+    invalid.extend(
+        ["\"\"", "1", &format!("\"{long}\"")]
+            .iter()
+            .map(|id| provisional_call("valid").replace("\"pending_1\"", id)),
+    );
+    invalid.extend(["\"bogus\"", "0", "null"].iter().map(|identity| {
+        provisional_call("valid").replace(
+            "\"valid\",\"provenance\"",
+            &format!("{identity},\"provenance\""),
+        )
+    }));
+    for event in invalid {
+        let frame = upstream_frame(&event);
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
+        );
+    }
+}

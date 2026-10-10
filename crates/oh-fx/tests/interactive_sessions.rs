@@ -2805,3 +2805,100 @@ fn a_session_holding_the_review_feedback_fx_saved_resumes_and_keeps_it() {
     assert_eq!(frames[5]["event"]["tool_result"]["review_feedback"], true);
     assert_eq!(kinds(&frames)[8..], ["user", "assistant", "turn_completed"]);
 }
+
+fn append_fx_compaction_cancelled_turn(home: &Home, id: &str) {
+    let arguments = json!({"path": "notes.md"}).to_string();
+    home.append(
+        id,
+        &[
+            frame(
+                4,
+                &json!({"user": {"text": "read the notes", "images": [], "work_id": null}}),
+            ),
+            frame(
+                5,
+                &json!({"tool_call": {
+                    "call_id": "toolu_01",
+                    "tool_name": "read_file",
+                    "arguments_json": arguments,
+                    "argument_integrity": "valid",
+                    "provisional_id": "pending_1",
+                    "provider_result": null,
+                    "final_identity": "valid",
+                    "provenance": "fx_local"
+                }}),
+            ),
+            frame(
+                6,
+                &json!({"tool_result": {
+                    "call_id": "toolu_01",
+                    "tool_name": "read_file",
+                    "status": "success",
+                    "artifact_ref": "result-toolu_01.txt",
+                    "tool_image_handle": null,
+                    "output_bytes": 5,
+                    "stored_bytes": 5,
+                    "completeness": "complete",
+                    "preview": "notes",
+                    "provider_native": false,
+                    "created_at_ms": 1,
+                    "permission_feedback": [],
+                    "committed_file_presentation": null,
+                    "command_replay_ref": null,
+                    "command_replay_bytes": null,
+                    "command_process_presentation": null,
+                    "terminal_action_presentation": null
+                }}),
+            ),
+            frame(
+                7,
+                &json!({"interrupted": {
+                    "reason": "cancelled",
+                    "partial_text": null,
+                    "command_replay_ref": null,
+                    "command_replay_bytes": null,
+                    "command_artifact_ref": null,
+                    "files": [],
+                    "turn_summary": null,
+                    "cancellation_origin": "compaction"
+                }}),
+            ),
+        ]
+        .concat(),
+    );
+}
+
+#[test]
+fn a_turn_fx_cancelled_during_compaction_resumes_without_a_cancellation_line() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Ready."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    append_fx_compaction_cancelled_turn(&home, &id);
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    session.send(b"next\r");
+    let screen = wait(&session, "Moved on.");
+    assert!(
+        appears_in_order(&screen, &["┃ read the notes", "notes.md", "┃ next"]),
+        "{screen}"
+    );
+    assert!(!screen.contains(CANCELLATION), "{screen}");
+    exit(session);
+    let frames = home.frames(&id);
+    assert_eq!(
+        frames[6]["event"]["interrupted"]["cancellation_origin"],
+        "compaction"
+    );
+    assert_eq!(
+        frames[4]["event"]["tool_call"]["provisional_id"],
+        "pending_1"
+    );
+    assert_eq!(kinds(&frames)[7..], ["user", "assistant", "turn_completed"]);
+}

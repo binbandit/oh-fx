@@ -972,3 +972,41 @@ fn review_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
         Err(SessionError::InvalidRecoveryCheckpoint)
     );
 }
+
+#[test]
+fn a_child_turns_work_id_is_read_and_written_in_upstreams_checkpoint_form() {
+    let upstream =
+        upstream_checkpoint().replace("\"images\":[]}", "\"images\":[],\"work_id\":\"work-1\"}");
+    assert_eq!(decoded(&upstream).work_id(), Some("work-1"));
+    assert_eq!(decoded(&upstream_checkpoint()).work_id(), None);
+    let calls = read_step_calls();
+    let point = recovery_point(&calls, "fn main() {}");
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: None,
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        files: Vec::new(),
+        work_id: Some("work-1"),
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(3, &source).unwrap().unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(
+        text.contains(
+            "\"user\":{\"text\":\"fix the build\",\"images\":[],\"work_id\":\"work-1\"},"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        decode_recovery_file(&written, 3)
+            .unwrap()
+            .unwrap()
+            .work_id(),
+        Some("work-1")
+    );
+}

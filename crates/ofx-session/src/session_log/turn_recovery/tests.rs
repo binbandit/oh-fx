@@ -1398,6 +1398,47 @@ fn a_paused_turn_keeps_its_review_feedback_when_committed() {
 }
 
 #[test]
+fn a_paused_child_turn_keeps_its_work_id_when_committed() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn: HistoryTurn {
+            user: "summarize the logs",
+            steps: Vec::new(),
+            steering: Vec::new(),
+            files: &[],
+            end: replied(""),
+        },
+        source: "Half",
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    let mut session = fixture.resume().unwrap();
+    session.begin_work("work-1");
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    drop(session);
+    let mut session = fixture.resume().unwrap();
+    session.settle_recovery().unwrap();
+    let log = fixture.log();
+    assert!(
+        log.iter().any(|line| line.contains(
+            "\"user\":{\"text\":\"summarize the logs\",\"images\":[],\"work_id\":\"work-1\"}"
+        )),
+        "{log:#?}"
+    );
+}
+
+#[test]
 fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() {
     let fixture = Fixture::new();
     let mut started = start_session(&fixture.sessions, metadata()).unwrap();

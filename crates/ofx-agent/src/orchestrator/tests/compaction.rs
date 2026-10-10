@@ -728,7 +728,9 @@ async fn cancelling_an_automatic_compaction_interrupts_the_turn_and_keeps_its_wo
         spoken_tool_reply(&big_step, "call-1", r#"{"value":"notes.md"}"#),
         Script::WaitForCancel,
     ]);
-    let (mut agent, _) = windowed(&provider, 45_000, 64);
+    let (agent, _) = windowed(&provider, 45_000, 64);
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(agent, log);
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
     let watched = Arc::clone(&provider);
@@ -766,6 +768,10 @@ async fn cancelling_an_automatic_compaction_interrupts_the_turn_and_keeps_its_wo
     assert_eq!(agent.history.len(), 3);
     assert_eq!(user_text(&agent.history[0]), "read the notes");
     assert!(mentions(&agent.history[1], "STEP_SENTINEL"));
+    let Some(turn_log::Logged::Turn { end, .. }) = entries.lock().unwrap().last().cloned() else {
+        panic!("a saved turn");
+    };
+    assert_eq!(end, "CompactionCancelled \"\"");
 }
 
 #[tokio::test]

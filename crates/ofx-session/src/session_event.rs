@@ -329,11 +329,7 @@ pub struct InterruptedEvent {
     pub(crate) files: Vec<FileEvidence>,
     #[serde(default, with = "crate::turn_summary")]
     pub turn_summary: Option<TurnSummary>,
-    #[serde(
-        default,
-        skip_serializing_if = "CancellationOrigin::is_turn",
-        with = "wire_tag"
-    )]
+    #[serde(default, skip_serializing_if = "is_default", with = "wire_tag")]
     pub cancellation_origin: CancellationOrigin,
 }
 
@@ -357,12 +353,6 @@ pub enum CancellationOrigin {
     #[default]
     Turn,
     Compaction,
-}
-
-impl CancellationOrigin {
-    fn is_turn(&self) -> bool {
-        *self == Self::Turn
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -735,6 +725,10 @@ fn is_valid_path(path: &str) -> bool {
 
 fn is_valid_text(text: &str) -> bool {
     (1..=MAX_TEXT_BYTES).contains(&text.len())
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 fn is_valid_identity(value: &str) -> bool {

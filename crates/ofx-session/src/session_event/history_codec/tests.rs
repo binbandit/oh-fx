@@ -626,3 +626,30 @@ fn history_snapshot_codec_keeps_review_feedback_in_upstream_layout() {
         assert!(decode_history_envelope(&corrupt).is_none(), "byte {at}");
     }
 }
+
+#[test]
+fn history_snapshot_codec_keeps_compaction_cancellations_and_provisional_ids_in_upstream_layout() {
+    use crate::session_event::{CancellationOrigin, FinalToolIdentity};
+
+    let mut interrupted = InterruptedEvent::new(InterruptReason::Cancelled, None);
+    interrupted.cancellation_origin = CancellationOrigin::Compaction;
+    let event = ConversationEvent::Interrupted(interrupted);
+    let bytes = encoded(&envelope(4, 6, event.clone()));
+    assert!(bytes.ends_with(&[0, 0, 1]), "{bytes:?}");
+    round_trip(&envelope(4, 6, event));
+
+    let mut call = ToolCallEvent::new("c1", "read_file", "{}", ToolArgumentIntegrity::Valid);
+    call.provisional_id = Some("pending_1".to_owned());
+    call.final_identity = FinalToolIdentity::WrongType;
+    let event = ConversationEvent::ToolCall(call);
+    let bytes = encoded(&envelope(2, 5, event.clone()));
+    let mut tail = vec![0, 1];
+    tail.extend(text_bytes("pending_1"));
+    tail.extend([0, 3, 0]);
+    assert!(bytes.ends_with(&tail), "{bytes:?}");
+    round_trip(&envelope(2, 5, event));
+    let mut unknown_identity = bytes;
+    let identity = unknown_identity.len() - 2;
+    unknown_identity[identity] = 4;
+    assert!(decode_history_envelope(&unknown_identity).is_none());
+}
