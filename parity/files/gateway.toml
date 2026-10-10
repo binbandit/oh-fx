@@ -53,7 +53,7 @@ note = "Responses transport, admission once its credential headers are built, th
 upstream = "src/gateway/openai_codex_models.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex_models.rs"]
-note = "Codex catalog endpoint parsing and model capabilities exist; upstream file-input/caching/search capability metadata is not fully represented in Rust contracts."
+note = "Codex catalog endpoint parsing and model capabilities exist, including image input from input_modalities; upstream file-input/caching/search capability metadata is not fully represented in Rust contracts."
 
 [[file]]
 upstream = "src/gateway/openai_codex_permission_reviewer.zig"
