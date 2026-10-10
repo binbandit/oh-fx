@@ -183,6 +183,28 @@ mod tests {
     }
 
     #[test]
+    fn new_results_are_stored_privately_and_an_existing_handle_is_replaced() {
+        let (root, dir) = session();
+        store_new_results(&dir, []).unwrap();
+        assert!(!root.path().join("session/tool-results").exists());
+        let first = make_handle("call_1", "shell", "one");
+        let second = make_handle("call_2", "shell", "two");
+        store_result(&dir, &second, "stale").unwrap();
+        store_new_results(&dir, [(first.as_str(), "one"), (second.as_str(), "two")]).unwrap();
+        let results = root.path().join("session/tool-results");
+        for (handle, text) in [(&first, "one"), (&second, "two")] {
+            let path = results.join(handle);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert_eq!(
+            store_new_results(&dir, [("../escape", "x")]),
+            Err(SessionError::InvalidConversationEvent)
+        );
+    }
+
+    #[test]
     fn large_result_storage_creates_a_stable_handle_and_bounded_preview() {
         let (root, dir) = session();
         let text = "x".repeat(PREVIEW_BYTES * 2);
