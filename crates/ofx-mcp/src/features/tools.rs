@@ -772,6 +772,43 @@ mod tests {
     }
 
     #[test]
+    fn catalogs_expire_at_the_earliest_page_lifetime() {
+        let expiry = |pages: &[(&str, u64)]| {
+            let mut builder = CatalogBuilder::default();
+            for (result, received_at_ms) in pages {
+                builder
+                    .append_response(
+                        &format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#),
+                        *received_at_ms,
+                        Limits::default(),
+                    )
+                    .unwrap();
+            }
+            builder.finish().unwrap().expires_at_ms
+        };
+        assert_eq!(
+            expiry(&[
+                (r#"{"ttlMs":10,"tools":[],"nextCursor":"n"}"#, 1_000),
+                (r#"{"ttlMs":500,"tools":[]}"#, 1_050),
+            ]),
+            1_010
+        );
+        assert_eq!(
+            expiry(&[
+                (r#"{"tools":[],"nextCursor":"n"}"#, 1_000),
+                (r#"{"ttlMs":500,"tools":[]}"#, 1_050),
+            ]),
+            1_550
+        );
+        assert_eq!(expiry(&[(r#"{"tools":[]}"#, 4_000)]), u64::MAX);
+        assert_eq!(expiry(&[(r#"{"ttlMs":-25,"tools":[]}"#, 2_000)]), 2_000);
+        assert_eq!(
+            expiry(&[(r#"{"ttlMs":100,"tools":[]}"#, u64::MAX - 1)]),
+            u64::MAX
+        );
+    }
+
+    #[test]
     fn tools_catalog_rejects_cache_scope_changes_across_pages() {
         let mut builder = CatalogBuilder::default();
         builder

@@ -89,3 +89,6 @@ impl Drop for PendingRefresh<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
