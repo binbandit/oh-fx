@@ -1,4 +1,5 @@
 mod import;
+mod remembered;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -12,6 +13,7 @@ use crate::session_log::managed_file::{has_private_dir_mode, session_directory_n
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
 pub(crate) use import::{ImportSource, Imported, seal, untouched_import};
+pub(crate) use remembered::{remembered_session_id, resumed_at};
 
 const PROFILE_DIR: &str = ".fx";
 const SESSIONS_DIR: &str = "sessions";
@@ -80,14 +82,17 @@ pub(crate) fn import_from_fx(
     }
 }
 
-fn open_sessions(home: &Path) -> Option<PrivateDir> {
+fn open_profile(home: &Path) -> Option<PrivateDir> {
     if !home.is_absolute() {
         return None;
     }
     let profile = PrivateDir::open_existing(&home.join(PROFILE_DIR)).ok()??;
-    let sessions = profile.open_child(SESSIONS_DIR).ok()??;
-    let private = has_private_dir_mode(&profile).ok()? && has_private_dir_mode(&sessions).ok()?;
-    private.then_some(sessions)
+    has_private_dir_mode(&profile).ok()?.then_some(profile)
+}
+
+fn open_sessions(home: &Path) -> Option<PrivateDir> {
+    let sessions = open_profile(home)?.open_child(SESSIONS_DIR).ok()??;
+    has_private_dir_mode(&sessions).ok()?.then_some(sessions)
 }
 
 #[cfg(test)]

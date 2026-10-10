@@ -1243,15 +1243,25 @@ const FX_ID: &str = "fx0123456789";
 const GATEWAY: &str = "\"gateway\"";
 
 fn save_in_fx(home: &Home, provider: &str) -> PathBuf {
+    write_fx_session(home, FX_ID, "/elsewhere/fx-work", 2, provider)
+}
+
+fn write_fx_session(
+    home: &Home,
+    id: &str,
+    workspace: &str,
+    updated_at_ms: i64,
+    provider: &str,
+) -> PathBuf {
     let fx = home.root.join(".fx");
-    let session = fx.join("sessions").join(FX_ID);
+    let session = fx.join("sessions").join(id);
     fs::create_dir_all(&session).expect("create an fx session");
     for directory in [fx.clone(), fx.join("sessions"), session.clone()] {
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .expect("make an fx folder private");
     }
     let manifest = format!(
-        "{{\"schema_version\":4,\"id\":\"{FX_ID}\",\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":{provider},\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
+        "{{\"schema_version\":4,\"id\":\"{id}\",\"origin_workspace_root\":\"{workspace}\",\"workspace_root\":\"{workspace}\",\"created_at_ms\":1,\"updated_at_ms\":{updated_at_ms},\"conversation_language\":\"en\",\"provider\":{provider},\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
     );
     let mut events = String::new();
     for (seq, event) in (1_u64..).zip([
@@ -1383,4 +1393,60 @@ fn ask_continues_an_fx_session_saved_on_a_provider_oh_fx_does_not_define() {
     assert_eq!(metadata["model"], "@openai/gpt-4o");
     assert_eq!(metadata["effort"], "high");
     assert_eq!(fx_files(&source), untouched);
+}
+
+#[test]
+fn ask_resume_last_opens_the_newest_session_of_this_workspace_saved_by_either_agent() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["first"])),
+        Reply::sse(&chat_text_events(&["second"])),
+        Reply::sse(&chat_text_events(&["third"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let workspace = fs::canonicalize(home.root.join("workspace"))
+        .expect("canonical workspace")
+        .display()
+        .to_string();
+    write_fx_session(&home, FX_ID, &workspace, 2, GATEWAY);
+    let own = session_id(&home.ask_json(&["first"], &[]));
+    let resumed = home.ask_json(&["--resume", "last", "second"], &[]);
+    assert_eq!(session_id(&resumed), own);
+    assert_eq!(home.session_ids(), std::slice::from_ref(&own));
+
+    let newest = write_fx_session(
+        &home,
+        "fx9876543210",
+        &workspace,
+        4_102_444_800_000,
+        GATEWAY,
+    );
+    write_fx_session(
+        &home,
+        "fxelsewhere0",
+        "/elsewhere/fx-work",
+        4_102_444_900_000,
+        GATEWAY,
+    );
+    let untouched = fx_files(&newest);
+    let output = home.ask(&["ask", "--json", "--resume", "last", "third"], &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "oh-fx ask: This session was saved with the gateway provider, which oh-fx cannot use yet; it continues with portkey.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(session_id(&result), "fx9876543210");
+    assert_eq!(
+        texts(&conversation(&server.requests()[2])),
+        [
+            "user: asked in fx",
+            "assistant: answered in fx",
+            "user: third"
+        ]
+    );
+    assert_eq!(fx_files(&newest), untouched);
+    let mut expected = vec![own, "fx9876543210".to_owned()];
+    expected.sort();
+    assert_eq!(home.session_ids(), expected);
 }
