@@ -26,6 +26,7 @@ use crate::stall_watch::StallWatch;
 
 const RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const REPLAY_PROVIDER: &str = "codex";
+const CREDENTIAL_SOURCE: &str = "chatgpt_subscription";
 const EVENT_STREAM: &str = "text/event-stream";
 const DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
 const MAX_MODEL_BYTES: usize = 1024;
@@ -102,7 +103,7 @@ pub trait CodexCredentials: Send + Sync {
         mode: CodexRefresh,
         account_id: &'a str,
         cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<CodexAccess>>;
+    ) -> BoxFuture<'a, Result<Option<CodexAccess>, String>>;
 }
 
 pub struct CodexProvider {
@@ -161,19 +162,27 @@ impl CodexProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
-        self.refresh_if_due(cancel).await;
+        self.refresh_if_due(sink, cancel).await;
         let mut sent = Vec::new();
         let first = self.request(&body, request.session_id, &mut sent)?;
         sink.emit(StreamEvent::Admitted);
-        let mut response = self.post(first, &sent, cancel).await?;
-        if response.status() == StatusCode::UNAUTHORIZED
-            && self.replace_access(CodexRefresh::Force, cancel).await
-        {
-            let replay = self.request(&body, request.session_id, &mut sent)?;
-            response = self.post(replay, &sent, cancel).await?;
+        let response = self.post(first, &sent, cancel).await?;
+        let unauthorized = response.status() == StatusCode::UNAUTHORIZED;
+        if !unauthorized || !self.replace_access(CodexRefresh::Force, sink, cancel).await {
+            return self
+                .receive(response, &sent, sink, cancel, request.model)
+                .await;
         }
-        self.receive(response, &sent, sink, cancel, request.model)
-            .await
+        let replay = self.request(&body, request.session_id, &mut sent)?;
+        let replayed = match self.post(replay, &sent, cancel).await {
+            Ok(response) => {
+                self.receive(response, &sent, sink, cancel, request.model)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        sink.emit(StreamEvent::RequestReplayed);
+        replayed
     }
 
     async fn receive(
@@ -204,22 +213,42 @@ impl CodexProvider {
         secrets
     }
 
-    async fn refresh_if_due(&self, cancel: &CancellationToken) {
+    async fn refresh_if_due(&self, sink: &mut dyn StreamSink, cancel: &CancellationToken) {
         let due = lock(&self.access).refresh_after_ms <= now_ms();
         if due {
-            self.replace_access(CodexRefresh::IfNeeded, cancel).await;
+            self.replace_access(CodexRefresh::IfNeeded, sink, cancel)
+                .await;
         }
     }
 
-    async fn replace_access(&self, mode: CodexRefresh, cancel: &CancellationToken) -> bool {
+    async fn replace_access(
+        &self,
+        mode: CodexRefresh,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> bool {
         let account_id = lock(&self.access).account_id.clone();
-        let Some(fresh) = self.credentials.refresh(mode, &account_id, cancel).await else {
-            return false;
+        let forced = mode == CodexRefresh::Force;
+        let fresh = match self.credentials.refresh(mode, &account_id, cancel).await {
+            Ok(Some(fresh)) => fresh,
+            Ok(None) => return false,
+            Err(error) => {
+                sink.emit(StreamEvent::CredentialRefreshFailed {
+                    source: CREDENTIAL_SOURCE,
+                    forced,
+                    error,
+                });
+                return false;
+            }
         };
         if fresh.account_id != account_id {
             return false;
         }
         *lock(&self.access) = fresh;
+        sink.emit(StreamEvent::CredentialRefreshed {
+            source: CREDENTIAL_SOURCE,
+            forced,
+        });
         true
     }
 

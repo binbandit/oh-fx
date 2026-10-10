@@ -644,9 +644,13 @@ async fn errors_mask_the_token_their_request_sent_after_another_request_rotates_
         let mut sent = Vec::new();
         let builder = codex.request("{}", None, &mut sent).unwrap();
         let response = codex.post(builder, &sent, &cancel).await.unwrap();
-        assert!(codex.replace_access(CodexRefresh::Force, &cancel).await);
-        assert_eq!(*codex.secrets(&sent), [SENT, ROTATED]);
         let mut sink = |_: StreamEvent| {};
+        assert!(
+            codex
+                .replace_access(CodexRefresh::Force, &mut sink, &cancel)
+                .await
+        );
+        assert_eq!(*codex.secrets(&sent), [SENT, ROTATED]);
         let error = codex
             .receive(response, &sent, &mut sink, &cancel, "gpt-5.6-sol")
             .await
@@ -722,7 +726,17 @@ async fn a_request_replayed_after_a_401_is_admitted_once_before_it_is_sent() {
         .unwrap_err();
     assert_eq!(error.status, Some(500));
     assert_eq!(server.requests().len(), 2);
-    assert_eq!(events, [StreamEvent::Admitted]);
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Admitted,
+            StreamEvent::CredentialRefreshed {
+                source: CREDENTIAL_SOURCE,
+                forced: true,
+            },
+            StreamEvent::RequestReplayed,
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1064,13 +1078,13 @@ impl CodexCredentials for Rotating {
         _mode: CodexRefresh,
         account_id: &'a str,
         _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<CodexAccess>> {
+    ) -> BoxFuture<'a, Result<Option<CodexAccess>, String>> {
         Box::pin(async move {
-            Some(CodexAccess::new(
+            Ok(Some(CodexAccess::new(
                 self.0.to_owned(),
                 account_id.to_owned(),
                 i64::MAX,
-            ))
+            )))
         })
     }
 }
@@ -1083,8 +1097,8 @@ impl CodexCredentials for NoRefresh {
         _mode: CodexRefresh,
         _account_id: &'a str,
         _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Option<CodexAccess>> {
-        Box::pin(async { None })
+    ) -> BoxFuture<'a, Result<Option<CodexAccess>, String>> {
+        Box::pin(async { Ok(None) })
     }
 }
 

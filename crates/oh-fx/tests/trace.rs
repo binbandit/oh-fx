@@ -15,6 +15,11 @@ const PORTKEY_KEY: &str = "pk-test-0123456789";
 const BEARER: &str = "sk-bearer-secret-0123456789abcdef";
 const VIRTUAL_KEY: &str = "vk-virtual-secret-9876543210";
 const SECRETS: [&str; 3] = [PORTKEY_KEY, BEARER, VIRTUAL_KEY];
+const SAVED_ACCESS: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
+const SAVED_REFRESH: &str = "rt-refresh-secret-0123456789";
+const FRESH_ACCESS: &str = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF90cmFjZSJ9LCJleHAiOjQxMDI0NDQ4MDB9.ZnJlc2gtc2lnbmF0dXJl";
+const ROTATED_REFRESH: &str = "rt-rotated-secret-9876543210";
+const CODEX_SECRETS: [&str; 4] = [SAVED_ACCESS, SAVED_REFRESH, FRESH_ACCESS, ROTATED_REFRESH];
 
 struct Launched {
     workspace: PathBuf,
@@ -322,8 +327,20 @@ fn bodies(log: &str) -> Vec<&str> {
         .collect()
 }
 
+fn assert_in_order(log: &str, wanted: &[&str]) {
+    let lines = bodies(log);
+    let mut at = 0;
+    for line in wanted {
+        let found = lines[at..]
+            .iter()
+            .position(|seen| seen == line)
+            .unwrap_or_else(|| panic!("{line}\n{log}"));
+        at += found + 1;
+    }
+}
+
 fn assert_no_secret(log: &str) {
-    for secret in SECRETS {
+    for secret in SECRETS.iter().chain(&CODEX_SECRETS) {
         assert!(
             !log.contains(secret),
             "{secret} reached the trace log:\n{log}"
@@ -343,22 +360,17 @@ fn a_recovered_ask_writes_its_stream_error_and_recovery_lines_without_credential
     );
     let result: serde_json::Value = serde_json::from_slice(&traced.output.stdout).unwrap();
     assert_eq!(result["final_output"], "Hello.", "{result}");
+    assert_in_order(
+        &traced.log,
+        &[
+            "[gateway] event=stream_error turn_id=1 step_id=1 err=ReadFailed cancel_requested=false provider_attempts=1/10 saw_content=true saw_tool_start=false saw_provider_tool_start=false recovery=continue_response replay_safe=false retry=true",
+            "[agent] event=recovery_checkpoint_set turn_id=1 step_id=1 provider_attempts=1/10 outstanding=false cause=transport_interrupted action=continue_response",
+            "[agent] restarting response preview_bytes=3 superseded_preview_bytes=0",
+            "[agent] event=recovery_checkpoint_set turn_id=1 step_id=1 provider_attempts=2/10 outstanding=false cause=provider_unavailable action=continue_response",
+            "[agent] event=prompt_finish turn_id=1 outcome_kind=assistant",
+        ],
+    );
     let lines = bodies(&traced.log);
-    let wanted = [
-        "[gateway] event=stream_error turn_id=1 step_id=1 err=ReadFailed cancel_requested=false provider_attempts=1/10 saw_content=true saw_tool_start=false saw_provider_tool_start=false recovery=continue_response replay_safe=false retry=true",
-        "[agent] event=recovery_checkpoint_set turn_id=1 step_id=1 provider_attempts=1/10 outstanding=false cause=transport_interrupted action=continue_response",
-        "[agent] restarting response preview_bytes=3 superseded_preview_bytes=0",
-        "[agent] event=recovery_checkpoint_set turn_id=1 step_id=1 provider_attempts=2/10 outstanding=false cause=provider_unavailable action=continue_response",
-        "[agent] event=prompt_finish turn_id=1 outcome_kind=assistant",
-    ];
-    let mut at = 0;
-    for line in wanted {
-        let found = lines[at..]
-            .iter()
-            .position(|seen| *seen == line)
-            .unwrap_or_else(|| panic!("{line}\n{}", traced.log));
-        at += found + 1;
-    }
     assert_eq!(
         lines
             .iter()
@@ -476,4 +488,202 @@ fn trace_reports_the_turns_network_calls() {
             .expect("the shell exits")
             .success()
     );
+}
+
+struct CodexServers {
+    auth: FakeServer,
+    _catalog: FakeServer,
+    codex: FakeServer,
+}
+
+fn ask_codex_traced(token: Reply, replies: Vec<Reply>) -> (Traced, CodexServers) {
+    let home = tempfile::tempdir().expect("prepare the trace test");
+    let root = home.path().canonicalize().expect("prepare the trace test");
+    let workspace = root.join("workspace");
+    let config = root.join("config/oh-fx");
+    let data = root.join("data/oh-fx");
+    for path in [&workspace, &config, &data] {
+        fs::create_dir_all(path).expect("prepare the trace test");
+    }
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("prepare the trace test");
+    fs::write(
+        config.join("settings.json"),
+        json!({"provider": "codex", "models": {"codex": "gpt-5.4"}, "session_titles": false})
+            .to_string(),
+    )
+    .expect("prepare the trace test");
+    let login = data.join("chatgpt-auth.json");
+    let session = json!({
+        "version": 1,
+        "access_token": SAVED_ACCESS,
+        "refresh_token": SAVED_REFRESH,
+        "expires_at_ms": 4_102_444_800_000_i64,
+        "account_id": "acct_trace",
+    });
+    fs::write(&login, format!("{session}\n")).expect("prepare the trace test");
+    fs::set_permissions(&login, fs::Permissions::from_mode(0o600)).expect("prepare the trace test");
+    let model = json!({
+        "slug": "gpt-5.4",
+        "visibility": "list",
+        "supported_in_api": true,
+        "supported_reasoning_levels": [{"effort": "low"}],
+    });
+    let auth = FakeServer::start([token]);
+    let catalog = FakeServer::start([
+        Reply::status(200, json!({"version": "0.153.1"}).to_string()),
+        Reply::status(200, json!({"models": [model]}).to_string()),
+    ]);
+    let codex = FakeServer::start(replies);
+    let log = root.join("trace.log");
+    let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args(["ask", "--json", "--no-save", "hi"])
+        .current_dir(&workspace)
+        .env_clear()
+        .env("HOME", &root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("SHELL", "/bin/sh")
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .env("OH_FX_TRACE_LOG", &log)
+        .env(
+            "OH_FX_E2E_CHATGPT_TOKEN_URL",
+            format!("{}/oauth/token", auth.base_url()),
+        )
+        .env(
+            "OH_FX_E2E_OPENAI_CODEX_MODELS_URL",
+            format!("{}/backend-api/codex/models", catalog.base_url()),
+        )
+        .env(
+            "OH_FX_E2E_CODEX_VERSION_URL",
+            format!("{}/@openai/codex/latest", catalog.base_url()),
+        )
+        .env(
+            "OH_FX_E2E_OPENAI_CODEX_RESPONSES_URL",
+            format!("{}/backend-api/codex/responses", codex.base_url()),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .expect("run oh-fx ask");
+    let log = fs::read_to_string(&log).expect("read the trace log");
+    let servers = CodexServers {
+        auth,
+        _catalog: catalog,
+        codex,
+    };
+    (Traced { output, log }, servers)
+}
+
+fn codex_rejection() -> Reply {
+    Reply::status(
+        401,
+        json!({"error": {"code": "token_expired", "message": format!(
+            "expired {SAVED_ACCESS} for {SAVED_REFRESH}"
+        )}})
+        .to_string(),
+    )
+}
+
+fn codex_answer(text: &str) -> Reply {
+    Reply::sse(&[
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+        json!({"type":"response.output_text.delta","output_index":0,"delta":text}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}),
+    ]
+    .map(|event| event.to_string()))
+}
+
+fn bearer(request: &ofx_testkit::RecordedRequest) -> Option<&str> {
+    request
+        .header("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+#[test]
+fn a_codex_ask_refreshes_a_rejected_login_and_replays_the_request_without_tokens() {
+    let tokens = json!({
+        "access_token": FRESH_ACCESS,
+        "refresh_token": ROTATED_REFRESH,
+        "expires_in": 3600,
+    });
+    let (traced, servers) = ask_codex_traced(
+        Reply::status(200, tokens.to_string()),
+        vec![codex_rejection(), codex_answer("Refreshed.")],
+    );
+    let result: serde_json::Value = serde_json::from_slice(&traced.output.stdout).unwrap();
+    assert_eq!(result["final_output"], "Refreshed.", "{result}");
+    let sent: Vec<_> = servers.codex.requests();
+    assert_eq!(
+        sent.iter().map(bearer).collect::<Vec<_>>(),
+        [Some(SAVED_ACCESS), Some(FRESH_ACCESS)]
+    );
+    assert!(
+        servers.auth.requests()[0]
+            .body_text()
+            .contains(SAVED_REFRESH)
+    );
+    assert_in_order(
+        &traced.log,
+        &[
+            "[gateway] event=credential_refreshed turn_id=1 step_id=1 source=chatgpt_subscription mode=force",
+            "[auth] event=authenticated_request_replayed turn_id=1 step_id=1 semantic_attempt=1",
+            "[agent] event=prompt_finish turn_id=1 outcome_kind=assistant",
+        ],
+    );
+    assert!(
+        !traced.log.contains("credential_refresh_failed"),
+        "{}",
+        traced.log
+    );
+    assert_no_secret(&traced.log);
+}
+
+#[test]
+fn a_rejected_codex_refresh_writes_its_failure_without_tokens() {
+    let revoked = json!({
+        "error": "invalid_grant",
+        "error_description": format!("refresh token {SAVED_REFRESH} was revoked"),
+    });
+    let (traced, servers) = ask_codex_traced(
+        Reply::status(400, revoked.to_string()),
+        vec![codex_rejection()],
+    );
+    assert_eq!(traced.output.status.code(), Some(1));
+    assert_eq!(servers.codex.requests().len(), 1);
+    assert_in_order(
+        &traced.log,
+        &[
+            "[auth] Codex refresh request rejected",
+            "[auth] retiring terminal Codex session reason=CredentialRefreshRejected",
+            "[auth] credential refresh provider failed source=chatgpt_subscription mode=force err=CredentialRefreshRejected",
+            "[gateway] event=credential_refresh_failed turn_id=1 step_id=1 source=chatgpt_subscription mode=force err=CredentialRefreshRejected",
+        ],
+    );
+    assert!(
+        !traced.log.contains("authenticated_request_replayed"),
+        "{}",
+        traced.log
+    );
+    assert_no_secret(&traced.log);
+}
+
+#[test]
+fn a_rejected_api_key_is_neither_refreshed_nor_replayed_and_stays_out_of_the_trace() {
+    let traced = ask_traced(
+        vec![Reply::status(401, secret_body())],
+        &["--json", "--no-save", "hi"],
+    );
+    assert_eq!(traced.output.status.code(), Some(1));
+    for absent in ["credential_refresh", "authenticated_request_replayed"] {
+        assert!(!traced.log.contains(absent), "{}", traced.log);
+    }
+    assert!(
+        traced
+            .log
+            .contains("[agent] event=prompt_finish turn_id=1 outcome_kind=http_error"),
+        "{}",
+        traced.log
+    );
+    assert_no_secret(&traced.log);
 }

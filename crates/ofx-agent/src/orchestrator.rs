@@ -1217,7 +1217,14 @@ impl Agent {
                 admitted,
                 tool,
             } = self
-                .attempt(turn, &sent, body.take(), &mut pending, events, cancel)
+                .attempt(
+                    turn,
+                    &sent,
+                    body.take(),
+                    (&mut pending, attempt),
+                    events,
+                    cancel,
+                )
                 .await;
             let consumed = attempt - usize::from(!admitted);
             let counted = (attempt, consumed, tool);
@@ -1297,7 +1304,7 @@ impl Agent {
         turn: &mut Turn,
         request: &ModelRequest<'_>,
         body: Option<String>,
-        pending: &mut Option<RouteRecoveryStatus>,
+        (pending, number): (&mut Option<RouteRecoveryStatus>, usize),
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Attempt {
@@ -1345,6 +1352,15 @@ impl Agent {
                 streamed_bytes += text.len();
                 events(UiEvent::ReasoningText { turn_id, text });
             }
+            StreamEvent::CredentialRefreshed { source, forced } => {
+                gateway_trace::credential_refreshed(trace, source, forced);
+            }
+            StreamEvent::CredentialRefreshFailed {
+                source,
+                forced,
+                error,
+            } => gateway_trace::credential_refresh_failed(trace, source, forced, &error),
+            StreamEvent::RequestReplayed => gateway_trace::request_replayed(trace, number),
         };
         let started_at_ms = ofx_trace::timestamp_ms();
         let streamed = match body {

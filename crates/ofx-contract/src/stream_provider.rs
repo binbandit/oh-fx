@@ -44,6 +44,16 @@ pub enum StreamEvent {
     ToolInputDelta {
         text: String,
     },
+    CredentialRefreshed {
+        source: &'static str,
+        forced: bool,
+    },
+    CredentialRefreshFailed {
+        source: &'static str,
+        forced: bool,
+        error: String,
+    },
+    RequestReplayed,
 }
 
 pub trait StreamSink: Send {
