@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ofx_agent::{CompactionEvent, ToolCallTrace, TraceRings};
-use ofx_contract::{PermissionMode, ReasoningEffort, is_provider_search_alias};
+use ofx_contract::{PermissionMode, ReasoningEffort, ToolResultStatus, is_provider_search_alias};
 use ofx_text::mask_secrets;
 use ofx_trace::{NetworkTrace, Sequenced};
 
@@ -34,6 +34,7 @@ pub(crate) struct TraceFacts {
     pub(crate) processing: bool,
     pub(crate) stream_active: bool,
     pub(crate) queued: usize,
+    pub(crate) web_searches: Vec<Option<ToolResultStatus>>,
     pub(crate) rings: TraceRings,
 }
 
@@ -120,7 +121,7 @@ impl Snapshot {
         self.write_problems(out)?;
         self.write_compaction(out)?;
         network_calls::write_section(out, &self.network)?;
-        tool_calls::write_section(out, &self.tool_calls)?;
+        tool_calls::write_section(out, &self.tool_calls, &self.facts.web_searches)?;
         self.write_runtime_context(out)?;
         if let Some(tail) = &self.tail {
             write_tail(out, tail)?;

@@ -1,7 +1,7 @@
 use std::fmt::{self, Write as _};
 
 use ofx_agent::{ToolCallMetric, ToolCallOutcome, ToolCallTrace};
-use ofx_contract::is_provider_search_alias;
+use ofx_contract::{ToolResultStatus, is_provider_search_alias};
 use ofx_text::mask_secrets;
 
 use super::{SEARCH_NAME, Timestamp};
@@ -27,13 +27,44 @@ pub(super) fn write_problems(out: &mut String, trace: &ToolCallTrace) -> Result<
     Ok(count)
 }
 
-pub(super) fn write_section(out: &mut String, trace: &ToolCallTrace) -> fmt::Result {
-    let calls = &trace.calls;
-    if calls.is_empty() {
+pub(super) fn write_section(
+    out: &mut String,
+    trace: &ToolCallTrace,
+    searches: &[Option<ToolResultStatus>],
+) -> fmt::Result {
+    if trace.calls.is_empty() && searches.is_empty() {
         out.push_str("\n## Tool Calls\n(none recorded)\n");
         return Ok(());
     }
     out.push_str("\n## Tool Calls\n### Local\n");
+    if trace.calls.is_empty() {
+        out.push_str("(none locally executed)\n");
+    } else {
+        write_local(out, trace)?;
+    }
+    write_searches(out, searches)
+}
+
+fn write_searches(out: &mut String, searches: &[Option<ToolResultStatus>]) -> fmt::Result {
+    out.push_str("### Web Search\n");
+    if searches.is_empty() {
+        out.push_str("(none retained)\n");
+        return Ok(());
+    }
+    writeln!(out, "last={}", searches.len())?;
+    for status in searches {
+        let label = match status {
+            Some(ToolResultStatus::Success) => "ok",
+            Some(ToolResultStatus::Failure) => "err",
+            None => "pending",
+        };
+        writeln!(out, "name={SEARCH_NAME} status={label}")?;
+    }
+    Ok(())
+}
+
+fn write_local(out: &mut String, trace: &ToolCallTrace) -> fmt::Result {
+    let calls = &trace.calls;
     let count =
         |outcome: ToolCallOutcome| calls.iter().filter(|call| call.outcome == outcome).count();
     let total_ms: u64 = calls.iter().map(|call| u64::from(call.duration_ms)).sum();

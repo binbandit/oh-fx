@@ -2242,6 +2242,92 @@ fn a_resumed_provider_search_keeps_its_search_row() {
 }
 
 #[test]
+fn trace_lists_the_resumed_sessions_web_searches_without_their_payloads() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let found = r#"{"results":["SEARCH_RESULT_SECRET"]}"#;
+    let arguments = json!({"query": "SEARCH_QUERY_SECRET"}).to_string();
+    let call = |seq, call_id: &str, tool_name: &str| {
+        frame(
+            seq,
+            &json!({"tool_call": {
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "arguments_json": arguments,
+                "provider_result": found,
+                "provenance": "provider_executed",
+            }}),
+        )
+    };
+    home.append(
+        &id,
+        &[
+            frame(4, &json!({"user": {"text": "search the web"}})),
+            call(5, "s1", "exa_search"),
+            call(6, "s2", "parallel_search"),
+            saved_result(7, "s1", "exa_search", "success", found),
+            saved_result(8, "s2", "parallel_search", "failure", found),
+            frame(9, &json!({"assistant": {"text": "Searched."}})),
+            frame(10, &json!({"turn_completed": {}})),
+        ]
+        .concat(),
+    );
+    let reports = home.root.join("reports");
+    let bin = home.root.join("bin");
+    for directory in [&reports, &bin] {
+        fs::create_dir(directory).expect("create the trace directories");
+    }
+    let copied = home.root.join("copied");
+    for tool in ["pbcopy", "xclip"] {
+        let script = bin.join(tool);
+        fs::write(&script, "#!/bin/sh\ncat > \"$OH_FX_TRACE_TEST_COPY\"\n")
+            .expect("write the clipboard stand-in");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))
+            .expect("make the clipboard stand-in runnable");
+    }
+    let mut command = home.command_in(&home.workspace, &["-c"]);
+    command
+        .env("TMPDIR", &reports)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("OH_FX_TRACE_TEST_COPY", &copied);
+    let session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "Searched.");
+    session.send(b"/trace\r");
+    wait(&session, "Trace copied to clipboard.");
+    let saved: Vec<PathBuf> = fs::read_dir(&reports)
+        .expect("list the reports")
+        .map(|entry| entry.expect("a report").path())
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    let report = fs::read_to_string(&saved[0]).expect("read the report");
+    assert_eq!(
+        fs::read_to_string(&copied).expect("read the copied report"),
+        report
+    );
+    let tools = &report[report
+        .find("\n## Tool Calls\n")
+        .expect("the Tool Calls section")..];
+    assert!(
+        tools.starts_with("\n## Tool Calls\n### Local\n(none locally executed)\n### Web Search\nlast=2\nname=web_search status=ok\nname=web_search status=err\n"),
+        "{report}"
+    );
+    for hidden in [
+        "SEARCH_RESULT_SECRET",
+        "SEARCH_QUERY_SECRET",
+        "exa_search",
+        "parallel_search",
+    ] {
+        assert!(!report.contains(hidden), "{hidden}\n{report}");
+    }
+    exit(session);
+}
+
+#[test]
 fn a_resumed_subagent_row_reads_its_outcome_from_the_whole_saved_result() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
     let home = Home::new(&server.base_url());
