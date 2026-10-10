@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
+use crate::session_codec::recovery_checkpoint::upstream_fixture::fields_checkpoint;
 use crate::session_store::{ListScope, SessionStore};
 use crate::session_summary_codec::ResumablePage;
 
@@ -533,6 +534,41 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
         .map(|summary| summary.history_len)
         .collect();
     assert_eq!(turns, [1, 1, 1, 1, 0]);
+    assert_eq!(catalog.skipped_invalid(), 0);
+}
+
+#[test]
+fn fx_sessions_paused_with_every_field_fx_saves_in_a_checkpoint_are_listed() {
+    let home = Home::new();
+    home.store("/work");
+    let session = Saved {
+        id: "fx-paused",
+        workspace: "/work",
+        title: None,
+        prompts: &[],
+        modified_s: 100,
+    };
+    session.write_files(
+        &home.fx_sessions(),
+        &session.manifest(),
+        &shell_turn("null", "null"),
+    );
+    let path = home.fx_sessions().join("fx-paused").join("recovery.json");
+    fs::write(
+        &path,
+        format!(
+            "{{\"conversation_seq\":5,\"checkpoint\":{}}}\n",
+            fields_checkpoint()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let catalog = home
+        .store("/work")
+        .catalog_with_fx(&FxSessions::open(home.path()))
+        .unwrap();
+    let page = catalog.listed_page(ListScope::AllWorkspaces, None, 50);
+    assert_eq!(ids(&page), ["fx-paused"]);
     assert_eq!(catalog.skipped_invalid(), 0);
 }
 

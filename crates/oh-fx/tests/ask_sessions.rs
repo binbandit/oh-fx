@@ -989,6 +989,73 @@ fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_process()
     );
 }
 
+const PNG_DATA: &str = "iVBORw0KGgoAAAANSUhEUg==";
+const REPLAY_HANDLE: &str =
+    "fx-command-replay-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.bin";
+
+#[test]
+fn a_continued_turn_keeps_every_field_fx_saved_with_its_checkpoint() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["continued"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    let presentation = json!({
+        "path": "a.rs", "kind": "edited",
+        "lines": [{"kind": "addition", "old_line": null, "new_line": 1, "text": "fn main() {}"}],
+        "additions": 1, "deletions": 0, "truncated": false,
+        "previous_content": null, "after_content": "fn main() {}\n",
+        "lifecycle_id": {"turn_id": 7, "call_id": "call_1"}
+    });
+    save_checkpoint_with(&home, &id, CONFIGURED_IDENTITY, |checkpoint| {
+        checkpoint["user"]["images"] = json!([{
+            "id": 1, "path": "/Users/me/shot.png", "media_type": "image/png",
+            "snapshot_path": "images/shot-1.png", "snapshot_sha256": "ab"
+        }]);
+        let result = &mut checkpoint["execution"]["tool_steps"][0]["tool_results"][0];
+        result["provider_native"] = json!(true);
+        result["created_at_ms"] = json!(1_700_000_000_001_i64);
+        result["committed_file_presentation"] = presentation.clone();
+        result["command_output_replay"] =
+            json!({"kind": "available", "handle": REPLAY_HANDLE, "framed_bytes": 22});
+        result["tool_images"] =
+            json!([{"type": "image", "mimeType": "image/png", "data": PNG_DATA}]);
+    });
+    let result = home.ask_json(&["--resume-id", &id, "--continue-recovery"], &[]);
+    assert_eq!(result["final_output"], "continued", "{result}");
+    assert_eq!(
+        texts(&conversation(&server.requests()[1]))[2..5],
+        ["user: fix the build", "assistant: ", "tool: fn main() {}"]
+    );
+    let frames = home.frames(&id);
+    let user = &frames[3]["event"]["user"];
+    assert_eq!(user["text"], "fix the build");
+    assert_eq!(user["images"][0]["snapshot_path"], "images/shot-1.png");
+    assert_eq!(user["images"][0]["inline_data"], Value::Null);
+    let saved = frames
+        .iter()
+        .find_map(|frame| frame["event"].get("tool_result"))
+        .expect("the restored result");
+    assert_eq!(saved["provider_native"], true);
+    assert_eq!(saved["created_at_ms"], 1_700_000_000_001_i64);
+    let mut kept = presentation;
+    kept["content_handle"] = Value::Null;
+    assert_eq!(saved["committed_file_presentation"], kept);
+    assert_eq!(saved["command_replay_ref"], REPLAY_HANDLE);
+    assert_eq!(saved["command_replay_bytes"], 22);
+    let image = saved["tool_image_handle"]
+        .as_str()
+        .expect("an image handle");
+    assert!(image.starts_with("image-result-read-"), "{image}");
+    let stored = fs::read_to_string(home.sessions().join(&id).join("tool-results").join(image))
+        .expect("the stored tool images");
+    assert_eq!(
+        stored,
+        format!(r#"[{{"type":"image","mimeType":"image/png","data":"{PNG_DATA}"}}]"#)
+    );
+}
+
 #[test]
 fn continue_recovery_shows_the_saved_partial_reply_and_restarts_it() {
     let server = FakeServer::start([

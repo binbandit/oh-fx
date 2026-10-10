@@ -104,8 +104,12 @@ fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
                     } else {
                         format!(" feedback={:?}", result.permission_feedback)
                     };
+                    let persisted = result
+                        .persisted
+                        .map(|persisted| format!(" persisted_at={}", persisted.created_at_ms))
+                        .unwrap_or_default();
                     format!(
-                        "{}={}:{:?}{raw}{whole}{process}{review}{feedback}",
+                        "{}={}:{:?}{raw}{whole}{process}{review}{feedback}{persisted}",
                         result.call_id, result.output, result.status
                     )
                 })
@@ -117,6 +121,14 @@ fn described_steps(turn: &HistoryTurn<'_>) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn described_user(turn: &HistoryTurn<'_>) -> String {
+    if turn.images.is_empty() {
+        turn.user.to_owned()
+    } else {
+        format!("{} images={}", turn.user, turn.images.len())
+    }
 }
 
 fn described_end(end: TurnEnd<'_>) -> String {
@@ -147,7 +159,7 @@ impl ConversationLog for MemoryLog {
             });
         }
         self.entries.lock().unwrap().push(Logged::Turn {
-            user: turn.user.to_owned(),
+            user: described_user(turn),
             steps: described_steps(turn),
             steering: turn
                 .steering
@@ -203,7 +215,7 @@ impl ConversationLog for MemoryLog {
             });
         }
         self.entries.lock().unwrap().push(Logged::Recovery {
-            user: point.turn.user.to_owned(),
+            user: described_user(&point.turn),
             steps: described_steps(&point.turn),
             files: described_files(point.turn.files),
             source: point.source.to_owned(),

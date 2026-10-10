@@ -1680,3 +1680,5 @@ fn the_recovery_ask_marker_lasts_until_the_checkpoint_changes() {
     resumed.discard_recovery();
     assert!(!resumed.recovery_was_asked());
 }
+
+mod upstream_fields;

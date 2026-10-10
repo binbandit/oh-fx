@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
 use ofx_contract::{
-    CommandProcessPresentation, HistoryCut, HistoryTurn, RecordedOutput, RecoveredTurn,
-    RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+    CommandOutputReplay, CommandProcessPresentation, HistoryCut, HistoryTurn, ImageAttachment,
+    PersistedResult, RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress,
+    RecoveryStrategy, ToolImages,
 };
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
@@ -140,6 +141,57 @@ async fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_pro
             r#""" replay=false calls=["call-2"] results=["call-2=echo {}:Success"]"#,
         ]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_continued_turn_saves_the_images_and_persisted_records_its_checkpoint_held() {
+    let provider = FakeProvider::new(vec![unavailable(), text_reply("done")]);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(new_agent(Arc::clone(&provider), vec![echo_tool()]), log);
+    let restored = RecoveredTurn {
+        outputs: vec![RecordedOutput {
+            call_id: ToolCallId::new("call-1"),
+            bytes: 900,
+            whole_file: false,
+            process: None,
+            review_feedback: false,
+            persisted: Some(Box::new(PersistedResult {
+                output_handle: Some("result-echo-0011-2233.txt".to_owned()),
+                preview: Some("saved".to_owned()),
+                stored_output_bytes: 900,
+                truncated: true,
+                created_at_ms: 7,
+                provider_native: false,
+                committed_file_presentation: None,
+                command_output_replay: Some(CommandOutputReplay::Unavailable),
+                tool_images: ToolImages::None,
+            })),
+        }],
+        images: vec![ImageAttachment {
+            id: 1,
+            path: "/Users/me/shot.png".to_owned(),
+            media_type: "image/png".to_owned(),
+            snapshot_path: Some("images/shot-1.png".to_owned()),
+            snapshot_sha256: Some("ab".to_owned()),
+            inline_data: None,
+            source_ref: None,
+        }],
+        ..recovered(RecoveryStrategy::ContinueAfterTool)
+    };
+    let (report, _) = continue_turn(&mut agent, restored).await;
+    assert_eq!(report.final_text, "done");
+    let step = r#""Checking." replay=false calls=["call-1"] results=["call-1=saved output:Success raw=900 persisted_at=7"]"#;
+    let entries = entries.lock().unwrap();
+    let Logged::Recovery { user, steps, .. } = &checkpoints(&entries)[0] else {
+        panic!("a saved checkpoint");
+    };
+    assert_eq!(user, "fix it images=1");
+    assert_eq!(*steps, [step]);
+    let Some(Logged::Turn { user, steps, .. }) = entries.last() else {
+        panic!("a saved turn");
+    };
+    assert_eq!(user, "fix it images=1");
+    assert_eq!(*steps, [step]);
 }
 
 #[tokio::test]
