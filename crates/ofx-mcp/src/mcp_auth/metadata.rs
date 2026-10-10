@@ -27,23 +27,10 @@ pub(crate) struct AuthorizationMetadata {
     pub(crate) authorization_response_iss_parameter_supported: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IssuerMismatchSource {
-    AuthorizationMetadata,
-    AuthorizationResponse,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct IssuerMismatch {
-    pub(crate) source: IssuerMismatchSource,
-    pub(crate) expected: String,
-    pub(crate) returned: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataOutcome {
-    Metadata(AuthorizationMetadata),
-    IssuerMismatch(IssuerMismatch),
+    Metadata(Box<AuthorizationMetadata>),
+    IssuerMismatch,
 }
 
 impl AuthorizationMetadata {
@@ -101,7 +88,9 @@ pub(crate) fn authorization_metadata_urls(issuer: &str) -> Result<Vec<String>, M
 }
 
 fn has_query(text: &str) -> bool {
-    text.split('#').next().is_some_and(|text| text.contains('?'))
+    text.split('#')
+        .next()
+        .is_some_and(|text| text.contains('?'))
 }
 
 pub(crate) fn parse_resource_metadata(
@@ -135,13 +124,9 @@ pub(crate) fn parse_authorization_metadata(
     };
     let issuer = required_string(&object, "issuer")?;
     if without_trailing_slash(issuer) != without_trailing_slash(expected_issuer) {
-        return Ok(MetadataOutcome::IssuerMismatch(IssuerMismatch {
-            source: IssuerMismatchSource::AuthorizationMetadata,
-            expected: expected_issuer.to_owned(),
-            returned: issuer.to_owned(),
-        }));
+        return Ok(MetadataOutcome::IssuerMismatch);
     }
-    Ok(MetadataOutcome::Metadata(AuthorizationMetadata {
+    Ok(MetadataOutcome::Metadata(Box::new(AuthorizationMetadata {
         authorization_endpoint: required_url(&object, "authorization_endpoint")?,
         token_endpoint: required_url(&object, "token_endpoint")?,
         registration_endpoint: optional_url(&object, "registration_endpoint")?,
@@ -167,7 +152,7 @@ pub(crate) fn parse_authorization_metadata(
             .and_then(Value::as_bool)
             .unwrap_or(false),
         issuer: issuer.to_owned(),
-    }))
+    })))
 }
 
 fn without_trailing_slash(issuer: &str) -> &str {
@@ -218,9 +203,12 @@ pub(crate) fn validate_authorization_metadata_urls(
 ) -> Result<(), McpError> {
     validate_oauth_url_for_resource(&metadata.authorization_endpoint, resource)?;
     validate_oauth_url_for_resource(&metadata.token_endpoint, resource)?;
-    for url in [&metadata.registration_endpoint, &metadata.revocation_endpoint]
-        .into_iter()
-        .flatten()
+    for url in [
+        &metadata.registration_endpoint,
+        &metadata.revocation_endpoint,
+    ]
+    .into_iter()
+    .flatten()
     {
         validate_oauth_url_for_resource(url, resource)?;
     }

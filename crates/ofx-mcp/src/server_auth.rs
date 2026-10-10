@@ -1,14 +1,22 @@
 use std::sync::{Arc, Mutex as StateMutex, PoisonError};
 
+use ofx_http::ConnectionOptions;
 use reqwest::RequestBuilder;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 use crate::error::McpError;
-use crate::mcp_auth::{Credentials, now_ms, refresh_credentials};
+use crate::mcp_auth::{
+    AuthorizationResult, ClientConfig, Credentials, authorize_interactive, now_ms,
+    refresh_credentials,
+};
 use crate::mcp_auth_store::CredentialStore;
-use crate::mcp_contract::{HttpHeader, McpServerConfig};
-use crate::server_transport::StartupFailure;
+use crate::mcp_contract::{
+    ConfigSource, HttpHeader, McpServerConfig, TransportType, WorkspaceAdmission,
+};
+use crate::server_transport::{ConnectOptions, StartupFailure};
 use crate::streamable_http::{HeaderError, validate_header_value, validate_static_headers};
 
 const CREDENTIALS_EXPIRED: &str = "MCP credentials expired.";
@@ -247,6 +255,87 @@ fn resolve_headers(
         validate_static_headers(&headers)?;
     }
     Ok(headers)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthenticationOutcome {
+    Authenticated { repaired_entries: usize },
+    IssuerMismatch,
+}
+
+pub(crate) async fn authenticate(
+    config: &McpServerConfig,
+    options: &ConnectOptions,
+    open_url: &(dyn Fn(&str) -> bool + Sync),
+    cancel: &CancellationToken,
+    environment: &(dyn Fn(&str) -> Option<String> + Sync),
+) -> Result<AuthenticationOutcome, McpError> {
+    if config.transport == TransportType::Stdio {
+        return Err(McpError::McpAuthenticationNotRemote);
+    }
+    if config.source == ConfigSource::Workspace
+        && config.workspace_admission != Some(WorkspaceAdmission::Approved)
+    {
+        return Err(McpError::McpWorkspaceApprovalRequired);
+    }
+    let store = options
+        .profile_data
+        .as_deref()
+        .map(CredentialStore::new)
+        .ok_or(McpError::HomeNotSet)?;
+    let previous = if config.allow_stored_credentials {
+        load_stored(config, &store).await?
+    } else {
+        None
+    };
+    let auth = config.auth.clone().unwrap_or_default();
+    let client_secret = auth
+        .client_secret_env
+        .as_deref()
+        .map(|name| {
+            environment(name)
+                .map(Zeroizing::new)
+                .ok_or(McpError::McpClientSecretEnvironmentMissing)
+        })
+        .transpose()?;
+    let http = ofx_http::build_connection_client(&ConnectionOptions {
+        user_agent: options.user_agent.clone(),
+        follow_redirects: false,
+        ..ConnectionOptions::default()
+    })
+    .map_err(|_| McpError::HttpClientUnavailable)?;
+    let client = ClientConfig {
+        resource: auth.resource.as_deref(),
+        issuer: auth.issuer.as_deref(),
+        client_id: auth.client_id.as_deref(),
+        client_secret: client_secret.as_deref().map(String::as_str),
+        client_metadata_url: auth.client_metadata_url.as_deref(),
+        scopes: &auth.scopes,
+        callback_port: auth.callback_port,
+    };
+    let previous_scope = previous
+        .as_ref()
+        .map(|credentials| credentials.scope.as_str());
+    let credentials = match authorize_interactive(
+        &http,
+        config.remote_url()?,
+        &client,
+        previous_scope,
+        open_url,
+        cancel,
+    )
+    .await?
+    {
+        AuthorizationResult::Credentials(credentials) => credentials,
+        AuthorizationResult::IssuerMismatch => return Ok(AuthenticationOutcome::IssuerMismatch),
+    };
+    let name = config.name.clone();
+    let saved = tokio::task::spawn_blocking(move || store.save(&name, &credentials))
+        .await
+        .map_err(|_| McpError::Cancelled)??;
+    Ok(AuthenticationOutcome::Authenticated {
+        repaired_entries: saved.repaired_entries,
+    })
 }
 
 #[cfg(test)]

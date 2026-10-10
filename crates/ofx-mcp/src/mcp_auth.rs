@@ -295,5 +295,10 @@ fn token_expires_at(object: &Map<String, Value>, now_ms: i64) -> Result<i64, Mcp
     Ok(now_ms.saturating_add(seconds.saturating_mul(1000)))
 }
 
+mod authorization;
+mod metadata;
+
+pub(crate) use authorization::{AuthorizationResult, ClientConfig, authorize_interactive};
+
 #[cfg(test)]
 mod tests;

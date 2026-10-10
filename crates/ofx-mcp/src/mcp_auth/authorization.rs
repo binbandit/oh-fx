@@ -14,9 +14,9 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use super::metadata::{
-    AuthorizationMetadata, IssuerMismatch, IssuerMismatchSource, MetadataOutcome, contains,
-    discover_authorization_metadata, discover_resource_metadata,
-    validate_authorization_metadata_urls, validate_oauth_url_for_resource,
+    AuthorizationMetadata, MetadataOutcome, contains, discover_authorization_metadata,
+    discover_resource_metadata, validate_authorization_metadata_urls,
+    validate_oauth_url_for_resource,
 };
 use super::{
     Credentials, Payload, now_ms, optional_secret, parse_json, request, required_secret,
@@ -25,7 +25,7 @@ use super::{
 use crate::error::McpError;
 use crate::oauth_uri::canonical_resource;
 
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const CALLBACK_TIMEOUT: Duration = Duration::from_mins(5);
 const MAX_SCOPE_TOKENS: usize = 64;
 const MAX_SCOPE_TOKEN_BYTES: usize = 256;
 const VERIFIER_ENTROPY_BYTES: usize = 48;
@@ -46,7 +46,7 @@ pub(crate) struct ClientConfig<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthorizationResult {
     Credentials(Box<Credentials>),
-    IssuerMismatch(IssuerMismatch),
+    IssuerMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,10 +92,8 @@ pub(crate) async fn authorize_interactive(
         .unwrap_or(protected.authorization_servers[0].as_str());
     validate_oauth_url_for_resource(issuer, &resource)?;
     let metadata = match discover_authorization_metadata(http, issuer).await? {
-        MetadataOutcome::Metadata(metadata) => metadata,
-        MetadataOutcome::IssuerMismatch(mismatch) => {
-            return Ok(AuthorizationResult::IssuerMismatch(mismatch));
-        }
+        MetadataOutcome::Metadata(metadata) => *metadata,
+        MetadataOutcome::IssuerMismatch => return Ok(AuthorizationResult::IssuerMismatch),
     };
     validate_authorization_metadata_urls(&metadata, &resource)?;
     if !metadata.supports_s256() {
@@ -128,13 +126,14 @@ pub(crate) async fn authorize_interactive(
         return Err(McpError::McpAuthorizationBrowserOpenFailed);
     }
     let callback = wait_for_callback(&listener, cancel).await?;
-    if let Some(mismatch) = validate_authorization_response(
+    if validate_authorization_response(
         &state,
         &metadata.issuer,
         metadata.authorization_response_iss_parameter_supported,
         &callback,
-    )? {
-        return Ok(AuthorizationResult::IssuerMismatch(mismatch));
+    )? == IssuerCheck::Mismatch
+    {
+        return Ok(AuthorizationResult::IssuerMismatch);
     }
     let grant = exchange_authorization_code(
         http,
@@ -280,7 +279,10 @@ fn requested_scope(
     Ok((!tokens.is_empty()).then(|| tokens.join(" ")))
 }
 
-fn append_scope_tokens<'a>(tokens: &mut Vec<&'a str>, scope: Option<&'a str>) -> Result<(), McpError> {
+fn append_scope_tokens<'a>(
+    tokens: &mut Vec<&'a str>,
+    scope: Option<&'a str>,
+) -> Result<(), McpError> {
     for token in scope
         .unwrap_or_default()
         .split([' ', '\t', '\r', '\n'])
@@ -312,7 +314,11 @@ fn append_unique<'a>(tokens: &mut Vec<&'a str>, value: &'a str) -> Result<(), Mc
     Ok(())
 }
 
-fn authorization_url(endpoint: &str, fields: &[(&str, &str)], scope: Option<&str>) -> Zeroizing<String> {
+fn authorization_url(
+    endpoint: &str,
+    fields: &[(&str, &str)],
+    scope: Option<&str>,
+) -> Zeroizing<String> {
     let mut form = FormBody::default();
     for (key, value) in fields {
         form.append(key, value);
@@ -321,7 +327,9 @@ fn authorization_url(endpoint: &str, fields: &[(&str, &str)], scope: Option<&str
         form.append("scope", scope);
     }
     let separator = if endpoint.contains('?') { '&' } else { '?' };
-    let mut url = Zeroizing::new(String::with_capacity(endpoint.len() + 1 + form.as_str().len()));
+    let mut url = Zeroizing::new(String::with_capacity(
+        endpoint.len() + 1 + form.as_str().len(),
+    ));
     let _ = write!(url, "{endpoint}{separator}{}", form.as_str());
     url
 }
@@ -379,23 +387,25 @@ fn query_error(error: QueryError) -> McpError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssuerCheck {
+    Matched,
+    Mismatch,
+}
+
 fn validate_authorization_response(
     expected_state: &str,
     expected_issuer: &str,
     issuer_required: bool,
     response: &AuthorizationResponse,
-) -> Result<Option<IssuerMismatch>, McpError> {
+) -> Result<IssuerCheck, McpError> {
     if expected_state != response.state.as_str() {
         return Err(McpError::OAuthStateMismatch);
     }
     match &response.issuer {
         None if issuer_required => Err(McpError::AuthorizationResponseIssuerMissing),
-        Some(issuer) if issuer != expected_issuer => Ok(Some(IssuerMismatch {
-            source: IssuerMismatchSource::AuthorizationResponse,
-            expected: expected_issuer.to_owned(),
-            returned: issuer.clone(),
-        })),
-        _ => Ok(None),
+        Some(issuer) if issuer != expected_issuer => Ok(IssuerCheck::Mismatch),
+        _ => Ok(IssuerCheck::Matched),
     }
 }
 
