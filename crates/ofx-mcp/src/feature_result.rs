@@ -59,8 +59,8 @@ pub(crate) fn resource_catalog(
     action: FeatureAction,
     server: &str,
     items: &[ResourceSummary],
-    template: bool,
 ) -> String {
+    let template = action == FeatureAction::ResourceTemplates;
     let items = items
         .iter()
         .map(|item| {
@@ -266,7 +266,6 @@ mod tests {
                     ),
                     resource("memory://notes", [None; 3]),
                 ],
-                false,
             ),
             format!(
                 r#"{ENVELOPE},"action":"resource_list","server":"docs","items":[{{"server":"docs","identity":"memory://plan","name":"plan","title":"Plan","description":"The \"plan\"","mimeType":"text/markdown","template":false}},{{"server":"docs","identity":"memory://notes","name":"plan","template":false}}]}}"#
@@ -277,14 +276,13 @@ mod tests {
                 FeatureAction::ResourceTemplates,
                 "docs",
                 &[resource("memory://{id}", [None, None, Some("text/plain")])],
-                true,
             ),
             format!(
                 r#"{ENVELOPE},"action":"resource_templates","server":"docs","items":[{{"server":"docs","identity":"memory://{{id}}","name":"plan","mimeType":"text/plain","template":true}}]}}"#
             )
         );
         assert_eq!(
-            resource_catalog(FeatureAction::ResourceList, "docs", &[], false),
+            resource_catalog(FeatureAction::ResourceList, "docs", &[]),
             format!(r#"{ENVELOPE},"action":"resource_list","server":"docs","items":[]}}"#)
         );
         let prompts = [

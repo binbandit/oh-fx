@@ -101,15 +101,11 @@ impl PreparedCall for FeatureCall {
         self.description.clone()
     }
 
-    fn refusal(&self) -> Option<&ToolOutput> {
-        self.request.as_ref().err()
-    }
-
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         Box::pin(async move {
             let request = match self.request {
                 Ok(request) => request,
-                Err(refusal) => return refusal,
+                Err(failure) => return failure,
             };
             let Some(runtime) = self.runtime else {
                 return ToolOutput::failure(NO_RUNTIME);
@@ -274,7 +270,6 @@ async fn model_output(runtime: &McpRuntime, request: &Request) -> Result<String,
                 request.action,
                 server,
                 &items,
-                templates,
             ))
         }
         FeatureAction::ResourceRead => {

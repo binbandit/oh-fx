@@ -72,9 +72,7 @@ fn runtime(configs: Vec<McpServerConfig>) -> Arc<McpRuntime> {
 
 async fn run(tool: &McpFeatures, arguments: &str) -> ToolOutput {
     let prepared = tool.prepare(arguments).unwrap();
-    if let Some(refusal) = prepared.refusal() {
-        return refusal.clone();
-    }
+    assert!(prepared.refusal().is_none());
     prepared
         .execute(ToolContext::new(
             ToolCallId::new("call"),
