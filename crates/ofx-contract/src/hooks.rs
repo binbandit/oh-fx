@@ -2,7 +2,8 @@ mod definitions;
 mod runtime;
 
 pub use definitions::{
-    AttentionKind, AttentionRequiredInput, HookInvocation, HookRegistrationError, HookScope,
-    PostTurnEndInput,
+    AttentionKind, AttentionRequiredInput, HookDispatchError, HookHandlerError, HookInvocation,
+    HookRegistrationError, HookScope, PostTurnEndInput, PreToolUseAction, PreToolUseInput,
+    PreToolUseOutcome,
 };
 pub use runtime::{HookRuntime, HookView};

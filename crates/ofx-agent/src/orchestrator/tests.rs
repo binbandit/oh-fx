@@ -2902,6 +2902,7 @@ mod lifecycle;
 mod malformed_arguments;
 mod mcp_servers;
 mod modes;
+mod pre_tool_use;
 mod prefill_retry;
 mod project_context;
 mod provider_executed;
