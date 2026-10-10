@@ -2878,6 +2878,7 @@ mod silent_summary;
 mod skills;
 mod steering;
 mod stop;
+mod tool_call_trace;
 mod tool_regeneration;
 mod turn_log;
 
