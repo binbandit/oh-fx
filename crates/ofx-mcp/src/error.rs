@@ -56,6 +56,10 @@ pub enum McpError {
     McpToolNameLimitExceeded,
     #[error("McpWorkspaceApprovalRequired")]
     McpWorkspaceApprovalRequired,
+    #[error("McpServerNotFound")]
+    McpServerNotFound,
+    #[error("McpResourcesUnsupported")]
+    McpResourcesUnsupported,
     #[error("McpHeaderEnvironmentMissing")]
     McpHeaderEnvironmentMissing,
     #[error("McpBearerEnvironmentMissing")]
@@ -110,6 +114,20 @@ pub enum McpError {
     ProtocolFailure,
     #[error("InvalidListResult")]
     InvalidListResult,
+    #[error("InvalidResult")]
+    InvalidResult,
+    #[error("InvalidResource")]
+    InvalidResource,
+    #[error("InvalidTemplate")]
+    InvalidTemplate,
+    #[error("DuplicateResource")]
+    DuplicateResource,
+    #[error("DuplicateTemplate")]
+    DuplicateTemplate,
+    #[error("ResourceLimitExceeded")]
+    ResourceLimitExceeded,
+    #[error("TemplateLimitExceeded")]
+    TemplateLimitExceeded,
     #[error("InvalidTool")]
     InvalidTool,
     #[error("DuplicateTool")]
@@ -140,6 +158,8 @@ pub enum McpError {
     InvalidJson,
     #[error("MetadataLimitExceeded")]
     MetadataLimitExceeded,
+    #[error("JsonDepthLimitExceeded")]
+    JsonDepthLimitExceeded,
     #[error("{}", io_error_name(.0))]
     Io(Arc<io::Error>),
     #[error("{}", http_error_name(.0))]

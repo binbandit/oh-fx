@@ -29,6 +29,22 @@ while IFS= read -r line; do
   esac
 done
 "#;
+const RESOURCE_SERVER: &str = r#"#!/bin/sh
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{},\"resources\":{}},\"serverInfo\":{\"name\":\"docs\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+    *'"method":"resources/list"'*)
+      reply "$id" '{"resources":[{"uri":"memory://plan","name":"plan"},{"uri":"memory://notes","name":"notes","title":"Team notes"}]}' ;;
+    *'"method":"resources/templates/list"'*)
+      reply "$id" '{"resourceTemplates":[{"uriTemplate":"memory://{id}","name":"by id"}]}' ;;
+  esac
+done
+"#;
 const SHELL_WAIT: Duration = Duration::from_secs(15);
 const FAILING_SERVER: &str = "#!/bin/sh\necho 'fatal: missing token' >&2\nexit 3\n";
 const LAUNCH_MARKER: &str = "#!/bin/sh\ntouch \"$MCP_STATE/launched\"\nexit 1\n";
@@ -745,5 +761,35 @@ fn the_mcp_command_approves_a_project_server_and_starts_it() {
         settings["workspaces"][workspace.to_string_lossy().as_ref()]["enabledMcpjsonServers"],
         json!(["docs"])
     );
+    exit(session);
+}
+
+#[test]
+fn the_mcp_command_lists_resources_and_resource_templates() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("docs.sh", RESOURCE_SERVER);
+    home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
+    let session = home.shell();
+    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    session.send(b"/mcp list\r");
+    shown(
+        &session,
+        "tools=0 resources=unknown templates=unknown prompts=0 cache=fresh",
+    );
+    session.send(b"/mcp resource list docs\r");
+    shown(&session, "MCP resources from docs (2):");
+    shown(&session, "docs :: memory://notes — Team notes");
+    shown(&session, "docs :: memory://plan — plan");
+    session.send(b"/mcp resource templates docs\r");
+    shown(&session, "MCP resource templates from docs (1):");
+    shown(&session, "docs :: memory://{id} — by id");
+    session.send(b"/mcp list\r");
+    shown(
+        &session,
+        "tools=0 resources=2 templates=1 prompts=0 cache=fresh",
+    );
+    session.send(b"/mcp resource list missing\r");
+    shown(&session, "MCP resource listing failed: McpServerNotFound.");
     exit(session);
 }

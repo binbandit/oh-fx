@@ -2,11 +2,15 @@ use std::sync::atomic::Ordering;
 
 use ofx_text::encode_terminal_safe;
 
+use crate::catalog_freshness::{Freshness, SnapshotMetadata, effective_freshness};
+use crate::feature_catalog::FeatureCatalogs;
+use crate::features::resources::{Resource, ResourceTemplate};
 use crate::health::{
     AuthenticationState, CacheFreshness, CapabilityCounts, ConnectionState, ServerSnapshot, Status,
-    SubscriptionState, capability_count, classify, observed_connection,
+    SubscriptionState, capability_count, classify, observed_connection, retry_delay,
 };
 use crate::mcp_contract::{McpServerConfig, TransportType};
+use crate::operation_control::monotonic_millis;
 use crate::server_connection::McpClient;
 use crate::server_lifecycle::{Lifecycle, Server};
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
@@ -54,11 +58,12 @@ pub(crate) fn snapshot_server(server: &Server) -> ServerSnapshot {
         cache_freshness: CacheFreshness::Unavailable,
         subscription: SubscriptionState::Unavailable,
         retry_attempt: server.restarts(),
+        retry_in_ms: None,
         discovered: false,
         failure,
     };
     if let Some(client) = client {
-        describe_connection(&mut snapshot, &client);
+        describe_connection(&mut snapshot, &client, &server.features);
     }
     snapshot
 }
@@ -75,7 +80,11 @@ pub(crate) fn health_failure(
     }
 }
 
-fn describe_connection(snapshot: &mut ServerSnapshot, client: &McpClient) {
+fn describe_connection(
+    snapshot: &mut ServerSnapshot,
+    client: &McpClient,
+    features: &FeatureCatalogs,
+) {
     let info = client.server_info();
     let capabilities = info.capabilities;
     snapshot.negotiated_name = info.name.as_deref().map(|name| safe(name, NAME_BYTES));
@@ -84,17 +93,55 @@ fn describe_connection(snapshot: &mut ServerSnapshot, client: &McpClient) {
         .as_deref()
         .map(|version| safe(version, VERSION_BYTES));
     snapshot.protocol_version = Some(safe(info.protocol_version, VERSION_BYTES));
+    let resources = features.snapshot::<Resource>();
+    let templates = features.snapshot::<ResourceTemplate>();
+    let advertises_resources = capabilities.resources.is_some();
     snapshot.counts = CapabilityCounts {
         tools: Some(client.tool_catalog().tools.len()),
-        resources: capability_count(capabilities.resources.is_some(), false, 0),
-        resource_templates: capability_count(capabilities.resources.is_some(), false, 0),
+        resources: capability_count(
+            advertises_resources,
+            resources.is_some(),
+            resources.as_ref().map_or(0, |catalog| catalog.items.len()),
+        ),
+        resource_templates: capability_count(
+            advertises_resources,
+            templates.is_some(),
+            templates.as_ref().map_or(0, |catalog| catalog.items.len()),
+        ),
         prompts: capability_count(capabilities.prompts.is_some(), false, 0),
     };
-    snapshot.cache_freshness = if client.tools_stale.load(Ordering::Acquire) {
-        CacheFreshness::Stale
-    } else {
-        CacheFreshness::Fresh
-    };
+    let tools_stale = client.tools_stale.load(Ordering::Acquire);
+    let catalogs = [
+        resources.map(|catalog| catalog.metadata),
+        templates.map(|catalog| catalog.metadata),
+    ];
+    let now_ms = monotonic_millis();
+    snapshot.cache_freshness = catalogs
+        .iter()
+        .flatten()
+        .map(|metadata| cache_freshness(*metadata, now_ms, tools_stale))
+        .fold(
+            if tools_stale {
+                CacheFreshness::Stale
+            } else {
+                CacheFreshness::Fresh
+            },
+            CacheFreshness::max,
+        );
+    snapshot.retry_attempt = catalogs
+        .iter()
+        .flatten()
+        .map(|metadata| metadata.refresh_attempt)
+        .fold(snapshot.retry_attempt, u8::max);
+    snapshot.retry_in_ms = retry_delay(
+        catalogs
+            .iter()
+            .flatten()
+            .map(|metadata| metadata.retry_at_ms)
+            .filter(|retry_at| *retry_at != 0)
+            .min(),
+        now_ms,
+    );
     let subscribed = capabilities.tools_list_changed
         || capabilities
             .resources
@@ -108,6 +155,14 @@ fn describe_connection(snapshot: &mut ServerSnapshot, client: &McpClient) {
         (true, false) => SubscriptionState::Stopped,
     };
     snapshot.discovered = true;
+}
+
+fn cache_freshness(metadata: SnapshotMetadata, now_ms: u64, invalidated: bool) -> CacheFreshness {
+    match effective_freshness(metadata, now_ms, invalidated) {
+        Freshness::Fresh => CacheFreshness::Fresh,
+        Freshness::Stale => CacheFreshness::Stale,
+        Freshness::FailedRefresh => CacheFreshness::FailedRefresh,
+    }
 }
 
 fn authentication(config: &McpServerConfig) -> AuthenticationState {
