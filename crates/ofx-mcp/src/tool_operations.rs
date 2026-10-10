@@ -1,15 +1,9 @@
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-
 use tokio::time::Instant;
 
 use crate::error::McpError;
-use crate::features::tools::{
-    Limits, ToolCallOutcome, ToolCatalog, parse_call_outcome, validate_arguments,
-};
+use crate::features::tools::{Limits, ToolCallOutcome, parse_call_outcome, validate_arguments};
 use crate::protocol_messages::build_tool_call_request;
-use crate::server_connection::{McpClient, lock};
-use crate::server_transport::discover_tools;
+use crate::server_connection::McpClient;
 use crate::transport::{McpTransport, ProgressSink, ServerRequestPolicy, TransportRequest};
 
 pub(crate) const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
@@ -36,22 +30,6 @@ pub(crate) fn response_frame_cap(max_tool_result_bytes: usize) -> usize {
 }
 
 impl McpClient {
-    pub(crate) async fn list_tools(&self) -> Result<Arc<ToolCatalog>, McpError> {
-        let deadline = Instant::now() + self.operation_timeout;
-        let catalog = Arc::new(discover_tools(&self.transport, deadline, |error| error).await?);
-        *lock(&self.catalog) = Arc::clone(&catalog);
-        self.tools_stale.store(false, Ordering::Release);
-        Ok(catalog)
-    }
-
-    pub(crate) async fn current_tools(&self) -> Result<Arc<ToolCatalog>, McpError> {
-        self.receive_pending_notifications();
-        if self.tools_stale.load(Ordering::Acquire) {
-            return self.list_tools().await;
-        }
-        Ok(self.tool_catalog())
-    }
-
     pub(crate) async fn call_tool(
         &self,
         name: &str,

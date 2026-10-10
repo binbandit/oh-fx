@@ -4,6 +4,7 @@ use ofx_contract::{ArgumentShape, parse_strict_json_value};
 use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
+use crate::catalog_freshness::{earliest_expiry, page_expiry};
 use crate::error::McpError;
 use crate::features::common::is_valid_base64;
 use crate::json_number::{non_negative_u64, ttl_milliseconds};
@@ -134,7 +135,14 @@ enum CacheScope {
 pub(crate) struct Page {
     tools: Vec<Tool>,
     next_cursor: Option<String>,
+    ttl_ms: Option<u64>,
     cache_scope: CacheScope,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Listing {
+    pub(crate) catalog: ToolCatalog,
+    pub(crate) expires_at_ms: u64,
 }
 
 #[derive(Debug, Default)]
@@ -145,6 +153,7 @@ pub(crate) struct CatalogBuilder {
     next_cursor: Option<String>,
     pages: usize,
     cache_scope: Option<CacheScope>,
+    expires_at_ms: Option<u64>,
 }
 
 impl CatalogBuilder {
@@ -155,14 +164,20 @@ impl CatalogBuilder {
     pub(crate) fn append_response(
         &mut self,
         response: &str,
+        received_at_ms: u64,
         limits: Limits,
     ) -> Result<bool, McpError> {
         let page = parse_list_page(response, limits)?;
-        self.append_page(page, limits)?;
+        self.append_page(page, received_at_ms, limits)?;
         Ok(self.next_cursor.is_none())
     }
 
-    fn append_page(&mut self, page: Page, limits: Limits) -> Result<(), McpError> {
+    fn append_page(
+        &mut self,
+        page: Page,
+        received_at_ms: u64,
+        limits: Limits,
+    ) -> Result<(), McpError> {
         self.pages += 1;
         if self.pages > limits.pages {
             return Err(McpError::PaginationLimitExceeded);
@@ -184,6 +199,10 @@ impl CatalogBuilder {
             Some(_) => {}
             None => self.cache_scope = Some(page.cache_scope),
         }
+        self.expires_at_ms = Some(earliest_expiry(
+            self.expires_at_ms,
+            page_expiry(received_at_ms, page.ttl_ms),
+        ));
         for tool in &page.tools {
             if !self.names.insert(tool.name.clone()) {
                 return Err(McpError::DuplicateTool);
@@ -197,13 +216,16 @@ impl CatalogBuilder {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<ToolCatalog, McpError> {
-        if self.pages == 0 {
+    pub(crate) fn finish(mut self) -> Result<Listing, McpError> {
+        let Some(expires_at_ms) = self.expires_at_ms else {
             return Err(McpError::InvalidListResult);
-        }
+        };
         self.tools
             .sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
-        Ok(ToolCatalog { tools: self.tools })
+        Ok(Listing {
+            catalog: ToolCatalog { tools: self.tools },
+            expires_at_ms,
+        })
     }
 }
 
@@ -233,11 +255,10 @@ pub(crate) fn parse_list_page(response: &str, limits: Limits) -> Result<Page, Mc
         Some(Value::String(cursor)) if cursor.len() <= limits.cursor_bytes => Some(cursor.clone()),
         Some(_) => return Err(McpError::InvalidListResult),
     };
-    if let Some(ttl) = result.get("ttlMs")
-        && ttl_milliseconds(ttl).is_none()
-    {
-        return Err(McpError::InvalidListResult);
-    }
+    let ttl_ms = result
+        .get("ttlMs")
+        .map(|ttl| ttl_milliseconds(ttl).ok_or(McpError::InvalidListResult))
+        .transpose()?;
     let cache_scope = match result.get("cacheScope") {
         None => CacheScope::Private,
         Some(Value::String(scope)) if scope == "private" => CacheScope::Private,
@@ -247,6 +268,7 @@ pub(crate) fn parse_list_page(response: &str, limits: Limits) -> Result<Page, Mc
     Ok(Page {
         tools,
         next_cursor,
+        ttl_ms,
         cache_scope,
     })
 }
@@ -669,10 +691,10 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"alpha","inputSchema":{"type":"object","properties":{"n":{"type":"integer"}}}}]}}"#,
         );
         let mut builder = CatalogBuilder::default();
-        builder.append_page(first, Limits::default()).unwrap();
+        builder.append_page(first, 0, Limits::default()).unwrap();
         assert_eq!(builder.next_cursor(), Some("p2"));
-        builder.append_page(second, Limits::default()).unwrap();
-        let catalog = builder.finish().unwrap();
+        builder.append_page(second, 0, Limits::default()).unwrap();
+        let catalog = builder.finish().unwrap().catalog;
         assert_eq!(catalog.tools[0].name, "alpha");
         assert_eq!(catalog.tools[1].name, "zeta");
         assert_eq!(catalog.tools[1].title.as_deref(), Some("Zeta"));
@@ -702,9 +724,9 @@ mod tests {
         );
         assert_eq!(parsed.next_cursor.as_deref(), Some(""));
         let mut builder = CatalogBuilder::default();
-        builder.append_page(parsed, Limits::default()).unwrap();
+        builder.append_page(parsed, 0, Limits::default()).unwrap();
         assert_eq!(builder.next_cursor(), Some(""));
-        assert!(builder.finish().unwrap().tools.is_empty());
+        assert!(builder.finish().unwrap().catalog.tools.is_empty());
     }
 
     #[test]
@@ -729,18 +751,18 @@ mod tests {
         let mut builder = CatalogBuilder::default();
         assert!(!builder
             .append_response(
-                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"second","inputSchema":{"type":"object"}}],"nextCursor":"page two"}}"#,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"second","inputSchema":{"type":"object"}}],"nextCursor":"page two"}}"#, 0,
                 Limits::default(),
             )
             .unwrap());
         assert_eq!(builder.next_cursor(), Some("page two"));
         assert!(builder
             .append_response(
-                r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"first","inputSchema":{"type":"object"}}]}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"first","inputSchema":{"type":"object"}}]}}"#, 0,
                 Limits::default(),
             )
             .unwrap());
-        let catalog = builder.finish().unwrap();
+        let catalog = builder.finish().unwrap().catalog;
         let names: Vec<_> = catalog
             .tools
             .iter()
@@ -754,13 +776,13 @@ mod tests {
         let mut builder = CatalogBuilder::default();
         builder
             .append_page(
-                page(r#"{"jsonrpc":"2.0","id":1,"result":{"ttlMs":100,"cacheScope":"private","tools":[],"nextCursor":"n"}}"#),
+                page(r#"{"jsonrpc":"2.0","id":1,"result":{"ttlMs":100,"cacheScope":"private","tools":[],"nextCursor":"n"}}"#), 0,
                 Limits::default(),
             )
             .unwrap();
         assert_eq!(
             builder.append_page(
-                page(r#"{"jsonrpc":"2.0","id":2,"result":{"ttlMs":100,"cacheScope":"public","tools":[]}}"#),
+                page(r#"{"jsonrpc":"2.0","id":2,"result":{"ttlMs":100,"cacheScope":"public","tools":[]}}"#), 0,
                 Limits::default()
             ),
             Err(McpError::InconsistentCacheScope)
@@ -773,19 +795,21 @@ mod tests {
         builder
             .append_page(
                 page(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[],"nextCursor":"repeat"}}"#),
+                0,
                 Limits::default(),
             )
             .unwrap();
         assert_eq!(
             builder.append_page(
                 page(r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[],"nextCursor":"repeat"}}"#),
+                0,
                 Limits::default()
             ),
             Err(McpError::DuplicateCursor)
         );
         assert_eq!(
             builder.append_page(
-                page(r#"{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"same","inputSchema":{"type":"object"}},{"name":"same","inputSchema":{"type":"object"}}]}}"#),
+                page(r#"{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"same","inputSchema":{"type":"object"}},{"name":"same","inputSchema":{"type":"object"}}]}}"#), 0,
                 Limits::default()
             ),
             Err(McpError::DuplicateTool)
@@ -887,12 +911,14 @@ mod tests {
         builder
             .append_page(
                 page(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[],"nextCursor":"a"}}"#),
+                0,
                 limits,
             )
             .unwrap();
         assert_eq!(
             builder.append_page(
                 page(r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#),
+                0,
                 limits
             ),
             Err(McpError::PaginationLimitExceeded)
@@ -916,12 +942,14 @@ mod tests {
             .append_response(
                 &json!({"jsonrpc":"2.0","id":1,"result":{"tools": half, "nextCursor": "n"}})
                     .to_string(),
+                0,
                 Limits::default(),
             )
             .unwrap();
         assert_eq!(
             builder.append_response(
                 &json!({"jsonrpc":"2.0","id":2,"result":{"tools": other}}).to_string(),
+                0,
                 Limits::default()
             ),
             Err(McpError::ToolLimitExceeded)

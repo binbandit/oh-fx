@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use ofx_text::encode_terminal_safe;
 
@@ -117,8 +116,9 @@ fn describe_connection(
     let templates = features.snapshot::<ResourceTemplate>();
     let prompts = features.snapshot::<Prompt>();
     let advertises_resources = capabilities.resources.is_some();
+    let tools = client.tool_snapshot();
     snapshot.counts = CapabilityCounts {
-        tools: Some(client.tool_catalog().tools.len()),
+        tools: Some(tools.catalog.tools.len()),
         resources: capability_count(
             advertises_resources,
             resources.is_some(),
@@ -135,8 +135,9 @@ fn describe_connection(
             prompts.as_ref().map_or(0, |catalog| catalog.items.len()),
         ),
     };
-    let tools_stale = client.tools_stale.load(Ordering::Acquire);
+    let tools_invalidated = client.tools_invalidation.pending();
     let catalogs = [
+        Some(tools.metadata),
         resources.map(|catalog| catalog.metadata),
         templates.map(|catalog| catalog.metadata),
         prompts.map(|catalog| catalog.metadata),
@@ -145,15 +146,8 @@ fn describe_connection(
     snapshot.cache_freshness = catalogs
         .iter()
         .flatten()
-        .map(|metadata| cache_freshness(*metadata, now_ms, tools_stale))
-        .fold(
-            if tools_stale {
-                CacheFreshness::Stale
-            } else {
-                CacheFreshness::Fresh
-            },
-            CacheFreshness::max,
-        );
+        .map(|metadata| cache_freshness(*metadata, now_ms, tools_invalidated))
+        .fold(CacheFreshness::Unavailable, CacheFreshness::max);
     snapshot.retry_attempt = catalogs
         .iter()
         .flatten()
@@ -187,6 +181,7 @@ fn cache_freshness(metadata: SnapshotMetadata, now_ms: u64, invalidated: bool) -
     match effective_freshness(metadata, now_ms, invalidated) {
         Freshness::Fresh => CacheFreshness::Fresh,
         Freshness::Stale => CacheFreshness::Stale,
+        Freshness::Refreshing => CacheFreshness::Refreshing,
         Freshness::FailedRefresh => CacheFreshness::FailedRefresh,
     }
 }

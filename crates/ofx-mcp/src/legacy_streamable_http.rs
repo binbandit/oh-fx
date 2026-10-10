@@ -1115,13 +1115,19 @@ mod tests {
             .unwrap();
         assert_eq!(client.tool_catalog().tools[0].name, "before");
         assert!(server.wait_for(|request| request.method == "GET").await);
-        let mut refreshed = client.current_tools().await.unwrap();
+        let mut refreshed = client
+            .refresh_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .catalog;
         for _ in 0..100 {
             if refreshed.tools[0].name == "after" {
                 break;
             }
             sleep(Duration::from_millis(20)).await;
-            refreshed = client.current_tools().await.unwrap();
+            refreshed = client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+                .catalog;
         }
         assert_eq!(refreshed.tools[0].name, "after");
         client.shutdown(ShutdownMode::ProcessExit).await;
@@ -1162,7 +1168,15 @@ mod tests {
             client.next_notification().await,
             Some(ServerNotification::ToolsListChanged)
         );
-        assert_eq!(client.current_tools().await.unwrap().tools[0].name, "after");
+        assert_eq!(
+            client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+                .catalog
+                .tools[0]
+                .name,
+            "after"
+        );
         client.shutdown(ShutdownMode::ProcessExit).await;
     }
 

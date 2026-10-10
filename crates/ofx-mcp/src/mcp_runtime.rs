@@ -393,9 +393,10 @@ impl McpRuntime {
                 continue;
             };
             server.features.request_refresh();
-            if client.list_tools().await.is_ok() {
-                self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-            }
+            client.request_tool_refresh();
+            server
+                .refresh_tools(&client, Instant::now() + client.operation_timeout)
+                .await;
         }
     }
 
@@ -572,6 +573,11 @@ impl DynamicTools for McpRuntime {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        if let Ok(runtime) = Handle::try_current() {
+            for server in self.current() {
+                server.refresh_stale_tools(&runtime);
+            }
+        }
         let generation = self.generation();
         let mut published = lock(&self.published);
         if published.generation != Some(generation) {

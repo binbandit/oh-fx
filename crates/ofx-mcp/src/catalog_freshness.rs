@@ -12,6 +12,7 @@ pub(crate) enum CacheScope {
 pub(crate) enum Freshness {
     Fresh,
     Stale,
+    Refreshing,
     FailedRefresh,
 }
 
@@ -39,6 +40,7 @@ pub(crate) enum RefreshAction {
     Hit,
     Refresh,
     RetryLater,
+    AlreadyRefreshing,
 }
 
 pub(crate) fn page_expiry(received_at_ms: u64, ttl_ms: Option<u64>) -> u64 {
@@ -54,6 +56,9 @@ pub(crate) fn decide_refresh(
     now_ms: u64,
     invalidated: bool,
 ) -> RefreshAction {
+    if metadata.freshness == Freshness::Refreshing {
+        return RefreshAction::AlreadyRefreshing;
+    }
     if metadata.freshness == Freshness::FailedRefresh && now_ms < metadata.retry_at_ms {
         return RefreshAction::RetryLater;
     }
@@ -72,7 +77,7 @@ pub(crate) fn effective_freshness(
     invalidated: bool,
 ) -> Freshness {
     match metadata.freshness {
-        Freshness::FailedRefresh => Freshness::FailedRefresh,
+        Freshness::Refreshing | Freshness::FailedRefresh => metadata.freshness,
         Freshness::Fresh | Freshness::Stale => {
             if invalidated || now_ms >= metadata.expires_at_ms {
                 Freshness::Stale
@@ -83,11 +88,21 @@ pub(crate) fn effective_freshness(
     }
 }
 
+pub(crate) fn begin_refresh(metadata: SnapshotMetadata) -> SnapshotMetadata {
+    SnapshotMetadata {
+        freshness: Freshness::Refreshing,
+        ..metadata
+    }
+}
+
 pub(crate) fn request_refresh(metadata: SnapshotMetadata) -> SnapshotMetadata {
     SnapshotMetadata {
         expires_at_ms: 0,
         retry_at_ms: 0,
-        freshness: Freshness::Stale,
+        freshness: match metadata.freshness {
+            Freshness::Refreshing => Freshness::Refreshing,
+            Freshness::Fresh | Freshness::Stale | Freshness::FailedRefresh => Freshness::Stale,
+        },
         ..metadata
     }
 }
@@ -178,6 +193,28 @@ mod tests {
             first
         );
         assert_eq!(earliest_expiry(None, first), first);
+    }
+
+    #[test]
+    fn a_refresh_in_flight_serves_its_snapshot_and_survives_a_refresh_request() {
+        let refreshing = begin_refresh(SnapshotMetadata::fresh(10));
+        assert_eq!(refreshing.expires_at_ms, 10);
+        assert_eq!(
+            decide_refresh(refreshing, 50, true),
+            RefreshAction::AlreadyRefreshing
+        );
+        assert_eq!(
+            effective_freshness(refreshing, 50, true),
+            Freshness::Refreshing
+        );
+        let requested = request_refresh(refreshing);
+        assert_eq!(requested.freshness, Freshness::Refreshing);
+        assert_eq!(requested.expires_at_ms, 0);
+        let failed = failed_refresh(SnapshotMetadata::fresh(10), 50);
+        assert_eq!(
+            decide_refresh(begin_refresh(failed), 0, false),
+            RefreshAction::AlreadyRefreshing
+        );
     }
 
     #[test]

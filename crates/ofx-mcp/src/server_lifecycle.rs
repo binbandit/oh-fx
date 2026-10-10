@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
+use tokio::runtime::Handle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -12,7 +13,7 @@ use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{ConnectOptions, StartupFailure, startup_failure_message};
-use crate::timing::{spawn, timeout_at};
+use crate::timing::{spawn, spawn_on, timeout_at};
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
 
@@ -202,11 +203,7 @@ impl Server {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
-        let published = client.tool_catalog();
-        let catalog = client.current_tools().await?;
-        if !Arc::ptr_eq(&published, &catalog) {
-            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-        }
+        let catalog = self.refresh_tools(&client, deadline).await;
         let name = &advertised.tool.name;
         let current = catalog.get(name);
         let instructions = client.server_info().instructions.as_deref();
@@ -217,6 +214,32 @@ impl Server {
             });
         }
         Ok(client.call_tool(name, arguments_json, options).await?)
+    }
+
+    pub(crate) async fn refresh_tools(
+        &self,
+        client: &McpClient,
+        deadline: Instant,
+    ) -> Arc<ToolCatalog> {
+        let refreshed = client.refresh_tools(deadline).await;
+        if refreshed.replaced {
+            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        }
+        refreshed.catalog
+    }
+
+    pub(crate) fn refresh_stale_tools(self: &Arc<Self>, runtime: &Handle) {
+        let Some(client) = self.ready_client() else {
+            return;
+        };
+        if !client.is_running() || !client.tools_need_refresh() {
+            return;
+        }
+        let server = Arc::clone(self);
+        spawn_on(runtime, async move {
+            let deadline = Instant::now() + client.operation_timeout;
+            server.refresh_tools(&client, deadline).await;
+        });
     }
 
     pub(crate) async fn running_client(
@@ -326,18 +349,17 @@ async fn watch(server: Weak<Server>, connection: Connection) {
         };
         match notification {
             Some(ServerNotification::ToolsListChanged) => {
-                let Some(refreshed) = connection
+                let Some(current) = server.upgrade() else {
+                    return;
+                };
+                let deadline = Instant::now() + connection.client.operation_timeout;
+                if connection
                     .stop
-                    .run_until_cancelled(connection.client.list_tools())
+                    .run_until_cancelled(current.refresh_tools(&connection.client, deadline))
                     .await
-                else {
+                    .is_none()
+                {
                     return;
-                };
-                let Some(server) = server.upgrade() else {
-                    return;
-                };
-                if refreshed.is_ok() {
-                    server.catalog_generation.fetch_add(1, Ordering::AcqRel);
                 }
             }
             Some(_) => {}

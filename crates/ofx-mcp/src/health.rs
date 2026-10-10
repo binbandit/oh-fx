@@ -89,6 +89,7 @@ pub(crate) enum CacheFreshness {
     Unavailable,
     Fresh,
     Stale,
+    Refreshing,
     FailedRefresh,
 }
 
@@ -98,6 +99,7 @@ impl CacheFreshness {
             Self::Unavailable => "unavailable",
             Self::Fresh => "fresh",
             Self::Stale => "stale",
+            Self::Refreshing => "refreshing",
             Self::FailedRefresh => "failed_refresh",
         }
     }
