@@ -6345,6 +6345,10 @@ mod tests {
         settings["session_titles"] = json!(false);
         let home = codex_home();
         let fx = save_in_fx(home.path(), &["asked in fx"]);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(fx.join("session.json")).unwrap()).unwrap();
+        manifest["ultrafast_mode"] = json!(true);
+        fs::write(fx.join("session.json"), manifest.to_string()).unwrap();
         let untouched = fs::read(fx.join("events.jsonl")).unwrap();
         let mut harness = Harness::codex_saved_in(home, &codex, &catalog, &settings).await;
 
@@ -6362,11 +6366,20 @@ mod tests {
         );
         let shown = notices_of(&mut harness, "/status").await;
         assert!(shown.contains(&rebind_notice("gateway")), "{shown:?}");
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: on".to_owned())
+        );
         let copy = harness.home.path().join("data/sessions").join(FX_ID);
         let saved: Value =
             serde_json::from_slice(&fs::read(copy.join("session.json")).unwrap()).unwrap();
         assert_eq!(saved["provider"], "codex");
         assert_eq!(saved["model"], CODEX_MODEL);
+        assert_eq!(saved["ultrafast_mode"], true);
+        let marker: Value =
+            serde_json::from_slice(&fs::read(copy.join("fx-import.json")).unwrap()).unwrap();
+        assert_eq!(marker["copy"]["preferences"]["provider"], "codex");
+        assert_eq!(marker["copy"]["preferences"]["ultrafast_mode"], true);
         assert_eq!(
             fs::read(copy.join("events.jsonl")).unwrap(),
             fs::read(fx.join("events.jsonl")).unwrap()
