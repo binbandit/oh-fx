@@ -788,3 +788,26 @@ fn resuming_a_schema_v3_edit_keeps_its_diff_and_command_replay() {
     );
     assert_eq!(snapshot(&home.fx_profile()), before);
 }
+
+#[test]
+fn resuming_a_schema_v3_session_fx_was_upgrading_reads_the_log_it_set_aside() {
+    let home = Home::new();
+    let dir = LegacyLog::started(ID, WORKSPACE)
+        .turn(&reply("one", "first"))
+        .write(&home.fx_sessions());
+    fs::rename(dir.join("events.jsonl"), dir.join("events.v3.backup")).unwrap();
+    add(
+        &dir,
+        "events.jsonl",
+        b"{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":20,\"event\":{\"user\":{\"text\":\"one\"}}}\n",
+    );
+    let before = snapshot(&home.fx_profile());
+
+    drop(importing(&home).resume(ID).unwrap());
+    let history = home.store(WORKSPACE).load(ID).unwrap().history;
+    assert_eq!(
+        history.turns[0].events.first(),
+        Some(&ConversationEvent::User(UserEvent::new("one")))
+    );
+    assert_eq!(snapshot(&home.fx_profile()), before);
+}
