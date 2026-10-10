@@ -287,7 +287,7 @@ fn codex() -> SavedProvider {
 
 #[test]
 fn work_done_in_oh_fx_keeps_the_copy_when_fx_moves_on() {
-    let keep: [(&str, OwnWork); 7] = [
+    let keep: [(&str, OwnWork); 8] = [
         ("paused", |home, session| {
             drop(session);
             add(
@@ -305,20 +305,27 @@ fn work_done_in_oh_fx_keeps_the_copy_when_fx_moves_on() {
         }),
         ("model", |_, mut session| {
             session
-                .select_model("openai/gpt-5-mini", None, false)
+                .select_model("openai/gpt-5-mini", None, false, None)
                 .unwrap();
         }),
         ("effort", |_, mut session| {
             let low = ReasoningEffort::parse("low").unwrap();
             session
-                .select_model("openai/gpt-5", Some(&low), false)
+                .select_model("openai/gpt-5", Some(&low), false, None)
                 .unwrap();
         }),
         ("fast mode", |_, mut session| {
-            session.select_model("openai/gpt-5", None, true).unwrap();
+            session
+                .select_model("openai/gpt-5", None, true, None)
+                .unwrap();
         }),
         ("provider", |_, mut session| {
             session.select_provider(codex(), "gpt-5.5").unwrap();
+        }),
+        ("ultra request", |_, mut session| {
+            session
+                .select_model("openai/gpt-5", None, false, Some(true))
+                .unwrap();
         }),
     ];
     for (case, own_work) in keep {
@@ -337,8 +344,12 @@ fn a_choice_that_changes_nothing_still_lets_fx_refresh_the_copy() {
     let home = Home::new();
     saved(&["one"], 100).write(&home.fx_sessions());
     let mut session = importing(&home).resume(ID).unwrap();
-    session.select_model("openai/gpt-5", None, false).unwrap();
+    session
+        .select_model("openai/gpt-5", None, false, Some(false))
+        .unwrap();
     drop(session);
+    let record = String::from_utf8(copy_of(&home, "fx-import.json")).unwrap();
+    assert!(!record.contains("ultrafast_mode"), "{record}");
     saved(&["one", "two in fx"], 200).write(&home.fx_sessions());
 
     drop(importing(&home).resume(ID).unwrap());

@@ -300,13 +300,18 @@ fn preferences_json(preferences: &SessionPreferences) -> Value {
         model,
         effort,
         fast_mode,
+        ultrafast_mode,
     } = preferences;
-    json!({
+    let mut recorded = json!({
         "provider": provider,
         "model": model,
         "effort": effort.label(),
         "fast_mode": fast_mode,
-    })
+    });
+    if *ultrafast_mode {
+        recorded["ultrafast_mode"] = Value::Bool(true);
+    }
+    recorded
 }
 
 fn copy_session(source: &PrivateDir, target: &PrivateDir) -> Result<(), SessionError> {
