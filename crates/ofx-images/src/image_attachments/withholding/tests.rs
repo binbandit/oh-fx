@@ -118,6 +118,45 @@ fn request_cache_still_withholds_a_snapshot_deleted_after_dimension_lookup() {
 }
 
 #[test]
+fn a_failed_dimension_read_never_withholds_another_snapshot_of_the_same_bytes() {
+    let snapshots = Snapshots::new();
+    let bytes = test_png_header(10, 10);
+    let first = snapshots.write("image-1-aaaaaaaaaaaaaaaa.bin", &bytes);
+    let second = snapshots.write("image-2-aaaaaaaaaaaaaaaa.bin", &bytes);
+    let image = |id, path: &str| ImageAttachment {
+        snapshot_sha256: Some("a".repeat(64)),
+        ..snapshot(id, path, "image/png")
+    };
+    let cache = AttachmentDimensionCache::default();
+    fs::remove_file(&first).unwrap();
+
+    let both = cache
+        .withhold(
+            &[user(
+                "[Image #1] [Image #2]",
+                vec![image(1, &first), image(2, &second)],
+            )],
+            MAX_IMAGE_DIMENSION,
+        )
+        .unwrap();
+    let alone = cache.withhold(
+        &[user("[Image #2]", vec![image(2, &second)])],
+        MAX_IMAGE_DIMENSION,
+    );
+    fs::write(&first, &bytes).unwrap();
+    let restored = cache.withhold(
+        &[user("[Image #1]", vec![image(1, &first)])],
+        MAX_IMAGE_DIMENSION,
+    );
+
+    let (notice, kept) = parts(&both[0]);
+    assert!(notice.starts_with("[Image #1 not sent: its dimensions could not be verified."));
+    assert_eq!(kept, [image(2, &second)]);
+    assert_eq!(alone, None);
+    assert_eq!(restored, None);
+}
+
+#[test]
 fn requests_ask_for_a_smaller_copy_of_an_oversized_in_memory_attachment() {
     let messages = [user(
         "[Image #3]",
