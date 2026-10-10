@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", "pk-test-0123456789")];
 const DEFERRED: &str = "Scoped project instructions were added before execution. Review them and reissue this tool call if it is still appropriate.";
+const MCP_SERVERS_NONE: &str = include_str!("../../../parity/goldens/mcp_servers_section.txt");
 const GUIDANCE: &str = "<project-instructions-guidance>\nDirect user instructions take precedence over project instructions. When project instructions conflict, follow the narrowest applicable project scope.\n</project-instructions-guidance>";
 
 struct Home {
@@ -111,7 +112,7 @@ fn ask_sends_global_ancestor_and_workspace_rules_after_the_system_prompt() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
     let texts = system_texts(&server.requests()[0]);
-    assert_eq!(texts.len(), 6);
+    assert_eq!(texts.len(), 7);
     assert!(texts[0].starts_with("# Identity and context\n"));
     assert!(texts[1].starts_with("Search the current public web"));
     assert_eq!(
@@ -124,9 +125,10 @@ fn ask_sends_global_ancestor_and_workspace_rules_after_the_system_prompt() {
             display(&project),
         )
     );
-    assert!(texts[3].starts_with("<fx-turn-context>\n"));
-    assert!(texts[4].starts_with("Runtime context: permission mode is auto."));
-    assert!(texts[5].starts_with("<response_language_control>"));
+    assert_eq!(texts[3], MCP_SERVERS_NONE);
+    assert!(texts[4].starts_with("<fx-turn-context>\n"));
+    assert!(texts[5].starts_with("Runtime context: permission mode is auto."));
+    assert!(texts[6].starts_with("<response_language_control>"));
 }
 
 #[test]
@@ -146,7 +148,7 @@ fn the_context_setting_turns_project_instructions_off() {
     assert!(output.status.success(), "{}", stderr(&output));
     for request in server.requests() {
         let texts = system_texts(&request);
-        assert_eq!(texts.len(), 5);
+        assert_eq!(texts.len(), 6);
         assert!(texts.iter().all(|text| !text.contains("WORKSPACE RULE")));
     }
 }
@@ -450,11 +452,15 @@ fn tool_targets_add_scoped_rules_and_a_lone_write_waits_for_them() {
         ])
     );
     let requests = server.requests();
-    assert_eq!(system_texts(&requests[0]).len(), 5);
-    assert_eq!(system_texts(&requests[1])[2], scoped(&sub));
+    assert_eq!(system_texts(&requests[0]).len(), 6);
+    assert_eq!(system_texts(&requests[1])[2], MCP_SERVERS_NONE);
+    assert_eq!(system_texts(&requests[1])[3], scoped(&sub));
     let texts = system_texts(&requests[3]);
-    assert_eq!(texts[2..4], [scoped(&sub), scoped(&deep)]);
-    assert!(texts[4].starts_with("<fx-turn-context>\n"));
+    assert_eq!(
+        texts[2..5],
+        [MCP_SERVERS_NONE.to_owned(), scoped(&sub), scoped(&deep)]
+    );
+    assert!(texts[5].starts_with("<fx-turn-context>\n"));
     assert_eq!(
         tool_results(&requests[3]),
         [

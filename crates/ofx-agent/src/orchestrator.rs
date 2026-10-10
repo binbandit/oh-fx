@@ -716,6 +716,7 @@ impl Agent {
         let skills = self
             .prepare_skills(turn.id, prompt, bindings, events, cancel)
             .await?;
+        let servers = self.mcp_servers_section(turn.id, events);
         let mut step = 0;
         loop {
             self.stop_at_step_limit(turn.id, step, events)?;
@@ -724,7 +725,6 @@ impl Agent {
                 self.resolve_capabilities(cancel).await?;
             }
             self.refresh_dynamic_tools(turn.id, events);
-            let servers = self.mcp_servers_section(turn.id, events);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             let messages = self.request_messages(turn);
@@ -858,12 +858,14 @@ impl Agent {
         }
         if let Some(project) = &self.project {
             instructions.extend(project.snapshot.as_deref());
-            instructions.extend(project.deltas.iter().map(String::as_str));
         }
         if !servers.text.is_empty() {
             instructions.push(&servers.text);
         }
         instructions.extend(servers.change_notice.as_deref());
+        if let Some(project) = &self.project {
+            instructions.extend(project.deltas.iter().map(String::as_str));
+        }
         if !skills.explicit.is_empty() {
             instructions.push(&skills.explicit);
         }
