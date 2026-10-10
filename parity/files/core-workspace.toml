@@ -109,7 +109,7 @@ modules = ["crates/ofx-workspace/src/statusline_identity.rs", "crates/ofx-tui/sr
 upstream = "src/core/workspace/tool_call_metrics.zig"
 status = "ported"
 modules = ["crates/ofx-agent/src/tool_call_metrics.rs"]
-note = "The 64-call ring with 64-byte names, 1,200-byte arguments and 2,000-byte results kept with their full sizes, web_fetch kept without payloads, the five outcomes and the lifetime counts are ported. The agent records each local call it settles, timed from its start to its own finish: an executed call by its result, a panicked one as runtime_failed with an empty result, one stopped after the cancel grace as tool_failed, and the parent's rejections and denials as rejected; provider-executed calls, calls the project gate deferred and calls a cancellation kept from starting are not recorded, as upstream's are not. Cuts end at a character boundary, as docs/differences/trace.md records."
+note = "The 64-call ring with 64-byte names, 1,200-byte arguments and 2,000-byte results kept with their full sizes, masked before they are cut as docs/differences/trace.md records, web_fetch kept without payloads, the five outcomes and the lifetime counts are ported. The agent records each local call it settles, timed from its start to its own finish: an executed call by its result, a panicked one as runtime_failed with an empty result, one stopped after the cancel grace as tool_failed, and the parent's rejections and denials as rejected; provider-executed calls, calls the project gate deferred and calls a cancellation kept from starting are not recorded, as upstream's are not. Cuts end at a character boundary, as docs/differences/trace.md records."
 
 [[file]]
 upstream = "src/core/workspace/unicode_simple_fold.zig"

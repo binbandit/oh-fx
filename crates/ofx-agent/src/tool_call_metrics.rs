@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use ofx_text::content_for_display;
+use ofx_text::{content_for_display, mask_secrets};
 
 const RING_CAPACITY: usize = 64;
 const MAX_NAME_BYTES: usize = 64;
@@ -124,12 +124,13 @@ impl ToolCallRing {
             if record.name == PAYLOAD_FREE_TOOL {
                 (String::new(), 0, String::new(), 0)
             } else {
-                let shown = content_for_display(record.output);
+                let arguments = mask_secrets(record.arguments);
+                let shown = mask_secrets(content_for_display(record.output));
                 (
-                    cut(record.arguments, MAX_ARGS_BYTES),
-                    total_bytes(record.arguments),
-                    cut(shown, MAX_RESULT_BYTES),
-                    total_bytes(shown),
+                    cut(&arguments, MAX_ARGS_BYTES),
+                    total_bytes(&arguments),
+                    cut(&shown, MAX_RESULT_BYTES),
+                    total_bytes(&shown),
                 )
             };
         self.push(ToolCallMetric {

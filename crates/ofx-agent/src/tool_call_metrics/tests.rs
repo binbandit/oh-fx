@@ -156,3 +156,69 @@ fn a_duration_runs_from_the_start_to_the_finish_and_is_never_negative() {
     assert!(calls[1].duration_ms >= 1_500);
     assert_eq!(calls[2].duration_ms, 2_250);
 }
+
+const SECRET_FORMS: [(&str, &str, &str); 4] = [
+    ("https://user:", "hunter2secretvalue", "@example.com/path"),
+    (
+        "Authorization: Bearer ",
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+        " end",
+    ),
+    ("API_KEY=", "supersecretvalue1234", " next"),
+    ("{\"api_key\":\"", "supersecretvalue1234", "\"}"),
+];
+
+fn cut_inside_each_secret(limit: usize, record: impl Fn(&ToolCallRing, &str)) {
+    for (before, secret, after) in SECRET_FORMS {
+        for kept in 0..=secret.len() {
+            let padding = "x".repeat(limit - before.len() - kept);
+            let text = format!("{padding}{before}{secret}{after}");
+            let ring = ToolCallRing::new();
+            record(&ring, &text);
+            let call = &ring.snapshot().calls[0];
+            for shown in [&call.args, &call.result] {
+                assert!(shown.len() <= limit);
+                assert!(
+                    !shown.contains(&secret[..4.min(secret.len())]),
+                    "{before}{secret} cut after {kept} secret bytes: {}",
+                    &shown[shown.len().saturating_sub(80)..]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn secrets_are_masked_before_the_arguments_are_cut() {
+    cut_inside_each_secret(MAX_ARGS_BYTES, |ring, text| {
+        ring.record(&recorded("shell", text, ""));
+    });
+}
+
+#[test]
+fn secrets_are_masked_before_the_result_is_cut() {
+    cut_inside_each_secret(MAX_RESULT_BYTES, |ring, text| {
+        ring.record(&recorded("shell", "{}", text));
+    });
+}
+
+#[test]
+fn masked_values_report_the_size_of_what_is_kept() {
+    let ring = ToolCallRing::new();
+    ring.record(&recorded(
+        "shell",
+        "API_KEY=supersecretvalue1234 next",
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+    ));
+    let call = &ring.snapshot().calls[0];
+    assert_eq!(call.args, "API_KEY=[redacted] next");
+    assert_eq!(
+        call.args_total_bytes,
+        u32::try_from(call.args.len()).unwrap()
+    );
+    assert!(!call.result.contains("abcdefghijklmnop"), "{}", call.result);
+    assert_eq!(
+        call.result_total_bytes,
+        u32::try_from(call.result.len()).unwrap()
+    );
+}
