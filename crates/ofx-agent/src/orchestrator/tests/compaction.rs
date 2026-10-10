@@ -1,9 +1,10 @@
 use ofx_contract::{
     ApprovalAnswer, ApprovalDecision, CompactionActivity, CompactionEnd, HistoryCut,
 };
+use ofx_trace::Ring;
 
 use super::*;
-use crate::compactor::CompactionError;
+use crate::compactor::{CompactionError, CompactionEvent, CompactionTraceKind};
 
 pub(super) async fn chat(agent: &mut Agent, turns: usize) {
     for turn in 1..=turns {
@@ -324,6 +325,32 @@ async fn a_cancelled_compaction_sends_nothing_and_keeps_the_history() {
         Err(CompactionError::Cancelled)
     );
     assert_eq!(provider.requests().len(), 6);
+}
+
+#[tokio::test]
+async fn a_compaction_cancelled_once_its_summary_is_written_saves_no_checkpoint() {
+    let provider = FakeProvider::new(chat_replies(6));
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(new_agent(Arc::clone(&provider), Vec::new()), log);
+    let ring = compaction_trace::traced(&mut agent);
+    chat(&mut agent, 6).await;
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    assert_eq!(
+        agent.compact(&mut || trigger.cancel(), &cancel).await,
+        Err(CompactionError::Cancelled)
+    );
+    assert_cancelled_before_commit(ring, "stage=summary origin=manual err=Cancelled");
+    assert_eq!(provider.requests().len(), 6);
+    let entries = entries.lock().unwrap().clone();
+    assert_eq!(entries.len(), 6, "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| !matches!(entry, turn_log::Logged::Compaction { .. }))
+    );
+    assert!(agent.compacted.is_none());
+    assert_eq!(user_text(&agent.history[0]), "question 1");
 }
 
 #[tokio::test]
@@ -766,6 +793,69 @@ async fn cancelling_an_automatic_compaction_interrupts_the_turn_and_keeps_its_wo
     assert_eq!(agent.history.len(), 3);
     assert_eq!(user_text(&agent.history[0]), "read the notes");
     assert!(mentions(&agent.history[1], "STEP_SENTINEL"));
+}
+
+#[tokio::test]
+async fn an_automatic_compaction_cancelled_once_its_summary_is_written_interrupts_the_turn_unsaved()
+{
+    let provider = FakeProvider::new(vec![unmetered(text_reply("small answer"))]);
+    let (agent, _) = windowed(&provider, 2_000, 64);
+    let (log, entries) = turn_log::MemoryLog::shared();
+    let mut agent = turn_log::logged(agent, log);
+    let ring = compaction_trace::traced(&mut agent);
+    run(&mut agent, "small question").await;
+    let cancel = CancellationToken::new();
+    let mut events = Vec::new();
+    let report = agent
+        .run_turn(
+            &"x ".repeat(4_000),
+            &mut |event| {
+                if let UiEvent::TurnCompaction {
+                    activity: CompactionActivity::Summarizing,
+                    ..
+                } = event
+                {
+                    cancel.cancel();
+                }
+                events.push(event);
+            },
+            &cancel,
+        )
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Interrupted);
+    assert_eq!(report.failure, None);
+    assert_eq!(
+        compaction_activity(&events),
+        [
+            CompactionActivity::Preparing,
+            CompactionActivity::Summarizing,
+            CompactionActivity::Ended(CompactionEnd::Cancelled),
+        ]
+    );
+    assert_eq!(provider.requests().len(), 1);
+    let entries = entries.lock().unwrap().clone();
+    assert!(
+        entries
+            .iter()
+            .all(|entry| !matches!(entry, turn_log::Logged::Compaction { .. })),
+        "{entries:?}"
+    );
+    assert!(agent.compacted.is_none());
+    assert_eq!(user_text(&agent.history[0]), "small question");
+    assert_cancelled_before_commit(ring, "stage=summary origin=automatic err=Cancelled");
+}
+
+fn assert_cancelled_before_commit(ring: &Ring<CompactionEvent>, detail: &str) {
+    let events = ring.snapshot();
+    let last = &events.last().expect("a cancelled compaction").event;
+    assert_eq!(last.kind, CompactionTraceKind::TransactionFailed);
+    assert!(!last.failed);
+    assert_eq!(last.detail, detail);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event.kind != CompactionTraceKind::Committed)
+    );
 }
 
 #[tokio::test]

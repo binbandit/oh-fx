@@ -511,7 +511,11 @@ impl Agent {
             follows_checkpoint: self.compactions > 0,
             trace,
         };
-        compactor::compact(request, &mut summarizer, progress, cancel).await
+        let compacted = compactor::compact(request, &mut summarizer, progress, cancel).await?;
+        if compacted.is_some() && cancel.is_cancelled() {
+            return Err(CompactionError::Cancelled);
+        }
+        Ok(compacted)
     }
 
     fn install_compaction(&mut self, compacted: Compacted) {
