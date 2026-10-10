@@ -134,6 +134,10 @@ async fn bootstrap(
     let saved = resumed
         .as_ref()
         .map(|resumed| resumed.session.preferences());
+    let ultrafast_requested = modifiers
+        .ultrafast_mode()
+        .or_else(|| saved.map(|preferences| preferences.ultrafast_mode))
+        .unwrap_or(false);
     let settings = profile.settings();
     let permission_mode = settings.permission_mode(&|name| env::var(name).ok());
     let setup = profile
@@ -181,6 +185,7 @@ async fn bootstrap(
                 model: modifiers.model().map(|_| setup.model().to_owned()),
                 effort: modifiers.reasoning_effort().cloned(),
                 fast_mode: modifiers.fast_mode(),
+                ultrafast_mode: modifiers.ultrafast_mode(),
             };
             Some(Persistence::new(
                 store,
@@ -200,7 +205,7 @@ async fn bootstrap(
         permission_mode,
         persistence,
         opening,
-        ultrafast_requested: modifiers.ultrafast_mode() == Some(true),
+        ultrafast_requested,
         relaunch_args: modifiers.relaunch_args().to_vec(),
     })
 }

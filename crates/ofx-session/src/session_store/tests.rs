@@ -72,6 +72,7 @@ fn preferences() -> SessionPreferences {
         model: "openai/gpt-5".to_owned(),
         effort: ReasoningEffort::Auto,
         fast_mode: false,
+        ultrafast_mode: false,
     }
 }
 
@@ -623,7 +624,9 @@ fn only_a_session_started_here_with_nothing_saved_is_discarded() {
     assert!(fixture.session_dir(&id).exists());
 
     let mut chosen = store.start(preferences()).unwrap();
-    chosen.select_model("other-model", None, false).unwrap();
+    chosen
+        .select_model("other-model", None, false, None)
+        .unwrap();
     let id = chosen.id().to_owned();
     assert_eq!(store.discard_pristine(chosen), SessionDisposal::Retained);
     assert!(fixture.session_dir(&id).join("session.json").exists());

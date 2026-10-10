@@ -85,9 +85,15 @@ struct RecoveryRoute {
     provider: SavedProvider,
     model: String,
     credential: Option<RouteCredential>,
-    requested_fast_mode: bool,
+    requested: RequestedModes,
     fast_mode: bool,
     may_have_sent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestedModes {
+    fast_mode: bool,
+    ultrafast_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,6 +303,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
     let (provider, model, credential) = authority(fields.required("authority")?)?;
     let requested_fast_mode = fields.flag("requested_fast_mode")?;
     let fast_mode = fields.flag("fast_mode")?;
+    let requested_ultrafast_mode = ultrafast_pair(&mut fields)?;
     fields.unsigned("max_provider_attempts")?;
     let consumed_attempts = fields.unsigned("consumed_provider_attempts")?;
     let outstanding_reservation = fields.flag("outstanding_reservation")?;
@@ -321,7 +328,10 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
             provider,
             model,
             credential,
-            requested_fast_mode,
+            requested: RequestedModes {
+                fast_mode: requested_fast_mode,
+                ultrafast_mode: requested_ultrafast_mode,
+            },
             fast_mode,
             may_have_sent: consumed_attempts > 0 || outstanding_reservation,
         },
@@ -569,6 +579,19 @@ fn one_of(value: &Json<'_>, tags: &[&'static str]) -> Option<&'static str> {
 
 fn tag<T: WireTag>(value: &Json<'_>) -> Option<T> {
     T::from_tag(value.as_str()?)
+}
+
+fn ultrafast_pair(fields: &mut Fields<'_>) -> Option<bool> {
+    let requested = fields.required("requested_ultrafast_mode");
+    let effective = fields.required("ultrafast_mode");
+    match (requested, effective) {
+        (None, None) => Some(false),
+        (Some(requested), Some(effective)) => {
+            effective.as_bool()?;
+            requested.as_bool()
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

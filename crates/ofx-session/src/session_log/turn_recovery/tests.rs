@@ -82,6 +82,7 @@ fn metadata() -> SessionMetadata {
             model: "openai/gpt-5".to_owned(),
             effort: ReasoningEffort::Auto,
             fast_mode: false,
+            ultrafast_mode: false,
         },
         title: None,
         subagent_child: false,
@@ -458,7 +459,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
     assert!(resumed.take_recovery().is_none());
     assert_eq!(pending.prompt(), "fix the build");
     let provider = metadata().preferences.provider;
-    let recovered = pending.into_turn(&provider, "openai/gpt-5", false);
+    let recovered = pending.into_turn(&provider, "openai/gpt-5", false, false);
     assert_eq!(recovered.prompt, "fix the build");
     assert_eq!(recovered.strategy, RecoveryStrategy::ContinueResponse);
     let calls = vec![ToolCall::new("c2", "shell", "{\"command\":\"ls\"}")];
@@ -589,7 +590,7 @@ fn a_continued_turn_saves_each_recovered_step_with_its_own_replay_binding() {
         let continued = resumed
             .take_recovery()
             .unwrap()
-            .into_turn(&running, "claude", false);
+            .into_turn(&running, "claude", false, false);
         let replay = projected_replay();
         let new_calls = shell_calls(&["c3"]);
         let mut finished = continued_history(&continued, replied("fixed"));
@@ -642,7 +643,7 @@ fn compact_then_finish(fixture: &Fixture, running: &SavedProvider) {
     let continued = resumed
         .take_recovery()
         .unwrap()
-        .into_turn(running, "claude", false);
+        .into_turn(running, "claude", false, false);
     let mut prefix = continued_history(&continued, replied(""));
     let rest_steps = prefix.steps.split_off(1);
     resumed
@@ -724,7 +725,7 @@ fn recovered_steps_with_the_same_text_keep_their_own_replays_when_continued() {
     let continued = resumed
         .take_recovery()
         .unwrap()
-        .into_turn(&running, "claude", false);
+        .into_turn(&running, "claude", false, false);
     let replay = projected_replay();
     let mut finished = continued_history(&continued, replied("fixed"));
     finished
@@ -785,7 +786,7 @@ fn a_continued_turn_reopened_after_its_compaction_keeps_the_later_steps_replay()
     let mut resumed = fixture.resume().unwrap();
     assert!(resumed.turn_open());
     let pending = resumed.take_recovery().unwrap();
-    let continued = pending.into_turn(&running, "claude", false);
+    let continued = pending.into_turn(&running, "claude", false, false);
     let finished = continued_history(
         &continued,
         TurnEnd::Replied {
@@ -812,7 +813,7 @@ fn a_partly_answered_step_keeps_its_replay_when_continued() {
     let continued = resumed
         .take_recovery()
         .unwrap()
-        .into_turn(&running, "claude", false);
+        .into_turn(&running, "claude", false, false);
     let finished = continued_history(
         &continued,
         TurnEnd::Replied {
@@ -913,6 +914,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 10,
     };
@@ -935,7 +937,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
     let pending = resumed.take_recovery().unwrap();
     assert!(pending.authorizes(RouteCredential::configured()));
     assert!(!pending.authorizes(RouteCredential::chatgpt_subscription("acct_1")));
-    let continued = pending.into_turn(&provider, "openai/gpt-5", false);
+    let continued = pending.into_turn(&provider, "openai/gpt-5", false, false);
     assert_eq!(continued.strategy, RecoveryStrategy::RetryRequest);
     assert!(matches!(
         &continued.messages[1],
@@ -968,7 +970,7 @@ fn a_checkpoint_written_during_a_continued_turn_keeps_the_recovered_replay_bindi
     let continued = resumed
         .take_recovery()
         .unwrap()
-        .into_turn(&running, "claude", false);
+        .into_turn(&running, "claude", false, false);
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn: continued_history(&continued, replied("")),
@@ -979,6 +981,7 @@ fn a_checkpoint_written_during_a_continued_turn_keeps_the_recovered_replay_bindi
         model: "claude",
         requested_fast_mode: false,
         fast_mode: false,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 10,
     };
@@ -1018,7 +1021,7 @@ fn recovered_files(fixture: &Fixture) -> Vec<ofx_contract::FileEvidence> {
     resumed
         .take_recovery()
         .unwrap()
-        .into_turn(&provider, "openai/gpt-5", false)
+        .into_turn(&provider, "openai/gpt-5", false, false)
         .files
 }
 
@@ -1089,6 +1092,7 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 10,
     };
@@ -1183,6 +1187,7 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 1,
     };
@@ -1292,6 +1297,7 @@ fn a_paused_turn_keeps_its_approval_feedback_when_committed() {
             model: "openai/gpt-5",
             requested_fast_mode: false,
             fast_mode: false,
+            ultrafast_mode: false,
             attempt_limit: 10,
             consumed_attempts: 1,
         };
@@ -1349,10 +1355,11 @@ fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() 
     fixture.save_checkpoint(5, &checkpoint("fix the build", &[], "", ""));
     let provider = metadata().preferences.provider;
     let mut session = fixture.resume().unwrap();
-    let continued = session
-        .take_recovery()
-        .unwrap()
-        .into_turn(&provider, "openai/gpt-5", false);
+    let continued =
+        session
+            .take_recovery()
+            .unwrap()
+            .into_turn(&provider, "openai/gpt-5", false, false);
     let point = RecoveryPoint {
         turn_id: TurnId::new(2),
         turn: continued_history(&continued, replied("")),
@@ -1363,6 +1370,7 @@ fn a_continued_turn_paused_again_is_committed_before_the_next_prompt_is_saved() 
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 1,
     };
@@ -1403,10 +1411,11 @@ fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is
     fixture.save_checkpoint(3, &checkpoint("fix the build", &[], "", ""));
     let provider = metadata().preferences.provider;
     let mut session = fixture.resume().unwrap();
-    let continued = session
-        .take_recovery()
-        .unwrap()
-        .into_turn(&provider, "openai/gpt-5", false);
+    let continued =
+        session
+            .take_recovery()
+            .unwrap()
+            .into_turn(&provider, "openai/gpt-5", false, false);
     let turn = continued_history(&continued, replied(""));
     session
         .record_compaction(
@@ -1431,6 +1440,7 @@ fn a_continued_turn_compacted_then_paused_is_committed_before_the_next_prompt_is
         model: "openai/gpt-5",
         requested_fast_mode: false,
         fast_mode: false,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 1,
     };

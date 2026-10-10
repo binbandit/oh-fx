@@ -159,6 +159,16 @@ impl ControllerState {
         }
     }
 
+    fn restore_speed(&mut self, fast_mode: bool, ultrafast_mode: bool) {
+        self.speed = if ultrafast_mode {
+            Speed::UltraRequested
+        } else if fast_mode {
+            Speed::Fast
+        } else {
+            Speed::Normal
+        };
+    }
+
     pub(crate) fn save_model_preference(&self, topic: &str, effort: Option<&ReasoningEffort>) {
         let provider = self.setup.provider();
         let saved = user_settings::save(self.setup.preferences(), |paths| {
@@ -593,6 +603,7 @@ impl Controller {
     pub(crate) fn requesting_ultrafast(mut self, requested: bool) -> Self {
         if requested {
             self.state.speed = Speed::UltraRequested;
+            self.reconfigure();
         }
         self
     }
@@ -786,6 +797,9 @@ impl Controller {
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => self.change_model(ModelChange::ToggleFast).await,
+            CommandEffect::WithdrawUltrafast => {
+                self.change_model(ModelChange::WithdrawUltrafast).await;
+            }
             CommandEffect::Compact => return self.compact(commands).await,
             CommandEffect::OpenSessions if self.state.holds_recovery() => {
                 refuse_resume_during_turn(&self.state);
@@ -855,8 +869,7 @@ impl Controller {
             .persistence
             .as_mut()
             .map(|persistence| persistence as &mut dyn ResumeHandoff);
-        self.upgrade
-            .apply(handoff, &*self.state.emit, self.state.ultrafast_requested())
+        self.upgrade.apply(handoff, &*self.state.emit)
     }
 
     fn open_picker(&self, scope: SessionScope) {
@@ -948,6 +961,7 @@ impl Controller {
             &self.state.setup,
             &self.state.model,
             self.state.fast_mode(),
+            self.state.ultrafast_requested(),
         ) {
             Ok(recovered) => {
                 let recovered = RecoveredTurn {
@@ -978,7 +992,8 @@ impl Controller {
             .setup
             .restore_reasoning(restored.reasoning_effort, restored.fast_mode);
         self.state.effort = self.state.setup.reasoning_effort();
-        self.state.set_fast_mode(restored.fast_mode);
+        self.state
+            .restore_speed(restored.fast_mode, restored.ultrafast_mode);
         if restored.model != self.state.model {
             self.state.use_model(restored.model);
         }
@@ -1009,6 +1024,7 @@ impl Controller {
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
         config.fast_mode = self.state.fast_mode();
+        config.ultrafast_mode = self.state.ultrafast_requested();
         config.reasoning_effort = self.state.effort.clone().into_named();
         self.state.setup.delegate_as(&config);
         self.agent.set_config(config);
@@ -1373,6 +1389,7 @@ fn run_deferred(
             }
             CommandEffect::SwitchModel(query) => ModelChange::Query(query),
             CommandEffect::ToggleFast => ModelChange::ToggleFast,
+            CommandEffect::WithdrawUltrafast => ModelChange::WithdrawUltrafast,
             CommandEffect::OpenSettings => return catalog.open_settings_menu(state),
             CommandEffect::Rename(title) => {
                 return rename_session(state, persistence.as_mut(), &title);
@@ -1435,11 +1452,23 @@ fn apply_change(
     models: &[ModelOption],
     work: Work,
 ) {
+    let saves_ultrafast = change.saves_ultrafast();
+    let turns_ultrafast_off = matches!(change, ModelChange::WithdrawUltrafast);
+    let (fast_before, ultrafast_before) = (state.fast_mode(), state.ultrafast_requested());
     let Outcome::Changed { effort } = change_model(state, change, models, work) else {
         return;
     };
     state.config_pending = true;
-    if let Some(notice) = save_session_preferences(state, persistence, effort.as_ref()) {
+    let ultrafast = state.ultrafast_requested();
+    if let Some(persistence) = persistence.as_mut()
+        && (turns_ultrafast_off
+            || (state.fast_mode() && !fast_before)
+            || (ultrafast_before && !ultrafast))
+    {
+        persistence.withdraw_launch_ultrafast();
+    }
+    let ultrafast = saves_ultrafast.then_some(ultrafast);
+    if let Some(notice) = save_session_preferences(state, persistence, effort.as_ref(), ultrafast) {
         state.emit(UiEvent::Notice { notice });
     }
 }
@@ -1484,10 +1513,11 @@ fn save_session_preferences(
     state: &ControllerState,
     persistence: &mut Option<Persistence>,
     effort: Option<&ReasoningEffort>,
+    ultrafast_mode: Option<bool>,
 ) -> Option<Notice> {
-    persistence
-        .as_mut()
-        .and_then(|persistence| persistence.select_model(&state.model, effort, state.fast_mode()))
+    persistence.as_mut().and_then(|persistence| {
+        persistence.select_model(&state.model, effort, state.fast_mode(), ultrafast_mode)
+    })
 }
 
 fn turn_events(
@@ -1812,21 +1842,25 @@ mod tests {
             Self::saved(home, setup)
         }
 
-        async fn upgrading(server: &FakeServer, upgrade: UpgradeShortcut, ultrafast: bool) -> Self {
+        async fn upgrading(
+            server: &FakeServer,
+            upgrade: UpgradeShortcut,
+            launch_ultrafast: Option<bool>,
+        ) -> Self {
             let home = tempfile::tempdir().unwrap();
             let setup = agent_setup(&home, server).await;
-            Self::saved_with(home, setup, upgrade, ultrafast)
+            Self::saved_with(home, setup, upgrade, launch_ultrafast)
         }
 
         fn saved(home: tempfile::TempDir, setup: AgentSetup) -> Self {
-            Self::saved_with(home, setup, UpgradeShortcut::default(), false)
+            Self::saved_with(home, setup, UpgradeShortcut::default(), None)
         }
 
         fn saved_with(
             home: tempfile::TempDir,
             setup: AgentSetup,
             upgrade: UpgradeShortcut,
-            ultrafast: bool,
+            launch_ultrafast: Option<bool>,
         ) -> Self {
             let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
             let store =
@@ -1837,14 +1871,17 @@ mod tests {
                 model: setup.configured_model().to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             };
             let overrides = LaunchOverrides {
                 model: None,
                 effort: None,
                 fast_mode: None,
+                ultrafast_mode: launch_ultrafast,
             };
             let persistence = Persistence::new(store, route, preferences, overrides, None);
-            Self::spawn(home, setup, Some(persistence), upgrade, ultrafast)
+            let requested = launch_ultrafast == Some(true);
+            Self::spawn(home, setup, Some(persistence), upgrade, requested)
         }
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
@@ -1870,11 +1907,13 @@ mod tests {
                 model: setup.configured_model().to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             };
             let overrides = LaunchOverrides {
                 model: None,
                 effort: None,
                 fast_mode: None,
+                ultrafast_mode: None,
             };
             let resumption = Resumption {
                 session,
@@ -2620,6 +2659,96 @@ mod tests {
         );
     }
 
+    async fn leave_a_session_saved_with_ultra(
+        harness: &mut Harness,
+    ) -> (String, std::path::PathBuf) {
+        chat(harness, &["first question"]).await;
+        let id = saved_sessions(&harness.home)[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let manifest = harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&id)
+            .join("session.json");
+        start_new_session(harness).await;
+        let saved = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            saved.replace(
+                "\"fast_mode\":false,",
+                "\"fast_mode\":false,\"ultrafast_mode\":true,",
+            ),
+        )
+        .unwrap();
+        (id, manifest)
+    }
+
+    async fn start_new_session(harness: &mut Harness) {
+        harness.command("/new");
+        harness
+            .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+            .await;
+    }
+
+    async fn resume_session(harness: &mut Harness, id: &str) {
+        harness.send(UiCommand::ResumeSession { id: id.to_owned() });
+        harness
+            .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_saved_ultra_request_comes_back_with_its_session_and_turning_it_off_is_saved() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        let (id, manifest) = leave_a_session_saved_with_ultra(&mut harness).await;
+        resume_session(&mut harness, &id).await;
+        let requested = |on: &str| (NoticeTone::Neutral, format!("requested: {on}"));
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            requested("on")
+        );
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast off").await,
+            (NoticeTone::Neutral, "requested off".to_owned())
+        );
+        assert!(
+            !fs::read_to_string(&manifest)
+                .unwrap()
+                .contains("ultrafast_mode")
+        );
+        start_new_session(&mut harness).await;
+        resume_session(&mut harness, &id).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            requested("off")
+        );
+    }
+
+    #[tokio::test]
+    async fn turning_ultra_off_while_it_is_off_keeps_a_resumed_sessions_saved_request_off() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let mut harness = Harness::start_saved(&server).await;
+        let (id, manifest) = leave_a_session_saved_with_ultra(&mut harness).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast off").await,
+            (NoticeTone::Neutral, "requested off".to_owned())
+        );
+        resume_session(&mut harness, &id).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: off".to_owned())
+        );
+        assert!(
+            fs::read_to_string(&manifest)
+                .unwrap()
+                .contains("\"ultrafast_mode\":true")
+        );
+    }
+
     #[tokio::test]
     async fn an_ultra_request_from_launch_lasts_until_turned_off_or_the_model_changes() {
         let server = FakeServer::start([]);
@@ -2747,7 +2876,7 @@ mod tests {
             Some(Readiness::settled(UpgradeState::Ready)),
             relaunch.clone(),
         );
-        let mut harness = Harness::upgrading(&server, upgrade, false).await;
+        let mut harness = Harness::upgrading(&server, upgrade, None).await;
         harness.send(UiCommand::ApplyReadyUpgrade);
         harness
             .until(|event| *event == UiEvent::ExitRequested)
@@ -2786,7 +2915,49 @@ mod tests {
             Some(Readiness::settled(UpgradeState::Ready)),
             relaunch.clone(),
         );
-        let mut harness = Harness::upgrading(&server, upgrade, true).await;
+        let mut harness = Harness::upgrading(&server, upgrade, Some(true)).await;
+        let argv = apply_ready_upgrade(&mut harness, &relaunch).await;
+        assert_eq!(argv[0], "--ultrafast");
+        assert_eq!(argv[1], "resume");
+    }
+
+    #[tokio::test]
+    async fn a_ready_upgrade_relaunch_keeps_an_off_choice_over_a_saved_ultra_request() {
+        use crate::app_upgrade_runtime::{Readiness, Relaunch, UpgradeState};
+
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+        let relaunch = Relaunch::default();
+        let upgrade = UpgradeShortcut::new(
+            Some(Readiness::settled(UpgradeState::Ready)),
+            relaunch.clone(),
+        );
+        let mut harness = Harness::upgrading(&server, upgrade, Some(false)).await;
+        let (id, _) = leave_a_session_saved_with_ultra(&mut harness).await;
+        resume_session(&mut harness, &id).await;
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: off".to_owned())
+        );
+        let argv = apply_ready_upgrade(&mut harness, &relaunch).await;
+        assert_eq!(
+            argv,
+            [
+                "--no-ultrafast",
+                "resume",
+                id.as_str(),
+                "--upgrade-relaunch"
+            ]
+        );
+        let Ok(ofx_cli::Invocation::Resume(relaunched, _)) = ofx_cli::parse_args(argv) else {
+            panic!("the relaunch resumes the session");
+        };
+        assert_eq!(relaunched.ultrafast_mode(), Some(false));
+    }
+
+    async fn apply_ready_upgrade(
+        harness: &mut Harness,
+        relaunch: &crate::app_upgrade_runtime::Relaunch,
+    ) -> Vec<std::ffi::OsString> {
         harness.send(UiCommand::ApplyReadyUpgrade);
         harness
             .until(|event| *event == UiEvent::ExitRequested)
@@ -2799,8 +2970,7 @@ mod tests {
             argv.extend(command.get_args().map(ToOwned::to_owned));
             std::io::Error::from(std::io::ErrorKind::NotFound)
         });
-        assert_eq!(argv[0], "--ultrafast");
-        assert_eq!(argv[1], "resume");
+        argv
     }
 
     fn saved_sessions(home: &tempfile::TempDir) -> Vec<Value> {

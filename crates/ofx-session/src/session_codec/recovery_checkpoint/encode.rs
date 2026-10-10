@@ -43,6 +43,10 @@ struct CheckpointWire<'a> {
     authority: AuthorityWire<'a>,
     requested_fast_mode: bool,
     fast_mode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_ultrafast_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ultrafast_mode: Option<bool>,
     max_provider_attempts: usize,
     consumed_provider_attempts: usize,
     outstanding_reservation: bool,
@@ -165,6 +169,8 @@ pub(crate) fn encode_recovery_file(
         },
         requested_fast_mode: point.requested_fast_mode,
         fast_mode: point.fast_mode,
+        requested_ultrafast_mode: point.ultrafast_mode.then_some(true),
+        ultrafast_mode: point.ultrafast_mode.then_some(true),
         max_provider_attempts: point.attempt_limit,
         consumed_provider_attempts: point.consumed_attempts,
         outstanding_reservation: false,

@@ -472,6 +472,7 @@ impl Profile {
                     &route.model,
                 )
             }),
+            ultrafast_mode: false,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         }
     }
@@ -1336,8 +1337,8 @@ mod tests {
         };
         let relaunch =
             crate::app_upgrade_runtime::Relaunch::carrying(launch.relaunch_args().to_vec());
-        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"), false);
-        relaunch.hand_off("session-123");
+        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"));
+        relaunch.hand_off("session-123", None);
         let mut argv = Vec::new();
         let _ = relaunch.run_with(|command| {
             argv.extend(command.get_args().map(OsStr::to_os_string));

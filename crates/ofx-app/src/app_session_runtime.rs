@@ -166,7 +166,12 @@ pub fn recovered_turn(
     if !pending.authorizes(setup.route_credential()) {
         return Err(SessionError::RecoveryCredentialAuthorityChanged);
     }
-    Ok(pending.into_turn(&running_provider(setup)?, setup.model(), setup.fast_mode()))
+    Ok(pending.into_turn(
+        &running_provider(setup)?,
+        setup.model(),
+        setup.fast_mode(),
+        false,
+    ))
 }
 
 pub struct LiveSession {
@@ -243,12 +248,13 @@ impl LiveSession {
         setup: &AgentSetup,
         model: &str,
         fast_mode: bool,
+        ultrafast_mode: bool,
     ) -> Result<RecoveredTurn, SessionError> {
         let provider = running_provider(setup)?;
         let pending = self
             .session()
             .take_authorized_recovery(setup.route_credential())?;
-        Ok(pending.into_turn(&provider, model, fast_mode))
+        Ok(pending.into_turn(&provider, model, fast_mode, ultrafast_mode))
     }
 
     pub(crate) fn settle_open_recovery(&self, agent: &mut Agent) -> Result<(), SessionError> {
@@ -359,5 +365,6 @@ pub fn configured_preferences(
         model: setup.configured_model().to_owned(),
         effort: settings.reasoning_effort(),
         fast_mode: settings.fast_mode_for(&setup.provider(), setup.configured_model()),
+        ultrafast_mode: false,
     }
 }

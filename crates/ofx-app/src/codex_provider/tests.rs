@@ -153,6 +153,7 @@ fn agent_config(model: &str, effort: Option<&str>, fast_mode: bool) -> AgentConf
         step_limit: 0,
         reasoning_effort: effort.map(str::to_owned),
         fast_mode,
+        ultrafast_mode: false,
         auto_compact_percent: AutoCompactPercent::resolve(None, None),
     }
 }

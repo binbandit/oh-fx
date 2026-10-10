@@ -170,6 +170,7 @@ impl Session {
                 step_limit: 0,
                 reasoning_effort: None,
                 fast_mode: false,
+                ultrafast_mode: false,
                 auto_compact_percent: AutoCompactPercent::resolve(None, None),
             },
         )

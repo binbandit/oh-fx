@@ -49,6 +49,7 @@ impl Sessions {
                 model: "openai/gpt-5".to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             },
             title: None,
             subagent_child,
