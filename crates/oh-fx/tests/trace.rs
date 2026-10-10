@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events};
+use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events, chat_tool_call_events};
 use serde_json::json;
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -243,63 +243,92 @@ struct Traced {
     log: String,
 }
 
-fn ask_traced(replies: Vec<Reply>, extra: &[&str]) -> Traced {
-    let home = tempfile::tempdir().expect("prepare the trace test");
-    let root = home.path().canonicalize().expect("prepare the trace test");
-    let workspace = root.join("workspace");
-    let config = root.join("config/oh-fx");
-    for path in [&workspace, &config] {
-        fs::create_dir_all(path).expect("prepare the trace test");
+struct TraceHome {
+    _home: tempfile::TempDir,
+    root: PathBuf,
+    server: FakeServer,
+}
+
+impl TraceHome {
+    fn new(replies: Vec<Reply>) -> Self {
+        let home = tempfile::tempdir().expect("prepare the trace test");
+        let root = home.path().canonicalize().expect("prepare the trace test");
+        let config = root.join("config/oh-fx");
+        for path in [&root.join("workspace"), &config] {
+            fs::create_dir_all(path).expect("prepare the trace test");
+        }
+        let server = FakeServer::start(replies);
+        fs::write(
+            config.join("settings.json"),
+            json!({
+                "provider": "portkey",
+                "model": "@openai/gpt-4o",
+                "providers": {"portkey": {
+                    "protocol": "openai-chat-completions",
+                    "base_url": server.base_url(),
+                    "auth": {"type": "bearer", "env": "PORTKEY_BEARER"},
+                    "headers": {
+                        "x-portkey-api-key": "${PORTKEY_API_KEY}",
+                        "x-portkey-virtual-key": "${PORTKEY_VIRTUAL_KEY}"
+                    },
+                    "models": ["@openai/gpt-4o"]
+                }}
+            })
+            .to_string(),
+        )
+        .expect("prepare the trace test");
+        Self {
+            _home: home,
+            root,
+            server,
+        }
     }
-    let server = FakeServer::start(replies);
-    fs::write(
-        config.join("settings.json"),
-        json!({
-            "provider": "portkey",
-            "model": "@openai/gpt-4o",
-            "providers": {"portkey": {
-                "protocol": "openai-chat-completions",
-                "base_url": server.base_url(),
-                "auth": {"type": "bearer", "env": "PORTKEY_BEARER"},
-                "headers": {
-                    "x-portkey-api-key": "${PORTKEY_API_KEY}",
-                    "x-portkey-virtual-key": "${PORTKEY_VIRTUAL_KEY}"
-                },
-                "models": ["@openai/gpt-4o"]
-            }}
-        })
-        .to_string(),
-    )
-    .expect("prepare the trace test");
-    let log = root.join("trace.log");
-    let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args(["ask"])
-        .args(extra)
-        .current_dir(&workspace)
-        .env_clear()
-        .env("HOME", &root)
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("SHELL", "/bin/sh")
-        .env("OH_FX_AUTO_UPGRADE", "0")
-        .env("OH_FX_TRACE_LOG", &log)
-        .env("PORTKEY_API_KEY", PORTKEY_KEY)
-        .env("PORTKEY_BEARER", BEARER)
-        .env("PORTKEY_VIRTUAL_KEY", VIRTUAL_KEY)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run oh-fx ask");
-    let log = fs::read_to_string(&log).expect("read the trace log");
-    let seen = server.requests();
-    assert!(
-        seen.iter().all(|request| request.header("authorization")
-            == Some(&format!("Bearer {BEARER}"))
-            && request.header("x-portkey-virtual-key") == Some(VIRTUAL_KEY)),
-        "the requests carry every credential"
-    );
-    Traced { output, log }
+
+    fn ask(&self, extra: &[&str]) -> Output {
+        let root = &self.root;
+        let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(["ask"])
+            .args(extra)
+            .current_dir(root.join("workspace"))
+            .env_clear()
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("OH_FX_TRACE_LOG", root.join("trace.log"))
+            .env("PORTKEY_API_KEY", PORTKEY_KEY)
+            .env("PORTKEY_BEARER", BEARER)
+            .env("PORTKEY_VIRTUAL_KEY", VIRTUAL_KEY)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx ask");
+        assert!(
+            self.server
+                .requests()
+                .iter()
+                .all(|request| request.header("authorization")
+                    == Some(&format!("Bearer {BEARER}"))
+                    && request.header("x-portkey-virtual-key") == Some(VIRTUAL_KEY)),
+            "the requests carry every credential"
+        );
+        output
+    }
+
+    fn log(&self) -> String {
+        fs::read_to_string(self.root.join("trace.log")).expect("read the trace log")
+    }
+}
+
+fn ask_traced(replies: Vec<Reply>, extra: &[&str]) -> Traced {
+    let home = TraceHome::new(replies);
+    let output = home.ask(extra);
+    Traced {
+        output,
+        log: home.log(),
+    }
 }
 
 fn secret_body() -> String {
@@ -686,4 +715,98 @@ fn a_rejected_api_key_is_neither_refreshed_nor_replayed_and_stays_out_of_the_tra
         traced.log
     );
     assert_no_secret(&traced.log);
+}
+
+#[test]
+fn a_resumed_ask_writes_its_history_projection_and_the_projected_shell_calls() {
+    let shell = r#"{"request":{"action":"run","command":"true"}}"#;
+    let home = TraceHome::new(vec![
+        Reply::sse(&chat_tool_call_events("call_1", "shell", shell)),
+        Reply::sse(&chat_text_events(&["Ran it."])),
+        Reply::sse(&chat_text_events(&["Again."])),
+    ]);
+    let first = home.ask(&["--yolo", "--json", "run it"]);
+    assert_eq!(first.status.code(), Some(0));
+    let second = home.ask(&["--resume", "last", "--json", "again"]);
+    assert_eq!(second.status.code(), Some(0));
+    let log = home.log();
+    assert_in_order(
+        &log,
+        &[
+            "[agent] event=prompt_start turn_id=1 prompt_bytes=6 model=@openai/gpt-4o",
+            "[history] event=projection_start turn_id=1 history_turns=0 gateway_messages_before=6 interrupted_turns=0 history_turn_kinds=none",
+            "[history] event=projection_end turn_id=1 history_turns=0 gateway_messages=6 added_gateway_messages=0 interrupted_turns=0 history_turn_kinds=none projected_message_roles=none partial_interrupted_closures=0",
+            "[agent] event=step_begin turn_id=1 step_id=1 step_index=1 step_limit=0 gateway_messages=7",
+            "[history] legacy_tool_history_projected terminal=true subagent=false messages=3",
+            "[agent] event=step_begin turn_id=1 step_id=2 step_index=2 step_limit=0 gateway_messages=9",
+            "[agent] event=prompt_start turn_id=1 prompt_bytes=5 model=@openai/gpt-4o",
+            "[history] event=projection_start turn_id=1 history_turns=1 gateway_messages_before=6 interrupted_turns=0 history_turn_kinds=assistant",
+            "[history] event=projection_end turn_id=1 history_turns=1 gateway_messages=10 added_gateway_messages=4 interrupted_turns=0 history_turn_kinds=assistant projected_message_roles=user,assistant,tool,assistant partial_interrupted_closures=0",
+            "[history] legacy_tool_history_projected terminal=true subagent=false messages=5",
+            "[agent] event=step_begin turn_id=1 step_id=1 step_index=1 step_limit=0 gateway_messages=11",
+        ],
+    );
+    assert_eq!(log.matches("event=projection_start").count(), 2, "{log}");
+    assert_eq!(
+        log.matches("legacy_tool_history_projected").count(),
+        2,
+        "{log}"
+    );
+}
+
+#[test]
+fn the_turn_after_a_cancelled_one_projects_the_interrupted_turn() {
+    let held = Reply::held_sse(
+        &chat_text_events(&["Once the story started.\nIt went on.\n", "still going"])[..3],
+    );
+    let answer = Reply::sse(&chat_text_events(&["It was interrupted."]));
+    let (_home, mut launched) = launch_with(0, vec![held, answer]);
+    launched.session.send(b"tell me a story\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("Once the story started."))
+        .expect("the reply streams");
+    launched.session.send(b"\x03");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("Cancelled"))
+        .expect("the turn is cancelled");
+    launched.session.send(b"\x1b");
+    launched.session.send(b"what happened?\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("It was interrupted."))
+        .expect("the next turn answers");
+    let log = launched.workspace.join("trace.log");
+    let written = launched
+        .session
+        .wait_for(WAIT, |_| {
+            fs::read_to_string(&log)
+                .is_ok_and(|text| text.matches("event=prompt_finish").count() == 2)
+        })
+        .map(|_| fs::read_to_string(&log).expect("read the trace log"))
+        .expect("the second turn finishes");
+    let end = " [history] event=projection_end turn_id=2 history_turns=1 gateway_messages=";
+    let line = written
+        .lines()
+        .find(|line| line.contains(end))
+        .unwrap_or_else(|| panic!("{written}"));
+    assert!(
+        line.ends_with(" added_gateway_messages=3 interrupted_turns=1 history_turn_kinds=interrupted projected_message_roles=user,assistant,user partial_interrupted_closures=1"),
+        "{line}"
+    );
+    assert!(
+        written.contains(
+            " [history] event=projection_start turn_id=2 history_turns=1 gateway_messages_before="
+        ),
+        "{written}"
+    );
+    launched.session.send(b"/quit\r");
+    assert!(
+        launched
+            .session
+            .wait_exit(WAIT)
+            .expect("the shell exits")
+            .success()
+    );
 }
