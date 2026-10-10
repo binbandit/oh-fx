@@ -620,3 +620,33 @@ fn session_last_needs_home_and_refuses_the_v2_store() {
         )
     );
 }
+
+#[test]
+fn session_last_encodes_stored_text_for_the_terminal() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "own");
+    let id = ids(&home.listed(&[]))[0].clone();
+    let manifest = home
+        .root
+        .join("data/oh-fx/sessions")
+        .join(&id)
+        .join("session.json");
+    let mut saved: Value =
+        serde_json::from_slice(&fs::read(&manifest).expect("read session.json")).expect("JSON");
+    saved["conversation_language"] = json!("en\u{9b}2J\u{202e}");
+    fs::write(&manifest, saved.to_string()).expect("rewrite session.json");
+
+    let text = described(&home.session(&["last"], &[]));
+    assert!(
+        text.contains("\nlanguage: en\\u{009b}2J\\u{202e}\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains('\u{9b}') && !text.contains('\u{202e}'),
+        "{text}"
+    );
+    let json: Value =
+        serde_json::from_str(&described(&home.session(&["last", "--json"], &[]))).expect("JSON");
+    assert_eq!(json["conversation_language"], "en\u{9b}2J\u{202e}");
+}

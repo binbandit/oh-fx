@@ -147,10 +147,10 @@ impl SessionSummarySnapshot<'_> {
             OutputFormat::Text => {
                 let mut out = format!(
                     "[session] {}\ncreated_at_ms: {}\nupdated_at_ms: {}\nlanguage: {}\nhistory_len: {}\n",
-                    summary.id,
+                    safe(&summary.id),
                     summary.created_at_ms,
                     summary.updated_at_ms,
-                    summary.conversation_language,
+                    safe(&summary.conversation_language),
                     summary.history_len
                 );
                 if let Some(marker) = summary.source.marker() {

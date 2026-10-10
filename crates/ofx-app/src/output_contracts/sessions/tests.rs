@@ -183,3 +183,19 @@ fn a_session_summary_fx_saved_carries_its_marker_last() {
         "{\"kind\":\"session_summary\",\"id\":\"abc\",\"title\":\"From \\u001b[2Jfx\",\"preview\":null,\"workspace_root\":\"/tmp/workspace\",\"origin_workspace_root\":\"/tmp/origin\",\"created_at_ms\":1,\"updated_at_ms\":2,\"history_len\":3,\"conversation_language\":\"es\",\"source\":\"fx\"}\n"
     );
 }
+
+#[test]
+fn a_session_summary_encodes_stored_text_for_the_terminal_and_keeps_it_in_json() {
+    let mut summary = summary(None);
+    summary.conversation_language = "en\u{9b}2J\u{202e}\u{1b}[31m".to_owned();
+    let snapshot = SessionSummarySnapshot { summary: &summary };
+    assert_eq!(
+        snapshot.render(OutputFormat::Text),
+        "[session] abc\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: en\\u{009b}2J\\u{202e}\\x1b[31m\nhistory_len: 3\n"
+    );
+    assert!(
+        snapshot
+            .render(OutputFormat::Json)
+            .contains("\"conversation_language\":\"en\u{9b}2J\u{202e}\\u001b[31m\"")
+    );
+}
