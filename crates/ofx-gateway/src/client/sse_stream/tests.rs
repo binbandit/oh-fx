@@ -277,7 +277,6 @@ async fn text_and_reasoning_deltas_reach_the_sink_and_empty_ones_do_not() {
         r#"{"type":"reasoning-delta","id":"r","delta":""}"#,
         r#"{"type":"text-delta","id":"t","delta":"Hello"}"#,
         r#"{"type":"text-delta","id":"t","delta":""}"#,
-        r#"{"type":"text-delta","id":"t","delta":7}"#,
         r#"["not","an","object"]"#,
         r#"{"type":5}"#,
         r#"{"type":"finish","finishReason":{"unified":"stop"}}"#,
@@ -343,4 +342,14 @@ async fn cancellation_stops_the_stream() {
     let (result, seen) = consume_wire(&wire, &cancel).await;
     assert_eq!(result.unwrap_err().kind, ProviderErrorKind::Cancelled);
     assert!(seen.is_empty());
+}
+
+#[tokio::test]
+async fn a_delta_that_is_not_text_is_invalid_provider_state() {
+    let wire = events(&[
+        r#"{"type":"text-delta","id":"t","delta":7}"#,
+        r#"{"type":"finish","finishReason":{"unified":"stop"}}"#,
+    ]);
+    let error = consume(&wire).await.unwrap_err();
+    assert_eq!(error.code, "InvalidProviderState");
 }

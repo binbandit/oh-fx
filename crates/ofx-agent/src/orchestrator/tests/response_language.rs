@@ -220,7 +220,12 @@ async fn a_tool_bearing_response_keeps_its_calls_and_drops_its_prose() {
     assert_eq!(streamed(&events), ["I inspected the lockfile."]);
     assert_eq!(
         provider.projections(),
-        [("prose and call".to_owned(), false, true)]
+        [(
+            "prose and call".to_owned(),
+            vec!["call-1".to_owned()],
+            false,
+            true
+        )]
     );
     let ChatMessage::Assistant {
         content,

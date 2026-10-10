@@ -86,6 +86,14 @@ impl ToolArgumentDiagnostic {
             error_offset,
         }
     }
+
+    pub fn failure_name(&self) -> &'static str {
+        self.failure.name()
+    }
+
+    pub fn error_offset(&self) -> Option<usize> {
+        self.error_offset
+    }
 }
 
 enum Stopped {

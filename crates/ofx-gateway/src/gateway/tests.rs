@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use ofx_contract::{ChatMessage, ProviderOptions, StreamEvent, ToolChoice, Usage};
+use ofx_contract::{
+    ChatMessage, ProviderOptions, ReplaySource, StreamEvent, ToolCallId, ToolChoice,
+    ToolExecutionProvenance, Usage,
+};
 use ofx_testkit::{FakeServer, RecordedRequest, RefusedPort, Reply};
 
 use super::*;
@@ -83,7 +86,15 @@ async fn a_turn_posts_upstreams_headers_and_body_and_streams_its_reply() {
     assert_eq!(completion.content.as_deref(), Some("Hello there"));
     assert_eq!(completion.finish_reason, FinishReason::Stop);
     assert!(completion.tool_calls.is_empty());
-    assert_eq!(completion.provider_replay, None);
+    assert_eq!(
+        completion.provider_replay,
+        Some(ProviderReplay {
+            source: replay_source(MODEL),
+            parts_json:
+                r#"[{"type":"reasoning","text":"Thinking"},{"type":"text","offset":0,"length":11}]"#
+                    .to_owned(),
+        })
+    );
     assert_eq!(
         completion.usage,
         Usage {
@@ -395,4 +406,156 @@ fn diagnostics_keep_identified_details_and_name_the_cause_otherwise() {
         "provider_error: two words: message"
     );
     assert_eq!(diagnostic(Some(": x"), "fallback"), "fallback: : x");
+}
+
+#[tokio::test]
+async fn a_tool_step_streams_its_start_and_input_and_finishes_with_the_call() {
+    let server = FakeServer::start([Reply::sse(&[
+        r#"{"type":"tool-input-start","id":"call_1","toolName":"read_file"}"#,
+        r#"{"type":"tool-input-delta","id":"call_1","delta":"{\"path\":"}"#,
+        r#"{"type":"tool-input-delta","id":"call_1","delta":"\"README.md\"}"}"#,
+        r#"{"type":"tool-input-end","id":"call_1"}"#,
+        r#"{"type":"tool-call","toolCallId":"call_1","toolName":"read_file","input":"{\"path\":\"README.md\"}"}"#,
+        r#"{"type":"finish","finishReason":{"unified":"tool-calls"}}"#,
+    ])]);
+    let (result, seen) = run(&keyed(&server), None).await;
+    let completion = result.unwrap();
+    assert_eq!(completion.finish_reason, FinishReason::ToolCalls);
+    assert_eq!(
+        completion.tool_calls,
+        [ToolCall::new(
+            "call_1",
+            "read_file",
+            r#"{"path":"README.md"}"#
+        )]
+    );
+    assert_eq!(completion.provider_replay, None);
+    assert_eq!(
+        seen[..3],
+        [
+            StreamEvent::Admitted,
+            StreamEvent::ToolCallStarted {
+                call_id: ToolCallId::new("call_1"),
+                tool_name: "read_file".to_owned(),
+            },
+            StreamEvent::ToolInputDelta {
+                text: r#"{"path":"#.to_owned()
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn provider_executed_results_complete_a_stop_and_local_calls_cannot() {
+    let searched = finishing(&[
+        r#"{"type":"tool-call","toolCallId":"search_1","toolName":"web_search","input":{"query":"rust"},"providerExecuted":true}"#,
+        r#"{"type":"tool-result","toolCallId":"search_1","result":{"results":[]}}"#,
+        r#"{"type":"text-delta","delta":"Found nothing."}"#,
+        STOP,
+    ])
+    .await
+    .unwrap();
+    assert_eq!(searched.finish_reason, FinishReason::Stop);
+    assert_eq!(
+        searched.tool_calls[0].provenance,
+        ToolExecutionProvenance::ProviderExecuted
+    );
+    assert_eq!(
+        searched.tool_calls[0].provider_result.as_deref(),
+        Some(r#"{"results":[]}"#)
+    );
+    for finish in ["stop", "other"] {
+        let event = format!(r#"{{"type":"finish","finishReason":{{"unified":"{finish}"}}}}"#);
+        let error = finishing(&[
+            r#"{"type":"tool-call","toolCallId":"c1","toolName":"read_file","input":{}}"#,
+            &event,
+        ])
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "InvalidProviderCompletion", "{finish}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_tool_identities_fail_the_request_with_upstreams_names() {
+    let cases = [
+        (
+            r#"{"type":"tool-call","toolCallId":"c1"}"#,
+            "MalformedProviderResultIdentity",
+        ),
+        (
+            r#"{"type":"tool-call","toolName":"read_file","input":{}}"#,
+            "MalformedAuthoritativeToolIdentity",
+        ),
+    ];
+    for (call, code) in cases {
+        let error = finishing(&[
+            call,
+            r#"{"type":"finish","finishReason":{"unified":"tool-calls"}}"#,
+        ])
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, code, "{call}");
+        assert_eq!(error.kind, ProviderErrorKind::Protocol);
+    }
+}
+
+#[tokio::test]
+async fn reasoning_and_call_metadata_come_back_as_a_gateway_replay() {
+    let completion = finishing(&[
+        r#"{"type":"reasoning-start","id":"r1","providerMetadata":{"google":{"signature":"signed"}}}"#,
+        r#"{"type":"reasoning-delta","id":"r1","delta":"thinking"}"#,
+        r#"{"type":"reasoning-end","id":"r1"}"#,
+        r#"{"type":"text-start","id":"t1"}"#,
+        r#"{"type":"text-delta","id":"t1","delta":"Reading."}"#,
+        r#"{"type":"text-end","id":"t1"}"#,
+        r#"{"type":"tool-call","toolCallId":"c1","toolName":"read_file","input":{"path":"a"},"providerMetadata":{"vertex":{"thoughtSignature":"sig"}}}"#,
+        r#"{"type":"finish","finishReason":{"unified":"tool-calls"}}"#,
+    ])
+    .await
+    .unwrap();
+    let replay = completion.provider_replay.unwrap();
+    assert_eq!(replay.source, replay_source(MODEL));
+    assert_eq!(
+        replay.parts_json,
+        r#"[{"type":"reasoning","text":"thinking","providerOptions":{"google":{"signature":"signed"}}},{"type":"text","offset":0,"length":8},{"type":"tool-call","toolCallId":"c1","providerOptions":{"vertex":{"thoughtSignature":"sig"}}}]"#
+    );
+    let gateway = provider("http://127.0.0.1:9/chat".to_owned(), None, None);
+    let calls = completion.tool_calls;
+    let step = gateway
+        .project_replay(&replay, &calls, false, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        step.parts_json,
+        r#"[{"type":"reasoning","text":"thinking","providerOptions":{"google":{"signature":"signed"}}},{"type":"tool-call","toolCallId":"c1","providerOptions":{"vertex":{"thoughtSignature":"sig"}}}]"#
+    );
+    let text = gateway
+        .project_replay(&replay, &[], true, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        text.parts_json,
+        r#"[{"type":"text","offset":0,"length":8}]"#
+    );
+    assert_eq!(
+        gateway.project_replay(&replay, &calls, true, true),
+        Ok(Some(replay.clone()))
+    );
+    assert_eq!(gateway.project_replay(&replay, &[], false, false), Ok(None));
+    let foreign = ProviderReplay {
+        source: ReplaySource {
+            provider: "codex".to_owned(),
+            model: MODEL.to_owned(),
+            binding: None,
+        },
+        ..replay
+    };
+    assert_eq!(
+        gateway.project_replay(&foreign, &calls, false, true),
+        Err(ProviderError::new(
+            ProviderErrorKind::Protocol,
+            "InvalidProviderState"
+        ))
+    );
 }

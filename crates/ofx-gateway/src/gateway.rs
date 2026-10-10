@@ -2,7 +2,7 @@ use std::fmt;
 
 use ofx_contract::{
     BoxFuture, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, StreamSink,
+    ProviderErrorKind, ProviderReplay, StreamSink, ToolCall,
 };
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
 use tokio_util::sync::CancellationToken;
@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 use crate::chat_completions::sanitized;
 use crate::client::{FailureCause, Finish, GatewayAttempt, GatewayCompletion};
-use crate::vercel_protocol::{RequestError, build_request};
+use crate::vercel_protocol::{RequestError, build_request, replay_source, select_replay_parts};
 
 const CHAT_URL: &str = "https://ai-gateway.vercel.sh/v4/ai/language-model";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
@@ -119,7 +119,7 @@ impl GatewayProvider {
             secrets: &self.secrets,
         };
         let completion = attempt.stream(payload, sink, cancel).await?;
-        into_completion(completion, &self.secrets)
+        into_completion(completion, request.model, &self.secrets)
     }
 }
 
@@ -146,6 +146,16 @@ impl ModelProvider for GatewayProvider {
     ) -> BoxFuture<'a, Result<Completion, ProviderError>> {
         Box::pin(self.complete(request, Some(body), sink, cancel))
     }
+
+    fn project_replay(
+        &self,
+        replay: &ProviderReplay,
+        calls: &[ToolCall],
+        text: bool,
+        reasoning: bool,
+    ) -> Result<Option<ProviderReplay>, ProviderError> {
+        select_replay_parts(replay, calls, text, reasoning).map_err(request_failure)
+    }
 }
 
 fn request_failure(error: RequestError) -> ProviderError {
@@ -154,6 +164,7 @@ fn request_failure(error: RequestError) -> ProviderError {
 
 fn into_completion(
     completion: GatewayCompletion,
+    model: &str,
     secrets: &[String],
 ) -> Result<Completion, ProviderError> {
     let detail = completion.failure_detail.as_deref();
@@ -208,21 +219,38 @@ fn into_completion(
                 secrets,
             ));
         }
-        Some(Finish::ToolCalls) => {
-            return Err(ProviderError::new(
-                ProviderErrorKind::Protocol,
-                "InvalidProviderCompletion",
-            ));
-        }
-        Some(Finish::Stop | Finish::Other) => FinishReason::Stop,
+        Some(finish) => match (finish, completion.tools.count()) {
+            (Finish::ToolCalls, 1..) => FinishReason::ToolCalls,
+            (Finish::Stop | Finish::Other, 0) => FinishReason::Stop,
+            (Finish::Stop, _) if completion.tools.all_provider_executed() => FinishReason::Stop,
+            _ => {
+                return Err(ProviderError::new(
+                    ProviderErrorKind::Protocol,
+                    "InvalidProviderCompletion",
+                ));
+            }
+        },
     };
-    let GatewayCompletion { content, usage, .. } = completion;
+    completion
+        .tools
+        .admission()
+        .map_err(|code| ProviderError::new(ProviderErrorKind::Protocol, code))?;
+    let GatewayCompletion {
+        content,
+        usage,
+        tools,
+        replay,
+        ..
+    } = completion;
     Ok(Completion {
         content: (!content.is_empty()).then_some(content),
-        tool_calls: Vec::new(),
+        tool_calls: tools.into_calls(),
         finish_reason,
         usage,
-        provider_replay: None,
+        provider_replay: replay.map(|parts_json| ProviderReplay {
+            source: replay_source(model),
+            parts_json,
+        }),
     })
 }
 

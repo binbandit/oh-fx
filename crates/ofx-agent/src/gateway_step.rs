@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ofx_contract::{
     BoxFuture, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, ProviderReplay, StreamSink,
+    ProviderErrorKind, ProviderReplay, StreamSink, ToolCall,
 };
 use ofx_trace::{NETWORK_CALLS, NetworkCall, NetworkRing, TraceContext};
 use tokio_util::sync::CancellationToken;
@@ -163,10 +163,11 @@ impl ModelProvider for MeteredProvider {
     fn project_replay(
         &self,
         replay: &ProviderReplay,
+        calls: &[ToolCall],
         text: bool,
         reasoning: bool,
     ) -> Result<Option<ProviderReplay>, ProviderError> {
-        self.inner.project_replay(replay, text, reasoning)
+        self.inner.project_replay(replay, calls, text, reasoning)
     }
 }
 

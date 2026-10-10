@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ofx_contract::{
     BoxFuture, CODEX_ORIGINATOR, ChatMessage, Completion, FinishReason, ModelProvider,
     ModelRequest, ProviderError, ProviderErrorKind, ProviderReplay, ReplaySource, StreamEvent,
-    StreamSink, valid_credential_account_id,
+    StreamSink, ToolCall, valid_credential_account_id,
 };
 use ofx_http::{ClientError, ConnectionOptions, SseDecoder, build_connection_client};
 use ofx_trace::trace_log;
@@ -332,6 +332,7 @@ impl ModelProvider for CodexProvider {
     fn project_replay(
         &self,
         replay: &ProviderReplay,
+        _calls: &[ToolCall],
         text: bool,
         reasoning: bool,
     ) -> Result<Option<ProviderReplay>, ProviderError> {

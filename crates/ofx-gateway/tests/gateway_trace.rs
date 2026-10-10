@@ -13,6 +13,18 @@ const KEY: &str = "vck_live_0123456789abcdef";
 const CHILD: &str = "OH_FX_GATEWAY_TRACE_CHILD";
 const TEST: &str = "the_trace_log_names_every_gateway_step_and_never_the_key";
 const MODEL: &str = "openai/gpt-5.6-sol";
+const TOOL_EVENTS: [&str; 10] = [
+    r#"{"type":"tool-input-start","id":"X","toolName":"read_file"}"#,
+    r#"{"type":"tool-input-start","id":"X","toolName":"grep_files"}"#,
+    r#"{"type":"tool-input-delta","id":"X","delta":"{\"path\":\"stable.txt\"}"}"#,
+    r#"{"type":"tool-input-end","id":"X"}"#,
+    r#"{"type":"tool-input-delta","id":"X","delta":"LATE_PREFIX_SENTINEL"}"#,
+    r#"{"type":"tool-input-end","id":"X"}"#,
+    r#"{"type":"tool-input-start","id":"X","toolName":"read_file"}"#,
+    r#"{"type":"tool-call","toolCallId":"c2","toolName":"ask_user_question","input":"{]FX_ARGUMENT_PRIVACY_SENTINEL"}"#,
+    r#"{"type":"tool-call","toolCallId":"X"}"#,
+    r#"{"type":"finish","finishReason":{"unified":"tool-calls"}}"#,
+];
 
 fn echoing_stream() -> Reply {
     let events = [
@@ -44,6 +56,7 @@ async fn run_turns() {
         ),
         Reply::sse(&[r#"{"type":"text-delta","delta":"cut"}"#, "[DONE]"]),
         Reply::sse(&["{not-json}"]),
+        Reply::sse(&TOOL_EVENTS),
     ]);
     let gateway = GatewayProvider::new(
         GatewayCredential::new(Some(KEY.to_owned()), Some("team_123".to_owned())),
@@ -64,12 +77,12 @@ async fn run_turns() {
         provider_options: ProviderOptions::default(),
         session_id: Some("session_123"),
     };
-    for _ in 0..4 {
+    for completes in [false, false, false, false, true] {
         let mut sink = |_: StreamEvent| {};
-        let failed = gateway
+        let outcome = gateway
             .stream(&request, &mut sink, &CancellationToken::new())
             .await;
-        assert!(failed.is_err());
+        assert_eq!(outcome.is_ok(), completes);
     }
 }
 
@@ -107,7 +120,13 @@ fn the_trace_log_names_every_gateway_step_and_never_the_key() {
         .unwrap();
     assert!(status.success());
     let log = fs::read_to_string(&log_path).unwrap();
-    for fragment in [KEY, "vck_live", "0123456789abcdef"] {
+    for fragment in [
+        KEY,
+        "vck_live",
+        "0123456789abcdef",
+        "LATE_PREFIX_SENTINEL",
+        "FX_ARGUMENT_PRIVACY_SENTINEL",
+    ] {
         assert!(
             !log.contains(fragment),
             "the log shows `{fragment}`:\n{log}"
@@ -142,6 +161,12 @@ fn the_trace_log_names_every_gateway_step_and_never_the_key() {
         "[gateway] event=stream_complete attempt=1 finish_reason=(none) content_bytes=3",
         "[sse] event type=invalid bytes=10 preview=<invalid-json>",
         "[gateway] event=sse_consume_error attempt=1 err=InvalidGatewaySseEvent",
+        "[sse] event=stream_state_anomaly reason=conflicting_start",
+        "[sse] event=stream_state_anomaly reason=unmatched_or_late_delta",
+        "[sse] event=stream_state_anomaly reason=unmatched_or_duplicate_end",
+        "[sse] event=stream_state_anomaly reason=late_start",
+        "[sse] event=tool_argument_integrity call_id=c2 tool_name=ask_user_question source=final_string bytes=30 failure=malformed_json diagnosis=syntax_error error_offset=1",
+        "[gateway] event=stream_complete attempt=1 finish_reason=tool-calls content_bytes=0 tool_call_count=2 tool_calls=2",
     ];
     let mut from = 0;
     for needle in ordered {

@@ -801,3 +801,66 @@ fn user_images_use_their_captured_bytes_and_refuse_unavailable_snapshots() {
         "FileNotFound"
     );
 }
+
+#[test]
+fn split_replays_keep_their_metadata_with_each_assistant_unit() {
+    let replay = ProviderReplay {
+        source: replay_source(MODEL),
+        parts_json: r#"[{"type":"reasoning","text":"reason"},{"type":"tool-call","toolCallId":"call","providerOptions":{"vertex":{"thoughtSignature":"signed"}}},{"type":"text","offset":0,"length":4,"providerOptions":{"openai":{"itemId":"text"}}}]"#.to_owned(),
+    };
+    let calls = vec![provider_call("call", "search", "{}", "result")];
+    let step = select_replay_parts(&replay, &calls, false, true).unwrap();
+    let last = select_replay_parts(&replay, &[], true, false).unwrap();
+    let messages = [
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: calls,
+            provider_replay: step,
+        },
+        success("call", "search", "result"),
+        ChatMessage::Assistant {
+            content: Some("done".to_owned()),
+            tool_calls: Vec::new(),
+            provider_replay: last,
+        },
+    ];
+    let entries = prompt(&body(&messages).unwrap());
+    let first = entries[0]["content"].as_array().unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first[1]["providerOptions"]["vertex"]["thoughtSignature"],
+        "signed"
+    );
+    let answer = entries[2]["content"].as_array().unwrap();
+    assert_eq!(answer.len(), 1);
+    assert_eq!(answer[0]["providerOptions"]["openai"]["itemId"], "text");
+}
+
+#[test]
+fn replay_selection_refuses_malformed_or_oversized_parts() {
+    for parts in [
+        "{}",
+        "[1]",
+        r#"[{"type":"image"}]"#,
+        r#"[{"type":"tool-call"}]"#,
+        r#"[{"type":"tool-call","toolCallId":7}]"#,
+    ] {
+        let replay = ProviderReplay {
+            source: replay_source(MODEL),
+            parts_json: parts.to_owned(),
+        };
+        assert_eq!(
+            select_replay_parts(&replay, &[], true, true),
+            Err(RequestError::InvalidProviderState),
+            "{parts}"
+        );
+    }
+    let oversized = ProviderReplay {
+        source: replay_source(MODEL),
+        parts_json: format!("[{}]", " ".repeat(MAX_REPLAY_BYTES)),
+    };
+    assert_eq!(
+        select_replay_parts(&oversized, &[], true, true),
+        Err(RequestError::ProviderStateTooLarge)
+    );
+}

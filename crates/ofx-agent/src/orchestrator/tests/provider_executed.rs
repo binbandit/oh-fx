@@ -320,8 +320,13 @@ async fn a_final_answer_with_provider_results_splits_its_replay_between_step_and
     assert_eq!(
         harness.provider.projections(),
         [
-            ("parts".to_owned(), false, true),
-            ("parts".to_owned(), true, false),
+            (
+                "parts".to_owned(),
+                vec!["provider_search".to_owned()],
+                false,
+                true
+            ),
+            ("parts".to_owned(), Vec::new(), true, false),
         ]
     );
     assert_eq!(
