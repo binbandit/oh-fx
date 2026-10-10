@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::ids::TurnId;
+use crate::types::TurnPresentationOutcome;
 
 pub(super) const HANDLER_NAME_BYTES: usize = 128;
 
@@ -17,6 +18,12 @@ pub enum HookScope {
 pub struct HookInvocation {
     pub scope: HookScope,
     pub turn_id: TurnId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostTurnEndInput {
+    pub invocation: HookInvocation,
+    pub outcome: TurnPresentationOutcome,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

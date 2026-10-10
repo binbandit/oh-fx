@@ -245,6 +245,14 @@ pub enum FinishReason {
     ToolCalls,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnPresentationOutcome {
+    Completed,
+    Interrupted,
+    Failed,
+    Paused,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionMode {
     Ask,
