@@ -237,14 +237,14 @@ while IFS= read -r line; do
   esac
 done
 "#;
-        let server = std::sync::Arc::new(Server::new(
+        let server = Arc::new(Server::new(
             McpServerConfig::stdio(
                 "fixture",
                 "/bin/sh",
                 vec!["-c".to_owned(), script.to_owned()],
             ),
             crate::server_transport::ConnectOptions::default(),
-            std::sync::Arc::default(),
+            Arc::default(),
         ));
         server.start().await;
         let Lifecycle::Ready(client) = server.lifecycle() else {
