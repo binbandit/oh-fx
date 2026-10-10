@@ -38,6 +38,7 @@ pub(crate) struct Converted {
     results: Vec<StoredResult>,
     recovery: Option<Vec<u8>>,
     usage: Option<UsageSnapshot>,
+    source_bytes: u64,
 }
 
 struct LogBuilder {
@@ -94,7 +95,11 @@ impl Results {
 }
 
 impl LegacySession {
-    pub(super) fn convert(self, purpose: Purpose) -> Result<Converted, SessionError> {
+    pub(super) fn convert(
+        self,
+        purpose: Purpose,
+        source_bytes: u64,
+    ) -> Result<Converted, SessionError> {
         let history_len = self.turns.len();
         let prompts = self.turns.iter().filter_map(|turn| match turn {
             LegacyTurn::Conversation(turn) => Some(turn.user.as_str()),
@@ -163,6 +168,7 @@ impl LegacySession {
             results: results.stored,
             recovery,
             usage: self.usage,
+            source_bytes,
         })
     }
 }
@@ -200,6 +206,10 @@ impl LogBuilder {
 }
 
 impl Converted {
+    pub(crate) fn source_bytes(&self) -> u64 {
+        self.source_bytes
+    }
+
     pub(crate) fn summary(&self, title: Option<String>) -> SessionSummary {
         let metadata = &self.metadata;
         SessionSummary {

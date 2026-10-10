@@ -72,7 +72,13 @@ fn report(kind: TopLevelKind, format: OutputFormat, code: &str, message: &str) -
     ExitCode::FAILURE
 }
 
-pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
+struct Profile {
+    home: PathBuf,
+    data: PathBuf,
+    workspace_root: String,
+}
+
+fn profile() -> Result<Profile, Failure> {
     let home_not_set = || Failure::Lookup("HomeNotSet".to_owned());
     let home = env::var_os("HOME")
         .map(PathBuf::from)
@@ -80,14 +86,28 @@ pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
     let paths = ProfilePaths::from_environment().ok_or_else(home_not_set)?;
     let workspace_root = env::current_dir()
         .and_then(fs::canonicalize)
-        .map_err(|_| Failure::Fatal("WorkspaceUnavailable"))?;
-    let workspace_root = workspace_root
-        .to_str()
-        .ok_or(Failure::Fatal("InvalidWorkspaceRoot"))?;
-    Ok(SavedSessions {
-        store: SessionStore::open_read_only(&paths.data, workspace_root)?,
-        fx: FxSessions::open(&home),
+        .map_err(|_| Failure::Fatal("WorkspaceUnavailable"))?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| Failure::Fatal("InvalidWorkspaceRoot"))?;
+    Ok(Profile {
+        home,
+        data: paths.data,
+        workspace_root,
     })
+}
+
+pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
+    let profile = profile()?;
+    Ok(SavedSessions {
+        store: SessionStore::open_read_only(&profile.data, &profile.workspace_root)?,
+        fx: FxSessions::open(&profile.home),
+    })
+}
+
+pub(crate) fn open_writable_sessions() -> Result<SessionStore, Failure> {
+    let profile = profile()?;
+    Ok(SessionStore::open(&profile.data, &profile.workspace_root)?.with_fx_home(profile.home))
 }
 
 fn list(args: &SessionListArgs) -> Result<String, Failure> {

@@ -174,7 +174,7 @@ fn inspect_session_dir(
         .then_some(DoctorIssueKind::UnsafePath))
 }
 
-fn holds_conversation_metadata(dir: &PrivateDir) -> Result<bool, SessionError> {
+pub(crate) fn holds_conversation_metadata(dir: &PrivateDir) -> Result<bool, SessionError> {
     let bytes = match read_managed_file(dir, MANIFEST_FILE, MAX_SESSION_METADATA_BYTES) {
         Ok(Some(bytes)) => bytes,
         Ok(None) | Err(SessionError::InvalidSessionFormat) => return Ok(false),

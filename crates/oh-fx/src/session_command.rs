@@ -1,26 +1,27 @@
 use std::process::ExitCode;
 
-use ofx_app::{SessionDetailSnapshot, SessionSummarySnapshot};
+use ofx_app::{SessionDetailSnapshot, SessionMigrationSnapshot, SessionSummarySnapshot};
 use ofx_cli::{
     Command, LaunchModifiers, OutputFormat, SessionAction, SessionArgs, SessionTarget, TopLevelKind,
 };
 use ofx_session::{ListScope, SessionError};
 
-use crate::sessions_command::{Failure, answer, open_saved_sessions};
+use crate::sessions_command::{Failure, answer, open_saved_sessions, open_writable_sessions};
+
+const MIGRATION_UNAVAILABLE: &str = "SessionMigrationUnavailable";
 
 pub(crate) fn run(args: &SessionArgs, modifiers: &LaunchModifiers) -> ExitCode {
     let selects_v2 =
         modifiers.selects_sessions_v2() || crate::cli_ask::sessions_v2_variable().is_some();
-    let SessionAction::Detail(target) = &args.action else {
-        return crate::unavailable_command(&Command::Session(args.clone()));
-    };
-    if selects_v2 {
-        return crate::unavailable_command(&Command::Session(args.clone()));
-    }
     crate::auto_upgrade::announce_and_schedule();
-    let result = match target {
-        SessionTarget::Last => latest(args.format),
-        SessionTarget::Id(id) => describe(id, args.format),
+    let result = match &args.action {
+        SessionAction::Migrate(_) if selects_v2 => {
+            Err(Failure::Lookup(MIGRATION_UNAVAILABLE.to_owned()))
+        }
+        SessionAction::Migrate(id) => migrate(id, args.format),
+        SessionAction::Detail(SessionTarget::Last) if !selects_v2 => latest(args.format),
+        SessionAction::Detail(SessionTarget::Id(id)) if !selects_v2 => describe(id, args.format),
+        _ => return crate::not_available(&Command::Session(args.clone())),
     };
     answer(TopLevelKind::Session, args.format, result)
 }
@@ -66,4 +67,12 @@ fn detail_failure(id: &str, error: SessionError) -> Failure {
         code: error.to_string(),
         message,
     }
+}
+
+fn migrate(id: &str, format: OutputFormat) -> Result<String, Failure> {
+    let migration = open_writable_sessions()?.migrate(id)?;
+    Ok(SessionMigrationSnapshot {
+        migration: &migration,
+    }
+    .render(format))
 }

@@ -460,7 +460,7 @@ fn preference_and_workspace_changes_replay_in_order() {
         "workspace_rebound",
         "{\"previous_workspace_root\":\"/work\",\"workspace_root\":\"/moved\"}",
     );
-    let session = load_schema_v3(&fixture.dir(&log), "legacy-moved").unwrap();
+    let (session, _) = load_schema_v3(&fixture.dir(&log), "legacy-moved").unwrap();
     assert_eq!(session.workspace_root, "/moved");
     assert_eq!(session.origin_workspace_root, "/work");
     assert_eq!(session.preferences.provider.id().label(), "gateway");
