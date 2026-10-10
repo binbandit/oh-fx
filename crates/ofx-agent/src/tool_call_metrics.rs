@@ -37,7 +37,7 @@ pub struct ToolCallMetric {
 pub struct ToolCallLifetime {
     pub total_calls: u64,
     pub total_duration_ms: u64,
-    outcome_counts: [u64; ToolCallOutcome::ALL.len()],
+    pub outcome_counts: [u64; ToolCallOutcome::ALL.len()],
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

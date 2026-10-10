@@ -48,6 +48,7 @@ use crate::prompt_context::Calibration;
 use crate::recovery_pause::RecoveryPause;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 use crate::tool_admission::{ShellExecutionFailureRetry, ShellValidationRetry};
+use crate::tool_call_metrics::{TOOL_CALL_TRACE, ToolCallOutcome, ToolCallRecord, ToolCallRing};
 use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
@@ -316,6 +317,7 @@ pub struct Agent {
     recovery_pause: RecoveryPause,
     lifecycle: Option<LifecycleContext>,
     compaction_trace: &'static Ring<CompactionEvent>,
+    tool_call_trace: &'static ToolCallRing,
     next_trace: Option<TraceContext>,
 }
 
@@ -368,6 +370,7 @@ impl Agent {
             recovery_pause: RecoveryPause::default(),
             lifecycle: None,
             compaction_trace: &COMPACTION_TRACE,
+            tool_call_trace: &TOOL_CALL_TRACE,
             next_trace: None,
         }
     }
@@ -1538,6 +1541,18 @@ impl Agent {
                 None => self.lazy_group(calls, next, rejected, &mut carried),
             };
             next += group.len();
+            let parallel = (group.len() > 1)
+                .then(|| group[0].1.parallel_group())
+                .flatten();
+            if let Some(kind) = parallel {
+                turn_trace::parallel_group(
+                    turn.trace,
+                    "parallel_tool_group_start",
+                    kind.name(),
+                    group.len(),
+                );
+            }
+            let count = group.len();
             let gate = Gate {
                 permissions: &*self.permissions,
                 approvals: self.approvals.as_ref(),
@@ -1554,7 +1569,23 @@ impl Agent {
                 reviews: &mut turn.reviews,
                 usage: &mut turn.usage,
             };
-            let settled = run_group(turn.id, group, gate, &mut reviewing, events, cancel).await;
+            let settled = run_group(
+                (turn.id, turn.trace),
+                group,
+                gate,
+                &mut reviewing,
+                events,
+                cancel,
+            )
+            .await;
+            if let Some(kind) = parallel {
+                turn_trace::parallel_group(
+                    turn.trace,
+                    "parallel_tool_group_finish",
+                    kind.name(),
+                    count,
+                );
+            }
             self.record_settled(turn, settled.outcomes, feedback);
             if let Some(blocked) = settled.blocked {
                 return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
@@ -1579,10 +1610,12 @@ impl Agent {
             executed,
             review_hold,
             feedback: given,
+            ran,
         } in outcomes
         {
             feedback.extend(given.map(|text| (call.id.clone(), text)));
             turn.trail.last_call = Some((call.id.clone(), call.name.clone()));
+            self.record_tool_call(turn.trace, call, output.as_ref(), executed, ran);
             let Some(output) = output else {
                 if executed {
                     turn.trail.active = Some((call.id.clone(), call.name.clone()));
@@ -1606,8 +1639,18 @@ impl Agent {
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
             let bytes = output.content.len();
+            let result_kind = turn_trace::result_kind(&output);
             let (model_output, truncated) =
                 bound_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+            if let Some(ran) = ran {
+                turn_trace::tool_execution_result(
+                    turn.trace,
+                    call,
+                    result_kind,
+                    ran.panicked,
+                    model_output.len(),
+                );
+            }
             turn.raw_outputs.push(RecordedOutput {
                 call_id: call.id.clone(),
                 bytes,
@@ -1629,6 +1672,31 @@ impl Agent {
                 status,
             });
         }
+    }
+
+    fn record_tool_call(
+        &self,
+        trace: TraceContext,
+        call: &ToolCall,
+        output: Option<&ToolOutput>,
+        executed: bool,
+        ran: Option<Ran>,
+    ) {
+        let outcome = match (output, ran) {
+            (Some(output), Some(ran)) => ran_outcome(output, ran.panicked),
+            (None, Some(_)) => ToolCallOutcome::ToolFailed,
+            (_, None) if executed || trace.subagent_id == 0 => ToolCallOutcome::Rejected,
+            (Some(_), None) => return,
+            (None, None) => ToolCallOutcome::Rejected,
+        };
+        self.tool_call_trace.record(ToolCallRecord {
+            name: &call.name,
+            arguments: &call.arguments,
+            output: output.map_or("", |output| &output.content),
+            outcome,
+            started_at_ms: ran.map_or_else(ofx_trace::timestamp_ms, |ran| ran.started_at_ms),
+            subagent_id: trace.subagent_id,
+        });
     }
 
     fn record_tool_step(
@@ -2256,6 +2324,15 @@ enum ParallelGroup {
     Subagent,
 }
 
+impl ParallelGroup {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Subagent => "subagent",
+        }
+    }
+}
+
 fn parallel_group(description: &CallDescription) -> Option<ParallelGroup> {
     match (description.concurrency, description.activity) {
         (Concurrency::Serial, _) => None,
@@ -2284,7 +2361,7 @@ enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput, bool),
     Admitted(Box<dyn PreparedCall>, ToolContext),
-    Running(JoinHandle<ToolOutput>),
+    Running(JoinHandle<ToolOutput>, i64),
     Unstarted,
 }
 
@@ -2295,9 +2372,10 @@ impl Dispatched {
                 discard(prepared);
                 Self::Unstarted
             }
-            Self::Admitted(prepared, context) => {
-                Self::Running(tokio::spawn(async move { prepared.execute(context).await }))
-            }
+            Self::Admitted(prepared, context) => Self::Running(
+                tokio::spawn(async move { prepared.execute(context).await }),
+                ofx_trace::timestamp_ms(),
+            ),
             other => other,
         }
     }
@@ -2310,6 +2388,13 @@ struct Settled<'c> {
     executed: bool,
     review_hold: bool,
     feedback: Option<String>,
+    ran: Option<Ran>,
+}
+
+#[derive(Clone, Copy)]
+struct Ran {
+    started_at_ms: i64,
+    panicked: bool,
 }
 
 struct SettledGroup<'c> {
@@ -2625,7 +2710,7 @@ fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -
 }
 
 async fn run_group<'c>(
-    turn_id: TurnId,
+    (turn_id, trace): (TurnId, TraceContext),
     group: Vec<(&'c ToolCall, Prepared)>,
     gate: Gate<'_>,
     reviewing: &mut Reviewing<'_>,
@@ -2641,6 +2726,7 @@ async fn run_group<'c>(
             discard(prepared);
             break;
         }
+        turn_trace::tool_call(trace, call);
         match prepared {
             Prepared::Rejected(Rejection {
                 reason,
@@ -2725,14 +2811,14 @@ async fn run_group<'c>(
     SettledGroup {
         outcomes: {
             drop(statuses);
-            settle_group(turn_id, dispatched, &mut reported, events, cancel).await
+            settle_group((turn_id, trace), dispatched, &mut reported, events, cancel).await
         },
         blocked,
     }
 }
 
 async fn settle_group<'c>(
-    turn_id: TurnId,
+    (turn_id, trace): (TurnId, TraceContext),
     dispatched: Vec<(&'c ToolCall, Dispatched, Option<String>)>,
     reported: &mut UnboundedReceiver<ChildStatus>,
     events: EventSink<'_>,
@@ -2740,11 +2826,18 @@ async fn settle_group<'c>(
 ) -> Vec<Settled<'c>> {
     let dispatched: Vec<_> = dispatched
         .into_iter()
-        .map(|(call, dispatched, feedback)| (call, dispatched.start(cancel), feedback))
+        .map(|(call, dispatched, feedback)| {
+            let started = dispatched.start(cancel);
+            if matches!(started, Dispatched::Running(..)) {
+                turn_trace::tool_execution_start(trace, call);
+            }
+            (call, started, feedback)
+        })
         .collect();
     let mut grace_deadline = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched, feedback) in dispatched {
+        let mut ran = None;
         let (output, escalates, executed, review_hold) = match dispatched {
             Dispatched::Rejected(output, reason) => {
                 report_context_notices(turn_id, &output, events);
@@ -2759,13 +2852,24 @@ async fn settle_group<'c>(
                 events(tool_finished(turn_id, call, Some(&output)));
                 (Some(output), true, false, review_hold)
             }
-            Dispatched::Running(mut task) => {
+            Dispatched::Running(mut task, started_at_ms) => {
                 let settling = settle(call, &mut task, cancel, &mut grace_deadline);
-                let output = forward_child_statuses(turn_id, settling, reported, events).await;
+                let settled = forward_child_statuses(turn_id, settling, reported, events).await;
+                let output = settled.map(|(output, panicked)| {
+                    ran = Some(Ran {
+                        started_at_ms,
+                        panicked,
+                    });
+                    output
+                });
                 if let Some(output) = &output {
                     report_context_notices(turn_id, output, events);
                 }
                 events(tool_finished(turn_id, call, output.as_ref()));
+                ran.get_or_insert(Ran {
+                    started_at_ms,
+                    panicked: false,
+                });
                 (output, true, true, false)
             }
             Dispatched::Admitted(prepared, _) => {
@@ -2791,9 +2895,21 @@ async fn settle_group<'c>(
             executed,
             review_hold,
             feedback,
+            ran,
         });
     }
     outcomes
+}
+
+fn ran_outcome(output: &ToolOutput, panicked: bool) -> ToolCallOutcome {
+    match output.status {
+        ToolResultStatus::Success => ToolCallOutcome::Succeeded,
+        ToolResultStatus::Failure if panicked => ToolCallOutcome::RuntimeFailed,
+        ToolResultStatus::Failure if output.command_result.is_some() => {
+            ToolCallOutcome::CommandFailed
+        }
+        ToolResultStatus::Failure => ToolCallOutcome::ToolFailed,
+    }
 }
 
 fn tool_rejected(
@@ -2876,7 +2992,7 @@ async fn settle(
     task: &mut JoinHandle<ToolOutput>,
     cancel: &CancellationToken,
     grace_deadline: &mut Option<Instant>,
-) -> Option<ToolOutput> {
+) -> Option<(ToolOutput, bool)> {
     let deadline = if let Some(deadline) = *grace_deadline {
         deadline
     } else {
@@ -2896,13 +3012,16 @@ async fn settle(
     None
 }
 
-fn settled_output(call: &ToolCall, joined: Result<ToolOutput, JoinError>) -> ToolOutput {
-    joined.unwrap_or_else(|error| {
-        if let Ok(payload) = error.try_into_panic() {
-            release(payload);
+fn settled_output(call: &ToolCall, joined: Result<ToolOutput, JoinError>) -> (ToolOutput, bool) {
+    match joined {
+        Ok(output) => (output, false),
+        Err(error) => {
+            if let Ok(payload) = error.try_into_panic() {
+                release(payload);
+            }
+            (panicked(&call.name), true)
         }
-        panicked(&call.name)
-    })
+    }
 }
 
 fn contained<T>(hook: impl FnOnce() -> T) -> Option<T> {

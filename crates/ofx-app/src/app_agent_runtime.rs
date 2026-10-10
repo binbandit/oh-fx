@@ -953,6 +953,7 @@ impl Controller {
             Ok(switched) => {
                 self.forget_tracked_changes();
                 ofx_agent::reset_compaction_trace();
+                ofx_agent::reset_tool_call_trace();
                 self.state.setup.forget_children();
                 self.bind_children();
                 self.restore_preferences(switched.preferences);
@@ -1089,6 +1090,7 @@ impl Controller {
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
         ofx_agent::reset_compaction_trace();
+        ofx_agent::reset_tool_call_trace();
         self.forget_tracked_changes();
         self.state.setup.forget_children();
         let started = self
