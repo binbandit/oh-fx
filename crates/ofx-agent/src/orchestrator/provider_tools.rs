@@ -83,10 +83,8 @@ impl Agent {
             turn.trail.completed(call);
         }
         if shown {
-            let output = ToolOutput {
-                status,
-                ..ToolOutput::success(model_output.clone())
-            };
+            let mut output = ToolOutput::success(model_output.clone());
+            output.status = status;
             events(tool_finished(turn.id, call, Some(&output)));
         }
         let content = if ToolArgumentIntegrity::classify_function_input(&call.arguments)

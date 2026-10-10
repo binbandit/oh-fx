@@ -1711,7 +1711,7 @@ impl Agent {
             if interrupted {
                 turn.trail.interrupted_at(call);
             }
-            let Some(output) = output else {
+            let Some(mut output) = output else {
                 continue;
             };
             turn.selected_tools.record(&output);
@@ -1730,7 +1730,7 @@ impl Agent {
                 turn.shell_corrections.observe(call, &output.content);
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
-            let images = output.images.into_vec();
+            let images = output.take_images();
             let bytes = output.content.len();
             let result_kind = turn_trace::result_kind(&output);
             let (model_output, truncated) =
