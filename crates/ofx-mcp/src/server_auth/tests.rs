@@ -409,6 +409,40 @@ mod stored {
     }
 
     #[tokio::test]
+    async fn a_refresh_of_a_superseded_grant_stays_with_its_session() {
+        let fixture = Fixture::start(RENEWED).await;
+        let mut slashed = fixture.credentials(1, Some("stored-refresh"));
+        slashed.issuer = "https://issuer.example/".to_owned();
+        fixture.store().save(&fixture.lookup(), &slashed).unwrap();
+        let auth = resolved(&fixture).await;
+        let mut reauthorized = fixture.credentials(i64::MAX, None);
+        reauthorized.access_token = Zeroizing::new("newer-token".to_owned());
+        fixture
+            .store()
+            .save(&fixture.lookup(), &reauthorized)
+            .unwrap();
+        let builder = auth
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization(builder).as_deref(),
+            Some("Bearer renewed-token")
+        );
+        let stored = std::fs::read_to_string(
+            fixture
+                .data()
+                .join("mcp-credentials")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        assert_eq!(stored.matches("\"server_identity\"").count(), 1, "{stored}");
+        assert!(!stored.contains("renewed-token"));
+        let loaded = fixture.store().load(&fixture.lookup()).unwrap().unwrap();
+        assert_eq!(loaded.access_token.as_str(), "newer-token");
+    }
+
+    #[tokio::test]
     async fn concurrent_requests_share_one_refresh() {
         let fixture = Fixture::start(RENEWED).await;
         fixture

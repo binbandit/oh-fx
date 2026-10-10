@@ -83,6 +83,14 @@ impl GrantLookup {
     }
 }
 
+fn write_store(locked: &LockedDir, store: &Store) -> Result<SaveResult, McpError> {
+    let bytes = serialize_store(store)?;
+    locked.directory.replace(FILE_NAME, bytes.as_bytes())?;
+    Ok(SaveResult {
+        repaired_entries: store.rejected_entries,
+    })
+}
+
 fn same_grant(
     identity: &str,
     entry: &Credentials,
@@ -130,50 +138,46 @@ impl CredentialStore {
         lookup: &GrantLookup,
         credentials: &Credentials,
     ) -> Result<SaveResult, McpError> {
-        self.write(&lookup.identity, credentials, |identity, entry| {
-            lookup.matches(identity, entry)
-                || same_grant(identity, entry, &lookup.identity, credentials)
-        })
+        let locked = self.open_or_create()?;
+        let mut store = load_store(&locked.directory)?;
+        let mut slot = None;
+        let mut kept = Vec::with_capacity(store.credentials.len() + 1);
+        for (identity, entry) in store.credentials.drain(..) {
+            if lookup.matches(&identity, &entry)
+                || same_grant(&identity, &entry, &lookup.identity, credentials)
+            {
+                slot.get_or_insert(kept.len());
+            } else {
+                kept.push((identity, entry));
+            }
+        }
+        let replacement = (lookup.identity.clone(), credentials.clone());
+        match slot {
+            Some(index) => kept.insert(index, replacement),
+            None => kept.push(replacement),
+        }
+        store.credentials = kept;
+        write_store(&locked, &store)
     }
 
     pub(crate) fn save_refreshed(
         &self,
         server_identity: &str,
         credentials: &Credentials,
-    ) -> Result<SaveResult, McpError> {
-        self.write(server_identity, credentials, |identity, entry| {
-            same_grant(identity, entry, server_identity, credentials)
-        })
-    }
-
-    fn write(
-        &self,
-        server_identity: &str,
-        credentials: &Credentials,
-        superseded: impl Fn(&str, &Credentials) -> bool,
-    ) -> Result<SaveResult, McpError> {
-        let locked = self.open_or_create()?;
+    ) -> Result<Option<SaveResult>, McpError> {
+        let Some(locked) = self.open_existing()? else {
+            return Ok(None);
+        };
         let mut store = load_store(&locked.directory)?;
-        let mut slot = None;
-        let mut kept = Vec::with_capacity(store.credentials.len() + 1);
-        for (identity, entry) in store.credentials.drain(..) {
-            if superseded(&identity, &entry) {
-                slot.get_or_insert(kept.len());
-            } else {
-                kept.push((identity, entry));
-            }
-        }
-        let replacement = (server_identity.to_owned(), credentials.clone());
-        match slot {
-            Some(index) => kept.insert(index, replacement),
-            None => kept.push(replacement),
-        }
-        store.credentials = kept;
-        let bytes = serialize_store(&store)?;
-        locked.directory.replace(FILE_NAME, bytes.as_bytes())?;
-        Ok(SaveResult {
-            repaired_entries: store.rejected_entries,
-        })
+        let Some((_, entry)) = store
+            .credentials
+            .iter_mut()
+            .find(|(identity, entry)| same_grant(identity, entry, server_identity, credentials))
+        else {
+            return Ok(None);
+        };
+        entry.clone_from(credentials);
+        write_store(&locked, &store).map(Some)
     }
 
     fn open_existing(&self) -> Result<Option<LockedDir>, McpError> {

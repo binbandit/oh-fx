@@ -191,7 +191,9 @@ impl Installing {
         })
         .await
         .map_err(|_| McpError::Cancelled)?;
-        trace_store_repair("refresh", &server, result?.repaired_entries);
+        if let Some(saved) = result? {
+            trace_store_repair("refresh", &server, saved.repaired_entries);
+        }
         let header = bearer_header(&refreshed)?;
         *credentials = refreshed;
         *self.bearer.lock().unwrap_or_else(PoisonError::into_inner) = header.clone();

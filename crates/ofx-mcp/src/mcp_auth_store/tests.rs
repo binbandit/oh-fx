@@ -414,6 +414,72 @@ fn a_save_supersedes_every_grant_its_lookup_would_find() {
 }
 
 #[test]
+fn no_sequence_of_saves_and_refreshes_makes_a_saved_lookup_ambiguous() {
+    let home = Home::new();
+    let store = home.store();
+    let endpoint = "https://mcp.example/team/mcp";
+    let lookups = [
+        lookup("one", endpoint, None, None),
+        lookup("one", endpoint, None, Some("https://issuer.example")),
+        lookup("one", endpoint, None, Some("https://issuer.example/")),
+        lookup("one", endpoint, None, Some("https://other.example")),
+        lookup("one", endpoint, Some(endpoint), None),
+        lookup("one", endpoint, Some("https://mcp.example/team"), None),
+        lookup("two", endpoint, None, None),
+    ];
+    let shapes = [
+        ("https://issuer.example", endpoint),
+        ("https://issuer.example/", endpoint),
+        ("https://issuer.example", "https://mcp.example/team"),
+        ("https://other.example", endpoint),
+        ("https://other.example", "https://mcp.example/"),
+    ];
+    let matching = |lookup: &GrantLookup| -> usize {
+        fs::read(home.file()).map_or(0, |bytes| {
+            parse_store(&bytes)
+                .unwrap()
+                .credentials
+                .iter()
+                .filter(|(identity, entry)| lookup.matches(identity, entry))
+                .count()
+        })
+    };
+    let mut sessions: Vec<(String, Credentials)> = Vec::new();
+    let mut seed: u64 = 0x5eed;
+    let mut next = |bound: usize| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(seed >> 33).unwrap() % bound
+    };
+    for step in 0..400 {
+        let counts: Vec<usize> = lookups.iter().map(&matching).collect();
+        if sessions.is_empty() || next(3) > 0 {
+            let chosen = &lookups[next(lookups.len())];
+            let (issuer, resource) = shapes[next(shapes.len())];
+            let mut grant = credentials(endpoint, &format!("token-{step}"));
+            grant.issuer = issuer.to_owned();
+            grant.resource = resource.to_owned();
+            if !chosen.matches(&chosen.identity, &grant) {
+                continue;
+            }
+            store.save(chosen, &grant).unwrap();
+            assert_eq!(matching(chosen), 1, "step {step}");
+            sessions.push((chosen.identity.clone(), grant));
+        } else {
+            let (identity, grant) = &sessions[next(sessions.len())];
+            let mut refreshed = grant.clone();
+            refreshed.access_token = Zeroizing::new(format!("refreshed-{step}"));
+            store.save_refreshed(identity, &refreshed).unwrap();
+            for (lookup, before) in lookups.iter().zip(&counts) {
+                assert!(matching(lookup) <= *before, "step {step}");
+            }
+        }
+    }
+    assert!(sessions.len() > 100);
+}
+
+#[test]
 fn a_save_drops_rejected_entries_and_reports_the_repair() {
     let home = Home::new();
     home.write(r#"{"version":1,"credentials":[{}]}"#);
