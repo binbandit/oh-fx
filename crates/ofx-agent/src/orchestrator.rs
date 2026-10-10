@@ -34,7 +34,7 @@ use crate::agent_steps::allows_step;
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
-use crate::lifecycle::LifecycleContext;
+use crate::lifecycle::{LifecycleContext, ToolPreparation};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, ToolEvidence, recovery_cause,
 };
@@ -210,6 +210,7 @@ struct Turn {
     tool_evidence: ToolEvidence,
     continuation: Option<&'static str>,
     restored: RestoredReply,
+    steps: u64,
 }
 
 struct ProjectInstructions {
@@ -542,6 +543,7 @@ impl Agent {
             tool_evidence: ToolEvidence::None,
             continuation: None,
             restored: RestoredReply::default(),
+            steps: 0,
         }
     }
 
@@ -781,6 +783,7 @@ impl Agent {
                 return Err(Stop::failed(failure));
             }
             step += 1;
+            turn.steps = step;
             let more_steps = allows_step(self.config.step_limit, step);
             if let Some(text) = self
                 .settle_completion(turn, completion, more_steps, events, cancel)
@@ -1198,11 +1201,28 @@ impl Agent {
         } else {
             turn.silent_tool_steps + 1
         };
-        let (calls, mut malformed) = self.record_tool_step(completion);
+        let malformed: Vec<Option<ToolOutput>> = completion
+            .tool_calls
+            .iter()
+            .map(|call| {
+                if provider_executed(call) {
+                    None
+                } else {
+                    argument_rejection(call)
+                }
+            })
+            .collect();
         let all_malformed = !malformed.is_empty() && malformed.iter().all(Option::is_some);
+        let hooked = self
+            .pre_tool_use(turn, &completion.tool_calls, &malformed, cancel)
+            .await
+            .ok_or_else(|| Stop::Interrupted {
+                partial: completion.content.clone().unwrap_or_default(),
+            })?;
+        let (calls, mut rejected) = self.record_tool_step(completion, malformed, hooked);
         let mut feedback = Vec::new();
         let ran = self
-            .run_groups(turn, &calls, &mut malformed, &mut feedback, events, cancel)
+            .run_groups(turn, &calls, &mut rejected, &mut feedback, events, cancel)
             .await;
         self.history.extend(
             feedback
@@ -1278,13 +1298,13 @@ impl Agent {
         &mut self,
         turn: &mut Turn,
         calls: &[ToolCall],
-        malformed: &mut [Option<ToolOutput>],
+        rejected: &mut [Option<Rejection>],
         feedback: &mut Vec<(ToolCallId, String)>,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<(), Stop> {
         let mut gate = match self.project {
-            Some(_) => Some(self.open_gate(turn.id, calls, malformed, events, cancel)?),
+            Some(_) => Some(self.open_gate(turn.id, calls, rejected, events, cancel)?),
             None => None,
         };
         let mut next = 0;
@@ -1309,7 +1329,7 @@ impl Agent {
                         continue;
                     }
                 },
-                None => self.lazy_group(calls, next, malformed, &mut carried),
+                None => self.lazy_group(calls, next, rejected, &mut carried),
             };
             next += group.len();
             let gate = Gate {
@@ -1400,36 +1420,26 @@ impl Agent {
     fn record_tool_step(
         &mut self,
         completion: Completion,
-    ) -> (Vec<ToolCall>, Vec<Option<ToolOutput>>) {
-        let malformed: Vec<Option<ToolOutput>> = completion
-            .tool_calls
-            .iter()
-            .map(|call| {
-                if provider_executed(call) {
-                    None
-                } else {
-                    argument_rejection(call)
-                }
-            })
-            .collect();
-        let calls: Vec<ToolCall> = completion
+        malformed: Vec<Option<ToolOutput>>,
+        hooked: Vec<ToolPreparation>,
+    ) -> (Vec<ToolCall>, Vec<Option<Rejection>>) {
+        let (calls, rejected): (Vec<ToolCall>, Vec<Option<Rejection>>) = completion
             .tool_calls
             .into_iter()
-            .zip(&malformed)
-            .map(|(call, rejection)| match rejection {
-                Some(_) => ToolCall {
-                    arguments: REPLAYED_MALFORMED_ARGUMENTS.to_owned(),
-                    ..call
-                },
-                None => call,
-            })
-            .collect();
+            .zip(malformed)
+            .zip(hooked)
+            .map(|((call, malformed), hooked)| prepared_for_history(call, malformed, hooked))
+            .unzip();
         let history_calls = calls
             .iter()
-            .zip(&malformed)
+            .zip(&rejected)
             .map(|(call, rejection)| match rejection {
-                None if !provider_executed(call) => self.history_call(call.clone()),
-                _ => call.clone(),
+                Some(Rejection {
+                    reason: ToolRejection::MalformedArguments,
+                    ..
+                }) => call.clone(),
+                _ if provider_executed(call) => call.clone(),
+                _ => self.history_call(call.clone()),
             })
             .collect();
         self.history.push(ChatMessage::Assistant {
@@ -1437,7 +1447,37 @@ impl Agent {
             tool_calls: history_calls,
             provider_replay: completion.provider_replay,
         });
-        (calls, malformed)
+        (calls, rejected)
+    }
+
+    async fn pre_tool_use(
+        &self,
+        turn: &Turn,
+        calls: &[ToolCall],
+        malformed: &[Option<ToolOutput>],
+        cancel: &CancellationToken,
+    ) -> Option<Vec<ToolPreparation>> {
+        let Some(lifecycle) = self
+            .lifecycle
+            .as_ref()
+            .filter(|lifecycle| lifecycle.has_pre_tool_use())
+        else {
+            return Some(vec![ToolPreparation::Unchanged; calls.len()]);
+        };
+        let step_index = usize::try_from(turn.steps).unwrap_or(usize::MAX);
+        let mut prepared = Vec::with_capacity(calls.len());
+        for (call, malformed) in calls.iter().zip(malformed) {
+            if provider_executed(call) || malformed.is_some() {
+                prepared.push(ToolPreparation::Unchanged);
+                continue;
+            }
+            prepared.push(
+                lifecycle
+                    .pre_tool_use(turn.id, step_index, call, cancel)
+                    .await?,
+            );
+        }
+        Some(prepared)
     }
 
     fn stop_with_notice(
@@ -1543,22 +1583,22 @@ impl Agent {
         &self,
         calls: &'c [ToolCall],
         start: usize,
-        malformed: &mut [Option<ToolOutput>],
+        rejected: &mut [Option<Rejection>],
         carried: &mut Deferred,
     ) -> Vec<(&'c ToolCall, Prepared)> {
         let head = match carried.0.take() {
             Some(uncompleted) => uncompleted.complete(&calls[start].name),
-            None => self.prepare(&calls[start], malformed[start].take()),
+            None => self.prepare(&calls[start], rejected[start].take()),
         };
         let parallel = head
             .parallel_group()
             .filter(|_| joins_parallel_groups(&calls[start]));
         let mut group = vec![(&calls[start], head)];
-        for (call, malformed) in calls[start + 1..].iter().zip(&mut malformed[start + 1..]) {
+        for (call, rejected) in calls[start + 1..].iter().zip(&mut rejected[start + 1..]) {
             if parallel.is_none() || !joins_parallel_groups(call) {
                 break;
             }
-            let uncompleted = self.prepare_uncompleted(call, malformed.take());
+            let uncompleted = self.prepare_uncompleted(call, rejected.take());
             if uncompleted.parallel_group() != parallel {
                 carried.0 = Some(uncompleted);
                 break;
@@ -1568,15 +1608,15 @@ impl Agent {
         group
     }
 
-    fn prepare(&self, call: &ToolCall, malformed: Option<ToolOutput>) -> Prepared {
-        match self.prepared_call(call, malformed) {
+    fn prepare(&self, call: &ToolCall, rejected: Option<Rejection>) -> Prepared {
+        match self.prepared_call(call, rejected) {
             Ok(prepared) => completed(prepared, &call.name),
             Err(rejection) => Prepared::Rejected(rejection),
         }
     }
 
-    fn prepare_uncompleted(&self, call: &ToolCall, malformed: Option<ToolOutput>) -> Prepared {
-        match self.prepared_call(call, malformed) {
+    fn prepare_uncompleted(&self, call: &ToolCall, rejected: Option<Rejection>) -> Prepared {
+        match self.prepared_call(call, rejected) {
             Ok(prepared) => inspected(prepared, &call.name),
             Err(rejection) => Prepared::Rejected(rejection),
         }
@@ -1585,14 +1625,10 @@ impl Agent {
     fn prepared_call(
         &self,
         call: &ToolCall,
-        malformed: Option<ToolOutput>,
+        rejected: Option<Rejection>,
     ) -> Result<Box<dyn PreparedCall>, Rejection> {
-        if let Some(output) = malformed {
-            return Err(Rejection {
-                reason: ToolRejection::MalformedArguments,
-                description: None,
-                output,
-            });
+        if let Some(rejection) = rejected {
+            return Err(rejection);
         }
         if let Some(output) = self
             .mode
@@ -1750,6 +1786,37 @@ fn presentation_outcome(outcome: TurnOutcome, ending: Ending) -> TurnPresentatio
         (TurnOutcome::Completed, _) => TurnPresentationOutcome::Completed,
         (TurnOutcome::Interrupted, _) => TurnPresentationOutcome::Interrupted,
         (TurnOutcome::Failed, _) => TurnPresentationOutcome::Failed,
+    }
+}
+
+fn prepared_for_history(
+    call: ToolCall,
+    malformed: Option<ToolOutput>,
+    hooked: ToolPreparation,
+) -> (ToolCall, Option<Rejection>) {
+    if let Some(output) = malformed {
+        let call = ToolCall {
+            arguments: REPLAYED_MALFORMED_ARGUMENTS.to_owned(),
+            ..call
+        };
+        let rejection = Rejection {
+            reason: ToolRejection::MalformedArguments,
+            description: None,
+            output,
+        };
+        return (call, Some(rejection));
+    }
+    match hooked {
+        ToolPreparation::Unchanged => (call, None),
+        ToolPreparation::Rewritten(arguments) => (ToolCall { arguments, ..call }, None),
+        ToolPreparation::Blocked(content) => {
+            let rejection = Rejection {
+                reason: ToolRejection::Invalid,
+                description: None,
+                output: ToolOutput::failure(content),
+            };
+            (call, Some(rejection))
+        }
     }
 }
 
