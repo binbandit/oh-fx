@@ -153,6 +153,15 @@ pub(crate) fn history_turns<'a>(
 }
 
 pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) -> HistoryTurn<'_> {
+    ended_turn(history, start, end, false)
+}
+
+pub(crate) fn ended_turn(
+    history: &[ChatMessage],
+    start: usize,
+    end: usize,
+    standalone_reply: bool,
+) -> HistoryTurn<'_> {
     let user = match &history[start] {
         ChatMessage::User { content, .. } => steering_text(content).unwrap_or(content),
         _ => "",
@@ -233,6 +242,10 @@ pub(crate) fn history_turn(history: &[ChatMessage], start: usize, end: usize) ->
         }
     }
     let (reply, reply_replay) = match pending {
+        Some(step) if standalone_reply => {
+            steps.push(step);
+            ("", None)
+        }
         Some(step) => {
             notes.splice(0..0, step.notes);
             (step.assistant, step.replay)

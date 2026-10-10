@@ -122,7 +122,7 @@ note = "Interrupted execution memory closes live cancelled and failed partial te
 upstream = "src/core/agent/runtime/finalization.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
-note = "Turn completion with its PostTurnEnd checkpoint, failed partial text and logging exist; retained candidate recovery, durable attention checkpoints and summary presentations are absent."
+note = "Turn completion with its PostTurnEnd checkpoint, the Stop candidate kept as a standalone step on allow, cancellation, failure, interruption, a pause's checkpoint and the step limit, the joined presentation of a continued answer, failed partial text and logging exist; durable attention checkpoints and summary presentations are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/gateway_step.zig"
@@ -146,7 +146,7 @@ note = "Cancelled partial turns, completed tool outputs and steering at its tool
 upstream = "src/core/agent/runtime/lifecycle.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/approvals.rs", "crates/ofx-agent/src/lifecycle.rs", "crates/ofx-tui/src/shell/mod.rs"]
-note = "Prepared calls and cancellation lifecycle exist; the turn loop dispatches the PreToolUse checkpoint for each valid local call after malformed and non-object arguments are rejected, keeps rewritten arguments in the call it validates, runs and saves, turns a block into upstream's blocked result and a handler failure or invalid output into the failed-closed result, and interrupts before the tool step is kept when the turn is cancelled around the hook; it dispatches PostTurnEnd on the blocking pool, and the interactive shell dispatches AttentionRequired. The Stop checkpoint, durable stop/attention checkpoints and transport publication authority are absent."
+note = "Prepared calls and cancellation lifecycle exist; the turn loop dispatches the PreToolUse checkpoint for each valid local call after malformed and non-object arguments are rejected, keeps rewritten arguments in the call it validates, runs and saves, turns a block into upstream's blocked result and a handler failure or invalid output into the failed-closed result, and interrupts before the tool step is kept when the turn is cancelled around the hook; it dispatches Stop once at a turn's final answer, checking cancellation before and after, and appends the continuation message when a handler continues; it dispatches PostTurnEnd on the blocking pool, and the interactive shell dispatches AttentionRequired. Durable attention checkpoints and transport publication authority are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/model_response_recovery.zig"

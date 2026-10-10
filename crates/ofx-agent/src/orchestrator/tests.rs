@@ -2914,6 +2914,7 @@ mod reviews;
 mod shell_retries;
 mod skills;
 mod steering;
+mod stop;
 mod tool_regeneration;
 mod turn_log;
 

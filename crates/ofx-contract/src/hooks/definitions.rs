@@ -6,6 +6,7 @@ use crate::types::TurnPresentationOutcome;
 
 pub(super) const HANDLER_NAME_BYTES: usize = 128;
 pub(super) const REASON_BYTES: usize = 4 * 1024;
+pub(super) const CONTEXT_BYTES: usize = 64 * 1024;
 pub(super) const ARGUMENTS_JSON_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +58,26 @@ pub enum PreToolUseOutcome {
     Unchanged,
     Rewritten(String),
     Blocked(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopInput<'a> {
+    pub invocation: HookInvocation,
+    pub step_index: usize,
+    pub assistant_text: &'a str,
+    pub can_continue: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopAction {
+    Allow,
+    ContinueOnce(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopOutcome {
+    Allow,
+    ContinueOnce(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
