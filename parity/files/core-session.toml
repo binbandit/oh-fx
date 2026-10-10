@@ -210,7 +210,7 @@ modules = ["crates/ofx-session/src/session_summary_codec.rs"]
 upstream = "src/core/session/session_title_generation.zig"
 status = "ported"
 modules = ["crates/ofx-session/src/session_title_generation.rs", "crates/ofx-app/src/app_session_runtime/session_titles.rs"]
-note = "The background task is a tokio task; the failure reasons and timings upstream keeps only for /trace are not recorded, since oh-fx has no trace log."
+note = "The background task is a tokio task; each title request is recorded in the network ring without turn ids, as upstream's is; the failure reasons and timings upstream keeps for /trace are not recorded yet."
 
 [[file]]
 upstream = "src/core/session/session_usage.zig"
