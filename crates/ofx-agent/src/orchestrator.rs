@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::iter;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
@@ -1427,7 +1428,11 @@ impl Agent {
             .tool_calls
             .into_iter()
             .zip(malformed)
-            .zip(hooked)
+            .zip(
+                hooked
+                    .into_iter()
+                    .chain(iter::repeat(ToolPreparation::Unchanged)),
+            )
             .map(|((call, malformed), hooked)| prepared_for_history(call, malformed, hooked))
             .unzip();
         let history_calls = calls
@@ -1462,7 +1467,7 @@ impl Agent {
             .as_ref()
             .filter(|lifecycle| lifecycle.has_pre_tool_use())
         else {
-            return Some(vec![ToolPreparation::Unchanged; calls.len()]);
+            return Some(Vec::new());
         };
         let step_index = usize::try_from(turn.steps).unwrap_or(usize::MAX);
         let mut prepared = Vec::with_capacity(calls.len());
