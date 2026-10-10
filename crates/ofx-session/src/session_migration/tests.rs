@@ -13,6 +13,8 @@ use ofx_contract::{ToolArgumentIntegrity, ToolResultStatus};
 
 type Edit = fn(String) -> String;
 
+pub(crate) const REQUEST_CHECKPOINT: &str = "{\"checkpoint\":{\"version\":2,\"route_identity\":{\"connection_id\":\"vercel\",\"adapter_kind\":\"vercel_ai_gateway\",\"permission_review_model_id\":\"review\"},\"delivery\":\"possibly_sent\",\"turn_id\":1,\"user\":{\"text\":\"saved request\",\"images\":[]},\"assistant_source\":\"\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]},\"cause\":\"response_interrupted\",\"action\":\"continuing_response\",\"tool_state\":\"uncertain\",\"route_model\":\"openai/gpt-5\",\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":0,\"outstanding_reservation\":false}}";
+
 pub(crate) const GENERATION: &str = "01010101010101010101010101010101";
 const AUTHORITY_ID: &str = "03030303030303030303030303030303";
 const USAGE: &str = "{\"billing\":\"complete\",\"api_duration_complete\":true,\"wall_duration_complete\":true,\"code_complete\":true,\"next_sequence\":1,\"settled_through_sequence\":0,\"api_duration_ms\":0,\"wall_duration_ms\":0,\"total_cost\":0,\"input_tokens\":0,\"output_tokens\":0,\"cache_read_tokens\":0,\"cache_write_tokens\":0,\"billable_web_search_calls\":0,\"lines_added\":0,\"lines_removed\":0,\"models\":[],\"pending\":[]}";
@@ -57,7 +59,8 @@ impl LegacyLog {
 
     #[must_use]
     pub(crate) fn turn(self, turn: &str) -> Self {
-        self.frame(
+        self.frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
+            .frame(
             "history_turn_committed",
             &format!(
                 "{{\"conversation_language\":\"en\",\"total_input_tokens\":0,\"total_output_tokens\":0,\"turn\":{turn}}}"
@@ -259,7 +262,7 @@ fn a_conversation_fx_saved_before_0_0_8_lists_from_its_committed_log() {
     assert_eq!(summary.origin_workspace_root, "/work");
     assert_eq!(summary.title.as_deref(), Some("Saved display title"));
     assert_eq!(summary.created_at_ms, 10);
-    assert_eq!(summary.updated_at_ms, 50);
+    assert_eq!(summary.updated_at_ms, 70);
     assert_eq!(summary.conversation_language, "en");
     assert_eq!(summary.history_len, 2);
     assert!(!summary.has_checkpoint);
@@ -292,9 +295,9 @@ fn a_watermark_that_does_not_match_the_log_makes_the_session_unreadable() {
         ("generation", |mark| {
             mark.replace(GENERATION, &"02".repeat(16))
         }),
-        ("event", |mark| mark.replace(&event_id(3), &event_id(2))),
+        ("event", |mark| mark.replace(&event_id(4), &event_id(3))),
         ("seq", |mark| {
-            mark.replace("\"through_seq\":3", "\"through_seq\":2")
+            mark.replace("\"through_seq\":4", "\"through_seq\":3")
         }),
         ("bytes", |mark| {
             mark.replace(
@@ -382,7 +385,8 @@ fn logs_holding_what_oh_fx_cannot_convert_yet_stay_unreadable() {
         LegacyLog::started("legacy-later", "/work").turn(&image_turn),
         LegacyLog::started("legacy-later", "/work").turn(&replay_turn),
         LegacyLog::started("legacy-later", "/work").turn(compacted),
-        LegacyLog::started("legacy-later", "/work").frame("recovery_checkpoint_cleared", "{}"),
+        LegacyLog::started("legacy-later", "/work")
+            .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT),
         LegacyLog::started("legacy-later", "/work").frame(
             "state_replacement_started",
             &format!(
@@ -442,7 +446,7 @@ fn preference_and_workspace_changes_replay_in_order() {
     assert_eq!(session.preferences.model, "openai/gpt-5.1");
     assert_eq!(session.preferences.effort.label(), "high");
     assert!(!session.preferences.fast_mode);
-    assert_eq!(session.updated_at_ms, 50);
+    assert_eq!(session.updated_at_ms, 60);
 
     let foreign = LegacyLog::with_preferences(
         "legacy-foreign",
@@ -565,4 +569,47 @@ fn unreadable_arguments_are_repaired_into_a_failed_result_as_upstream_repairs_th
             .as_deref()
             .is_some_and(|preview| preview.contains("Tool arguments were not valid JSON."))
     );
+}
+
+#[test]
+fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
+    let fixture = Fixture::new();
+    let cleared = LegacyLog::started("legacy-cleared", "/work")
+        .turn(&reply("one", "two"))
+        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
+        .frame("recovery_checkpoint_cleared", "{}");
+    let summary = fixture.summary(&cleared).unwrap().unwrap();
+    assert_eq!(summary.history_len, 1);
+    assert_eq!(summary.updated_at_ms, 60);
+
+    let open = LegacyLog::started("legacy-open", "/work")
+        .turn(&reply("one", "two"))
+        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT);
+    assert!(fixture.summary(&open).is_err());
+    let settled_later = LegacyLog::started("legacy-settled", "/work")
+        .turn(&reply("one", "two"))
+        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
+        .turn(&reply("three", "four"));
+    assert_eq!(
+        fixture
+            .summary(&settled_later)
+            .unwrap()
+            .unwrap()
+            .history_len,
+        2
+    );
+
+    for malformed in [
+        LegacyLog::started("legacy-bad-set", "/work").frame("recovery_checkpoint_set", "{}"),
+        LegacyLog::started("legacy-bad-set", "/work")
+            .frame("recovery_checkpoint_set", "{\"checkpoint\":null}"),
+        LegacyLog::started("legacy-bad-clear", "/work")
+            .frame("recovery_checkpoint_cleared", "{\"checkpoint\":{}}"),
+    ] {
+        assert!(
+            fixture.summary(&malformed).is_err(),
+            "{}",
+            malformed.events()
+        );
+    }
 }

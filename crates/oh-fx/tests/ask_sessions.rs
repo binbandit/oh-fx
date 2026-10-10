@@ -1466,8 +1466,10 @@ fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
     );
     let turn = "{\"conversation_language\":\"en\",\"total_input_tokens\":7,\"total_output_tokens\":3,\"turn\":{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered in fx 0.0.7\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}}";
     let mut events = String::new();
+    let checkpoint = "{\"checkpoint\":{\"version\":2,\"route_identity\":{\"connection_id\":\"vercel\",\"adapter_kind\":\"vercel_ai_gateway\",\"permission_review_model_id\":\"review\"},\"delivery\":\"possibly_sent\",\"turn_id\":1,\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant_source\":\"\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]},\"cause\":\"response_interrupted\",\"action\":\"continuing_response\",\"tool_state\":\"uncertain\",\"route_model\":\"openai/gpt-5\",\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":0,\"outstanding_reservation\":false}}";
     for (seq, (kind, payload)) in (1_u64..).zip([
         ("session_started", started.as_str()),
+        ("recovery_checkpoint_set", checkpoint),
         ("history_turn_committed", turn),
     ]) {
         let _ = writeln!(
@@ -1477,8 +1479,8 @@ fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
         );
     }
     let watermark = format!(
-        "{{\"schema_version\":1,\"session_id\":\"{FX_ID}\",\"log_generation\":\"{V3_GENERATION}\",\"through_seq\":2,\"through_event_id\":\"{:032x}\",\"through_event_log_bytes\":{}}}\n",
-        2,
+        "{{\"schema_version\":1,\"session_id\":\"{FX_ID}\",\"log_generation\":\"{V3_GENERATION}\",\"through_seq\":3,\"through_event_id\":\"{:032x}\",\"through_event_log_bytes\":{}}}\n",
+        3,
         events.len()
     );
     let authority = format!(

@@ -47,6 +47,7 @@ struct Replay {
     generation: Identifier,
     seq: u64,
     event_id: Identifier,
+    recovery_set: bool,
 }
 
 pub(crate) fn holds_schema_v3(dir: &PrivateDir, id: &str) -> Result<bool, SessionError> {
@@ -93,7 +94,8 @@ fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionEr
     }
     let committed = replay.seq == watermark.seq
         && replay.event_id == watermark.event_id
-        && reader.offset() == watermark.bytes;
+        && reader.offset() == watermark.bytes
+        && !replay.recovery_set;
     if committed {
         Ok(replay.session)
     } else {
@@ -148,6 +150,7 @@ impl Replay {
             generation,
             seq: 1,
             event_id,
+            recovery_set: false,
         })
     }
 
@@ -171,8 +174,11 @@ impl Replay {
             } => {
                 session.turns.push(turn);
                 session.conversation_language = conversation_language;
+                self.recovery_set = false;
             }
             Event::UsageCheckpointed => {}
+            Event::RecoverySet => self.recovery_set = true,
+            Event::RecoveryCleared => self.recovery_set = false,
         }
         session.updated_at_ms = envelope.timestamp_ms;
         self.seq = envelope.seq;

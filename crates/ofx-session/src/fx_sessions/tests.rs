@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
-use crate::session_migration::tests::{LegacyLog, reply};
+use crate::session_migration::tests::{LegacyLog, REQUEST_CHECKPOINT, reply};
 use crate::session_store::{ListScope, SessionStore};
 use crate::session_summary_codec::ResumablePage;
 
@@ -611,7 +611,7 @@ fn sessions_fx_saved_before_its_conversation_layout_are_listed_and_marked() {
     fs::create_dir_all(child.join("subagent")).unwrap();
     fs::write(child.join("subagent/owner.json"), "{}").unwrap();
     LegacyLog::started("fx-legacy-later", "/work")
-        .frame("recovery_checkpoint_cleared", "{}")
+        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
         .write(&home.fx_sessions());
     let before = snapshot(&home.fx_profile());
 
@@ -621,7 +621,7 @@ fn sessions_fx_saved_before_its_conversation_layout_are_listed_and_marked() {
     assert_eq!(legacy.source, SessionSource::Fx);
     assert_eq!(legacy.title.as_deref(), Some("Old work"));
     assert_eq!(legacy.history_len, 1);
-    assert_eq!(legacy.updated_at_ms, 30);
+    assert_eq!(legacy.updated_at_ms, 40);
     let everywhere = home.listed("/work", ListScope::AllWorkspaces);
     assert_eq!(ids(&everywhere), ["fx-legacy-elsewhere", "fx-legacy"]);
     assert_eq!(snapshot(&home.fx_profile()), before);

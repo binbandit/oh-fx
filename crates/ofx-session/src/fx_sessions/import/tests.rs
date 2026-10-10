@@ -15,7 +15,9 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
 use crate::session_log::WritableSession;
-use crate::session_migration::tests::{GENERATION, LegacyLog, command_result, command_turn, reply};
+use crate::session_migration::tests::{
+    GENERATION, LegacyLog, REQUEST_CHECKPOINT, command_result, command_turn, reply,
+};
 use crate::session_store::{ListScope, SessionStore};
 
 type OwnWork = fn(&Home, WritableSession);
@@ -583,7 +585,7 @@ fn resuming_a_session_fx_saved_before_0_0_8_converts_it_into_the_copy() {
     assert_eq!(metadata.preferences.model, "openai/gpt-5");
     assert_eq!(metadata.preferences.effort, ReasoningEffort::Auto);
     assert_eq!(metadata.created_at_ms, 10);
-    assert_eq!(metadata.updated_at_ms, 70);
+    assert_eq!(metadata.updated_at_ms, 100);
     assert_eq!(metadata.workspace_root, WORKSPACE);
     assert_eq!(metadata.title.as_deref(), Some("first prompt here"));
     let turns: Vec<_> = saved
@@ -661,7 +663,7 @@ fn a_schema_v3_session_without_its_manifest_imports_and_follows_fx_until_used() 
 fn a_schema_v3_session_oh_fx_cannot_convert_yet_is_refused() {
     let home = Home::new();
     legacy()
-        .frame("recovery_checkpoint_cleared", "{}")
+        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
         .write(&home.fx_sessions());
     let before = snapshot(&home.fx_profile());
     assert_eq!(

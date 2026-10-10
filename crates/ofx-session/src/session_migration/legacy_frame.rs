@@ -49,6 +49,8 @@ pub(super) enum Event {
         turn: LegacyTurn,
     },
     UsageCheckpointed,
+    RecoverySet,
+    RecoveryCleared,
 }
 
 pub(super) fn decode_frame(line: &[u8]) -> Result<Envelope, SessionError> {
@@ -76,6 +78,8 @@ fn envelope(mut fields: Fields<'_>) -> Option<Envelope> {
         "workspace_rebound" => workspace_rebound(payload)?,
         "history_turn_committed" => turn_committed(payload)?,
         "usage_checkpointed" => usage_checkpointed(payload)?,
+        "recovery_checkpoint_set" => recovery_set(payload)?,
+        "recovery_checkpoint_cleared" => recovery_cleared(payload)?,
         _ => return None,
     };
     fields.finish(Envelope {
@@ -200,6 +204,16 @@ fn usage_checkpointed(payload: Json<'_>) -> Option<Event> {
     let mut fields = Fields::new(payload)?;
     usage(&fields.required("usage")?)?;
     fields.finish(Event::UsageCheckpointed)
+}
+
+fn recovery_set(payload: Json<'_>) -> Option<Event> {
+    let mut fields = Fields::new(payload)?;
+    matches!(fields.required("checkpoint")?, Json::Object(_)).then_some(())?;
+    fields.finish(Event::RecoverySet)
+}
+
+fn recovery_cleared(payload: Json<'_>) -> Option<Event> {
+    Fields::new(payload)?.finish(Event::RecoveryCleared)
 }
 
 fn usage(value: &Json<'_>) -> Option<()> {
