@@ -9,6 +9,7 @@ use crate::feature_catalog_runtime::FEATURE_RESPONSE_FRAME_CAP_BYTES;
 use crate::features::common::ResourceContent;
 use crate::features::prompts::{
     self, GetOutcome, Prompt, PromptArgument, PromptGetResult, parse_get_outcome,
+    validate_arguments_json,
 };
 use crate::features::resources::{
     Limits, ReadOutcome, Resource, ResourceTemplate, parse_read_outcome, stale_fallback_eligible,
@@ -182,23 +183,15 @@ impl Server {
             return Err(McpError::McpPromptsUnsupported.into());
         }
         loop {
-            let (identity, arguments) =
-                self.prompt_identity(name, arguments_json, deadline).await?;
-            let Lifecycle::Ready(client) = self.lifecycle() else {
-                return Err(McpError::McpConnectionClosed.into());
-            };
-            if self.config.transport == TransportType::Stdio && !client.is_running() {
-                self.running_client(deadline)
-                    .await
-                    .map_err(RestartFailure::into_error)?;
+            let (identity, arguments) = self
+                .prompt_identity(name, deadline, |prompt| {
+                    validate_arguments_json(prompt, arguments_json, prompts::Limits::default())
+                })
+                .await?;
+            let Some(client) = self.feature_client(deadline).await? else {
                 continue;
-            }
-            let current = self
-                .while_current(&client, || identity.current(&self.features))
-                .unwrap_or(false);
-            if !current || client.prompts_invalidation.pending() {
-                return Err(McpError::McpFeatureCatalogChanged.into());
-            }
+            };
+            self.check_current(&client, &identity)?;
             return match request_prompt(&client, name, &arguments, deadline).await? {
                 GetOutcome::Complete(result) => Ok(result),
                 GetOutcome::ProtocolFailure(error) => {
@@ -206,6 +199,22 @@ impl Server {
                 }
             };
         }
+    }
+
+    async fn feature_client(
+        self: &Arc<Self>,
+        deadline: Instant,
+    ) -> Result<Option<Arc<McpClient>>, McpError> {
+        let Lifecycle::Ready(client) = self.lifecycle() else {
+            return Err(McpError::McpConnectionClosed);
+        };
+        if self.config.transport == TransportType::Stdio && !client.is_running() {
+            self.running_client(deadline)
+                .await
+                .map_err(RestartFailure::into_error)?;
+            return Ok(None);
+        }
+        Ok(Some(client))
     }
 }
 

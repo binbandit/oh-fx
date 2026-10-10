@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use serde_json::Value;
 use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs};
-use crate::features::prompts::{self, Prompt, validate_arguments_json};
+use crate::features::prompts::Prompt;
 use crate::features::resources::uri_template::{
     DEFAULT_TEMPLATE_MATCH_STEPS, TemplateMatch, TemplateMatchBudget, match_template_with_budget,
 };
 use crate::features::resources::{Resource, ResourceTemplate};
+use crate::server_connection::McpClient;
 use crate::server_lifecycle::Server;
 
 #[derive(Debug, Clone)]
@@ -25,6 +25,14 @@ impl FeatureIdentity {
             Self::Resource(items) => published(features, items),
             Self::Template(items) => published(features, items),
             Self::Prompt(items) => published(features, items),
+        }
+    }
+
+    fn invalidated(&self, client: &McpClient) -> bool {
+        match self {
+            Self::Resource(_) => Resource::invalidation(client).pending(),
+            Self::Template(_) => ResourceTemplate::invalidation(client).pending(),
+            Self::Prompt(_) => Prompt::invalidation(client).pending(),
         }
     }
 }
@@ -61,20 +69,33 @@ impl Server {
         Err(McpError::McpResourceNotFound)
     }
 
-    pub(crate) async fn prompt_identity(
+    pub(crate) async fn prompt_identity<R>(
         self: &Arc<Self>,
         name: &str,
-        arguments_json: &str,
         deadline: Instant,
-    ) -> Result<(FeatureIdentity, Value), McpError> {
+        check: impl FnOnce(&Prompt) -> Result<R, McpError>,
+    ) -> Result<(FeatureIdentity, R), McpError> {
         let catalog = self.feature_catalog::<Prompt>(deadline).await?;
         let prompt = catalog
             .iter()
             .find(|prompt| prompt.name == name)
             .ok_or(McpError::McpPromptNotFound)?;
-        let arguments =
-            validate_arguments_json(prompt, arguments_json, prompts::Limits::default())?;
-        Ok((FeatureIdentity::Prompt(catalog), arguments))
+        let checked = check(prompt)?;
+        Ok((FeatureIdentity::Prompt(catalog), checked))
+    }
+
+    pub(crate) fn check_current(
+        &self,
+        client: &Arc<McpClient>,
+        identity: &FeatureIdentity,
+    ) -> Result<(), McpError> {
+        let current = self
+            .while_current(client, || identity.current(&self.features))
+            .unwrap_or(false);
+        if !current || identity.invalidated(client) {
+            return Err(McpError::McpFeatureCatalogChanged);
+        }
+        Ok(())
     }
 }
 
