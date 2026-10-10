@@ -95,6 +95,10 @@ pub(crate) fn build_list_request(request_id: u64, method: &str, cursor: Option<&
     request_frame(request_id, method, &params)
 }
 
+pub(crate) fn build_resource_read_request(request_id: u64, uri: &str) -> String {
+    request_frame(request_id, "resources/read", &json!({"uri": uri}))
+}
+
 pub(crate) fn build_tool_call_request(
     request_id: u64,
     original_name: &str,
@@ -302,6 +306,10 @@ mod tests {
         assert_eq!(
             build_list_request(2, "resources/templates/list", Some("")),
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/templates/list\",\"params\":{\"cursor\":\"\"}}"
+        );
+        assert_eq!(
+            build_resource_read_request(7, "git+ssh://host/repo?ref=main#README"),
+            "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"resources/read\",\"params\":{\"uri\":\"git+ssh://host/repo?ref=main#README\"}}"
         );
     }
 

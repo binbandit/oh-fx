@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
 use crate::catalog_freshness::{CacheScope, earliest_expiry, page_expiry};
@@ -18,6 +19,9 @@ pub(crate) struct Limits {
     pub(crate) metadata_bytes: usize,
     pub(crate) icons: usize,
     pub(crate) icon_sizes: usize,
+    pub(crate) content_items: usize,
+    pub(crate) content_field_bytes: usize,
+    pub(crate) total_content_bytes: usize,
     pub(crate) json_depth: usize,
 }
 
@@ -31,6 +35,9 @@ impl Default for Limits {
             metadata_bytes: 128 * 1024,
             icons: 16,
             icon_sizes: 16,
+            content_items: 256,
+            content_field_bytes: 1024 * 1024,
+            total_content_bytes: 4 * 1024 * 1024,
             json_depth: 32,
         }
     }
@@ -40,6 +47,39 @@ impl Default for Limits {
 pub(crate) struct CacheHints {
     pub(crate) ttl_ms: Option<u64>,
     pub(crate) scope: CacheScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResourceData {
+    Text(String),
+    Blob(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResourceContent {
+    pub(crate) uri: String,
+    pub(crate) mime_type: Option<String>,
+    pub(crate) annotations_json: Option<String>,
+    pub(crate) metadata_json: Option<String>,
+    pub(crate) data: ResourceData,
+}
+
+impl ResourceContent {
+    pub(crate) fn content_bytes(&self) -> usize {
+        let data = match &self.data {
+            ResourceData::Text(value) | ResourceData::Blob(value) => value.len(),
+        };
+        [
+            self.mime_type.as_ref(),
+            self.annotations_json.as_ref(),
+            self.metadata_json.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(self.uri.len().saturating_add(data), |total, field| {
+            total.saturating_add(field.len())
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +290,78 @@ pub(crate) fn parse_cache_hints(result: &Map<String, Value>) -> Result<CacheHint
     Ok(CacheHints { ttl_ms, scope })
 }
 
+pub(crate) fn parse_protocol_error(value: &Value, limits: Limits) -> Result<RpcError, McpError> {
+    let object = value.as_object().ok_or(McpError::InvalidEnvelope)?;
+    let code = match object.get("code") {
+        Some(Value::Number(code)) => code.as_i64().ok_or(McpError::InvalidEnvelope)?,
+        _ => return Err(McpError::InvalidEnvelope),
+    };
+    let message = match object.get("message") {
+        Some(Value::String(message)) if message.len() <= limits.description_bytes => message,
+        _ => return Err(McpError::InvalidEnvelope),
+    };
+    let data = object
+        .get("data")
+        .map(|data| {
+            bounded_json(data, limits.metadata_bytes, limits.json_depth).map(|_| data.clone())
+        })
+        .transpose()?;
+    Ok(RpcError {
+        code,
+        message: message.clone(),
+        data,
+    })
+}
+
+pub(crate) fn parse_resource_content(
+    value: &Value,
+    limits: Limits,
+) -> Result<ResourceContent, McpError> {
+    let object = value.as_object().ok_or(McpError::InvalidContent)?;
+    let uri = required_string(object, "uri", limits.uri_bytes)?;
+    let (field, is_blob) = match (object.get("text"), object.get("blob")) {
+        (Some(text), None) => (text, false),
+        (None, Some(blob)) => (blob, true),
+        _ => return Err(McpError::InvalidContent),
+    };
+    let mime_type = optional_string(object, "mimeType", limits.title_bytes)?;
+    if let Some(annotations) = object.get("annotations") {
+        validate_annotations(annotations, limits)?;
+    }
+    if let Some(metadata) = object.get("_meta") {
+        if !metadata.is_object() {
+            return Err(McpError::InvalidContent);
+        }
+        validate_bounded_json(metadata, limits.metadata_bytes, limits.json_depth)?;
+    }
+    let serialized = |name: &str| {
+        object
+            .get(name)
+            .map(|value| bounded_json(value, limits.metadata_bytes, limits.json_depth))
+            .transpose()
+    };
+    let annotations_json = serialized("annotations")?;
+    let metadata_json = serialized("_meta")?;
+    let value = match field {
+        Value::String(value) if value.len() <= limits.content_field_bytes => value.clone(),
+        _ => return Err(McpError::InvalidContent),
+    };
+    let data = if !is_blob {
+        ResourceData::Text(value)
+    } else if is_valid_base64(&value) {
+        ResourceData::Blob(value)
+    } else {
+        return Err(McpError::InvalidContent);
+    };
+    Ok(ResourceContent {
+        uri: uri.to_owned(),
+        mime_type: mime_type.map(str::to_owned),
+        annotations_json,
+        metadata_json,
+        data,
+    })
+}
+
 pub(crate) fn validate_annotations(value: &Value, limits: Limits) -> Result<(), McpError> {
     let object = value.as_object().ok_or(McpError::InvalidContent)?;
     if let Some(audience) = object.get("audience") {
@@ -350,11 +462,52 @@ pub(crate) fn validate_bounded_json(
     max_bytes: usize,
     max_depth: usize,
 ) -> Result<(), McpError> {
+    bounded_json(value, max_bytes, max_depth).map(drop)
+}
+
+fn bounded_json(value: &Value, max_bytes: usize, max_depth: usize) -> Result<String, McpError> {
     validate_json_depth(value, max_depth)?;
-    if value.to_string().len() > max_bytes {
+    let json = value.to_string();
+    if json.len() > max_bytes {
         return Err(McpError::MetadataLimitExceeded);
     }
-    Ok(())
+    Ok(json)
+}
+
+pub(crate) fn is_valid_base64(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return false;
+    }
+    let padding = bytes.iter().rev().take_while(|byte| **byte == b'=').count();
+    if padding > 2 {
+        return false;
+    }
+    let data = bytes.get(..bytes.len() - padding).unwrap_or_default();
+    let Some(indices) = data
+        .iter()
+        .map(|byte| base64_index(*byte))
+        .collect::<Option<Vec<u8>>>()
+    else {
+        return false;
+    };
+    match (padding, indices.last()) {
+        (1, Some(last)) => last.trailing_zeros() >= 2,
+        (2, Some(last)) => last.trailing_zeros() >= 4,
+        (0, _) => true,
+        _ => false,
+    }
+}
+
+fn base64_index(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -497,5 +650,15 @@ mod tests {
             validate_bounded_json(&nested(3), 1024, 2),
             Err(McpError::JsonDepthLimitExceeded)
         );
+    }
+
+    #[test]
+    fn base64_validation_requires_canonical_padding() {
+        for valid in ["", "AA==", "AAA=", "AAAA", "QUJD"] {
+            assert!(is_valid_base64(valid), "{valid}");
+        }
+        for invalid in ["A", "A===", "AB==", "AAB=", "AA=A", "A..A", "AAAA=", "===="] {
+            assert!(!is_valid_base64(invalid), "{invalid}");
+        }
     }
 }
