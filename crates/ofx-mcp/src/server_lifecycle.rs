@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::catalog_freshness::Freshness;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
@@ -202,11 +203,14 @@ impl Server {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
-        let published = client.tool_catalog();
-        let catalog = client.current_tools().await?;
-        if !Arc::ptr_eq(&published, &catalog) {
+        let refreshed = client.settled_tools(deadline).await?;
+        if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
+        if client.tools_invalidation.pending() {
+            return Err(McpError::McpToolCatalogChanged.into());
+        }
+        let catalog = refreshed.catalog;
         let name = &advertised.tool.name;
         let current = catalog.get(name);
         let instructions = client.server_info().instructions.as_deref();
@@ -216,7 +220,31 @@ impl Server {
                 still_advertised: current.is_some(),
             });
         }
-        Ok(client.call_tool(name, arguments_json, options).await?)
+        if Instant::now() >= deadline {
+            return Err(McpError::McpRequestTimedOut.into());
+        }
+        Ok(client
+            .call_tool(name, arguments_json, options, deadline)
+            .await?)
+    }
+
+    pub(crate) async fn refresh_tools(&self, client: &McpClient, deadline: Instant) {
+        if client.refresh_tools(deadline).await.replaced {
+            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
+        while let Ok(refreshed) = client.settled_tools(deadline).await {
+            if refreshed.replaced {
+                self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+            }
+            if !client.tools_invalidation.pending()
+                || client.tool_snapshot().metadata.freshness == Freshness::FailedRefresh
+            {
+                return;
+            }
+        }
     }
 
     pub(crate) async fn running_client(
@@ -326,18 +354,17 @@ async fn watch(server: Weak<Server>, connection: Connection) {
         };
         match notification {
             Some(ServerNotification::ToolsListChanged) => {
-                let Some(refreshed) = connection
+                let Some(current) = server.upgrade() else {
+                    return;
+                };
+                let deadline = Instant::now() + connection.client.operation_timeout;
+                if connection
                     .stop
-                    .run_until_cancelled(connection.client.list_tools())
+                    .run_until_cancelled(current.follow_tool_change(&connection.client, deadline))
                     .await
-                else {
+                    .is_none()
+                {
                     return;
-                };
-                let Some(server) = server.upgrade() else {
-                    return;
-                };
-                if refreshed.is_ok() {
-                    server.catalog_generation.fetch_add(1, Ordering::AcqRel);
                 }
             }
             Some(_) => {}

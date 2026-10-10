@@ -11,12 +11,13 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::error::McpError;
-use crate::features::tools::{CatalogBuilder, Limits, ToolCatalog};
+use crate::features::tools::{CatalogBuilder, Limits, Listing};
 use crate::legacy_http_sse::{LegacySseClient, SSE_PROTOCOL_VERSION, validate_initialize_response};
 use crate::legacy_streamable_http::{
     HTTP_INITIALIZED_NOTIFICATION, HttpEndpoint, HttpVersion, LegacyHttpClient,
 };
 use crate::mcp_contract::McpServerConfig;
+use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::{
     ElicitationCapabilities, STDIO_INITIALIZED_NOTIFICATION, ServerCapabilities,
     build_legacy_initialize_request, build_tools_list_request, parse_json,
@@ -92,7 +93,7 @@ pub(crate) struct Connected {
     pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
-    pub(crate) catalog: ToolCatalog,
+    pub(crate) listing: Listing,
     pub(crate) notifications: mpsc::UnboundedReceiver<Value>,
 }
 
@@ -444,11 +445,11 @@ async fn finish_startup(
         notifications,
     } = started;
     match discover(&transport, info, initialized, deadline, request_error).await {
-        Ok((info, catalog)) => Ok(Connected {
+        Ok((info, listing)) => Ok(Connected {
             transport,
             info,
             wire,
-            catalog,
+            listing,
             notifications,
         }),
         Err(error) => Err(abandon(transport, error).await),
@@ -461,11 +462,11 @@ async fn discover(
     initialized: &str,
     deadline: Instant,
     request_error: fn(McpError) -> McpError,
-) -> Result<(ServerInfo, ToolCatalog), McpError> {
+) -> Result<(ServerInfo, Listing), McpError> {
     let info = info?;
     transport.notify(initialized.to_owned(), deadline).await?;
-    let catalog = discover_tools(transport, deadline, request_error).await?;
-    Ok((info, catalog))
+    let listing = discover_tools(transport, deadline, request_error).await?;
+    Ok((info, listing))
 }
 
 async fn abandon(transport: Transport, error: McpError) -> StartupFailure {
@@ -519,7 +520,7 @@ pub(crate) async fn discover_tools(
     transport: &Transport,
     deadline: Instant,
     request_error: fn(McpError) -> McpError,
-) -> Result<ToolCatalog, McpError> {
+) -> Result<Listing, McpError> {
     let mut builder = CatalogBuilder::default();
     loop {
         let id = transport.next_request_id()?;
@@ -533,7 +534,7 @@ pub(crate) async fn discover_tools(
             ))
             .await
             .map_err(request_error)?;
-        if builder.append_response(&response, Limits::default())? {
+        if builder.append_response(&response, monotonic_millis(), Limits::default())? {
             return builder.finish();
         }
     }

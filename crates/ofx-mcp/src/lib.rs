@@ -1,4 +1,5 @@
 mod catalog_freshness;
+mod catalog_refresh;
 mod command_provider;
 mod docker_run;
 mod error;

@@ -1,13 +1,13 @@
 use std::future::{Future, poll_fn};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 
+use crate::catalog_freshness::SnapshotMetadata;
 use crate::error::McpError;
 use crate::feature_catalog::Invalidation;
 use crate::features::tools::ToolCatalog;
@@ -33,13 +33,20 @@ pub(crate) enum ServerNotification {
     },
 }
 
+#[derive(Clone)]
+pub(crate) struct ToolSnapshot {
+    pub(crate) catalog: Arc<ToolCatalog>,
+    pub(crate) metadata: SnapshotMetadata,
+}
+
 pub(crate) struct McpClient {
     pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
     pub(crate) operation_timeout: Duration,
-    pub(crate) catalog: Mutex<Arc<ToolCatalog>>,
-    pub(crate) tools_stale: AtomicBool,
+    pub(crate) tools: Mutex<ToolSnapshot>,
+    pub(crate) tools_invalidation: Invalidation,
+    pub(crate) tools_settled: Notify,
     pub(crate) resources_invalidation: Invalidation,
     pub(crate) prompts_invalidation: Invalidation,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
@@ -77,8 +84,12 @@ impl McpClient {
             info: connected.info,
             wire: connected.wire,
             operation_timeout: Duration::from_millis(config.operation_timeout_ms.into()),
-            catalog: Mutex::new(Arc::new(connected.catalog)),
-            tools_stale: AtomicBool::new(false),
+            tools: Mutex::new(ToolSnapshot {
+                catalog: Arc::new(connected.listing.catalog),
+                metadata: SnapshotMetadata::fresh(connected.listing.expires_at_ms),
+            }),
+            tools_invalidation: Invalidation::default(),
+            tools_settled: Notify::new(),
             resources_invalidation: Invalidation::default(),
             prompts_invalidation: Invalidation::default(),
             notifications: Mutex::new(connected.notifications),
@@ -94,7 +105,11 @@ impl McpClient {
     }
 
     pub(crate) fn tool_catalog(&self) -> Arc<ToolCatalog> {
-        Arc::clone(&lock(&self.catalog))
+        Arc::clone(&lock(&self.tools).catalog)
+    }
+
+    pub(crate) fn tool_snapshot(&self) -> ToolSnapshot {
+        lock(&self.tools).clone()
     }
 
     pub(crate) fn next_notification(&self) -> impl Future<Output = Option<ServerNotification>> {
@@ -129,7 +144,7 @@ impl McpClient {
                 if !capabilities.tools_list_changed {
                     return None;
                 }
-                self.tools_stale.store(true, Ordering::Release);
+                self.tools_invalidation.invalidate();
                 Some(ServerNotification::ToolsListChanged)
             }
             "notifications/resources/list_changed" => {
@@ -276,7 +291,12 @@ done
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let outcome = client
-            .call_tool("snapshot", "{}", CallOptions::default())
+            .call_tool(
+                "snapshot",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         let ToolCallOutcome::Complete(result) = outcome else {
@@ -321,6 +341,7 @@ done
                     progress: Some(Arc::new(move |update| lock(&sink_progress).push(update))),
                     ..CallOptions::default()
                 },
+                Instant::now() + Duration::from_secs(10),
             )
             .await
             .unwrap();
@@ -343,7 +364,10 @@ done
             }]
         );
 
-        let refreshed = client.current_tools().await.unwrap();
+        let refreshed = client
+            .refresh_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .catalog;
         assert_eq!(refreshed.tools[0].name, "gamma");
         assert_eq!(client.tool_catalog().tools.len(), 1);
         client.shutdown(ShutdownMode::Graceful).await;
@@ -357,7 +381,12 @@ done
             .await
             .unwrap();
         let outcome = client
-            .call_tool("roots", "{}", CallOptions::default())
+            .call_tool(
+                "roots",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -623,7 +652,12 @@ printf '%s\n' "$3" > "$STATE/cidfile"
             })
         );
         client
-            .call_tool("alpha", "{}", CallOptions::default())
+            .call_tool(
+                "alpha",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert_eq!(
