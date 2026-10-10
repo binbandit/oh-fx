@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/auth/auth_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/auth_runtime.rs"]
-note = "Codex credential preparation, refresh and the unrefreshed stored-login read for status exist; Vercel/Grok preparation, inventory and provider transition handling are absent."
+note = "Codex credential preparation, refresh and the unrefreshed stored-login read for status exist, with their preparation and refresh trace lines; Vercel/Grok preparation, inventory and provider transition handling are absent."
 
 [[file]]
 upstream = "src/core/auth/auth_transition.zig"
@@ -19,19 +19,19 @@ note = "The default /logout target and the busy rule for signing out of the sele
 upstream = "src/core/auth/browser_callback.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/browser_callback.rs"]
-note = "Loopback GET callback validation and success/failure HTML responses exist; upstream exact-origin form POST acceptance, CORS handling and separate lifecycle-cancellation input are absent."
+note = "Loopback GET callback validation and success/failure HTML responses exist; upstream exact-origin form POST acceptance, CORS handling and separate lifecycle-cancellation input are absent, and the socket timeout setup trace lines do not apply because the callback uses async timeouts."
 
 [[file]]
 upstream = "src/core/auth/chatgpt_oauth.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/chatgpt_oauth.rs"]
-note = "Browser PKCE login started and finished separately, callback validation, token refresh, session retirement and the loopback test endpoints exist; upstream per-operation auth trace diagnostics are absent."
+note = "Browser PKCE login started and finished separately, callback validation, token refresh, session retirement, the loopback test endpoints and the auth trace lines exist."
 
 [[file]]
 upstream = "src/core/auth/chatgpt_session.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/chatgpt_session.rs"]
-note = "Native token/account parsing, expiry skew and locked durable file mutation exist; upstream step-specific auth trace diagnostics are absent. Upstream uses profile files, not a native keychain backend."
+note = "Native token/account parsing, expiry skew, locked durable file mutation and the session load trace lines exist; the load lines start at the profile directory, as oh-fx opens no home directory first. Upstream uses profile files, not a native keychain backend."
 
 [[file]]
 upstream = "src/core/auth/credential_authority.zig"
@@ -49,13 +49,13 @@ note = "Auth mode and Codex guidance exist; catalog access authority, Vercel tea
 upstream = "src/core/auth/grok_oauth.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/grok_oauth.rs", "crates/ofx-auth/src/grok_oauth/run_login.rs", "crates/ofx-auth/src/grok_oauth/sign_in.rs"]
-note = "Browser and manual-code sign-in, callback classification, token exchange, account lookup, logout and revocation exist; credential refresh (loadAccess) and activation after sign-in are deferred with the Grok request route, as docs/differences/auth.md records, and tests pass loopback endpoints to the constructor in place of upstream's FX_E2E overrides."
+note = "Browser and manual-code sign-in, callback classification, token exchange, account lookup, logout and revocation exist with their trace lines; credential refresh (loadAccess) with its trace lines and activation after sign-in are deferred with the Grok request route, as docs/differences/auth.md records, and tests pass loopback endpoints to the constructor in place of upstream's FX_E2E overrides."
 
 [[file]]
 upstream = "src/core/auth/grok_session.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/grok_session.rs", "crates/ofx-auth/src/subscription_session.rs"]
-note = "Session encoding, the refresh deadline and private locked storage through the shared subscription session store exist; the Grok credential refresh that consumes them is deferred with the Grok request route."
+note = "Session encoding, the refresh deadline and private locked storage through the shared subscription session store exist, with the session load trace lines; the Grok credential refresh that consumes them is deferred with the Grok request route."
 
 [[file]]
 upstream = "src/core/auth/js_host_auth.zig"
@@ -106,4 +106,4 @@ note = "Owned secret bytes are zeroed on drop and clearing, matching the upstrea
 upstream = "src/core/auth/session_presence.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/session_presence.rs"]
-note = "Private profile-file presence and writable-target checks exist; upstream storageError diagnostic tracing is absent and missing-directory checks use the documented nearest-existing-ancestor policy. Upstream uses profile files, not a keychain."
+note = "Private profile-file presence and writable-target checks exist, and the shared session store writes storageError's trace line; missing-directory checks use the documented nearest-existing-ancestor policy. Upstream uses profile files, not a keychain."
