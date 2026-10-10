@@ -30,7 +30,7 @@ use ofx_gateway::{
 use ofx_http::ClientError;
 use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
-use ofx_session::RouteCredential;
+use ofx_session::{ProfilePublisher, RouteCredential};
 use ofx_tools::{CapabilitySearch, WebFetchProgress};
 use ofx_workspace::{ChangeTracker, WorkspaceAccess, WorkspaceAccessError};
 use tokio_util::sync::CancellationToken;
@@ -756,6 +756,12 @@ impl AgentSetup {
 
     pub fn source(&self) -> CredentialSource {
         self.source
+    }
+
+    pub(crate) fn profile_usage(&self) -> Option<ProfilePublisher> {
+        self.preferences
+            .as_ref()
+            .and_then(|paths| ProfilePublisher::open(&paths.data))
     }
 
     pub fn route_credential(&self) -> RouteCredential {

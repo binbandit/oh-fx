@@ -1,12 +1,14 @@
 use std::time::Instant;
 
 use ofx_config::DurableError;
-use ofx_contract::{DeliveryOutcome, FileChangeStats, ProviderBilling, RequestTicket};
+use ofx_contract::{
+    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, RequestTicket, UsageIncident,
+};
 
 use super::{WritableSession, now_ms};
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
-use crate::session_usage::ReserveFailure;
+use crate::session_usage::{PublicationBatch, ReserveFailure};
 use crate::session_usage_sidecar;
 
 impl WritableSession {
@@ -55,6 +57,22 @@ impl WritableSession {
         if self.checkpoint_usage(now_ms()).is_err() {
             self.usage.mark_code_incomplete();
         }
+    }
+
+    pub(crate) fn usage_publication_batch(&mut self) -> PublicationBatch {
+        self.usage.publication_batch(now_ms())
+    }
+
+    pub(crate) fn usage_incident_published(&mut self, incident: &UsageIncident) {
+        self.usage.incident_published(incident);
+    }
+
+    pub(crate) fn usage_fact_published(&mut self, fact: &GenerationFact) {
+        self.usage.fact_published(fact);
+    }
+
+    pub(crate) fn save_published_usage(&mut self) {
+        let _ = self.checkpoint_usage_for_continuation(now_ms());
     }
 
     fn checkpoint_usage(&mut self, now: i64) -> Result<(), SessionError> {

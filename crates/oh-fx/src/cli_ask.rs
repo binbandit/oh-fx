@@ -1617,6 +1617,9 @@ impl Presenter {
     }
 
     fn finish(mut self, report: &TurnReport, model: &str, saved: Option<SavedAsk>) -> Answered {
+        if let Some(saved) = &saved {
+            saved.finish_publications();
+        }
         self.finalize_turn(report.outcome);
         if self.mode == OutputMode::Terminal {
             let _ = self.end_line();

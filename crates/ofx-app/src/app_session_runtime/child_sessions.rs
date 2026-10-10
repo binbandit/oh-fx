@@ -2,13 +2,17 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ofx_agent::{ChildRecord, ChildSettings, ChildStore, ResumedChild};
 use ofx_contract::{ConversationLog, LogFailure};
-use ofx_session::{ChildSessions, SessionError, SessionLog, SessionPreferences, WritableSession};
+use ofx_session::{
+    ChildSessions, PublicationScheduler, SessionError, SessionLog, SessionPreferences,
+    WritableSession,
+};
 
 use super::SessionRoute;
 
 pub(super) struct SessionChildren {
     sessions: ChildSessions,
     parent: Weak<Mutex<WritableSession>>,
+    publisher: Option<PublicationScheduler>,
     route: SessionRoute,
     language: String,
 }
@@ -16,6 +20,7 @@ pub(super) struct SessionChildren {
 struct ChildSession {
     session: Arc<Mutex<WritableSession>>,
     parent: Weak<Mutex<WritableSession>>,
+    publisher: Option<PublicationScheduler>,
     route: SessionRoute,
 }
 
@@ -23,12 +28,14 @@ impl SessionChildren {
     pub(super) fn new(
         sessions: ChildSessions,
         parent: Weak<Mutex<WritableSession>>,
+        publisher: Option<PublicationScheduler>,
         route: SessionRoute,
         language: String,
     ) -> Self {
         Self {
             sessions,
             parent,
+            publisher,
             route,
             language,
         }
@@ -71,6 +78,7 @@ impl ChildStore for SessionChildren {
         Ok(Arc::new(ChildSession {
             session: Arc::new(Mutex::new(session)),
             parent: Weak::clone(&self.parent),
+            publisher: self.publisher.clone(),
             route: self.route.clone(),
         }))
     }
@@ -88,6 +96,7 @@ impl ChildStore for SessionChildren {
             record: Arc::new(ChildSession {
                 session: Arc::new(Mutex::new(session)),
                 parent: Weak::clone(&self.parent),
+                publisher: self.publisher.clone(),
                 route: self.route.clone(),
             }),
             settings,
@@ -117,7 +126,8 @@ impl ChildRecord for ChildSession {
                 self.route.provider.clone(),
                 self.route.credential,
             )
-            .accounting_in(Weak::clone(&self.parent)),
+            .accounting_in(Weak::clone(&self.parent))
+            .publishing_with(self.publisher.clone()),
         )
     }
 }

@@ -273,6 +273,7 @@ impl Persistence {
         self.stop_title_generation();
         agent.detach_session();
         if let Some(live) = self.live.take() {
+            live.finish_publications();
             match self.relaunch.take() {
                 Some(relaunch) => {
                     if live.session().require_writable().is_ok() {
@@ -286,6 +287,12 @@ impl Persistence {
             }
         }
         self.remember_fresh = false;
+    }
+
+    pub(crate) fn abandon_profile_ledger(&self) {
+        if let Some(live) = &self.live {
+            live.abandon_profile_ledger();
+        }
     }
 
     pub(super) fn remember(&self, id: &str) -> Option<Notice> {

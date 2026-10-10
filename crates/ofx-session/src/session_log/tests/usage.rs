@@ -6,10 +6,13 @@ use ofx_contract::{
 };
 
 use super::*;
+use crate::profile_usage_runtime::ProfilePublisher;
+use crate::profile_usage_store::ProfileUsageStore;
 use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_conversation_log::SessionLog;
 use crate::session_usage::Availability;
 use crate::session_usage_sidecar::{SIDECAR_FILE, load_conversation};
+use crate::usage_publisher::UsagePublisher;
 
 const FRESH_SIDECAR: &str = "{\"schema_version\":1,\"session_id\":\"fresh\",\"snapshot\":{\"schema_version\":3,\"billing\":\"complete\",\"api_duration_complete\":true,\"wall_duration_complete\":true,\"code_complete\":true,\"next_sequence\":1,\"settled_through_sequence\":0,\"api_duration_ms\":0,\"wall_duration_ms\":0,\"total_cost\":0,\"input_tokens\":0,\"output_tokens\":0,\"cache_read_tokens\":0,\"cache_write_tokens\":0,\"reasoning_tokens\":0,\"request_count\":0,\"billable_web_search_calls\":0,\"lines_added\":0,\"lines_removed\":0,\"models\":[],\"pending\":[],\"publication_backlog\":[],\"incidents\":[]}}";
 
@@ -20,6 +23,36 @@ fn saved(fixture: &Fixture, id: &str) -> UsageSnapshot {
 
 fn current(session: &mut WritableSession) -> UsageSnapshot {
     session.usage.snapshot(now_ms())
+}
+
+fn codex() -> SavedProvider {
+    SavedProvider::new(ProviderId::Codex, None).unwrap()
+}
+
+fn exact_billing(generation_id: &str) -> ProviderBilling {
+    ProviderBilling {
+        generation_id: generation_id.to_owned(),
+        created_at_ms: 1_000,
+        model: "codex/gpt-test".to_owned(),
+        total_cost: 0.0,
+        input_tokens: 17,
+        output_tokens: 7,
+        cache_read_tokens: 5,
+        cache_write_tokens: 0,
+        reasoning_tokens: Some(3),
+        billable_web_search_calls: 0,
+    }
+}
+
+fn publishing_log(session: &Arc<Mutex<WritableSession>>, publisher: &UsagePublisher) -> SessionLog {
+    SessionLog::new(Arc::clone(session), codex(), RouteCredential::configured())
+        .publishing_with(Some(publisher.scheduler()))
+}
+
+fn settle_exact(log: &SessionLog, generation_id: &str) {
+    let ticket = log.begin_request().unwrap();
+    log.finish_exact_request(ticket, &exact_billing(generation_id))
+        .unwrap();
 }
 
 #[test]
@@ -206,24 +239,8 @@ fn an_exact_request_is_saved_with_its_generation_waiting_for_publication() {
     let fixture = Fixture::new();
     let mut session = fixture.start("exact");
     let ticket = session.begin_request().unwrap();
-    let billing = ProviderBilling {
-        generation_id: "resp_saved".to_owned(),
-        created_at_ms: 1_000,
-        model: "codex/gpt-test".to_owned(),
-        total_cost: 0.0,
-        input_tokens: 17,
-        output_tokens: 7,
-        cache_read_tokens: 5,
-        cache_write_tokens: 0,
-        reasoning_tokens: Some(3),
-        billable_web_search_calls: 0,
-    };
     session
-        .finish_exact_request(
-            ticket,
-            &billing,
-            &SavedProvider::new(ProviderId::Codex, None).unwrap(),
-        )
+        .finish_exact_request(ticket, &exact_billing("resp_saved"), &codex())
         .unwrap();
     let saved = saved(&fixture, "exact");
     assert_eq!(saved.billing, Availability::Pending);
@@ -247,4 +264,60 @@ fn an_exact_request_is_saved_with_its_generation_waiting_for_publication() {
     assert_eq!(usage.billing, Availability::Pending);
     assert_eq!(usage.pending, saved.pending);
     assert_eq!(usage.publication_backlog, saved.publication_backlog);
+}
+
+#[test]
+fn a_session_publishes_its_exact_usage_to_the_profile_ledger() {
+    let fixture = Fixture::new();
+    let data = fixture.root.path().join("data/oh-fx");
+    let session = Arc::new(Mutex::new(fixture.start("published")));
+    let publisher = UsagePublisher::new(&session, ProfilePublisher::open(&data).unwrap());
+    let log = publishing_log(&session, &publisher);
+    settle_exact(&log, "resp_one");
+    settle_exact(&log, "resp_two");
+    publisher.finish_before_shutdown();
+
+    let usage = saved(&fixture, "published");
+    assert_eq!(usage.billing, Availability::Complete);
+    assert!(usage.pending.is_empty());
+    assert!(usage.publication_backlog.is_empty());
+    assert_eq!((usage.input_tokens, usage.request_count), (34, Some(2)));
+    assert_eq!(usage.models.len(), 1);
+    let ledger = ProfileUsageStore::open(&data).unwrap().load().unwrap();
+    assert!(ledger.coverage_started_at_ms.is_some());
+    assert_eq!(ledger.facts.len(), 2);
+    assert_eq!(ledger.pending.len(), 2);
+    assert!(ledger.incidents.is_empty());
+    let lines = fs::read_to_string(data.join("usage.jsonl")).unwrap();
+    assert!(lines.starts_with("{\"schema_version\":1,\"kind\":\"coverage\","));
+    assert_eq!(lines.lines().count(), 5);
+}
+
+#[test]
+fn an_abandoned_ledger_leaves_the_backlog_for_the_next_resume() {
+    let fixture = Fixture::new();
+    let data = fixture.root.path().join("data/oh-fx");
+    let session = Arc::new(Mutex::new(fixture.start("held")));
+    let profile = ProfilePublisher::open(&data).unwrap();
+    profile.abandon_for_process_exit();
+    let publisher = UsagePublisher::new(&session, profile);
+    let log = publishing_log(&session, &publisher);
+    settle_exact(&log, "resp_held");
+    publisher.finish_before_shutdown();
+    let held = saved(&fixture, "held");
+    assert_eq!(held.billing, Availability::Pending);
+    assert_eq!(held.publication_backlog.len(), 1);
+    assert!(!data.join("usage.jsonl").exists());
+    drop((log, publisher, session));
+
+    let resumed = Arc::new(Mutex::new(fixture.resume("held").unwrap()));
+    let publisher = UsagePublisher::new(&resumed, ProfilePublisher::open(&data).unwrap());
+    publisher.schedule();
+    drop(publisher);
+    let settled = saved(&fixture, "held");
+    assert_eq!(settled.billing, Availability::Complete);
+    assert!(settled.publication_backlog.is_empty());
+    assert_eq!(settled.input_tokens, 17);
+    let ledger = ProfileUsageStore::open(&data).unwrap().load().unwrap();
+    assert_eq!(ledger.facts, held.publication_backlog);
 }

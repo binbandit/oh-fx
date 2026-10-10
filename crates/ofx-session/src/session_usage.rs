@@ -8,8 +8,10 @@ use ofx_text::lowercase_hex;
 
 mod accounting;
 mod exact;
+mod publication;
 
 pub(crate) use accounting::{ReserveFailure, Usage};
+pub(crate) use publication::PublicationBatch;
 
 use crate::generation_fact_codec::{self, cost, non_negative};
 use crate::json_fields::push_string;

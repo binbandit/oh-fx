@@ -33,9 +33,10 @@ mod session_usage_sidecar;
 #[cfg(test)]
 mod spawn_gate;
 mod turn_summary;
+mod usage_publisher;
 
 pub use fx_sessions::FxSessions;
-pub use profile_usage_runtime::{ProfileUsage, ProfileUsageError};
+pub use profile_usage_runtime::{ProfilePublisher, ProfileUsage, ProfileUsageError};
 pub use profile_usage_store::UsageStoreError;
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
@@ -60,3 +61,4 @@ pub use session_store::{ListScope, RememberedSession, ResumeTarget, SessionCatal
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource, SessionSummary};
 pub use session_title_generation::{TitleGate, TitleRequest, generate_title, prompt_excerpt};
 pub use session_usage::UsageSnapshot;
+pub use usage_publisher::{PublicationScheduler, UsagePublisher};

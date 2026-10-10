@@ -9,10 +9,12 @@ use crate::session_codec::SavedProvider;
 use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_error::SessionError;
 use crate::session_log::WritableSession;
+use crate::usage_publisher::PublicationScheduler;
 
 pub struct SessionLog {
     session: Arc<Mutex<WritableSession>>,
     usage: Weak<Mutex<WritableSession>>,
+    publisher: Option<PublicationScheduler>,
     provider: SavedProvider,
     credential: RouteCredential,
 }
@@ -25,6 +27,7 @@ impl SessionLog {
     ) -> Self {
         Self {
             usage: Arc::downgrade(&session),
+            publisher: None,
             session,
             provider,
             credential,
@@ -35,6 +38,19 @@ impl SessionLog {
     pub fn accounting_in(mut self, owner: Weak<Mutex<WritableSession>>) -> Self {
         self.usage = owner;
         self
+    }
+
+    #[must_use]
+    pub fn publishing_with(mut self, publisher: Option<PublicationScheduler>) -> Self {
+        self.publisher = publisher;
+        self
+    }
+
+    fn settled(&self, settlement: Result<(), SessionError>) -> Result<(), LogFailure> {
+        if let Some(publisher) = &self.publisher {
+            publisher.schedule();
+        }
+        settlement.map_err(log_failure)
     }
 
     fn session(&self) -> MutexGuard<'_, WritableSession> {
@@ -94,8 +110,7 @@ impl ConversationLog for SessionLog {
         ticket: RequestTicket,
         outcome: DeliveryOutcome,
     ) -> Result<(), LogFailure> {
-        self.with_usage(|session| session.finish_request(ticket, outcome))
-            .map_err(log_failure)
+        self.settled(self.with_usage(|session| session.finish_request(ticket, outcome)))
     }
 
     fn finish_exact_request(
@@ -103,8 +118,11 @@ impl ConversationLog for SessionLog {
         ticket: RequestTicket,
         billing: &ProviderBilling,
     ) -> Result<(), LogFailure> {
-        self.with_usage(|session| session.finish_exact_request(ticket, billing, &self.provider))
-            .map_err(log_failure)
+        self.settled(
+            self.with_usage(|session| {
+                session.finish_exact_request(ticket, billing, &self.provider)
+            }),
+        )
     }
 
     fn record_committed_lines(&self, change: FileChangeStats) {

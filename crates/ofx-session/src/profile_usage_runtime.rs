@@ -1,12 +1,16 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_contract::{
     UsageCompleteness, UsageIncident, UsageReport, UsageReportError, UsageScope,
     build_rolling_report,
 };
 
-use crate::profile_usage_store::{LoadedUsage, ProfileUsageStore, UsageStoreError};
+use crate::profile_usage_store::{
+    AppendOutcome, LoadedUsage, ProfileEvent, ProfileUsageStore, UsageStoreError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProfileUsageError {
@@ -14,6 +18,49 @@ pub enum ProfileUsageError {
     Store(#[from] UsageStoreError),
     #[error(transparent)]
     Report(#[from] UsageReportError),
+    #[error("ConflictingUsagePublication")]
+    Conflict,
+}
+
+impl ProfileUsageError {
+    pub(crate) fn ledger_unavailable(self) -> bool {
+        matches!(
+            self,
+            Self::Store(UsageStoreError::LockBusy | UsageStoreError::LockAbandoned)
+        )
+    }
+}
+
+#[derive(Clone)]
+pub struct ProfilePublisher {
+    store: Arc<Mutex<ProfileUsageStore>>,
+    abandoned: Arc<AtomicBool>,
+}
+
+impl ProfilePublisher {
+    pub fn open(data_dir: &Path) -> Option<Self> {
+        let store = ProfileUsageStore::open(data_dir).ok()?;
+        Some(Self {
+            abandoned: store.abandon_flag(),
+            store: Arc::new(Mutex::new(store)),
+        })
+    }
+
+    pub fn abandon_for_process_exit(&self) {
+        self.abandoned.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn publish(&self, event: ProfileEvent<'_>) -> Result<(), ProfileUsageError> {
+        let outcome = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .append_event(event)?;
+        match outcome {
+            AppendOutcome::Conflict => Err(ProfileUsageError::Conflict),
+            AppendOutcome::Appended | AppendOutcome::Duplicate => Ok(()),
+        }
+    }
 }
 
 pub struct ProfileUsage {
