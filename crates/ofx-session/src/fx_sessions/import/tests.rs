@@ -705,3 +705,30 @@ fn a_watermark_fx_publishes_later_refreshes_an_untouched_copy() {
         2
     );
 }
+
+#[test]
+fn resuming_a_compacted_schema_v3_session_restores_its_summary() {
+    let home = Home::new();
+    LegacyLog::started(ID, WORKSPACE)
+        .turn(&reply("one", "first"))
+        .turn(&reply("two", "second"))
+        .turn("{\"kind\":\"compacted_summary\",\"summary\":\"Earlier: one and two.\",\"removed_turn_count\":2,\"compaction_count\":1}")
+        .turn(&reply("three", "third"))
+        .write(&home.fx_sessions());
+    let before = snapshot(&home.fx_profile());
+
+    drop(importing(&home).resume(ID).unwrap());
+    let history = home.store(WORKSPACE).load(ID).unwrap().history;
+    let compacted = history.compacted.unwrap();
+    assert_eq!(compacted.summary, "Earlier: one and two.");
+    let prompts: Vec<&str> = history
+        .turns
+        .iter()
+        .filter_map(|turn| match turn.events.first() {
+            Some(ConversationEvent::User(user)) => Some(user.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, ["three"]);
+    assert_eq!(snapshot(&home.fx_profile()), before);
+}
