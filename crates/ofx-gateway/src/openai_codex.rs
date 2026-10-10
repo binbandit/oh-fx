@@ -8,6 +8,7 @@ use ofx_contract::{
     StreamSink, valid_credential_account_id,
 };
 use ofx_http::{ClientError, ConnectionOptions, SseDecoder, build_connection_client};
+use ofx_images::AttachmentDimensionCache;
 use ofx_trace::trace_log;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use reqwest::{RequestBuilder, Response, StatusCode};
@@ -111,6 +112,7 @@ pub struct CodexProvider {
     responses_url: String,
     credentials: Arc<dyn CodexCredentials>,
     access: Mutex<CodexAccess>,
+    attachments: AttachmentDimensionCache,
 }
 
 impl fmt::Debug for CodexProvider {
@@ -139,7 +141,24 @@ impl CodexProvider {
             responses_url: endpoints.responses,
             credentials,
             access: Mutex::new(access),
+            attachments: AttachmentDimensionCache::default(),
         })
+    }
+
+    fn build(&self, request: &ModelRequest<'_>) -> Result<String, ResponsesError> {
+        match self
+            .attachments
+            .withhold_oversized_attachments(request.messages)
+        {
+            Some(messages) => {
+                let projected = ModelRequest {
+                    messages: &messages,
+                    ..*request
+                };
+                build_request(&projected, &replay_parts(&projected))
+            }
+            None => build_request(request, &replay_parts(request)),
+        }
     }
 
     async fn complete(
@@ -148,7 +167,7 @@ impl CodexProvider {
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
-        let body = build_request(request, &replay_parts(request)).map_err(codex_failure)?;
+        let body = self.build(request).map_err(codex_failure)?;
         self.complete_body(request, body, sink, cancel).await
     }
 
@@ -316,7 +335,7 @@ impl ModelProvider for CodexProvider {
     }
 
     fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
-        build_request(request, &replay_parts(request)).ok()
+        self.build(request).ok()
     }
 
     fn stream_body<'a>(

@@ -837,6 +837,7 @@ dependencies = [
  "ofx-contract",
  "ofx-text",
  "rustix",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror",

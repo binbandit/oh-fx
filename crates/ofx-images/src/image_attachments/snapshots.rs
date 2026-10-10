@@ -406,7 +406,7 @@ fn open_or_create_snapshot_directory(path: &str) -> Result<OwnedFd, AttachmentEr
     }
 }
 
-fn open_snapshot_file_no_follow(path: &str) -> Result<File, AttachmentError> {
+pub(super) fn open_snapshot_file_no_follow(path: &str) -> Result<File, AttachmentError> {
     let (parent, name) = snapshot_parent(path)?;
     let flags =
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
