@@ -8,6 +8,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::error::McpError;
+use crate::feature_catalog::Invalidation;
 use crate::features::tools::ToolCatalog;
 use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
 use crate::protocol_negotiation::ElicitationWire;
@@ -37,6 +38,7 @@ pub(crate) struct McpClient {
     pub(crate) operation_timeout: Duration,
     pub(crate) catalog: Mutex<Arc<ToolCatalog>>,
     pub(crate) tools_stale: AtomicBool,
+    pub(crate) resources_invalidation: Invalidation,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
 }
 
@@ -66,6 +68,7 @@ impl McpClient {
             operation_timeout: Duration::from_millis(config.operation_timeout_ms.into()),
             catalog: Mutex::new(Arc::new(connected.catalog)),
             tools_stale: AtomicBool::new(false),
+            resources_invalidation: Invalidation::default(),
             notifications: Mutex::new(connected.notifications),
         }
     }
@@ -117,10 +120,16 @@ impl McpClient {
                 self.tools_stale.store(true, Ordering::Release);
                 Some(ServerNotification::ToolsListChanged)
             }
-            "notifications/resources/list_changed" => capabilities
-                .resources
-                .is_some_and(|resources| resources.list_changed)
-                .then_some(ServerNotification::ResourcesListChanged),
+            "notifications/resources/list_changed" => {
+                if !capabilities
+                    .resources
+                    .is_some_and(|resources| resources.list_changed)
+                {
+                    return None;
+                }
+                self.resources_invalidation.invalidate();
+                Some(ServerNotification::ResourcesListChanged)
+            }
             "notifications/prompts/list_changed" => capabilities
                 .prompts
                 .is_some_and(|prompts| prompts.list_changed)

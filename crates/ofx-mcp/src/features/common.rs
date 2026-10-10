@@ -1,0 +1,327 @@
+use serde_json::{Map, Value};
+
+use crate::catalog_freshness::CacheScope;
+use crate::error::McpError;
+use crate::json_number::ttl_milliseconds;
+use crate::mcp_contract::validate_json_rpc_response_envelope;
+
+const MAX_SUPPORTED_JSON_DEPTH: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Limits {
+    pub(crate) name_bytes: usize,
+    pub(crate) uri_bytes: usize,
+    pub(crate) title_bytes: usize,
+    pub(crate) description_bytes: usize,
+    pub(crate) metadata_bytes: usize,
+    pub(crate) icons: usize,
+    pub(crate) icon_sizes: usize,
+    pub(crate) json_depth: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            name_bytes: 256,
+            uri_bytes: 64 * 1024,
+            title_bytes: 4096,
+            description_bytes: 64 * 1024,
+            metadata_bytes: 128 * 1024,
+            icons: 16,
+            icon_sizes: 16,
+            json_depth: 32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CacheHints {
+    pub(crate) ttl_ms: Option<u64>,
+    pub(crate) scope: CacheScope,
+}
+
+pub(crate) fn parse_envelope(response: &str, limits: Limits) -> Result<Value, McpError> {
+    let value: Value = serde_json::from_str(response).map_err(|_| McpError::InvalidEnvelope)?;
+    validate_json_depth(&value, limits.json_depth)?;
+    validate_json_rpc_response_envelope(&value).map_err(|_| McpError::InvalidEnvelope)?;
+    Ok(value)
+}
+
+pub(crate) fn complete_result(value: &Value) -> Result<&Map<String, Value>, McpError> {
+    if value.get("error").is_some() {
+        return Err(McpError::ProtocolFailure);
+    }
+    let result = value
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or(McpError::InvalidResult)?;
+    match result.get("resultType") {
+        None => Ok(result),
+        Some(Value::String(kind)) if kind == "complete" => Ok(result),
+        Some(_) => Err(McpError::UnsupportedResultType),
+    }
+}
+
+pub(crate) fn parse_cache_hints(result: &Map<String, Value>) -> Result<CacheHints, McpError> {
+    let ttl_ms = result
+        .get("ttlMs")
+        .map(|value| ttl_milliseconds(value).ok_or(McpError::InvalidResult))
+        .transpose()?;
+    let scope = match result.get("cacheScope") {
+        None => CacheScope::Private,
+        Some(Value::String(scope)) if scope == "private" => CacheScope::Private,
+        Some(Value::String(scope)) if scope == "public" => CacheScope::Public,
+        Some(_) => return Err(McpError::InvalidResult),
+    };
+    Ok(CacheHints { ttl_ms, scope })
+}
+
+pub(crate) fn validate_annotations(value: &Value, limits: Limits) -> Result<(), McpError> {
+    let object = value.as_object().ok_or(McpError::InvalidContent)?;
+    if let Some(audience) = object.get("audience") {
+        let roles = audience
+            .as_array()
+            .filter(|roles| roles.len() <= 2)
+            .ok_or(McpError::InvalidContent)?;
+        if !roles
+            .iter()
+            .all(|role| matches!(role.as_str(), Some("user" | "assistant")))
+        {
+            return Err(McpError::InvalidContent);
+        }
+    }
+    if let Some(priority) = object.get("priority")
+        && !priority
+            .as_f64()
+            .is_some_and(|priority| (0.0..=1.0).contains(&priority))
+    {
+        return Err(McpError::InvalidContent);
+    }
+    optional_string(object, "lastModified", limits.title_bytes)?;
+    validate_bounded_json(value, limits.metadata_bytes, limits.json_depth)
+}
+
+pub(crate) fn validate_icons(value: &Value, limits: Limits) -> Result<(), McpError> {
+    let icons = value
+        .as_array()
+        .filter(|icons| icons.len() <= limits.icons)
+        .ok_or(McpError::InvalidContent)?;
+    for icon in icons {
+        let icon = icon.as_object().ok_or(McpError::InvalidContent)?;
+        required_string(icon, "src", limits.uri_bytes)?;
+        optional_string(icon, "mimeType", limits.title_bytes)?;
+        if let Some(sizes) = icon.get("sizes") {
+            let sizes = sizes
+                .as_array()
+                .filter(|sizes| sizes.len() <= limits.icon_sizes)
+                .ok_or(McpError::InvalidContent)?;
+            if !sizes.iter().all(|size| {
+                size.as_str()
+                    .is_some_and(|size| size.len() <= limits.title_bytes)
+            }) {
+                return Err(McpError::InvalidContent);
+            }
+        }
+        if let Some(theme) = icon.get("theme")
+            && !matches!(theme.as_str(), Some("light" | "dark"))
+        {
+            return Err(McpError::InvalidContent);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn required_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    max_bytes: usize,
+) -> Result<&'a str, McpError> {
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= max_bytes)
+        .ok_or(McpError::InvalidContent)
+}
+
+pub(crate) fn optional_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    max_bytes: usize,
+) -> Result<Option<&'a str>, McpError> {
+    match object.get(name) {
+        None => Ok(None),
+        Some(Value::String(value)) if value.len() <= max_bytes => Ok(Some(value)),
+        Some(_) => Err(McpError::InvalidContent),
+    }
+}
+
+pub(crate) fn validate_json_depth(value: &Value, max_depth: usize) -> Result<(), McpError> {
+    if max_depth > MAX_SUPPORTED_JSON_DEPTH || deeper_than(value, max_depth) {
+        return Err(McpError::JsonDepthLimitExceeded);
+    }
+    Ok(())
+}
+
+fn deeper_than(value: &Value, remaining: usize) -> bool {
+    let deeper = |child: &Value| remaining == 0 || deeper_than(child, remaining - 1);
+    match value {
+        Value::Array(items) => items.iter().any(deeper),
+        Value::Object(members) => members.values().any(deeper),
+        _ => false,
+    }
+}
+
+pub(crate) fn validate_bounded_json(
+    value: &Value,
+    max_bytes: usize,
+    max_depth: usize,
+) -> Result<(), McpError> {
+    validate_json_depth(value, max_depth)?;
+    if value.to_string().len() > max_bytes {
+        return Err(McpError::MetadataLimitExceeded);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn nested(depth: usize) -> Value {
+        (0..depth).fold(json!(1), |inner, _| json!({ "a": inner }))
+    }
+
+    #[test]
+    fn iterative_json_depth_validation_accepts_the_limit_and_rejects_the_next_level() {
+        let below = json!({"a": {"b": 1}});
+        assert_eq!(validate_json_depth(&below, 2), Ok(()));
+        assert_eq!(
+            validate_json_depth(&below, 1),
+            Err(McpError::JsonDepthLimitExceeded)
+        );
+        assert_eq!(validate_json_depth(&json!(1), 0), Ok(()));
+        assert_eq!(validate_json_depth(&json!([]), 0), Ok(()));
+        assert_eq!(validate_json_depth(&nested(32), 32), Ok(()));
+        assert_eq!(
+            validate_json_depth(&nested(33), 32),
+            Err(McpError::JsonDepthLimitExceeded)
+        );
+        assert_eq!(
+            validate_json_depth(&json!(1), MAX_SUPPORTED_JSON_DEPTH + 1),
+            Err(McpError::JsonDepthLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn envelopes_and_results_fail_with_upstreams_error_names() {
+        let limits = Limits::default();
+        assert_eq!(parse_envelope("{", limits), Err(McpError::InvalidEnvelope));
+        assert_eq!(
+            parse_envelope(r#"{"jsonrpc":"1.0","id":1,"result":{}}"#, limits),
+            Err(McpError::InvalidEnvelope)
+        );
+        let failure = parse_envelope(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}"#,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(complete_result(&failure), Err(McpError::ProtocolFailure));
+        let scalar = parse_envelope(r#"{"jsonrpc":"2.0","id":1,"result":1}"#, limits).unwrap();
+        assert_eq!(complete_result(&scalar), Err(McpError::InvalidResult));
+        let pending = parse_envelope(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"input_required"}}"#,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(
+            complete_result(&pending),
+            Err(McpError::UnsupportedResultType)
+        );
+    }
+
+    #[test]
+    fn cache_hints_default_to_private_without_a_lifetime() {
+        let hints = |result: Value| parse_cache_hints(result.as_object().unwrap());
+        assert_eq!(
+            hints(json!({})),
+            Ok(CacheHints {
+                ttl_ms: None,
+                scope: CacheScope::Private
+            })
+        );
+        assert_eq!(
+            hints(json!({"ttlMs": 2.5e3, "cacheScope": "public"})),
+            Ok(CacheHints {
+                ttl_ms: Some(2500),
+                scope: CacheScope::Public
+            })
+        );
+        assert_eq!(hints(json!({"ttlMs": 0.5})), Err(McpError::InvalidResult));
+        assert_eq!(hints(json!({"ttlMs": "5"})), Err(McpError::InvalidResult));
+        assert_eq!(
+            hints(json!({"cacheScope": "shared"})),
+            Err(McpError::InvalidResult)
+        );
+    }
+
+    #[test]
+    fn annotations_and_icons_follow_the_shared_bounds() {
+        let limits = Limits::default();
+        assert_eq!(
+            validate_annotations(
+                &json!({"audience": ["user", "assistant"], "priority": 0.5, "lastModified": "2025-01-01"}),
+                limits
+            ),
+            Ok(())
+        );
+        for invalid in [
+            json!([]),
+            json!({"audience": ["system"]}),
+            json!({"audience": ["user", "user", "user"]}),
+            json!({"priority": 1.5}),
+            json!({"priority": "high"}),
+            json!({"lastModified": 1}),
+        ] {
+            assert_eq!(
+                validate_annotations(&invalid, limits),
+                Err(McpError::InvalidContent),
+                "{invalid}"
+            );
+        }
+        assert_eq!(
+            validate_icons(
+                &json!([{"src": "https://x/icon.png", "mimeType": "image/png", "sizes": ["48x48"], "theme": "dark"}]),
+                limits
+            ),
+            Ok(())
+        );
+        for invalid in [
+            json!({}),
+            json!([{"src": ""}]),
+            json!([{"src": "a", "theme": "blue"}]),
+            json!([{"src": "a", "sizes": [48]}]),
+            Value::Array(vec![json!({"src": "a"}); 17]),
+        ] {
+            assert_eq!(
+                validate_icons(&invalid, limits),
+                Err(McpError::InvalidContent),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_json_reports_size_and_depth_separately() {
+        assert_eq!(validate_bounded_json(&json!({"k": "v"}), 9, 32), Ok(()));
+        assert_eq!(
+            validate_bounded_json(&json!({"k": "v"}), 8, 32),
+            Err(McpError::MetadataLimitExceeded)
+        );
+        assert_eq!(
+            validate_bounded_json(&nested(3), 1024, 2),
+            Err(McpError::JsonDepthLimitExceeded)
+        );
+    }
+}

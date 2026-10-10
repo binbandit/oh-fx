@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
+use crate::mcp_commands::render_resource_listing;
 
 pub(crate) const TOPIC: &str = "mcp";
 pub(crate) const RECONNECTING: &str = "MCP reconnection started. Your existing MCP servers will stay active while the new configuration is checked.";
@@ -134,6 +135,18 @@ impl McpHost {
         let runtime = Arc::clone(&self.runtime);
         let sources = self.sources.clone();
         self.replace_pending(|cancel| async move { reload(&runtime, &sources, &cancel).await });
+    }
+
+    pub(crate) fn list_resources(&self, server: String, templates: bool) {
+        let runtime = Arc::clone(&self.runtime);
+        let emit = Arc::clone(&self.emit);
+        tokio::spawn(async move {
+            let listing = runtime.list_resources(&server, templates).await;
+            let body = render_resource_listing(&server, templates, listing);
+            emit(UiEvent::Notice {
+                notice: Notice::new(NoticeTone::Neutral, TOPIC, body),
+            });
+        });
     }
 
     pub(crate) fn begin_authority_reduction(&self, rebuild: bool) {

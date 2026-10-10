@@ -4,10 +4,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
+use crate::feature_catalog::FeatureCatalogs;
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
-use crate::server_transport::{ConnectOptions, startup_failure_message};
+use crate::server_transport::{ConnectOptions, StartupFailure, startup_failure_message};
 use crate::timing::spawn;
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
@@ -39,6 +40,28 @@ pub(crate) enum CallFailure {
     DefinitionChanged { still_advertised: bool },
 }
 
+pub(crate) enum RestartFailure {
+    Unavailable(McpError),
+    Failed { error: McpError, message: String },
+}
+
+impl RestartFailure {
+    pub(crate) fn into_error(self) -> McpError {
+        match self {
+            Self::Unavailable(error) | Self::Failed { error, .. } => error,
+        }
+    }
+}
+
+impl From<RestartFailure> for CallFailure {
+    fn from(failure: RestartFailure) -> Self {
+        match failure {
+            RestartFailure::Unavailable(error) => Self::Mcp(error),
+            RestartFailure::Failed { message, .. } => Self::RestartFailed(message),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Advertised {
     pub(crate) tool: Tool,
@@ -53,6 +76,7 @@ impl From<McpError> for CallFailure {
 
 pub(crate) struct Server {
     pub(crate) config: McpServerConfig,
+    pub(crate) features: FeatureCatalogs,
     options: ConnectOptions,
     state: Mutex<State>,
     restarts: Mutex<u8>,
@@ -67,6 +91,7 @@ impl Server {
     ) -> Self {
         Self {
             config,
+            features: FeatureCatalogs::default(),
             options,
             state: Mutex::new(State::Waiting),
             restarts: Mutex::new(0),
@@ -110,15 +135,17 @@ impl Server {
             }
             *state = State::Starting;
         }
-        if let Err(message) = self.connect().await {
-            self.settle_failure(message);
+        if let Err(failure) = self.connect().await {
+            self.settle_failure(self.failure_message(&failure));
         }
     }
 
-    async fn connect(self: &Arc<Self>) -> Result<(), String> {
-        let client = McpClient::connect(&self.config, &self.options)
-            .await
-            .map_err(|failure| startup_failure_message(&failure, self.config.startup_timeout_ms))?;
+    fn failure_message(&self, failure: &StartupFailure) -> String {
+        startup_failure_message(failure, self.config.startup_timeout_ms)
+    }
+
+    async fn connect(self: &Arc<Self>) -> Result<(), StartupFailure> {
+        let client = McpClient::connect(&self.config, &self.options).await?;
         let connection = Connection {
             client: Arc::new(client),
             stop: CancellationToken::new(),
@@ -180,12 +207,12 @@ impl Server {
         Ok(client.call_tool(name, arguments_json, options).await?)
     }
 
-    async fn running_client(self: &Arc<Self>) -> Result<Arc<McpClient>, CallFailure> {
+    pub(crate) async fn running_client(self: &Arc<Self>) -> Result<Arc<McpClient>, RestartFailure> {
         let current = match &*lock(&self.state) {
             State::Ready(connection) => Some(connection.client.clone()),
             _ => None,
         };
-        let client = current.ok_or(CallFailure::Mcp(McpError::McpConnectionClosed))?;
+        let client = current.ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))?;
         if client.is_running() {
             return Ok(client);
         }
@@ -194,17 +221,23 @@ impl Server {
             if *restarts >= self.config.restart_limit {
                 drop(restarts);
                 self.settle_failure("MCP restart limit reached".to_owned());
-                return Err(CallFailure::Mcp(McpError::McpRestartLimitReached));
+                return Err(RestartFailure::Unavailable(
+                    McpError::McpRestartLimitReached,
+                ));
             }
             *restarts += 1;
         }
-        self.connect().await.map_err(|message| {
+        if let Err(failure) = self.connect().await {
+            let message = self.failure_message(&failure);
             self.settle_failure(message.clone());
-            CallFailure::RestartFailed(message)
-        })?;
+            return Err(RestartFailure::Failed {
+                error: failure.error,
+                message,
+            });
+        }
         match &*lock(&self.state) {
             State::Ready(connection) => Ok(connection.client.clone()),
-            _ => Err(CallFailure::Mcp(McpError::McpConnectionClosed)),
+            _ => Err(RestartFailure::Unavailable(McpError::McpConnectionClosed)),
         }
     }
 
