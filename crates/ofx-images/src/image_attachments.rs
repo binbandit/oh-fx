@@ -19,6 +19,7 @@ const HEADER_BYTES: u64 = 64;
 const PATH_WHITESPACE: &[char] = &[' ', '\t', '\r', '\n'];
 
 pub const IMAGE_TOO_LARGE_NOTICE: &str = "image exceeds the 20 MiB limit";
+pub const MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE: &str = "Unable to verify image support for this model, so the image was not sent. Try again later, choose another model, or remove the image.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AttachmentError {

@@ -24,12 +24,14 @@ use ofx_config::{
     save_yolo_acknowledged,
 };
 use ofx_contract::{
-    ApprovalRequest, CallDescription, FULL_ACCESS_WARNING, ModelRecoveryAction, ModelRecoveryCause,
-    PermissionMode, RecoveredTurn, RouteRecoveryStatus, ToolActivity, ToolCallId, ToolEffect,
-    ToolRejection, ToolResultStatus, TurnOutcome, UiEvent, Usage, format_unknown_action,
+    ApprovalRequest, CallDescription, FULL_ACCESS_WARNING, ImageAttachment, ModelRecoveryAction,
+    ModelRecoveryCause, PermissionMode, RecoveredTurn, RouteRecoveryStatus, ToolActivity,
+    ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent, Usage,
+    format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
+use ofx_images::MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE;
 use ofx_mcp::{McpRuntime, ShutdownMode, render_workspace_diagnostic};
 use ofx_session::{
     SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
@@ -41,7 +43,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
-use crate::ask_images::{ImageFailure, check_image_paths};
+use crate::ask_images::{CapturedImages, ImageFailure, load_image_paths};
 use crate::ask_session::SavedAsk;
 use crate::command_echo::CommandEcho;
 use crate::permission_prompt;
@@ -252,6 +254,7 @@ struct Signalled(i32);
 struct AskRequest<'a> {
     args: &'a AskArgs,
     prompt: &'a str,
+    images: &'a [ImageAttachment],
     modifiers: &'a LaunchModifiers,
     executions: &'a ManagedExecutions,
 }
@@ -266,6 +269,7 @@ struct PreparedAsk {
     saved: Option<SavedAsk>,
     title: Option<TitleGeneration>,
     recovered: Option<RecoveredTurn>,
+    images: CapturedImages,
 }
 
 pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
@@ -273,13 +277,14 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
         Ok(prompt) => prompt,
         Err(error) => return report_argument_error(error),
     };
-    if let Err(failure) = check_image_paths(&args.image_paths) {
-        return report_image_failure(&failure, args.output.json);
-    }
+    let images = match load_image_paths(&args.image_paths) {
+        Ok(images) => images,
+        Err(failure) => return report_image_failure(&failure, args.output.json),
+    };
     if let Some(feature) = unavailable_feature(args, modifiers) {
         return unavailable(&feature, args.output.json);
     }
-    run_prompt(args, &prompt, modifiers)
+    run_turn(args, &prompt, &images, modifiers).exit
 }
 
 fn report_image_failure(failure: &ImageFailure<'_>, json: bool) -> ExitCode {
@@ -302,7 +307,7 @@ pub(crate) fn unavailable_launch(modifiers: &LaunchModifiers) -> Option<&'static
 }
 
 pub(crate) fn run_prompt(args: &AskArgs, prompt: &str, modifiers: &LaunchModifiers) -> ExitCode {
-    run_turn(args, prompt, modifiers).exit
+    run_turn(args, prompt, &[], modifiers).exit
 }
 
 pub(crate) fn capture_prompt(
@@ -310,11 +315,16 @@ pub(crate) fn capture_prompt(
     prompt: &str,
     modifiers: &LaunchModifiers,
 ) -> Result<String, ExitCode> {
-    let answered = run_turn(args, prompt, modifiers);
+    let answered = run_turn(args, prompt, &[], modifiers);
     answered.final_text.ok_or(answered.exit)
 }
 
-fn run_turn(args: &AskArgs, prompt: &str, modifiers: &LaunchModifiers) -> Answered {
+fn run_turn(
+    args: &AskArgs,
+    prompt: &str,
+    images: &[ImageAttachment],
+    modifiers: &LaunchModifiers,
+) -> Answered {
     if prompt.is_empty() && !args.session.continue_recovery {
         return Answered::failed(
             Failure::code("InvalidConversationEvent").report(args.output.json),
@@ -328,6 +338,7 @@ fn run_turn(args: &AskArgs, prompt: &str, modifiers: &LaunchModifiers) -> Answer
         Ok(runtime) => runtime.block_on(ask(
             args,
             prompt,
+            images,
             modifiers,
             SubscriptionEndpoints::from_environment(),
         )),
@@ -366,7 +377,10 @@ pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option
 }
 
 fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
-    let ask = [(!args.image_paths.is_empty(), "--image")];
+    let ask = [(
+        !args.image_paths.is_empty() && !args.session.no_save,
+        "--image",
+    )];
     if let Some(flag) = unsupported_launch_modifier(modifiers) {
         return Some(flag.to_owned());
     }
@@ -410,6 +424,7 @@ fn unavailable(feature: &str, json: bool) -> ExitCode {
 async fn ask(
     args: &AskArgs,
     prompt: &str,
+    images: &[ImageAttachment],
     modifiers: &LaunchModifiers,
     endpoints: SubscriptionEndpoints,
 ) -> Answered {
@@ -426,6 +441,7 @@ async fn ask(
     let request = AskRequest {
         args,
         prompt,
+        images,
         modifiers,
         executions: &executions,
     };
@@ -483,6 +499,7 @@ async fn respond(
         saved,
         title,
         recovered,
+        images,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => return Ok(Answered::failed(failure.report(args.output.json))),
@@ -507,7 +524,16 @@ async fn respond(
     };
     let report = match recovered {
         Some(recovered) => agent.continue_turn(recovered, &mut present, cancel).await,
-        None => agent.run_turn(request.prompt, &mut present, cancel).await,
+        None => {
+            agent
+                .run_turn_with_images(
+                    request.prompt,
+                    images.images().to_vec(),
+                    &mut present,
+                    cancel,
+                )
+                .await
+        }
     };
     if let Some(titling) = titling {
         let _ = titling.await;
@@ -552,6 +578,8 @@ async fn prepare_agent(
         }
         None => None,
     };
+    let images = CapturedImages::capture(request.images.to_vec(), cancel)
+        .map_err(|error| Failure::code(error.to_string()))?;
     let (reasoning_effort, fast_mode) = requested_reasoning(
         args,
         profile.settings(),
@@ -619,6 +647,7 @@ async fn prepare_agent(
         saved,
         title,
         recovered,
+        images,
     })
 }
 
@@ -1567,7 +1596,13 @@ impl Presenter {
             | TurnFailure::SkillContext(_)
             | TurnFailure::Compaction(_)
             | TurnFailure::Persistence(_)
-            | TurnFailure::RecoveryPaused => self.describe_error(failure.code(), None),
+            | TurnFailure::RecoveryPaused
+            | TurnFailure::SubscriptionNativeImageUnavailable => {
+                self.describe_error(failure.code(), None)
+            }
+            TurnFailure::ModelImageCapabilityUnavailable => {
+                self.describe_notice(failure.code(), MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE)
+            }
             TurnFailure::StepLimitReached
             | TurnFailure::RepeatedMalformedArguments
             | TurnFailure::RepeatedShellExecutionFailure => Ok(FailureSummary {
@@ -1587,6 +1622,16 @@ impl Presenter {
         }
         if let Some(detail) = detail {
             write_stderr(&format!("oh-fx ask: {detail}\n"))?;
+        }
+        Ok(FailureSummary {
+            error: Some(code.to_owned()),
+            auth_failure: false,
+        })
+    }
+
+    fn describe_notice(&self, code: &str, notice: &str) -> io::Result<FailureSummary> {
+        if self.mode != OutputMode::Json {
+            write_stderr(&format!("oh-fx ask: {notice}\n"))?;
         }
         Ok(FailureSummary {
             error: Some(code.to_owned()),
@@ -1949,6 +1994,7 @@ mod tests {
         let request = AskRequest {
             args: &args,
             prompt: "Hello",
+            images: &[],
             modifiers: &LaunchModifiers::default(),
             executions: &executions,
         };
@@ -2038,6 +2084,7 @@ mod tests {
         let request = AskRequest {
             args: &args,
             prompt: &prompt,
+            images: &[],
             modifiers: &LaunchModifiers::default(),
             executions: &executions,
         };

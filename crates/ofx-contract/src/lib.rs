@@ -48,7 +48,7 @@ pub use hooks::{
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use mcp_servers::{McpServersCatalog, McpServersSection};
 pub use model_capabilities::{
-    CapabilityLookup, CapabilityResolver, ModelCapabilities, intrinsically_fast,
+    CapabilityLookup, CapabilityResolver, ImageInputSupport, ModelCapabilities, intrinsically_fast,
 };
 pub use modes::{ActiveMode, ModeRegistry, ModeSpec, ToolPolicy};
 pub use permission_gate::{

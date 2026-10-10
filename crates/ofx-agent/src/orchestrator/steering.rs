@@ -1,7 +1,7 @@
 use std::mem;
 use std::sync::Arc;
 
-use ofx_contract::{ChatMessage, TurnId, UiEvent};
+use ofx_contract::{ChatMessage, ImageAttachment, TurnId, UiEvent};
 use tokio_util::sync::CancellationToken;
 
 use super::turn_log::Ending;
@@ -57,12 +57,17 @@ impl Agent {
             .is_some_and(|worker| worker.continues_steering())
     }
 
-    pub(super) fn turn_message(&self, prompt: &str) -> ChatMessage {
-        ChatMessage::user(if self.continues_steering() {
-            steering_message(prompt)
-        } else {
-            prompt.to_owned()
-        })
+    pub(super) fn turn_message(&self, prompt: &str, images: Vec<ImageAttachment>) -> ChatMessage {
+        ChatMessage::User {
+            content: if self.continues_steering() {
+                steering_message(prompt)
+            } else {
+                prompt.to_owned()
+            },
+            restored_steering: false,
+            feedback_for: None,
+            images,
+        }
     }
 
     pub(super) fn steering_boundary(&self, kind: BoundaryKind) -> Boundary {

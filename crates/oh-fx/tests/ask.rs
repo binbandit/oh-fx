@@ -1359,6 +1359,91 @@ fn ask_checks_every_image_before_anything_else_as_upstream_does() {
     assert!(!home.root.join("data").exists());
 }
 
+fn vision_settings(base_url: &str, metadata: Option<Value>) -> Value {
+    let mut settings = portkey_settings(base_url);
+    if let Some(metadata) = metadata {
+        settings["providers"]["portkey"]["model_metadata"] = json!({"@openai/gpt-4o": metadata});
+    }
+    settings
+}
+
+#[test]
+fn unsaved_images_reach_a_vision_connection_as_upstream_content_parts() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["a pixel"]))]);
+    let home = Home::with_settings(&vision_settings(
+        &server.base_url(),
+        Some(json!({"supports_vision": true})),
+    ));
+    fs::create_dir(home.workspace.join("photos")).unwrap();
+    fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
+    fs::write(home.workspace.join("photos/b.gif"), b"GIF89arest").unwrap();
+    let output = home.ask(
+        &[
+            "ask",
+            "--no-save",
+            "--image",
+            "shot.png",
+            "--image",
+            "photos/b.gif",
+            "what is this",
+        ],
+        &KEY,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "a pixel");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let body = requests[0].body_text();
+    assert!(
+        body.contains(concat!(
+            r#"{"role":"user","content":[{"type":"text","text":"what is this"},"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgpyZXN0"}},"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/gif;base64,R0lGODlhcmVzdA=="}}]}]"#,
+        )),
+        "{body}"
+    );
+    assert!(!home.root.join("data").exists());
+}
+
+#[test]
+fn images_stop_before_any_request_when_the_model_cannot_take_them() {
+    let server = FakeServer::start([]);
+    for (metadata, notice, code) in [
+        (
+            None,
+            "oh-fx ask: Unable to verify image support for this model, so the image was not sent. Try again later, choose another model, or remove the image.\n",
+            "ModelImageCapabilityUnavailable",
+        ),
+        (
+            Some(json!({"supports_vision": false})),
+            "oh-fx: SubscriptionNativeImageUnavailable\n",
+            "SubscriptionNativeImageUnavailable",
+        ),
+        (
+            Some(json!({"context_window": 128_000})),
+            "oh-fx: SubscriptionNativeImageUnavailable\n",
+            "SubscriptionNativeImageUnavailable",
+        ),
+    ] {
+        let home = Home::with_settings(&vision_settings(&server.base_url(), metadata));
+        fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
+        let args = ["ask", "--no-save", "--image", "shot.png", "what is this"];
+        let output = home.ask(&args, &KEY);
+        assert_eq!(output.status.code(), Some(1), "{code}");
+        assert_eq!(stderr(&output), notice);
+        let output = home.ask(
+            &["ask", "--json", "--no-save", "--image", "shot.png", "hi"],
+            &KEY,
+        );
+        assert_eq!(output.status.code(), Some(1), "{code}");
+        assert_eq!(stderr(&output), "", "{code}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["error"], code);
+        assert_eq!(result["steps"], 0);
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn the_sessions_v2_variable_selects_the_store_that_ask_cannot_use_yet() {
     let server = FakeServer::start([
