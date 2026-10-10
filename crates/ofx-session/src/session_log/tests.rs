@@ -964,6 +964,41 @@ fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
 }
 
 #[test]
+fn a_model_choice_saves_an_ultra_request_only_when_it_names_one() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("ultra");
+    let manifest = || fs::read_to_string(fixture.dir("ultra").join("session.json")).unwrap();
+    session
+        .select_model("openai/gpt-5", None, false, Some(true))
+        .unwrap();
+    assert!(manifest().contains("\"fast_mode\":false,\"ultrafast_mode\":true,"));
+    let effort = ReasoningEffort::Named("high".to_owned());
+    session
+        .select_model("openai/gpt-5", Some(&effort), false, None)
+        .unwrap();
+    assert!(
+        load_session(&fixture.sessions, "ultra")
+            .unwrap()
+            .metadata
+            .preferences
+            .ultrafast_mode
+    );
+    session
+        .select_model("openai/gpt-5", None, false, Some(false))
+        .unwrap();
+    drop(session);
+    assert!(!manifest().contains("ultrafast_mode"));
+    assert!(
+        !fixture
+            .resume("ultra")
+            .unwrap()
+            .metadata()
+            .preferences
+            .ultrafast_mode
+    );
+}
+
+#[test]
 fn a_batch_cut_anywhere_by_a_crash_is_removed_as_a_whole() {
     let fixture = Fixture::new();
     let mut session = fixture.start("atomic");

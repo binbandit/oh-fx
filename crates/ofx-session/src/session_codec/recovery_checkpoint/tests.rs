@@ -540,6 +540,82 @@ fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
 }
 
 #[test]
+fn an_ultra_request_is_read_as_upstream_writes_it_and_kept_only_for_the_same_selection() {
+    let pair = "\"requested_ultrafast_mode\":true,\"ultrafast_mode\":true,";
+    let ultra =
+        upstream_checkpoint().replace("\"fast_mode\":true,", &format!("\"fast_mode\":true,{pair}"));
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let continued = |text: &str, ultrafast| {
+        decoded(text)
+            .into_continuation(&codex, "gpt-5.4", false, ultrafast)
+            .fast_mode
+    };
+    assert!(continued(&ultra, true));
+    assert!(!continued(&ultra, false));
+    assert!(!continued(&upstream_checkpoint(), true));
+    let effective_only = ultra.replace(
+        "\"requested_ultrafast_mode\":true",
+        "\"requested_ultrafast_mode\":false",
+    );
+    assert!(continued(&effective_only, false));
+    for invalid in [
+        ultra.replace("\"requested_ultrafast_mode\":true,", ""),
+        ultra.replace("\"ultrafast_mode\":true,\"max", "\"max"),
+        ultra.replace(
+            "\"requested_ultrafast_mode\":true",
+            "\"requested_ultrafast_mode\":null",
+        ),
+        ultra.replace(
+            "\"ultrafast_mode\":true,\"max",
+            "\"ultrafast_mode\":1,\"max",
+        ),
+        ultra.replace(
+            "\"requested_ultrafast_mode\":true",
+            "\"requested_ultrafast_mode\":\"true\"",
+        ),
+    ] {
+        assert_eq!(
+            decode_recovery_file(&file_with(&invalid, 1), 1),
+            Err(SessionError::InvalidRecoveryCheckpoint),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn an_ultra_request_is_written_as_upstream_writes_it() {
+    let calls = read_step_calls();
+    let mut point = recovery_point(&calls, "fn main() {}");
+    point.ultrafast_mode = true;
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: None,
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        files: Vec::new(),
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(3, &source).unwrap().unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(
+        text.contains(
+            "\"requested_fast_mode\":false,\"fast_mode\":true,\"requested_ultrafast_mode\":true,\"ultrafast_mode\":true,\"max_provider_attempts\":10,"
+        ),
+        "{text}"
+    );
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let read = decode_recovery_file(&written, 3).unwrap().unwrap();
+    assert!(
+        read.into_continuation(&codex, "gpt-5.4", false, true)
+            .fast_mode
+    );
+}
+
+#[test]
 fn a_continuation_keeps_each_restored_results_raw_size_and_process() {
     let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
     let mut saved = checkpoint();
