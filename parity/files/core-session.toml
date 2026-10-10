@@ -87,7 +87,7 @@ note = "Environment-flag parsing exists; v1/v2 store routing, recovery, doctor a
 upstream = "src/core/session/session_authority.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_authority.rs"]
-note = "The authority marker of the schema-v3 layout fx 0.0.1 to 0.0.7 wrote classifies an fx session for listing and import, and a dir behind an upgrade fence is refused; reading a fenced dir's stable snapshot and the creation-orphan check come with the rest of NEW-G."
+note = "The authority marker of the schema-v3 layout fx 0.0.1 to 0.0.7 wrote classifies an fx session for listing and import, and a dir behind an upgrade fence is refused, as upstream refuses one without a session.legacy.json snapshot. Reading that pre-public snapshot is not ported, as for the v1 and v2 snapshots, and a marker-less creation orphan is never read as schema-v3, which is what upstream's creation-orphan check guards."
 
 [[file]]
 upstream = "src/core/session/session_catalog.zig"
@@ -156,7 +156,7 @@ note = "Session-ID validation/generation exists; terminal-specific IDs and v2 di
 upstream = "src/core/session/session_log.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_migration/conversion.rs", "crates/ofx-session/src/session_migration/recovery_file.rs"]
-note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy and the in-place import recovery are missing; the permission and usage sidecars are not written, as for oh-fx's own sessions."
+note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy is missing, and an in-place import fx left unfinished is read as recoverInterruptedLegacyImport resolves it, from events.v3.backup until the new metadata exists, without repairing fx's files; the permission and usage sidecars are not written, as for oh-fx's own sessions."
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
