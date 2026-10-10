@@ -126,30 +126,50 @@ impl McpRuntime {
         settling
     }
 
-    pub(crate) fn search(&self, request: &McpSearchRequest) -> McpSearchResult {
+    fn early_answer(&self, request: &McpSearchRequest) -> Option<McpSearchResult> {
         let servers = self.current();
-        let server = request.server.as_deref();
-        let mut search_result = self.limits.get(ContextLimitName::McpSearchResultBytes);
-        if let McpSearchHost::Ask { result_bytes } = request.host {
-            if server.is_some_and(|name| !servers.iter().any(|known| known.config.name == name)) {
-                return McpSearchResult::plain(SERVER_NOT_FOUND);
-            }
-            if result_bytes < search_result.effective_bytes() {
-                search_result.value = ContextLimitValue::Bytes(result_bytes);
-            }
-        }
-        if self.discovering.load(Ordering::Acquire)
-            && !servers.iter().any(|server| server.catalog().is_some())
+        if matches!(request.host, McpSearchHost::Ask { .. })
+            && let Some(name) = request.server.as_deref()
+            && !servers.iter().any(|known| known.config.name == name)
         {
-            return McpSearchResult::plain(DISCOVERING);
+            return Some(McpSearchResult::plain(SERVER_NOT_FOUND));
+        }
+        (self.discovering.load(Ordering::Acquire)
+            && !servers.iter().any(|server| server.catalog().is_some()))
+        .then(|| McpSearchResult::plain(DISCOVERING))
+    }
+
+    async fn refresh_tool_lists(&self, scope: Option<&str>) {
+        for server in self.current() {
+            if scope.is_some_and(|name| server.config.name != name) {
+                continue;
+            }
+            let Lifecycle::Ready(client) = server.lifecycle() else {
+                continue;
+            };
+            server
+                .refresh_tools(&client, Instant::now() + client.operation_timeout)
+                .await;
+        }
+    }
+
+    pub(crate) fn search(&self, request: &McpSearchRequest) -> McpSearchResult {
+        if let Some(answer) = self.early_answer(request) {
+            return answer;
+        }
+        let mut search_result = self.limits.get(ContextLimitName::McpSearchResultBytes);
+        if let McpSearchHost::Ask { result_bytes } = request.host
+            && result_bytes < search_result.effective_bytes()
+        {
+            search_result.value = ContextLimitValue::Bytes(result_bytes);
         }
         tool_search::search(
-            &servers,
+            &self.current(),
             &self.names,
             &self.reserved,
             Search {
                 query: &request.query,
-                server,
+                server: request.server.as_deref(),
             },
             SearchLimits {
                 description: self.limits.get(ContextLimitName::McpDescriptionBytes),
@@ -659,6 +679,9 @@ impl McpToolSearch for McpRuntime {
         request: McpSearchRequest,
     ) -> BoxFuture<'static, McpSearchResult> {
         Box::pin(async move {
+            if self.early_answer(&request).is_none() {
+                self.refresh_tool_lists(request.server.as_deref()).await;
+            }
             match tokio::task::spawn_blocking(move || self.search(&request)).await {
                 Ok(result) => result,
                 Err(error) => std::panic::resume_unwind(error.into_panic()),

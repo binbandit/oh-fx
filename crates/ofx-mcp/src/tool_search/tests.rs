@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use ofx_config::{ContextLimits, parse_context_limit_override};
-use ofx_contract::{McpSearchHost, McpSearchRequest};
+use ofx_contract::{McpSearchHost, McpSearchRequest, McpToolSearch};
 use serde_json::json;
 
 use super::*;
@@ -486,4 +486,33 @@ async fn dropping_or_abandoning_startup_discovery_ends_the_discovering_state() {
     );
     discovery.abandon().await;
     assert_eq!(search(&runtime, "datadog", None).model_output, empty);
+}
+
+#[tokio::test]
+async fn a_search_lists_an_expired_tool_list_again_first() {
+    let fixture = Fixture::new();
+    let listing = |tools: &[(&str, &str)]| {
+        json!({
+            "tools": tools
+                .iter()
+                .map(|(name, description)| json!({"name": name, "description": description, "inputSchema": {"type": "object"}}))
+                .collect::<Vec<_>>(),
+            "ttlMs": 1
+        })
+    };
+    let config = fixture.listing("datadog", &listing(&[DATADOG[1]]));
+    let runtime = Arc::new(connected(vec![config], &[]).await);
+    fixture.listing("datadog", &listing(DATADOG));
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let request = McpSearchRequest {
+        query: Arc::new(PreparedQuery::prepare("datadog".to_owned()).unwrap()),
+        server: None,
+        host: McpSearchHost::Interactive,
+    };
+    assert_eq!(
+        McpToolSearch::search_tools(Arc::clone(&runtime), request)
+            .await
+            .model_output,
+        LISTED
+    );
 }
