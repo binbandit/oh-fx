@@ -169,7 +169,7 @@ fn read_file_reports_attached_images_on_its_tool_output() {
         output.content,
         "<path>frame.png</path>\n<content>image attached (image/png, 24 bytes)</content>"
     );
-    assert_eq!(output.images.len(), 1);
-    assert_eq!(output.images[0].mime_type, "image/png");
+    assert_eq!(output.images().len(), 1);
+    assert_eq!(output.images()[0].mime_type, "image/png");
     assert_eq!(output.model_view_covers_full_file, Some(true));
 }

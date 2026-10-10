@@ -108,8 +108,11 @@ pub struct ToolOutput {
     pub file_change: Option<FileChangeStats>,
     pub model_view_covers_full_file: Option<bool>,
     pub dynamic_tools: Option<Box<DynamicToolChange>>,
-    pub images: Box<[ToolImage]>,
+    images: Option<Box<ToolImages>>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolImages(Vec<ToolImage>);
 
 impl ToolOutput {
     pub fn success(content: impl Into<String>) -> Self {
@@ -123,7 +126,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
-            images: Box::default(),
+            images: None,
         }
     }
 
@@ -138,7 +141,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
-            images: Box::default(),
+            images: None,
         }
     }
 
@@ -213,8 +216,19 @@ impl ToolOutput {
 
     #[must_use]
     pub fn with_images(mut self, images: Vec<ToolImage>) -> Self {
-        self.images = images.into_boxed_slice();
+        self.images = (!images.is_empty()).then(|| Box::new(ToolImages(images)));
         self
+    }
+
+    pub fn images(&self) -> &[ToolImage] {
+        self.images.as_deref().map_or(&[], |images| &images.0)
+    }
+
+    pub fn take_images(&mut self) -> Vec<ToolImage> {
+        self.images
+            .take()
+            .map(|images| images.0)
+            .unwrap_or_default()
     }
 }
 
