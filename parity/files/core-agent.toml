@@ -127,8 +127,8 @@ note = "Turn completion with its PostTurnEnd checkpoint, the Stop candidate kept
 [[file]]
 upstream = "src/core/agent/runtime/gateway_step.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs", "crates/ofx-contract/src/stream_provider.rs", "crates/ofx-agent/src/gateway_step.rs"]
-note = "Model requests, provider completion and provider admission are implemented, and each model request is recorded in the network ring as recordProviderResultMetric does: a completion with its bytes, tokens and stop reason, an HTTP failure under upstream's failure status, a failure the stream reported as a finish (error, content-filter, length or a missing finish) as a completed call with that stop reason, and a transport failure with its error code; title and chat-completions review requests are recorded through `MeteredProvider` without turn ids, as upstream passes them none, and the Codex reviewer, which upstream sends past this funnel, is not recorded; and each step advertises the dynamic tools the turn selected that the source still publishes, replacing a changed definition and adding and retiring tools as executions report them; tool image projection, usage observations at admission and detailed delivery-certainty evidence are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs", "crates/ofx-agent/src/orchestrator/request_usage.rs", "crates/ofx-contract/src/stream_provider.rs", "crates/ofx-agent/src/gateway_step.rs"]
+note = "Model requests, provider completion and provider admission are implemented, and each model request is recorded in the network ring as recordProviderResultMetric does: a completion with its bytes, tokens and stop reason, an HTTP failure under upstream's failure status, a failure the stream reported as a finish (error, content-filter, length or a missing finish) as a completed call with that stop reason, and a transport failure with its error code; title and chat-completions review requests are recorded through `MeteredProvider` without turn ids, as upstream passes them none, and the Codex reviewer, which upstream sends past this funnel, is not recorded; and each step advertises the dynamic tools the turn selected that the source still publishes, replacing a changed definition and adding and retiring tools as executions report them. Each admitted request begins and settles in the session's usage with upstream's delivery outcomes: a failure status or a connection that never opened is unbilled, any other failure or a cancellation is an ambiguous delivery, and a completion without exact usage is possibly billed; a request whose start cannot be saved fails the turn. Tool image projection, exact and deferred usage outcomes, and detailed delivery-certainty evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/image_provider.zig"
@@ -230,7 +230,7 @@ note = "Turn review cache, admission, the malformed-argument stop, identical-fai
 upstream = "src/core/agent/runtime/tool_batch.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/provider_tools.rs"]
-note = "Tool batches, argument validation, parallel execution and approval feedback appended after every result of its step exist, and provider-executed calls publish their provider results in call order with the identical-failure escalation; subagent-specific lifecycle settlement is absent."
+note = "Tool batches, argument validation, parallel execution and approval feedback appended after every result of its step exist, and provider-executed calls publish their provider results in call order with the identical-failure escalation, and a committed file change adds its lines to the session's usage; subagent-specific lifecycle settlement is absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tool_contracts.zig"

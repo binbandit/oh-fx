@@ -6,6 +6,10 @@ use ofx_contract::{
 };
 use ofx_text::lowercase_hex;
 
+mod accounting;
+
+pub(crate) use accounting::{ReserveFailure, Usage};
+
 use crate::generation_fact_codec::{self, cost, non_negative};
 use crate::json_fields::push_string;
 use crate::session_codec::recovery_checkpoint::{
@@ -184,8 +188,13 @@ impl UsageSnapshot {
         if !valid_incident(&incident) {
             return Err(UsageSnapshotError::Invalid);
         }
+        self.push_incident(incident);
+        Ok(())
+    }
+
+    fn push_incident(&mut self, incident: UsageIncident) {
         if self.incidents.contains(&incident) {
-            return Ok(());
+            return;
         }
         if self.incidents.len() == MAX_USAGE_INCIDENTS {
             let newest_at_ms = self
@@ -197,10 +206,9 @@ impl UsageSnapshot {
                 occurred_at_ms: newest_at_ms,
                 completeness: UsageCompleteness::Incomplete,
             }];
-            return Ok(());
+            return;
         }
         self.incidents.push(incident);
-        Ok(())
     }
 
     pub(crate) fn validate(&self) -> Result<(), UsageSnapshotError> {

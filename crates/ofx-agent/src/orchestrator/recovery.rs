@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::mem;
 
 use ofx_contract::{
-    ChatMessage, ModelRecoveryCause, ModelRequest, ProviderError, RecoveryStrategy, ToolChoice,
-    TurnId, UiEvent,
+    ChatMessage, LogFailure, ModelRecoveryCause, ModelRequest, ProviderError, RecoveryStrategy,
+    ToolChoice, TurnId, UiEvent,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -178,6 +178,20 @@ impl<'a> Restart<'a> {
         }
     }
 
+    pub(super) fn begin_again(&mut self, turn: &mut Turn, events: EventSink<'_>) {
+        if self.restarted(&turn.language.stage) {
+            events(restarted(turn.id));
+        }
+        turn.language.stage.restart();
+    }
+
+    pub(super) fn settled(&mut self, settled: Result<(), LogFailure>) -> Result<(), Stop> {
+        settled.map_err(|failure| Stop::Failed {
+            failure: TurnFailure::Persistence(failure),
+            partial: self.take_partial(),
+        })
+    }
+
     pub(super) fn restarted(&mut self, stage: &LanguageStage) -> bool {
         if self.latest.is_empty() || stage.holds_candidate() {
             self.latest.clear();
@@ -196,18 +210,22 @@ impl<'a> Restart<'a> {
         self.messages = messages;
     }
 
-    pub(super) fn failed(self, error: ProviderError) -> Stop {
+    pub(super) fn failed(self, failure: TurnFailure) -> Stop {
         Stop::Failed {
-            failure: TurnFailure::Provider(error),
+            failure,
             partial: self.into_partial(),
         }
     }
 
-    pub(super) fn into_partial(self) -> String {
+    pub(super) fn into_partial(mut self) -> String {
+        self.take_partial()
+    }
+
+    fn take_partial(&mut self) -> String {
         if self.latest.is_empty() {
-            self.interrupted
+            mem::take(&mut self.interrupted)
         } else {
-            self.latest
+            mem::take(&mut self.latest)
         }
     }
 }
