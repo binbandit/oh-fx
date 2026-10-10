@@ -84,6 +84,21 @@ impl Server {
         Ok((FeatureIdentity::Prompt(catalog), checked))
     }
 
+    pub(crate) async fn template_identity(
+        self: &Arc<Self>,
+        uri_template: &str,
+        deadline: Instant,
+    ) -> Result<FeatureIdentity, McpError> {
+        let templates = self.feature_catalog::<ResourceTemplate>(deadline).await?;
+        if templates
+            .iter()
+            .any(|template| template.uri_template == uri_template)
+        {
+            return Ok(FeatureIdentity::Template(templates));
+        }
+        Err(McpError::McpResourceTemplateNotFound)
+    }
+
     pub(crate) fn check_current(
         &self,
         client: &Arc<McpClient>,
