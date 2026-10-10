@@ -620,6 +620,66 @@ async fn ask_starts_optional_servers_only_when_a_search_needs_them() {
 }
 
 #[tokio::test]
+async fn ask_reports_a_server_that_fails_to_start_for_a_scoped_search() {
+    let runtime = Arc::new(runtime(vec![failing("broken")], &[]));
+    runtime.connect_for_ask(false).await;
+    assert!(!started(&runtime, "broken"));
+    let output: Value =
+        serde_json::from_str(&ask_search(&runtime, "anything", Some("broken")).await).unwrap();
+    assert_eq!(output["state"], "server_failed");
+    assert!(
+        output["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("MCP server 'broken' is unavailable: MCP server exited with code 3")
+    );
+}
+
+#[tokio::test]
+async fn an_unscoped_ask_search_dropped_while_servers_start_records_them_as_cancelled() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.path().join("hold"), "").unwrap();
+    let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));
+    runtime.connect_for_ask(false).await;
+    let searching = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { ask_search(&runtime, "datadog", None).await }
+    });
+    let settled = |wanted: fn(&Lifecycle) -> bool| {
+        let runtime = Arc::clone(&runtime);
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !wanted(&runtime_server(&runtime, "datadog").lifecycle()) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    settled(|lifecycle| matches!(lifecycle, Lifecycle::Starting)).await;
+    searching.abort();
+    assert!(searching.await.unwrap_err().is_cancelled());
+    settled(|lifecycle| matches!(lifecycle, Lifecycle::Failed(failure) if failure == "Cancelled"))
+        .await;
+    std::fs::remove_file(fixture.path().join("hold")).unwrap();
+    let output: Value = serde_json::from_str(
+        &tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ask_search(&runtime, "datadog", Some("datadog")),
+        )
+        .await
+        .expect("a later search answers at once"),
+    )
+    .unwrap();
+    assert_eq!(output["state"], "server_failed");
+    assert_eq!(
+        output["error"],
+        "MCP server 'datadog' is unavailable: Cancelled"
+    );
+}
+
+#[tokio::test]
 async fn a_terminal_ask_starts_every_server_before_the_turn() {
     let fixture = Fixture::new();
     let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));

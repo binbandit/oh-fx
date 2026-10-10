@@ -12,6 +12,8 @@ pub enum McpError {
     Cancelled,
     #[error("McpRequestTimedOut")]
     McpRequestTimedOut,
+    #[error("McpConnectionTimedOut")]
+    McpConnectionTimedOut,
     #[error("McpConnectionClosed")]
     McpConnectionClosed,
     #[error("McpResponseFrameTooLarge")]

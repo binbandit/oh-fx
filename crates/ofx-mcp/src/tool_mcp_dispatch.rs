@@ -114,13 +114,16 @@ impl PreparedCall for SelectCall {
                 return ToolOutput::failure(format_tool_execution_error_json(NAME, "Cancelled"));
             };
             match projection {
-                None => ToolOutput::failure(format!(
+                Err(error) => {
+                    ToolOutput::failure(format_tool_execution_error_json(NAME, &error.to_string()))
+                }
+                Ok(None) => ToolOutput::failure(format!(
                     "Dynamic MCP tool not found or not allowed: {name}"
                 )),
-                Some(Projection::Rejected { output, notice }) => {
+                Ok(Some(Projection::Rejected { output, notice })) => {
                     ToolOutput::failure(output).with_context_notices([notice])
                 }
-                Some(Projection::Selected { notice, .. }) => {
+                Ok(Some(Projection::Selected { notice, .. })) => {
                     let mut encoded = String::new();
                     write_scalar(&mut encoded, &name);
                     ToolOutput::success(format!(

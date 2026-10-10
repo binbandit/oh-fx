@@ -543,16 +543,35 @@ async fn ask_starts_the_named_server_before_a_feature_call() {
     let runtime = runtime(vec![config("fixture", state.path())]);
     runtime.connect_for_ask(false).await;
     let tool = McpFeatures::new(Some(Arc::clone(&runtime)));
-    let output = run(&tool, r#"{"action":"prompt_list","server":"fixture"}"#).await;
     assert_eq!(
-        output.status,
-        ToolResultStatus::Success,
-        "{}",
-        output.content
+        run(&tool, r#"{"action":"prompt_list","server":"fixture"}"#).await,
+        success(format!(
+            r#"{ENVELOPE},"action":"prompt_list","server":"fixture","items":[{{"server":"fixture","identity":"review","description":"Review code","arguments":[{{"name":"tone","required":true,"description":"How to say it"}}]}}]}}"#
+        ))
     );
     assert_eq!(
         run(&tool, r#"{"action":"prompt_list","server":"absent"}"#).await,
         failure(&McpError::McpServerNotFound)
     );
+    runtime.shutdown(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn ask_reports_why_a_server_started_for_a_feature_call_failed() {
+    let runtime = runtime(vec![McpServerConfig::stdio(
+        "broken",
+        "/bin/sh",
+        vec!["-c".to_owned(), "exit 3".to_owned()],
+    )]);
+    runtime.connect_for_ask(false).await;
+    let tool = McpFeatures::new(Some(Arc::clone(&runtime)));
+    assert_eq!(
+        run(&tool, r#"{"action":"prompt_list","server":"broken"}"#).await,
+        failure(&McpError::McpServerExitedDuringStartup)
+    );
+    assert!(matches!(
+        runtime.current()[0].lifecycle(),
+        crate::server_lifecycle::Lifecycle::Failed(_)
+    ));
     runtime.shutdown(ShutdownMode::Immediate).await;
 }

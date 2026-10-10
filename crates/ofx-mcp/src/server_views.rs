@@ -247,7 +247,7 @@ done
             crate::server_transport::ConnectOptions::default(),
             Arc::default(),
         ));
-        server.start().await;
+        server.start().await.unwrap();
         let Lifecycle::Ready(client) = server.lifecycle() else {
             panic!("the server is not ready");
         };

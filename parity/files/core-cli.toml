@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/cli/cli_ask.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/cli_ask.rs", "crates/oh-fx/src/cli_ask.rs"]
-note = "Argument parsing, ask runtime, --continue-recovery, MCP startup that connects every server in a terminal and only required ones otherwise, additional directories, the stderr permission prompt, the per-mode response restart notice with the JSON preview discard, and the --image preflight with its messages exist; styled terminal ask presentation, sending images and session-v2 ask persistence are absent."
+note = "Argument parsing, ask runtime, --continue-recovery, MCP startup that connects every server in a terminal and only required profile servers and approved project servers otherwise, additional directories, the stderr permission prompt, the per-mode response restart notice with the JSON preview discard, and the --image preflight with its messages exist; styled terminal ask presentation, sending images and session-v2 ask persistence are absent."
 
 [[file]]
 upstream = "src/core/cli/cli_replay.zig"
