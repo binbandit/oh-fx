@@ -53,6 +53,15 @@ pub enum ToolResultStatus {
     Failure,
 }
 
+impl ToolResultStatus {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnTokenProgress {
     pub input_tokens: u64,

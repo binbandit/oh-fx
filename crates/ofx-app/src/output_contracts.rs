@@ -8,6 +8,7 @@ use ofx_contract::PermissionMode;
 use crate::app_bootstrap_runtime::CredentialSource;
 
 pub(crate) mod doctor;
+pub(crate) mod session_detail;
 pub(crate) mod sessions;
 pub(crate) mod status;
 pub(crate) mod usage;

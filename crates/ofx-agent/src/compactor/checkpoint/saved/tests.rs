@@ -171,3 +171,17 @@ fn checkpoints_without_the_marker_are_continued_as_text() {
         )
     );
 }
+
+#[test]
+fn model_text_renders_saved_checkpoints_and_leaves_plain_summaries_to_the_caller() {
+    let payload = sample();
+    assert_eq!(
+        checkpoint_model_text(&encode_checkpoint(&payload)),
+        Some(render(&payload))
+    );
+    assert_eq!(
+        checkpoint_model_text(&format!("{MARKER}not json")),
+        Some("not json".to_owned())
+    );
+    assert_eq!(checkpoint_model_text("plain summary"), None);
+}

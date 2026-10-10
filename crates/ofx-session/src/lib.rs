@@ -20,6 +20,7 @@ mod session_discovery;
 mod session_display_metadata;
 mod session_error;
 mod session_event;
+mod session_json;
 mod session_layout;
 mod session_log;
 mod session_migration;
@@ -53,8 +54,8 @@ pub use session_event::{
 };
 pub use session_layout::is_valid_session_id;
 pub use session_log::{
-    CompactedHistory, PendingRecovery, SavedHistory, SavedSession, SavedTurn, SessionDisposal,
-    WritableSession,
+    ArchivedSteering, ArchivedTurn, CompactedHistory, ExecutedStep, PendingRecovery, SavedHistory,
+    SavedSession, SavedTurn, SessionArchive, SessionDisposal, TurnExecution, WritableSession,
 };
 pub use session_store::{ListScope, RememberedSession, ResumeTarget, SessionCatalog, SessionStore};
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource, SessionSummary};

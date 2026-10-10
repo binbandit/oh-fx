@@ -390,8 +390,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
     for (args, kind) in [
         (&["models", "--json"][..], "models"),
         (&["balance", "--json"], "credits"),
-        (&["session", "x", "--json"], "session"),
-        (&["session", "--id", "last", "--json"], "session"),
         (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
     ] {
