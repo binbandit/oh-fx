@@ -23,7 +23,7 @@ pub(crate) struct Resumption {
 pub(crate) struct Persistence {
     pub(super) store: SessionStore,
     pub(super) route: SessionRoute,
-    preferences: SessionPreferences,
+    pub(super) preferences: SessionPreferences,
     pub(super) live: Option<LiveSession>,
     pub(super) overrides: LaunchOverrides,
     resumption: Option<Resumption>,

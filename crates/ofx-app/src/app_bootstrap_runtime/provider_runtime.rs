@@ -106,6 +106,12 @@ impl AgentSetup {
         }
     }
 
+    pub(crate) fn routes(&self, provider: &ProviderId) -> bool {
+        self.switchboard
+            .as_ref()
+            .is_some_and(|switchboard| switchboard.profile.settings.routes(provider))
+    }
+
     pub(crate) fn switch_target(&self, provider: ProviderId) -> Result<SwitchTarget, Notice> {
         let switchboard = self
             .switchboard

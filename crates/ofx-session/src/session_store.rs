@@ -164,12 +164,20 @@ impl SessionStore {
     }
 
     pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
-        let mut session = match self.import_from_fx(id)? {
-            Some(imported) => self.open_imported(id, imported)?,
-            None => self.open_within(id, self.lock_deadline)?,
-        };
+        let mut session = self.open_importing(id, self.lock_deadline)?;
         self.move_here(&mut session)?;
         Ok(session)
+    }
+
+    fn open_importing(
+        &self,
+        id: &str,
+        deadline: Duration,
+    ) -> Result<WritableSession, SessionError> {
+        match self.import_from_fx(id)? {
+            Some(imported) => self.open_imported(id, imported),
+            None => self.open_within(id, deadline),
+        }
     }
 
     pub(crate) fn open_imported(
@@ -200,7 +208,7 @@ impl SessionStore {
     }
 
     pub fn open_without_waiting(&self, id: &str) -> Result<WritableSession, SessionError> {
-        self.open_within(id, Duration::ZERO)
+        self.open_importing(id, Duration::ZERO)
     }
 
     pub fn move_here(&self, session: &mut WritableSession) -> Result<(), SessionError> {
@@ -314,6 +322,13 @@ impl SessionStore {
     pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
         let scan = self.scan_summaries()?;
         Ok(self.catalog_of(scan))
+    }
+
+    pub fn catalog_with_fx_sessions(&self) -> Result<SessionCatalog, SessionError> {
+        match &self.fx_home {
+            Some(home) => self.catalog_with_fx(&FxSessions::open(home)),
+            None => self.catalog(),
+        }
     }
 
     pub fn catalog_with_fx(&self, fx: &FxSessions) -> Result<SessionCatalog, SessionError> {

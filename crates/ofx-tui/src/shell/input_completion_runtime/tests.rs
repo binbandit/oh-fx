@@ -270,6 +270,7 @@ fn an_open_session_picker_owns_the_footer_and_filters_by_a_typed_at() {
                 workspace_root: "/workspace".to_owned(),
                 updated_at_ms: 0,
                 turns: 1,
+                from_fx: false,
             }],
             has_more: false,
         },

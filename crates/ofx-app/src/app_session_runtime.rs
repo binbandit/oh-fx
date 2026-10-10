@@ -237,10 +237,7 @@ impl LiveSession {
     }
 
     pub fn rebind_notice(&self, saved: &str) -> String {
-        format!(
-            "This session was saved with the {saved} provider, which oh-fx cannot use yet; it continues with {}.",
-            self.route.provider.id().label()
-        )
+        self.route.rebind_notice(saved)
     }
 
     pub(crate) fn continue_recovery(
@@ -339,6 +336,13 @@ pub struct SessionRoute {
 impl SessionRoute {
     pub fn provider(&self) -> &SavedProvider {
         &self.provider
+    }
+
+    pub(crate) fn rebind_notice(&self, saved: &str) -> String {
+        format!(
+            "This session was saved with the {saved} provider, which oh-fx cannot use yet; it continues with {}.",
+            self.provider.id().label()
+        )
     }
 }
 
