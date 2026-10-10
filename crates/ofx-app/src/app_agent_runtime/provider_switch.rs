@@ -110,6 +110,16 @@ impl Controller {
         self.sign_in.is_some()
     }
 
+    pub(super) async fn cancel_sign_in(&mut self) {
+        if !self.signing_in() {
+            return;
+        }
+        self.state.steer_sign_in(SignInControl::cancel);
+        let result = signed_in(&mut self.sign_in).await;
+        self.finish_sign_in(result).await;
+        self.drop_waiting_prompts();
+    }
+
     pub(super) async fn finish_sign_in(&mut self, result: Result<(), ChatGptError>) {
         self.sign_in = None;
         self.state.sign_in = None;
