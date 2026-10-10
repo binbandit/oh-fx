@@ -635,6 +635,7 @@ fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
     }
 }
 
+mod archive;
 mod checkpoints;
 mod replacements;
 mod turn_fields;

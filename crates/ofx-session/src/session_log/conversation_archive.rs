@@ -1,7 +1,8 @@
 use std::mem;
 
 use ofx_config::PrivateDir;
-use ofx_contract::FileEvidence;
+use ofx_contract::{FileEvidence, ToolResultStatus};
+use serde_json::Value;
 
 use super::conversation_writer::scan_log;
 use super::managed_file::{Access, open_managed_file};
@@ -13,7 +14,7 @@ use crate::session_event::{
     AssistantEvent, ConversationEvent, InterruptedEvent, SavedReplay, ToolCallEvent,
     ToolResultEvent,
 };
-use crate::session_migration::holds_schema_v3;
+use crate::session_migration::{archive_schema_v3, holds_schema_v3};
 use crate::session_replay::History;
 use crate::session_summary_codec::SessionSource;
 use crate::session_usage_sidecar;
@@ -40,6 +41,7 @@ pub enum ArchivedTurn {
         user: String,
         assistant: Option<String>,
         tool_call: Option<ToolCallEvent>,
+        completed_tool_names: Vec<String>,
         execution: TurnExecution,
     },
 }
@@ -61,7 +63,24 @@ impl TurnExecution {
 pub struct ExecutedStep {
     pub assistant: Option<String>,
     pub calls: Vec<ToolCallEvent>,
-    pub results: Vec<ToolResultEvent>,
+    pub results: Vec<ArchivedResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedResult {
+    pub call_id: String,
+    pub tool_name: String,
+    pub status: ToolResultStatus,
+    pub output: String,
+    pub output_handle: Option<String>,
+    pub preview: Option<String>,
+    pub output_bytes: u64,
+    pub stored_output_bytes: u64,
+    pub truncated: bool,
+    pub provider_native: bool,
+    pub created_at_ms: i64,
+    pub permission_feedback: Vec<String>,
+    pub presentation: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +99,7 @@ pub(crate) fn load_archive(
         return Err(SessionError::SessionNotFound);
     }
     if holds_schema_v3(dir, id)? {
-        return Err(SessionError::UnsupportedSessionSchema);
+        return archive_schema_v3(dir, id);
     }
     let (metadata, archive) = read_conversation(dir, id, unreadable_log)?;
     if metadata.subagent_child {
@@ -296,7 +315,10 @@ impl ArchiveBuilder {
         self.steps.push(ExecutedStep {
             assistant: self.pending_assistant.take(),
             calls: mem::take(&mut self.calls),
-            results: mem::take(&mut self.results),
+            results: mem::take(&mut self.results)
+                .into_iter()
+                .map(ArchivedResult::from_event)
+                .collect(),
         });
     }
 
@@ -339,6 +361,7 @@ impl ArchiveBuilder {
             user,
             assistant: interrupted.partial_text,
             tool_call,
+            completed_tool_names: Vec::new(),
             execution: self.take_execution(files),
         })
     }

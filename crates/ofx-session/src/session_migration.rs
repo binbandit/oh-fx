@@ -1,6 +1,7 @@
 mod conversion;
 mod durable_state;
 mod durable_turn;
+mod legacy_archive;
 mod legacy_checkpoint;
 mod legacy_frame;
 mod legacy_presentation;
@@ -21,7 +22,7 @@ use crate::session_error::SessionError;
 use crate::session_log::managed_file::{
     Access, entry_exists, open_managed_file, read_managed_file,
 };
-use crate::session_log::{EVENTS_FILE, read_metadata};
+use crate::session_log::{EVENTS_FILE, SessionArchive, read_metadata};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::SessionSummary;
 use crate::session_usage::UsageSnapshot;
@@ -72,6 +73,17 @@ pub(crate) fn read_schema_v3(
     id: &str,
 ) -> Result<Option<Converted>, SessionError> {
     converted(dir, id, Purpose::Import)
+}
+
+pub(crate) fn archive_schema_v3(
+    dir: &PrivateDir,
+    id: &str,
+) -> Result<SessionArchive, SessionError> {
+    let (session, _) = load_schema_v3(dir, id)?;
+    if session.subagent_child {
+        return Err(SessionError::SessionNotFound);
+    }
+    Ok(session.archive())
 }
 
 pub(crate) fn summarize_schema_v3(

@@ -296,12 +296,9 @@ fn turn_events(
     }
     let mut follows_standalone = false;
     for (index, step) in steps.into_iter().enumerate() {
-        if !step.assistant.is_empty() || step.replay.is_some() || follows_standalone {
-            events.push(assistant(
-                step.assistant,
-                step.replay,
-                step.calls.is_empty(),
-            ));
+        let text = step.assistant.unwrap_or_default();
+        if !text.is_empty() || step.replay.is_some() || follows_standalone {
+            events.push(assistant(text, step.replay, step.calls.is_empty()));
         }
         follows_standalone = step.calls.is_empty();
         events.extend(step.calls.into_iter().map(ConversationEvent::ToolCall));
@@ -336,6 +333,7 @@ fn turn_events(
             partial,
             pending,
             cancelled,
+            ..
         } => {
             if let Some(call) = pending {
                 if ends_standalone {
@@ -372,8 +370,8 @@ fn assistant(
 }
 
 fn steering_events(entry: Steering, events: &mut Vec<ConversationEvent>) {
-    if !entry.assistant_prefix.is_empty() {
-        events.push(assistant(entry.assistant_prefix, None, false));
+    if let Some(prefix) = entry.assistant_prefix.filter(|prefix| !prefix.is_empty()) {
+        events.push(assistant(prefix, None, false));
     }
     if !entry.text.is_empty() {
         events.push(ConversationEvent::Steering(SteeringEvent {

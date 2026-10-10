@@ -7,7 +7,7 @@ use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, ToolCallEvent, ToolResultEvent,
     TurnCompletedEvent, UserEvent,
 };
-use crate::session_log::{CompactedHistory, ExecutedStep, TurnExecution};
+use crate::session_log::{ArchivedResult, CompactedHistory, ExecutedStep, TurnExecution};
 
 struct Log {
     root: tempfile::TempDir,
@@ -202,6 +202,7 @@ fn a_turn_open_at_its_checkpoint_is_copied_and_closed_as_failed() {
                 user: "second".to_owned(),
                 assistant: None,
                 tool_call: None,
+                completed_tool_names: Vec::new(),
                 execution: TurnExecution {
                     steps: vec![ExecutedStep {
                         assistant: None,
@@ -211,14 +212,14 @@ fn a_turn_open_at_its_checkpoint_is_copied_and_closed_as_failed() {
                             "{}",
                             ToolArgumentIntegrity::Valid,
                         )],
-                        results: vec![ToolResultEvent::new(
+                        results: vec![ArchivedResult::from_event(ToolResultEvent::new(
                             "one",
                             "shell",
                             ToolResultStatus::Success,
                             "result-one.txt",
                             0,
                             ArtifactCompleteness::Complete,
-                        )],
+                        ))],
                     }],
                     ..TurnExecution::default()
                 },

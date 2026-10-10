@@ -180,7 +180,7 @@ fn tool_steps_keep_the_text_before_their_calls_and_the_turn_its_files() {
         steps: vec![ExecutedStep {
             assistant: Some("Listing.".to_owned()),
             calls: vec![tool_call("call-1")],
-            results: vec![tool_result("call-1")],
+            results: vec![ArchivedResult::from_event(tool_result("call-1"))],
         }],
         files: vec![evidence("src/main.rs").into()],
         steering: Vec::new(),
@@ -278,6 +278,7 @@ fn an_interruption_keeps_its_partial_text_and_the_one_call_it_cut_short() {
             user: "work".to_owned(),
             assistant: Some("part".to_owned()),
             tool_call: Some(tool_call("call-1")),
+            completed_tool_names: Vec::new(),
             execution: TurnExecution {
                 files: vec![evidence("src/lib.rs").into()],
                 ..TurnExecution::default()
@@ -299,6 +300,7 @@ fn an_interruption_after_a_reply_keeps_that_reply_as_a_step() {
             user: "work".to_owned(),
             assistant: None,
             tool_call: None,
+            completed_tool_names: Vec::new(),
             execution: TurnExecution {
                 steps: vec![ExecutedStep {
                     assistant: Some("so far".to_owned()),

@@ -7,6 +7,7 @@ use super::*;
 use crate::session_event::{
     CommittedFilePresentation, LifecycleId, PresentationLine, ToolResultEvent, WireTag,
 };
+use crate::session_log::ArchivedTurn;
 
 const EDIT_CALL: &str = "call_edit";
 
@@ -124,6 +125,53 @@ fn a_small_edit_keeps_its_presentation_inline() {
     );
     let change = result.file_change().unwrap();
     assert_eq!(change.path, "src/main.rs");
+}
+
+#[test]
+fn detail_shows_an_edit_with_its_contents_inline() {
+    let fixture = Fixture::new();
+    let large = "a\n".repeat(3_000);
+    let log = LegacyLog::started_007("legacy-edit-detail")
+        .turn(&edit_turn_007(&presentation_007("x\n", &large)));
+    let turns = fixture.archive(&log).unwrap().turns;
+    let [ArchivedTurn::Replied { execution, .. }] = turns.as_slice() else {
+        panic!("{turns:?}");
+    };
+    let presentation = execution.steps[0].results[0].presentation.clone().unwrap();
+    assert_eq!(
+        presentation.to_string(),
+        format!(
+            "{{\"path\":\"src/main.rs\",\"kind\":\"edited\",\"lines\":[{{\"kind\":\"context\",\"old_line\":1,\"new_line\":1,\"text\":\"fn main() {{\"}},{{\"kind\":\"deletion\",\"old_line\":2,\"new_line\":null,\"text\":\"    old();\"}},{{\"kind\":\"addition\",\"old_line\":null,\"new_line\":2,\"text\":\"    new();\"}}],\"additions\":1,\"deletions\":1,\"truncated\":false,\"previous_content\":\"x\\n\",\"after_content\":{},\"lifecycle_id\":{{\"turn_id\":3,\"call_id\":\"call_edit\"}},\"content_handle\":null}}",
+            serde_json::to_string(&large).unwrap()
+        )
+    );
+}
+
+#[test]
+fn detail_shows_output_that_is_not_utf8_with_replacement_characters() {
+    let fixture = Fixture::new();
+    let mut output = vec![b'a'; 5_000];
+    output.extend([0xff, 0xfe, b'\n']);
+    let log = LegacyLog::started_007("legacy-binary-detail").turn(&turn_007(
+        "call_1",
+        "run_command",
+        "{\"command\":\"cat blob\"}",
+        &result_007(
+            "call_1",
+            "run_command",
+            &base64_007(&output),
+            "null",
+            "null",
+        ),
+    ));
+    let turns = fixture.archive(&log).unwrap().turns;
+    let [ArchivedTurn::Replied { execution, .. }] = turns.as_slice() else {
+        panic!("{turns:?}");
+    };
+    assert_eq!(
+        execution.steps[0].results[0].output,
+        format!("{}\u{fffd}\u{fffd}\n", "a".repeat(5_000))
+    );
 }
 
 #[test]

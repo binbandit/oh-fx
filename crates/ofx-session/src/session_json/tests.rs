@@ -54,7 +54,7 @@ fn execution_presentation_keeps_upstreams_shape_and_leaves_replays_and_summaries
                     "{\"url\":\"https://example.com/file.pdf\"}",
                     ToolArgumentIntegrity::Valid,
                 )],
-                results: vec![fetched()],
+                results: vec![ArchivedResult::from_event(fetched())],
             },
             ExecutedStep {
                 assistant: None,
@@ -64,7 +64,7 @@ fn execution_presentation_keeps_upstreams_shape_and_leaves_replays_and_summaries
                     "{}",
                     ToolArgumentIntegrity::Valid,
                 )],
-                results: vec![edited()],
+                results: vec![ArchivedResult::from_event(edited())],
             },
         ],
         files: vec![FileEvidence {
@@ -100,9 +100,9 @@ fn execution_presentation_keeps_upstreams_shape_and_leaves_replays_and_summaries
 
 #[test]
 fn a_result_without_a_preview_shows_empty_output() {
-    assert_eq!(edited().output(), "");
+    assert_eq!(ArchivedResult::from_event(edited()).output, "");
     assert_eq!(
-        fetched().output(),
+        ArchivedResult::from_event(fetched()).output,
         "<artifact_handle>artifact-file.pdf</artifact_handle>"
     );
 }

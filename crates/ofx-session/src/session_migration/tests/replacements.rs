@@ -60,7 +60,7 @@ pub(super) fn reply_007(prompt: &str, answer: &str) -> String {
     )
 }
 
-fn compacted_007(summary: &str, removed: usize, compactions: usize) -> String {
+pub(super) fn compacted_007(summary: &str, removed: usize, compactions: usize) -> String {
     format!(
         "{{\"kind\":\"compacted_summary\",\"summary\":\"{summary}\",\"removed_turn_count\":{removed},\"compaction_count\":{compactions}}}"
     )
