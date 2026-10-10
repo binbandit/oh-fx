@@ -1,6 +1,8 @@
+use std::collections::HashSet;
+
 use serde_json::{Map, Value};
 
-use crate::catalog_freshness::CacheScope;
+use crate::catalog_freshness::{CacheScope, earliest_expiry, page_expiry};
 use crate::error::McpError;
 use crate::json_number::ttl_milliseconds;
 use crate::mcp_contract::validate_json_rpc_response_envelope;
@@ -38,6 +40,178 @@ impl Default for Limits {
 pub(crate) struct CacheHints {
     pub(crate) ttl_ms: Option<u64>,
     pub(crate) scope: CacheScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Paging {
+    pub(crate) pages: usize,
+    pub(crate) items: usize,
+    pub(crate) cursor_bytes: usize,
+    pub(crate) common: Limits,
+}
+
+pub(crate) trait Listed: Sized {
+    const LIST_METHOD: &'static str;
+    const ITEMS_FIELD: &'static str;
+    const COUNTS_ITEMS_FIRST: bool = false;
+
+    type Limits: Copy + Default;
+
+    fn paging(limits: Self::Limits) -> Paging;
+
+    fn parse_item(value: &Value, limits: Self::Limits) -> Result<Self, McpError>;
+
+    fn identity(&self) -> &str;
+
+    fn name(&self) -> &str;
+
+    fn limit_exceeded() -> McpError;
+
+    fn duplicate() -> McpError;
+}
+
+#[derive(Debug)]
+pub(crate) struct Page<T> {
+    pub(crate) items: Vec<T>,
+    next_cursor: Option<String>,
+    cache: CacheHints,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Catalog<T> {
+    pub(crate) items: Vec<T>,
+    pub(crate) expires_at_ms: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct CatalogBuilder<T> {
+    items: Vec<T>,
+    cursors: HashSet<String>,
+    pages: usize,
+    expires_at_ms: Option<u64>,
+    cache_scope: Option<CacheScope>,
+}
+
+impl<T> Default for CatalogBuilder<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            cursors: HashSet::new(),
+            pages: 0,
+            expires_at_ms: None,
+            cache_scope: None,
+        }
+    }
+}
+
+impl<T: Listed> CatalogBuilder<T> {
+    pub(crate) fn append_page(
+        &mut self,
+        page: Page<T>,
+        received_at_ms: u64,
+        limits: T::Limits,
+    ) -> Result<Option<String>, McpError> {
+        let paging = T::paging(limits);
+        if self.pages + 1 > paging.pages {
+            return Err(McpError::PaginationLimitExceeded);
+        }
+        if T::COUNTS_ITEMS_FIRST {
+            self.check_count(&page, paging)?;
+        }
+        if let Some(cursor) = &page.next_cursor
+            && self.cursors.contains(cursor)
+        {
+            return Err(McpError::DuplicateCursor);
+        }
+        if self
+            .cache_scope
+            .is_some_and(|scope| scope != page.cache.scope)
+        {
+            return Err(McpError::InconsistentCacheScope);
+        }
+        if let Some(cursor) = &page.next_cursor {
+            self.cursors.insert(cursor.clone());
+        }
+        self.pages += 1;
+        self.cache_scope.get_or_insert(page.cache.scope);
+        self.expires_at_ms = Some(earliest_expiry(
+            self.expires_at_ms,
+            page_expiry(received_at_ms, page.cache.ttl_ms),
+        ));
+        if !T::COUNTS_ITEMS_FIRST {
+            self.check_count(&page, paging)?;
+        }
+        for (index, item) in page.items.iter().enumerate() {
+            let identity = item.identity();
+            if self
+                .items
+                .iter()
+                .chain(&page.items[..index])
+                .any(|seen| seen.identity() == identity)
+            {
+                return Err(T::duplicate());
+            }
+        }
+        self.items.extend(page.items);
+        Ok(page.next_cursor)
+    }
+
+    fn check_count(&self, page: &Page<T>, paging: Paging) -> Result<(), McpError> {
+        if self.items.len() + page.items.len() > paging.items {
+            return Err(T::limit_exceeded());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<Catalog<T>, McpError> {
+        let Some(expires_at_ms) = self.expires_at_ms else {
+            return Err(McpError::InvalidListResult);
+        };
+        self.items.sort_by(|left, right| {
+            left.identity()
+                .as_bytes()
+                .cmp(right.identity().as_bytes())
+                .then_with(|| left.name().as_bytes().cmp(right.name().as_bytes()))
+        });
+        Ok(Catalog {
+            items: self.items,
+            expires_at_ms,
+        })
+    }
+}
+
+pub(crate) fn parse_page<T: Listed>(
+    response: &str,
+    limits: T::Limits,
+) -> Result<Page<T>, McpError> {
+    let paging = T::paging(limits);
+    let envelope = parse_envelope(response, paging.common)?;
+    let result = complete_result(&envelope).map_err(list_result_error)?;
+    let items = result
+        .get(T::ITEMS_FIELD)
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= paging.items)
+        .ok_or(McpError::InvalidListResult)?
+        .iter()
+        .map(|item| T::parse_item(item, limits))
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = match result.get("nextCursor") {
+        None => None,
+        Some(Value::String(cursor)) if cursor.len() <= paging.cursor_bytes => Some(cursor.clone()),
+        Some(_) => return Err(McpError::InvalidListResult),
+    };
+    Ok(Page {
+        items,
+        next_cursor,
+        cache: parse_cache_hints(result)?,
+    })
+}
+
+fn list_result_error(error: McpError) -> McpError {
+    match error {
+        McpError::ProtocolFailure | McpError::UnsupportedResultType => error,
+        _ => McpError::InvalidListResult,
+    }
 }
 
 pub(crate) fn parse_envelope(response: &str, limits: Limits) -> Result<Value, McpError> {

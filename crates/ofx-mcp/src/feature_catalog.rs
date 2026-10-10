@@ -2,7 +2,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::catalog_freshness::{SnapshotMetadata, failed_refresh, request_refresh};
-use crate::features::resources::{Listed, Resource, ResourceTemplate};
+use crate::error::McpError;
+use crate::features::common::Listed;
+use crate::features::prompts::Prompt;
+use crate::features::resources::{Resource, ResourceTemplate};
 use crate::protocol_messages::ServerCapabilities;
 use crate::server_connection::{McpClient, lock};
 
@@ -18,6 +21,7 @@ pub(crate) struct FeatureCatalogs {
     advertised: Mutex<ServerCapabilities>,
     resources: Mutex<Option<Snapshot<Resource>>>,
     templates: Mutex<Option<Snapshot<ResourceTemplate>>>,
+    prompts: Mutex<Option<Snapshot<Prompt>>>,
 }
 
 impl FeatureCatalogs {
@@ -25,10 +29,15 @@ impl FeatureCatalogs {
         *lock(&self.advertised) = capabilities;
         *lock(&self.resources) = None;
         *lock(&self.templates) = None;
+        *lock(&self.prompts) = None;
     }
 
     pub(crate) fn advertises_resources(&self) -> bool {
         lock(&self.advertised).resources.is_some()
+    }
+
+    pub(crate) fn advertises_prompts(&self) -> bool {
+        lock(&self.advertised).prompts.is_some()
     }
 
     pub(crate) fn snapshot<T: FeatureCatalog>(&self) -> Option<Snapshot<T>> {
@@ -51,6 +60,7 @@ impl FeatureCatalogs {
     pub(crate) fn request_refresh(&self) {
         expire(&self.resources);
         expire(&self.templates);
+        expire(&self.prompts);
     }
 }
 
@@ -90,6 +100,8 @@ pub(crate) trait FeatureCatalog: Listed + Clone + Send + Sync + 'static {
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>>;
 
     fn invalidation(client: &McpClient) -> &Invalidation;
+
+    fn unavailable() -> McpError;
 }
 
 impl FeatureCatalog for Resource {
@@ -100,6 +112,10 @@ impl FeatureCatalog for Resource {
     fn invalidation(client: &McpClient) -> &Invalidation {
         &client.resources_invalidation
     }
+
+    fn unavailable() -> McpError {
+        McpError::McpResourceCatalogUnavailable
+    }
 }
 
 impl FeatureCatalog for ResourceTemplate {
@@ -109,6 +125,24 @@ impl FeatureCatalog for ResourceTemplate {
 
     fn invalidation(client: &McpClient) -> &Invalidation {
         &client.resources_invalidation
+    }
+
+    fn unavailable() -> McpError {
+        McpError::McpResourceCatalogUnavailable
+    }
+}
+
+impl FeatureCatalog for Prompt {
+    fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
+        &catalogs.prompts
+    }
+
+    fn invalidation(client: &McpClient) -> &Invalidation {
+        &client.prompts_invalidation
+    }
+
+    fn unavailable() -> McpError {
+        McpError::McpPromptCatalogUnavailable
     }
 }
 
@@ -160,5 +194,27 @@ mod tests {
         assert_eq!(requested.freshness, Freshness::Stale);
         assert_eq!(requested.retry_at_ms, 0);
         assert!(catalogs.snapshot::<ResourceTemplate>().is_none());
+    }
+
+    #[test]
+    fn prompt_catalogs_expire_on_reload_and_clear_on_reconnect() {
+        let catalogs = FeatureCatalogs::default();
+        let prompts: Arc<[Prompt]> = Arc::from(vec![Prompt {
+            name: "review".to_owned(),
+            title: None,
+            description: None,
+            arguments: Vec::new(),
+        }]);
+        catalogs.publish(Snapshot {
+            items: Arc::clone(&prompts),
+            metadata: SnapshotMetadata::fresh(u64::MAX),
+        });
+        catalogs.request_refresh();
+        let requested = catalogs.snapshot::<Prompt>().unwrap();
+        assert!(Arc::ptr_eq(&requested.items, &prompts));
+        assert_eq!(requested.metadata.freshness, Freshness::Stale);
+        catalogs.reset(ServerCapabilities::default());
+        assert!(catalogs.snapshot::<Prompt>().is_none());
+        assert!(!catalogs.advertises_prompts());
     }
 }
