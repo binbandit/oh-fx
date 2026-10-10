@@ -57,12 +57,12 @@ pub(crate) fn pkce_challenge(verifier: &str) -> String {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FormBody {
+pub struct FormBody {
     text: Zeroizing<String>,
 }
 
 impl FormBody {
-    pub(crate) fn append(&mut self, key: &str, value: &str) {
+    pub fn append(&mut self, key: &str, value: &str) {
         if !self.text.is_empty() {
             self.text.push('&');
         }
@@ -71,12 +71,13 @@ impl FormBody {
         percent_encode(&mut self.text, value);
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
         &self.text
     }
 }
 
-pub(crate) fn percent_encode(out: &mut String, value: &str) {
+pub fn percent_encode(out: &mut String, value: &str) {
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             out.push(char::from(byte));

@@ -14,9 +14,9 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_elicitation_runtime::ElicitationContext;
 use crate::legacy_sse::{Event, Parser};
-use crate::mcp_contract::HttpHeader;
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::protocol_negotiation::ElicitationWire;
+use crate::server_auth::HttpAuth;
 use crate::streamable_http::{MediaType, parse_media_type, validate_header_value};
 use crate::timing::{sleep, spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
@@ -93,7 +93,7 @@ pub(crate) fn validate_session_id(value: &str) -> Result<(), McpError> {
 pub(crate) struct HttpShared {
     http: reqwest::Client,
     url: String,
-    headers: Vec<HttpHeader>,
+    auth: Arc<HttpAuth>,
     version: Option<HttpVersion>,
     session_id: Option<String>,
     stopping: AtomicBool,
@@ -161,7 +161,7 @@ pub(crate) struct LegacyHttpClient {
 pub(crate) struct HttpEndpoint {
     pub(crate) http: reqwest::Client,
     pub(crate) url: String,
-    pub(crate) headers: Vec<HttpHeader>,
+    pub(crate) auth: Arc<HttpAuth>,
     pub(crate) notifications: mpsc::UnboundedSender<Value>,
 }
 
@@ -175,7 +175,7 @@ impl LegacyHttpClient {
         let bootstrap = HttpShared {
             http: endpoint.http,
             url: endpoint.url,
-            headers: endpoint.headers,
+            auth: endpoint.auth,
             version: None,
             session_id: None,
             stopping: AtomicBool::new(false),
@@ -332,7 +332,23 @@ impl Drop for CancelOnDrop<'_> {
 }
 
 impl HttpShared {
-    fn builder(
+    fn closing_builder(&self) -> Result<RequestBuilder, McpError> {
+        Ok(self
+            .auth
+            .apply_current(self.unauthorized_builder(Method::DELETE, false, None)?))
+    }
+
+    async fn builder(
+        &self,
+        method: Method,
+        accepts_json: bool,
+        last_event_id: Option<&str>,
+    ) -> Result<RequestBuilder, McpError> {
+        let builder = self.unauthorized_builder(method, accepts_json, last_event_id)?;
+        self.auth.apply(builder).await
+    }
+
+    fn unauthorized_builder(
         &self,
         method: Method,
         accepts_json: bool,
@@ -356,21 +372,19 @@ impl HttpShared {
             validate_header_value(last_event_id)?;
             builder = builder.header("Last-Event-ID", last_event_id);
         }
-        for header in &self.headers {
-            builder = builder.header(header.name.as_str(), header.value.as_str());
-        }
         Ok(builder)
     }
 
-    fn post_builder(&self, body: &str) -> Result<RequestBuilder, McpError> {
+    async fn post_builder(&self, body: &str) -> Result<RequestBuilder, McpError> {
         Ok(self
-            .builder(Method::POST, true, None)?
+            .builder(Method::POST, true, None)
+            .await?
             .header(CONTENT_TYPE, "application/json")
             .body(body.to_owned()))
     }
 
     async fn post(&self, body: &str, options: &PostOptions<'_>) -> Result<FinalResponse, McpError> {
-        let builder = self.post_builder(body)?;
+        let builder = self.post_builder(body).await?;
         if let Some(committed) = options.committed {
             committed.store(true, Ordering::Release);
         }
@@ -418,7 +432,7 @@ impl HttpShared {
     }
 
     async fn post_accepted(&self, body: &str) -> Result<(), McpError> {
-        let response = self.post_builder(body)?.send().await?;
+        let response = self.post_builder(body).await?.send().await?;
         reject_redirect_or_authentication(&response)?;
         if response.status() == StatusCode::ACCEPTED {
             Ok(())
@@ -454,7 +468,8 @@ impl HttpShared {
                         sleep(Duration::from_millis(retry_ms.into())).await;
                     }
                     let response = self
-                        .builder(Method::GET, false, Some(&last_event_id))?
+                        .builder(Method::GET, false, Some(&last_event_id))
+                        .await?
                         .send()
                         .await?;
                     reject_redirect_or_authentication(&response)?;
@@ -554,7 +569,8 @@ impl HttpShared {
 
     async fn listen_once(&self, cursor: &mut StreamCursor) -> Result<bool, McpError> {
         let mut response = self
-            .builder(Method::GET, false, cursor.last_event_id.as_deref())?
+            .builder(Method::GET, false, cursor.last_event_id.as_deref())
+            .await?
             .send()
             .await?;
         reject_redirect_or_authentication(&response)?;
@@ -607,7 +623,7 @@ impl HttpShared {
         if self.session_id.is_none() || self.session_retired.load(Ordering::Acquire) {
             return;
         }
-        let Ok(builder) = self.builder(Method::DELETE, false, None) else {
+        let Ok(builder) = self.closing_builder() else {
             return;
         };
         let _ = timeout(CLOSE_TIMEOUT, builder.send()).await;
@@ -796,7 +812,7 @@ mod tests {
 
     use super::*;
     use crate::features::tools::{ToolCallOutcome, ToolContent};
-    use crate::mcp_contract::{McpServerConfig, TransportType};
+    use crate::mcp_contract::{HttpHeader, McpServerConfig, TransportType};
     use crate::server_connection::{McpClient, ServerNotification};
     use crate::server_transport::ConnectOptions;
     use crate::test_support::{FakeServer, RecordedRequest, Reply};
