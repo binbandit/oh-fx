@@ -20,7 +20,7 @@ use crate::session_log::managed_file::{
 };
 use crate::session_log::{
     LOCK_DEADLINE, SavedSession, SessionDisposal, WritableSession, delete_session, load_session,
-    now_ms, resume_session, start_session,
+    now_ms, remove_abandoned_staging, resume_session, start_session,
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
@@ -345,10 +345,13 @@ impl SessionStore {
     }
 
     fn session_names(&self) -> Result<Vec<String>, SessionError> {
-        match &self.sessions {
-            Some(sessions) => session_directory_names(sessions),
-            None => Ok(Vec::new()),
+        let Some(sessions) = &self.sessions else {
+            return Ok(Vec::new());
+        };
+        if self.writable {
+            remove_abandoned_staging(sessions);
         }
+        session_directory_names(sessions)
     }
 
     fn scan_names(&self, names: &[String]) -> CatalogScan {

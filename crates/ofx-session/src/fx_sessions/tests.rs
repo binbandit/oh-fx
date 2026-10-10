@@ -288,6 +288,14 @@ fn listing_fx_sessions_never_writes_into_fx_folder() {
         }
         .write(&home.fx_sessions());
     }
+    let staging = home
+        .fx_sessions()
+        .join("creating+0123456789abcdef0123456789abcdef");
+    fs::create_dir(&staging).unwrap();
+    fs::File::open(&staging)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + Duration::from_secs(100))
+        .unwrap();
     let before = snapshot(&home.fx_profile());
     assert_eq!(
         home.listed("/work", ListScope::AllWorkspaces)

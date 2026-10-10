@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_config::ProviderId;
 use ofx_contract::ReasoningEffort;
@@ -309,6 +309,90 @@ fn listing_skips_entries_that_are_not_sessions() {
         .map(|catalog| catalog.page(ListScope::AllWorkspaces, None, None, 10))
         .unwrap();
     assert_eq!(ids(&page), ["good"]);
+}
+
+fn stage(sessions: &Path, name: &str, age_s: u64) -> PathBuf {
+    let dir = sessions.join(name);
+    fs::create_dir(&dir).unwrap();
+    for file in ["session.json", "events.jsonl", "session.lock"] {
+        fs::write(dir.join(file), "").unwrap();
+        fs::set_permissions(dir.join(file), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    fs::File::open(&dir)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(age_s))
+        .unwrap();
+    dir
+}
+
+#[test]
+fn a_writable_listing_removes_staging_an_interrupted_start_left_behind() {
+    let fixture = Fixture::new();
+    fixture.seed("good", "/w", 1, 10);
+    let sessions = fixture.data().join("sessions");
+    let hour = 60 * 60;
+    let abandoned = stage(&sessions, "creating+0123456789abcdef0123456789abcdef", hour);
+    let kept = [
+        stage(
+            &sessions,
+            "creating+00000000000000000000000000000000",
+            hour - 60,
+        ),
+        stage(
+            &sessions,
+            "creating+ffffffffffffffffffffffffffffffff",
+            2 * hour,
+        ),
+        stage(
+            &sessions,
+            "creating+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            2 * hour,
+        ),
+        stage(&sessions, "creating+0123456789abcdef", 2 * hour),
+        stage(&sessions, "recovery+staging", 2 * hour),
+    ];
+    let elsewhere = stage(
+        &fixture.root.path().join("data"),
+        "creating+11111111111111111111111111111111",
+        2 * hour,
+    );
+    symlink(
+        &elsewhere,
+        sessions.join("creating+22222222222222222222222222222222"),
+    )
+    .unwrap();
+    let held = PrivateDir::open_existing(&kept[1])
+        .unwrap()
+        .unwrap()
+        .try_lock("session.lock")
+        .unwrap()
+        .unwrap();
+
+    let listed = |store: SessionStore| {
+        ids(&store
+            .catalog()
+            .unwrap()
+            .page(ListScope::AllWorkspaces, None, None, 10))
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(listed(fixture.reader("/w")), ["good"]);
+    assert!(abandoned.exists());
+    assert_eq!(listed(fixture.store("/w")), ["good"]);
+    assert!(!abandoned.exists());
+    for dir in &kept {
+        assert!(dir.join("session.json").exists(), "{}", dir.display());
+    }
+    assert!(elsewhere.join("session.json").exists());
+    assert!(
+        sessions
+            .join("creating+22222222222222222222222222222222")
+            .exists()
+    );
+    drop(held);
+    assert!(fixture.store("/w").resume_latest().is_ok());
+    assert!(!kept[1].exists());
 }
 
 #[test]

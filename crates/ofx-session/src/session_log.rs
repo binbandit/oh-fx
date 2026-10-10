@@ -8,6 +8,7 @@ mod turn_restore;
 
 use std::fs::File;
 use std::mem;
+use std::os::fd::AsFd;
 use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,9 +37,9 @@ use conversation_history::{ReplayScan, replay_history, visit_turns};
 use conversation_progress::ProgressPoint;
 use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{
-    Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
-    open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
-    same_directory, sync_dir,
+    Access, create_managed_file, create_private_dir, directory_names, entry_exists,
+    lock_with_deadline, open_managed_file, publish_dir, read_managed_file, remove_created_dir,
+    remove_session_dir, same_directory, sync_dir,
 };
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
@@ -54,6 +55,7 @@ const SESSION_LOCK_FILE: &str = "session.lock";
 const OWNER_LIVE_FILE: &str = "owner.live";
 const STAGING_PREFIX: &str = "creating+";
 const STAGING_RANDOM_BYTES: usize = 16;
+const ABANDONED_STAGING_AGE: Duration = Duration::from_hours(1);
 pub(crate) const LOCK_DEADLINE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -770,6 +772,46 @@ fn staging_name() -> Result<String, SessionError> {
     let mut random = [0_u8; STAGING_RANDOM_BYTES];
     getrandom::fill(&mut random).map_err(|_| SessionError::SessionStartFailed)?;
     Ok(format!("{STAGING_PREFIX}{}", lowercase_hex(&random)))
+}
+
+fn is_staging_name(name: &str) -> bool {
+    name.strip_prefix(STAGING_PREFIX).is_some_and(|suffix| {
+        suffix.len() == STAGING_RANDOM_BYTES * 2
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+pub(crate) fn remove_abandoned_staging(sessions: &PrivateDir) {
+    let Ok(names) = directory_names(sessions, is_staging_name) else {
+        return;
+    };
+    for name in names {
+        let Ok(Some(dir)) = sessions.open_child(&name) else {
+            continue;
+        };
+        if !untouched_for(&dir, ABANDONED_STAGING_AGE) {
+            continue;
+        }
+        let Ok(Some(_lock)) = dir.try_lock(SESSION_LOCK_FILE) else {
+            continue;
+        };
+        drop(dir);
+        let _ = remove_session_dir(sessions, &name);
+    }
+}
+
+fn untouched_for(dir: &PrivateDir, age: Duration) -> bool {
+    let Ok(stat) = rustix::fs::fstat(dir.as_fd()) else {
+        return false;
+    };
+    let modified = u64::try_from(stat.st_mtime)
+        .ok()
+        .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds));
+    modified
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|elapsed| elapsed >= age)
 }
 
 #[cfg(test)]

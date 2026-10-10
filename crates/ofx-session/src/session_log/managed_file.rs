@@ -169,13 +169,20 @@ fn remove_tree<P: Arg + Copy>(parent: BorrowedFd<'_>, name: P, depth: usize) -> 
 }
 
 pub(crate) fn session_directory_names(dir: &PrivateDir) -> Result<Vec<String>, SessionError> {
+    directory_names(dir, is_valid_session_id)
+}
+
+pub(crate) fn directory_names(
+    dir: &PrivateDir,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<Vec<String>, SessionError> {
     let mut names = Vec::new();
     for entry in fs::Dir::read_from(dir.as_fd())? {
         let entry = entry?;
         let Ok(name) = entry.file_name().to_str() else {
             continue;
         };
-        if !is_valid_session_id(name) {
+        if !wanted(name) {
             continue;
         }
         let directory = match entry.file_type() {
