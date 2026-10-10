@@ -64,6 +64,7 @@ pub(crate) struct Request<'a> {
     pub(crate) size: Size,
     pub(crate) model: &'a str,
     pub(crate) sends_after_conversation: bool,
+    pub(crate) follows_checkpoint: bool,
     pub(crate) trace: Tracer,
 }
 
@@ -121,7 +122,7 @@ pub(crate) async fn compact(
             "model={} turns={} earlier={} store=false",
             request.model,
             turns.len(),
-            request.earlier.is_some(),
+            request.follows_checkpoint,
         ),
     );
     let kept = kept_from(request.turns, chosen.cut);

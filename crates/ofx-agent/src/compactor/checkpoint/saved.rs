@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 use super::{
     ENTRY_KINDS, Entry, Highest, OpenTurn, Payload, Tool, Turn, Used, UsedKind, highest_ids, render,
 };
+use crate::compactor::{CompactionError, trace};
 
 const MARKER: &str = "fx-compactor-v1\n";
 const MAX_NUMBER: usize = 1 << 30;
@@ -144,10 +145,15 @@ pub(crate) fn restore_checkpoint(summary: &str) -> (String, Option<Payload>) {
         .as_ref()
         .and_then(Value::as_object)
         .and_then(payload_from);
-    match payload {
-        Some(payload) => (render(&payload), Some(payload)),
-        None => (json.to_owned(), None),
+    if let Some(payload) = payload {
+        return (render(&payload), Some(payload));
     }
+    trace::unrecorded(format_args!(
+        "checkpoint payload unreadable bytes={} err={}; using its raw text",
+        summary.len(),
+        CompactionError::InvalidCheckpoint
+    ));
+    (json.to_owned(), None)
 }
 
 fn saved_tools(tools: &[Tool]) -> Vec<SavedTool<'_>> {

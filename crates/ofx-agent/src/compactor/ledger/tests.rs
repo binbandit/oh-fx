@@ -135,7 +135,6 @@ none";
     assert_eq!(written.noted, [3, 4]);
     assert_eq!(written.unknown, 1);
     assert_eq!(written.repeated, 0);
-    assert_eq!(written.renumbered, 1);
 
     assert_eq!(
         texts(&written.entries),
@@ -180,10 +179,12 @@ none";
         "The user fixed the build; the tests pass."
     );
 
-    let far = read(
+    let (trace, ring) = traced();
+    let far = super::read(
         "Facts:\n- F18446744073709551615 (T8): the parser is slow\n- F1000 (T8): the loader is fast",
         &known(&[3], &[8], false),
         &[],
+        trace,
     );
     assert_eq!(
         texts(&far.entries),
@@ -192,7 +193,12 @@ none";
             "F1000 (T8): the loader is fast"
         ]
     );
-    assert_eq!(far.renumbered, 1);
+    assert_eq!(
+        logged(ring),
+        [
+            "compaction entries renumbered because their IDs were taken or far above the highest count=1"
+        ]
+    );
 
     let closed = read(reply, &known(&[3], &[8], false), &[]);
     assert_eq!(closed.work(0), "");
@@ -491,7 +497,6 @@ fn notes_cut_to_their_room_and_renumbered_entries_are_logged() {
     );
     let written = super::read(&reply, &known(&[3], &[8], false), &[], trace);
     assert_eq!(written.earlier.len(), MAX_EARLIER_BYTES);
-    assert_eq!(written.renumbered, 1);
     assert_eq!(
         logged(ring),
         [

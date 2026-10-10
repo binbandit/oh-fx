@@ -158,6 +158,7 @@ fn failed(reason: Reason, detail: String) -> Outcome {
 }
 
 fn answered_kind(error: &ProviderError) -> Option<&'static str> {
+    error.status?;
     Some(match error.kind {
         ProviderErrorKind::InvalidRequest => "invalid_request",
         ProviderErrorKind::Unauthorized => "unauthorized",
@@ -168,8 +169,7 @@ fn answered_kind(error: &ProviderError) -> Option<&'static str> {
         ProviderErrorKind::BadGateway => "bad_gateway",
         ProviderErrorKind::Unavailable => "unavailable",
         ProviderErrorKind::GatewayTimeout => "gateway_timeout",
-        ProviderErrorKind::ProviderError if error.status.is_some() => "provider_error",
-        _ => return None,
+        _ => "provider_error",
     })
 }
 

@@ -34,6 +34,13 @@ fn named(events: &[Sequenced<CompactionEvent>], kind: CompactionTraceKind) -> Ve
 
 const LOG: (CompactionTraceKind, bool) = (CompactionTraceKind::Log, false);
 
+fn bad_request() -> ProviderError {
+    ProviderError {
+        status: Some(400),
+        ..failure(ProviderErrorKind::InvalidRequest, "BadRequest")
+    }
+}
+
 fn overflow() -> Script {
     let mut error = failure(ProviderErrorKind::InvalidRequest, "BadRequest");
     error.detail = Some("maximum context length exceeded".to_owned());
@@ -250,8 +257,12 @@ async fn a_manual_compaction_records_its_own_turn_and_counts_every_compaction() 
         agent.compact(&mut || {}, &CancellationToken::new()).await,
         Ok(Compaction::Compacted)
     );
-    let committed = ring.snapshot();
-    let committed = named(&committed, CompactionTraceKind::Committed);
+    let again = ring.snapshot();
+    assert_eq!(
+        named(&again, CompactionTraceKind::ProviderStart),
+        ["model=test-model turns=6 earlier=true store=false"]
+    );
+    let committed = named(&again, CompactionTraceKind::Committed);
     assert!(
         committed[0].contains(" compaction_count=2 "),
         "{}",
@@ -325,14 +336,8 @@ async fn a_failed_automatic_compaction_records_each_failed_request_and_its_stage
     let big_step = format!("STEP_SENTINEL {}", "h".repeat(150_000));
     let provider = FakeProvider::new(vec![
         spoken_tool_reply(&big_step, "call-1", r#"{"value":"notes.md"}"#),
-        Script::Fail(
-            Vec::new(),
-            failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
-        ),
-        Script::Fail(
-            Vec::new(),
-            failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
-        ),
+        Script::Fail(Vec::new(), bad_request()),
+        Script::Fail(Vec::new(), bad_request()),
     ]);
     let (mut agent, _) = windowed(&provider, 45_000, 64);
     let ring = traced(&mut agent);

@@ -380,7 +380,6 @@ pub(crate) struct Written {
     pub(crate) noted: Vec<usize>,
     pub(crate) earlier: String,
     pub(crate) repeated: usize,
-    pub(crate) renumbered: usize,
     pub(crate) unknown: usize,
 }
 
@@ -579,7 +578,6 @@ pub(crate) fn read(reply: &str, known: &Known, earlier: &[Entry], trace: Tracer)
         noted: reader.noted,
         earlier: earlier_summary,
         repeated: entries.repeated,
-        renumbered: entries.renumbered,
         unknown: reader.unknown,
     }
 }

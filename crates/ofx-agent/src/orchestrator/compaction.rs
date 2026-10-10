@@ -508,6 +508,7 @@ impl Agent {
             size,
             model: &self.config.model,
             sends_after_conversation: conversation.is_some(),
+            follows_checkpoint: self.compactions > 0,
             trace,
         };
         compactor::compact(request, &mut summarizer, progress, cancel).await

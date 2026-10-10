@@ -48,9 +48,9 @@ note = "Summary generation and checkpoint validation exist; saved-record referen
 
 [[file]]
 upstream = "src/core/compactor/trace.zig"
-status = "ported"
+status = "partial"
 modules = ["crates/ofx-agent/src/compactor/trace.rs", "crates/ofx-trace/src/ring.rs"]
-note = "The 64-event ring with 512-byte details, its info, failure, infoIf and free-form log recording with the context_compaction trace lines, snapshot and reset are ported. The source_checkpointed and credential_unauthorized kinds arrive with the compaction_prepared checkpoint and the credential check, and overflow_without_compaction is left out because no request can reach it, upstream's or oh-fx's: an overflow being recovered always asks for a compaction."
+note = "The 64-event ring with 512-byte details, its info, failure, infoIf and free-form log recording with the context_compaction trace lines, snapshot and reset are ported. The source_checkpointed kind arrives with the compaction_prepared checkpoint, credential_unauthorized is omitted with the credential check docs/upstream-parity.md omits, and overflow_without_compaction is left out because no request can reach it, upstream's or oh-fx's: an overflow being recovered always asks for a compaction."
 
 [[file]]
 upstream = "src/core/compactor/window.zig"

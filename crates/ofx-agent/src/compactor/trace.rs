@@ -41,7 +41,7 @@ pub struct CompactionEvent {
 #[derive(Clone, Copy)]
 pub(crate) struct Tracer {
     ring: &'static Ring<CompactionEvent>,
-    pub(crate) context: TraceContext,
+    context: TraceContext,
 }
 
 #[derive(Clone, Copy)]
@@ -71,6 +71,10 @@ impl CompactionTraceKind {
             Self::ProviderOverflowRecovery => "provider_overflow_recovery",
         }
     }
+}
+
+pub(crate) fn unrecorded(detail: fmt::Arguments<'_>) {
+    ofx_trace::log(TRACE_SCOPE, detail);
 }
 
 pub fn compaction_trace() -> Vec<Sequenced<CompactionEvent>> {

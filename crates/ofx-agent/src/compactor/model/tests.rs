@@ -1,4 +1,4 @@
-use ofx_contract::{Completion, ProviderErrorKind, ToolCall, ToolSpec, Usage};
+use ofx_contract::{Completion, ProviderError, ProviderErrorKind, ToolCall, ToolSpec, Usage};
 use ofx_trace::{Ring, TraceContext};
 
 use super::*;
@@ -194,7 +194,10 @@ async fn each_summary_request_and_its_failure_reach_the_compaction_trace() {
         output_tokens: Some(80),
     };
     let provider = ScriptedProvider::new(vec![
-        Err(failure(ProviderErrorKind::InvalidRequest, "BadRequest")),
+        Err(ProviderError {
+            status: Some(400),
+            ..failure(ProviderErrorKind::InvalidRequest, "BadRequest")
+        }),
         Err(failure(ProviderErrorKind::Protocol, "OutputTruncated")),
         Ok(calling(ToolCall::new("c", "shell", "{}"))),
         Err(failure(ProviderErrorKind::Protocol, "InvalidFinishReason")),

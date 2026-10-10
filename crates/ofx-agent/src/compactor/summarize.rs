@@ -651,7 +651,6 @@ fn merged(first: Written, more: Written) -> Written {
             first.earlier
         },
         repeated: first.repeated + more.repeated,
-        renumbered: first.renumbered + more.renumbered,
         unknown: first.unknown + more.unknown,
     }
 }

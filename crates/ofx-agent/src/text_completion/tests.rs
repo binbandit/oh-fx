@@ -18,7 +18,14 @@ fn request(messages: &[ChatMessage]) -> ModelRequest<'_> {
     }
 }
 
-fn answered(text: &str) -> Outcome {
+fn answered(error: ProviderError, status: u16) -> ProviderError {
+    ProviderError {
+        status: Some(status),
+        ..error
+    }
+}
+
+fn replied(text: &str) -> Outcome {
     Outcome {
         reply: Ok(text.to_owned()),
         usage: Usage::default(),
@@ -91,9 +98,9 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         complete(&oversized, &request(&messages), 9, &cancel).await,
         Ok(unusable(Reason::Truncated, "bytes=10"))
     );
-    let refused = ScriptedProvider::new(vec![Err(failure(
-        ProviderErrorKind::InvalidRequest,
-        "BadRequest",
+    let refused = ScriptedProvider::new(vec![Err(answered(
+        failure(ProviderErrorKind::InvalidRequest, "BadRequest"),
+        400,
     ))]);
     assert_eq!(
         complete(&refused, &request(&messages), 1024, &cancel).await,
@@ -108,6 +115,14 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         complete(&broken, &request(&messages), 1024, &cancel).await,
         Ok(unusable(Reason::Transport, "err=InvalidFinishReason"))
     );
+    let filtered = ScriptedProvider::new(vec![Err(failure(
+        ProviderErrorKind::ProviderError,
+        "ContentFiltered",
+    ))]);
+    assert_eq!(
+        complete(&filtered, &request(&messages), 1024, &cancel).await,
+        Ok(unusable(Reason::Transport, "err=ContentFiltered"))
+    );
 }
 
 #[tokio::test]
@@ -118,9 +133,9 @@ async fn a_provider_error_detail_is_masked_and_kept_to_one_safe_line() {
         "  bad key Bearer abcdefghijklmnop \x1b[31mred\x1b[0m\tdone {}\nsecond line",
         "x".repeat(300)
     );
-    let rejected = ScriptedProvider::new(vec![Err(failure(
-        ProviderErrorKind::Unauthorized,
-        "Unauthorized",
+    let rejected = ScriptedProvider::new(vec![Err(answered(
+        failure(ProviderErrorKind::Unauthorized, "Unauthorized"),
+        401,
     )
     .with_detail(detail))]);
     let Ok(Outcome {
@@ -168,7 +183,7 @@ async fn transient_failures_are_retried_before_anything_streams() {
     let started = tokio::time::Instant::now();
     assert_eq!(
         complete(&provider, &request(&messages), 1024, &cancel).await,
-        Ok(answered("the notes"))
+        Ok(replied("the notes"))
     );
     assert_eq!(provider.seen().len(), 3);
     assert_eq!(started.elapsed(), Duration::from_millis(3_250));
