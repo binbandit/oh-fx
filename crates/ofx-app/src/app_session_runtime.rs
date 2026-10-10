@@ -211,6 +211,7 @@ impl LiveSession {
         let language = self.session().metadata().conversation_language.clone();
         Some(Arc::new(SessionChildren::new(
             sessions,
+            Arc::downgrade(&self.session),
             self.route.clone(),
             language,
         )))

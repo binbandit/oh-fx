@@ -41,6 +41,8 @@ use crate::compactor::{CompactionError, CompactionEvent, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::gateway_step::Meter;
 use crate::lifecycle::{LifecycleContext, ToolPreparation};
+use request_usage::RequestUsage;
+
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, ToolEvidence, recovery_cause,
 };
@@ -63,6 +65,7 @@ mod paused;
 mod project_gate;
 mod provider_tools;
 mod recovery;
+mod request_usage;
 mod response_language;
 mod steering;
 mod turn_ledger;
@@ -80,7 +83,7 @@ use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
     may_run_at_provider, provider_executed,
 };
-use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted};
+use recovery::{Restart, RestoredReply, recovery_tool_choice};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -1228,6 +1231,7 @@ impl Agent {
                 streamed_bytes,
                 admitted,
                 tool,
+                settled,
             } = self
                 .attempt(
                     turn,
@@ -1237,10 +1241,11 @@ impl Agent {
                     events,
                     cancel,
                 )
-                .await;
+                .await?;
             let consumed = attempt - usize::from(!admitted);
             let counted = (attempt, consumed, tool);
             let observed = restart.observe(partial, counted, &mut turn.tool_evidence);
+            restart.settled(settled)?;
             let error = match streamed {
                 Ok(completion) => {
                     let outcome = (recovering_from.is_some(), attempt, tool);
@@ -1267,7 +1272,7 @@ impl Agent {
                 {
                     events(UiEvent::Recovery { turn_id, status });
                 }
-                return Err(restart.failed(error));
+                return Err(restart.failed(TurnFailure::Provider(error)));
             };
             let evidence = (tool, cause, &error);
             let evidence =
@@ -1281,7 +1286,7 @@ impl Agent {
                     status: stalled_status(cause, consumed, &error, &decision),
                 });
                 self.discard_recovery(STALL_STOP);
-                return Err(restart.failed(error));
+                return Err(restart.failed(TurnFailure::Provider(error)));
             };
             let decided = (cause, decision.strategy);
             self.prepare_retry(turn, &mut request, &mut restart, failed, decided);
@@ -1299,10 +1304,7 @@ impl Agent {
                 }
                 () = tokio::time::sleep(decision.delay) => {}
             }
-            if restart.restarted(&turn.language.stage) {
-                events(restarted(turn_id));
-            }
-            turn.language.stage.restart();
+            restart.begin_again(turn, events);
             attempt += 1;
             status.failed_attempt = attempt;
             status.retry_wait = None;
@@ -1319,17 +1321,22 @@ impl Agent {
         (pending, number): (&mut Option<RouteRecoveryStatus>, usize),
         events: EventSink<'_>,
         cancel: &CancellationToken,
-    ) -> Attempt {
+    ) -> Result<Attempt, Stop> {
         let turn_id = turn.id;
         let trace = turn.trace;
         let mut streamed_text = StreamText::default();
         let mut streamed_bytes = 0;
         let mut admitted = false;
         let mut tool = ToolEvidence::None;
+        let mut usage = RequestUsage::new(self.log.as_deref());
+        let attempt_cancel = cancel.child_token();
         let mut sink = |event: StreamEvent| match event {
             StreamEvent::Admitted => {
                 admitted = true;
                 turn_trace::provider_admitted(trace, request.model);
+                if !usage.admit() {
+                    attempt_cancel.cancel();
+                }
                 if let Some(status) = pending.take() {
                     events(UiEvent::Recovery { turn_id, status });
                 }
@@ -1378,19 +1385,25 @@ impl Agent {
         let streamed = match body {
             Some(body) => {
                 self.provider
-                    .stream_body(request, body, &mut sink, cancel)
+                    .stream_body(request, body, &mut sink, &attempt_cancel)
                     .await
             }
-            None => self.provider.stream(request, &mut sink, cancel).await,
+            None => {
+                self.provider
+                    .stream(request, &mut sink, &attempt_cancel)
+                    .await
+            }
         };
         Meter::new(self.network_calls, trace).record(request.model, started_at_ms, &streamed);
-        Attempt {
+        let settled = usage.settle(&streamed);
+        Ok(Attempt {
             streamed,
             partial: streamed_text.partial,
             streamed_bytes,
             admitted,
             tool,
-        }
+            settled,
+        })
     }
 
     pub fn recovery_pause(&self) -> RecoveryPause {
@@ -1718,6 +1731,9 @@ impl Agent {
                 continue;
             };
             turn.selected_tools.record(&output);
+            if executed && let (Some(change), Some(log)) = (output.file_change, &self.log) {
+                log.record_committed_lines(change);
+            }
             let status = output.status;
             if executed && !interrupted && (status == ToolResultStatus::Success || !parallel) {
                 turn.trail.completed(call);
@@ -2290,6 +2306,7 @@ struct Attempt {
     streamed_bytes: usize,
     admitted: bool,
     tool: ToolEvidence,
+    settled: Result<(), LogFailure>,
 }
 
 fn stopped_status(

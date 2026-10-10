@@ -6,6 +6,7 @@ pub(crate) mod managed_file;
 mod turn_events;
 mod turn_recovery;
 mod turn_restore;
+mod usage_checkpoint;
 
 use std::fs::File;
 use std::mem;
@@ -32,7 +33,7 @@ use crate::session_error::SessionError;
 use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
 use crate::session_layout::is_valid_session_id;
 use crate::session_replay::History;
-use crate::session_usage::UsageSnapshot;
+use crate::session_usage::{Usage, UsageSnapshot};
 use crate::session_usage_sidecar;
 
 pub(crate) use conversation_archive::load_archive;
@@ -123,16 +124,12 @@ pub struct WritableSession {
     language: String,
     recovery: Recovery,
     work_id: Option<String>,
-    usage: UsageSnapshot,
+    usage: Usage,
 }
 
 impl WritableSession {
     pub fn id(&self) -> &str {
         &self.metadata.id
-    }
-
-    pub fn usage(&self) -> &UsageSnapshot {
-        &self.usage
     }
 
     pub fn metadata(&self) -> &SessionMetadata {
@@ -582,21 +579,21 @@ pub(crate) fn start_session(
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
     let language = metadata.conversation_language.clone();
-    let usage = UsageSnapshot::fresh();
-    let prepared = prepare_session(sessions, &staging, &metadata.id, &manifest, &usage).map(
-        |(owned, writer)| WritableSession {
-            owned,
-            writer,
-            cache: None,
-            metadata,
-            history: SavedHistory::default(),
-            started: true,
-            language,
-            recovery: Recovery::Absent,
-            work_id: None,
-            usage,
-        },
-    );
+    let prepared =
+        prepare_session(sessions, &staging, &metadata.id, &manifest).map(|(owned, writer)| {
+            WritableSession {
+                owned,
+                writer,
+                cache: None,
+                metadata,
+                history: SavedHistory::default(),
+                started: true,
+                language,
+                recovery: Recovery::Absent,
+                work_id: None,
+                usage: Usage::fresh(),
+            }
+        });
     let session = match prepared {
         Ok(session) => session,
         Err(error) => {
@@ -619,7 +616,6 @@ fn prepare_session(
     staging: &str,
     id: &str,
     manifest: &[u8],
-    usage: &UsageSnapshot,
 ) -> Result<(OwnedSessionDir, ConversationWriter), SessionError> {
     let dir = sessions
         .open_child_private(staging)?
@@ -628,7 +624,7 @@ fn prepare_session(
     owned.dir.replace(MANIFEST_FILE, manifest)?;
     let file = create_managed_file(&owned.dir, EVENTS_FILE)?;
     file.sync_all()?;
-    session_usage_sidecar::write(&owned.dir, id, usage)?;
+    session_usage_sidecar::write(&owned.dir, id, &UsageSnapshot::fresh())?;
     sync_dir(&owned.dir)?;
     Ok((owned, ConversationWriter::new(file)))
 }
@@ -682,7 +678,11 @@ fn resume_owned(
         let window = replay.finish(history, end)?;
         replay_history(history, end, &window)
     })?;
-    let usage = session_usage_sidecar::load_conversation(&owned.dir, id, metadata.updated_at_ms)?;
+    let usage = Usage::restore(
+        session_usage_sidecar::load_conversation(&owned.dir, id, metadata.updated_at_ms)?,
+        metadata.created_at_ms,
+        now_ms(),
+    );
     Ok(WritableSession {
         owned,
         writer,

@@ -1,10 +1,11 @@
 use std::fmt;
+use std::time::Instant;
 
 use crate::file_evidence::FileEvidence;
 use crate::ids::{ToolCallId, TurnId};
 use crate::types::{
-    ChatMessage, CommandProcessPresentation, ModelRecoveryAction, ModelRecoveryCause,
-    ProviderReplay, ToolCall, ToolResultStatus,
+    ChatMessage, CommandProcessPresentation, FileChangeStats, ModelRecoveryAction,
+    ModelRecoveryCause, ProviderReplay, ToolCall, ToolResultStatus,
 };
 
 pub const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
@@ -164,6 +165,19 @@ impl fmt::Display for LogFailure {
 
 impl std::error::Error for LogFailure {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    Unbilled,
+    PossiblyBilledWithoutIdentity,
+    AmbiguousDelivery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestTicket {
+    pub sequence: u64,
+    pub started_at: Instant,
+}
+
 pub trait ConversationLog: Send + Sync {
     fn require_writable(&self) -> Result<(), LogFailure>;
 
@@ -179,4 +193,14 @@ pub trait ConversationLog: Send + Sync {
     fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure>;
 
     fn clear_recovery(&self) -> Result<(), LogFailure>;
+
+    fn begin_request(&self) -> Result<RequestTicket, LogFailure>;
+
+    fn finish_request(
+        &self,
+        ticket: RequestTicket,
+        outcome: DeliveryOutcome,
+    ) -> Result<(), LogFailure>;
+
+    fn record_committed_lines(&self, change: FileChangeStats);
 }
