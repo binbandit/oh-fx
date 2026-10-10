@@ -1117,3 +1117,4 @@ fn a_turn_left_unsaved_keeps_its_prompt_language_for_the_next_commit() {
 }
 
 mod history_cache;
+mod upstream_frames;

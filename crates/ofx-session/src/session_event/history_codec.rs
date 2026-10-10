@@ -88,6 +88,13 @@ impl Encoder<'_> {
         value.map_or(Some(()), |text| self.text(text))
     }
 
+    fn optional_int(&mut self, value: Option<u64>) {
+        self.flag(value.is_some());
+        if let Some(value) = value {
+            self.int(value);
+        }
+    }
+
     fn absent(&mut self) {
         self.byte(0);
     }
@@ -146,9 +153,9 @@ impl Encoder<'_> {
                 self.byte(6);
                 self.tag(interrupted.reason)?;
                 self.optional_text(interrupted.partial_text.as_deref())?;
-                self.absent();
-                self.absent();
-                self.absent();
+                self.optional_text(interrupted.command_replay_ref.as_deref())?;
+                self.optional_int(interrupted.command_replay_bytes);
+                self.optional_text(interrupted.command_artifact_ref.as_deref())?;
                 self.files(&interrupted.files)?;
                 self.summary(interrupted.turn_summary);
                 self.byte(0);
@@ -202,10 +209,7 @@ impl Encoder<'_> {
         self.tag(result.status)?;
         self.text(&result.artifact_ref)?;
         self.absent();
-        self.flag(result.output_bytes.is_some());
-        if let Some(bytes) = result.output_bytes {
-            self.int(bytes);
-        }
+        self.optional_int(result.output_bytes);
         self.int(result.stored_bytes);
         self.tag(result.completeness)?;
         self.optional_text(result.preview.as_deref())?;
@@ -213,9 +217,9 @@ impl Encoder<'_> {
         self.flag(false);
         self.signed(result.created_at_ms);
         self.texts(&result.permission_feedback)?;
-        for _ in 0..3 {
-            self.absent();
-        }
+        self.absent();
+        self.optional_text(result.command_replay_ref.as_deref())?;
+        self.optional_int(result.command_replay_bytes);
         self.process(result.command_process_presentation);
         self.absent();
         Some(())
@@ -453,8 +457,8 @@ impl<'a> Decoder<'a> {
             created_at_ms: self.signed()?,
             permission_feedback: self.texts()?,
             committed_file_presentation: self.fixed::<Null>()?,
-            command_replay_ref: self.fixed::<Null>()?,
-            command_replay_bytes: self.fixed::<Null>()?,
+            command_replay_ref: self.optional_text().ok()?,
+            command_replay_bytes: self.optional(Self::int).ok()?,
             command_process_presentation: self.optional(Self::process).ok()?,
             terminal_action_presentation: self.fixed::<Null>()?,
         })
@@ -464,9 +468,9 @@ impl<'a> Decoder<'a> {
         Some(InterruptedEvent {
             reason: self.tag()?,
             partial_text: self.optional_text().ok()?,
-            command_replay_ref: self.fixed::<Null>()?,
-            command_replay_bytes: self.fixed::<Null>()?,
-            command_artifact_ref: self.fixed::<Null>()?,
+            command_replay_ref: self.optional_text().ok()?,
+            command_replay_bytes: self.optional(Self::int).ok()?,
+            command_artifact_ref: self.optional_text().ok()?,
             files: self.files()?,
             turn_summary: self.optional(Self::summary).ok()?,
             cancellation_origin: self.fixed::<TurnOrigin>()?,

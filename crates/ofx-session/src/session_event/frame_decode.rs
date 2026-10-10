@@ -127,8 +127,10 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         created_at_ms: fields.or("created_at_ms", 0, |value| value.as_i64())?,
         permission_feedback: fields.or("permission_feedback", Vec::new(), strings)?,
         committed_file_presentation: fields.fixed("committed_file_presentation")?,
-        command_replay_ref: fields.fixed("command_replay_ref")?,
-        command_replay_bytes: fields.fixed("command_replay_bytes")?,
+        command_replay_ref: fields
+            .nullable("command_replay_ref", |value| string(value).map(Some))?,
+        command_replay_bytes: fields
+            .nullable("command_replay_bytes", |value| value.as_u64().map(Some))?,
         command_process_presentation: fields.nullable("command_process_presentation", |value| {
             process_presentation::frame::read(value).map(Some)
         })?,
@@ -140,9 +142,12 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
     Some(InterruptedEvent {
         reason: tag(&fields.required("reason")?)?,
         partial_text: fields.nullable("partial_text", |value| string(value).map(Some))?,
-        command_replay_ref: fields.fixed("command_replay_ref")?,
-        command_replay_bytes: fields.fixed("command_replay_bytes")?,
-        command_artifact_ref: fields.fixed("command_artifact_ref")?,
+        command_replay_ref: fields
+            .nullable("command_replay_ref", |value| string(value).map(Some))?,
+        command_replay_bytes: fields
+            .nullable("command_replay_bytes", |value| value.as_u64().map(Some))?,
+        command_artifact_ref: fields
+            .nullable("command_artifact_ref", |value| string(value).map(Some))?,
         files: fields.or("files", Vec::new(), files)?,
         turn_summary: fields.nullable("turn_summary", |value| {
             turn_summary::read_frame(value).map(Some)
