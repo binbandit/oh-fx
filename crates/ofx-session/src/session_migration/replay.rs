@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use super::LegacySession;
 use super::durable_state::{DurableState, durable_state};
 use super::durable_turn::LegacyTurn;
+use super::legacy_checkpoint::LegacyCheckpoint;
 use super::legacy_frame::{
     Chunk, Envelope, Event, PreferenceChange, RAW_CHUNK_BYTES, Replacement, Started,
 };
@@ -14,7 +15,7 @@ pub(super) struct Replay {
     pub(super) generation: Identifier,
     pub(super) seq: u64,
     pub(super) event_id: Identifier,
-    recovery_set: bool,
+    pub(super) recovery: Option<LegacyCheckpoint>,
     pending: Option<Pending>,
 }
 
@@ -44,13 +45,13 @@ impl Replay {
             generation,
             seq: 1,
             event_id,
-            recovery_set: false,
+            recovery: None,
             pending: None,
         })
     }
 
     pub(super) fn settled(&self) -> bool {
-        !self.recovery_set && self.pending.is_none()
+        self.pending.is_none()
     }
 
     pub(super) fn apply(&mut self, envelope: Envelope) -> Result<(), SessionError> {
@@ -98,10 +99,10 @@ impl Replay {
                 }
                 session.turns.push(turn);
                 session.conversation_language = conversation_language;
-                self.recovery_set = false;
+                self.recovery = None;
             }
-            Event::RecoverySet => self.recovery_set = true,
-            Event::RecoveryCleared => self.recovery_set = false,
+            Event::RecoverySet(checkpoint) => self.recovery = Some(checkpoint),
+            Event::RecoveryCleared => self.recovery = None,
             Event::UsageCheckpointed
             | Event::Started(_)
             | Event::ReplacementStarted(_)
@@ -129,7 +130,7 @@ impl Replay {
         if !complete {
             return Err(SessionError::InvalidSessionFormat);
         }
-        let state = durable_state(&pending.bytes).ok_or(SessionError::InvalidSessionFormat)?;
+        let mut state = durable_state(&pending.bytes).ok_or(SessionError::InvalidSessionFormat)?;
         let prior = &self.session;
         let same_session = state.id == prior.id
             && state.created_at_ms == prior.created_at_ms
@@ -140,7 +141,7 @@ impl Replay {
         if !same_session {
             return Err(SessionError::InvalidSessionFormat);
         }
-        self.recovery_set = state.recovery_set;
+        self.recovery = state.recovery.take();
         self.session = LegacySession::replaced(state);
         Ok(())
     }
@@ -192,6 +193,7 @@ impl LegacySession {
             subagent_child: started.subagent_child,
             turns: Vec::new(),
             context_history_start: 0,
+            recovery: None,
         }
     }
 
@@ -207,6 +209,7 @@ impl LegacySession {
             subagent_child: state.subagent_child,
             turns: state.turns,
             context_history_start: state.context_history_start,
+            recovery: None,
         }
     }
 

@@ -54,7 +54,7 @@ fn permissions_007() -> String {
     )
 }
 
-fn reply_007(prompt: &str, answer: &str) -> String {
+pub(super) fn reply_007(prompt: &str, answer: &str) -> String {
     format!(
         "{{\"kind\":\"assistant\",\"user\":{{\"text\":\"{prompt}\",\"images\":[]}},\"assistant\":\"{answer}\",\"execution\":{{\"schema_version\":4,\"tool_steps\":[],\"files\":[]}}}}"
     )
@@ -66,7 +66,7 @@ fn compacted_007(summary: &str, removed: usize, compactions: usize) -> String {
     )
 }
 
-fn state_007(
+pub(super) fn state_007(
     id: &str,
     updated_at_ms: usize,
     history: &[String],
@@ -85,7 +85,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 impl LegacyLog {
-    fn started_007(id: &str) -> Self {
+    pub(super) fn started_007(id: &str) -> Self {
         Self::with_preferences(id, "/work", PREFERENCES_007)
     }
 
@@ -94,7 +94,7 @@ impl LegacyLog {
         self
     }
 
-    fn replaced(self, reason: &str, state: &str, timestamp_ms: usize) -> Self {
+    pub(super) fn replaced(self, reason: &str, state: &str, timestamp_ms: usize) -> Self {
         let bytes = state.as_bytes();
         let chunks: Vec<&[u8]> = bytes.chunks(RAW_CHUNK_BYTES).collect();
         let digest = sha256_hex(bytes);
@@ -136,7 +136,10 @@ impl LegacyLog {
     }
 }
 
-fn written(fixture: &Fixture, log: &LegacyLog) -> (Vec<ConversationEvent>, SessionMetadata) {
+pub(super) fn written(
+    fixture: &Fixture,
+    log: &LegacyLog,
+) -> (Vec<ConversationEvent>, SessionMetadata) {
     let converted = read_schema_v3(&fixture.dir(log), &log.id).unwrap().unwrap();
     let copy = fixture.root.path().join("copies").join(&log.id);
     fs::create_dir_all(&copy).unwrap();
@@ -168,7 +171,7 @@ fn checkpoints(events: &[ConversationEvent]) -> Vec<(usize, &ContextCheckpointEv
         .collect()
 }
 
-fn prompts(events: &[ConversationEvent]) -> Vec<&str> {
+pub(super) fn prompts(events: &[ConversationEvent]) -> Vec<&str> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -429,10 +432,6 @@ fn a_replacement_whose_state_does_not_check_out_makes_the_session_unreadable() {
             "child flag",
             broken("compaction", &broken_state(50, ",\"subagent_child\":false")),
         ),
-        (
-            "recovery left set",
-            broken("compaction", &broken_state(50, &recovery_tail())),
-        ),
     ]);
 }
 
@@ -441,6 +440,8 @@ fn a_replaced_state_keeps_its_child_flag_settles_its_checkpoint_and_reads_older_
     let fixture = Fixture::new();
     let child = broken("compaction", &broken_state(50, ",\"subagent_child\":true"));
     assert_eq!(fixture.summary(&child).unwrap(), None);
+    let archived = broken("compaction", &broken_state(50, &recovery_tail()));
+    assert_eq!(fixture.summary(&archived).unwrap().unwrap().history_len, 2);
     let settled =
         broken("compaction", &broken_state(50, &recovery_tail())).turn(&reply_007("two", "second"));
     assert_eq!(fixture.summary(&settled).unwrap().unwrap().history_len, 2);
@@ -476,7 +477,7 @@ fn context_last(state: &str) -> String {
     )
 }
 
-fn command_turn_007(turn: usize, output: &str) -> String {
+pub(super) fn command_turn_007(turn: usize, output: &str) -> String {
     let result = command_result(&format!("call_{turn}"), output, "null");
     let result = format!(
         "{},\"terminal_action_presentation\":null}}",
