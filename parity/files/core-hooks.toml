@@ -2,13 +2,13 @@
 upstream = "src/core/hooks/common.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/hooks.rs"]
-note = "Re-exports the scope, invocation and registration error that oh-fx carries; the limits and the view, handler and dispatch errors land with the events that use them."
+note = "Re-exports the scope, invocation, registration error and the handler and dispatch errors that oh-fx carries; the limits stay private to the runtime, and the view error cannot arise because freezing consumes the runtime, as docs/differences/hooks.md records."
 
 [[file]]
 upstream = "src/core/hooks/definitions.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/hooks/definitions.rs"]
-note = "Scope kinds, the invocation, the PostTurnEnd and AttentionRequired inputs, the attention kinds, the handler name limit and the registration errors exist; the hook kind table, the PreToolUse and Stop inputs, actions and outcomes, the other limits and the handler and dispatch errors are missing. The invocation carries its scope kind and turn only and PostTurnEnd carries no provider disposition, as docs/differences/hooks.md records."
+note = "Scope kinds, the invocation, the PreToolUse, PostTurnEnd and AttentionRequired inputs, the PreToolUse actions and outcomes, the attention kinds, the handler name, reason and arguments limits, the registration errors and the handler and dispatch errors exist; the hook kind table and the Stop input, actions, outcomes and context limit are missing. The invocation carries its scope kind and turn only and PostTurnEnd carries no provider disposition, as docs/differences/hooks.md records."
 
 [[file]]
 upstream = "src/core/hooks/hooks.zig"
@@ -25,9 +25,9 @@ modules = []
 upstream = "src/core/hooks/runtime.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/hooks/runtime.rs"]
-note = "Handler name validation, duplicate refusal per event, freezing into a shared view that holds nothing when no handler registered, and ordered PostTurnEnd and AttentionRequired dispatch exist; PreToolUse and Stop registration and dispatch are missing. Freezing consumes the runtime and handlers write no trace lines, as docs/differences/hooks.md records."
+note = "Handler name validation, duplicate refusal per event, freezing into a shared view that holds nothing when no handler registered, PreToolUse dispatch that chains rewrites in order, lets the first block win and rejects oversized or non-object rewrites and empty or oversized block reasons, and ordered PostTurnEnd and AttentionRequired dispatch exist; Stop registration and dispatch are missing. Freezing consumes the runtime and handlers write no trace lines, as docs/differences/hooks.md records."
 
 [[file]]
 upstream = "src/core/hooks/tool.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-contract/src/hooks.rs"]
