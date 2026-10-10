@@ -17,7 +17,7 @@ use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::{build_prompt_get_request, build_resource_read_request};
 use crate::server_connection::McpClient;
-use crate::server_lifecycle::{Lifecycle, Server};
+use crate::server_lifecycle::{Lifecycle, RestartFailure, Server};
 use crate::tool_result::protocol_diagnostic;
 use crate::transport::{McpTransport, TransportRequest};
 
@@ -190,7 +190,7 @@ impl Server {
             if self.config.transport == TransportType::Stdio && !client.is_running() {
                 self.running_client(deadline)
                     .await
-                    .map_err(|failure| failure.into_error())?;
+                    .map_err(RestartFailure::into_error)?;
                 continue;
             }
             let current = self

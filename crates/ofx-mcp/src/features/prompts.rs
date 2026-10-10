@@ -758,7 +758,6 @@ mod tests {
     #[test]
     fn prompt_get_results_fail_with_upstreams_error_names() {
         let limits = Limits::default();
-        let content = |content: Value| json!({"messages": [{"role": "user", "content": content}]});
         let cases = [
             (json!({}), McpError::InvalidGetResult),
             (
@@ -795,6 +794,36 @@ mod tests {
                 json!({"messages": [{"role": "user"}]}),
                 McpError::InvalidMessage,
             ),
+            (
+                json!({"messages": [], "ttlMs": 0.5}),
+                McpError::InvalidResult,
+            ),
+            (
+                json!({"messages": [], "cacheScope": "shared"}),
+                McpError::InvalidResult,
+            ),
+        ];
+        for (result, expected) in cases {
+            assert_eq!(get(&result, limits).err(), Some(expected), "{result}");
+        }
+        let small = Limits {
+            result_json_bytes: 30,
+            ..Limits::default()
+        };
+        assert_eq!(
+            get(
+                &json!({"messages": [text_message("x".repeat(20).as_str())]}),
+                small
+            ),
+            Err(McpError::MetadataLimitExceeded)
+        );
+        assert!(get(&json!({"messages": [text_message("x")]}), small).is_ok());
+    }
+
+    #[test]
+    fn prompt_message_contents_fail_with_upstreams_error_names() {
+        let content = |content: Value| json!({"messages": [{"role": "user", "content": content}]});
+        let cases = [
             (content(json!("hello")), McpError::InvalidContent),
             (content(json!({"text": "x"})), McpError::InvalidContent),
             (
@@ -842,30 +871,14 @@ mod tests {
                 content(json!({"type": "video", "_meta": {"big": "x".repeat(128 * 1024)}})),
                 McpError::MetadataLimitExceeded,
             ),
-            (
-                json!({"messages": [], "ttlMs": 0.5}),
-                McpError::InvalidResult,
-            ),
-            (
-                json!({"messages": [], "cacheScope": "shared"}),
-                McpError::InvalidResult,
-            ),
         ];
         for (result, expected) in cases {
-            assert_eq!(get(&result, limits).err(), Some(expected), "{result}");
+            assert_eq!(
+                get(&result, Limits::default()).err(),
+                Some(expected),
+                "{result}"
+            );
         }
-        let small = Limits {
-            result_json_bytes: 30,
-            ..Limits::default()
-        };
-        assert_eq!(
-            get(
-                &json!({"messages": [text_message("x".repeat(20).as_str())]}),
-                small
-            ),
-            Err(McpError::MetadataLimitExceeded)
-        );
-        assert!(get(&json!({"messages": [text_message("x")]}), small).is_ok());
     }
 
     #[test]
