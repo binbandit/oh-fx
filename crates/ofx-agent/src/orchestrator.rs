@@ -57,6 +57,7 @@ use crate::worker_runtime::WorkerRuntime;
 mod compaction;
 mod dynamic_tools;
 mod gateway_trace;
+mod history_trace;
 mod mode_policy;
 mod paused;
 mod project_gate;
@@ -238,6 +239,7 @@ struct Turn {
     trace: TraceContext,
     selected_tools: SelectedTools,
     trail: ToolTrail,
+    projection: Option<history_trace::HistoryShape>,
 }
 
 #[derive(Default)]
@@ -624,6 +626,11 @@ impl Agent {
             trace,
             selected_tools: SelectedTools::default(),
             trail: ToolTrail::default(),
+            projection: history_trace::shape(
+                &self.history,
+                &self.turn_starts,
+                &self.pending_interruptions,
+            ),
         }
     }
 
@@ -852,6 +859,10 @@ impl Agent {
         self.turn_starts.len() + usize::from(self.compacted.is_some())
     }
 
+    pub fn retained_web_searches(&self) -> Vec<Option<ToolResultStatus>> {
+        provider_tools::retained_web_searches(&self.history)
+    }
+
     pub fn last_assistant_reply(&self) -> Option<Arc<str>> {
         self.last_reply
             .as_ref()
@@ -891,6 +902,7 @@ impl Agent {
             self.refresh_dynamic_tools(&turn.selected_tools);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
+            history_trace::projected(turn.trace, turn.projection.take(), instructions.len());
             let messages = self.request_messages(turn);
             let gateway_messages = instructions.len() + messages.len();
             self.trace_step(turn, (step + 1, entered), gateway_messages);
@@ -1950,6 +1962,9 @@ impl Agent {
                     tool_calls[position].arguments = arguments;
                 }
             }
+        }
+        if let Cow::Owned(projected) = &history {
+            history_trace::tool_history_projected(projected.len());
         }
         history
     }
