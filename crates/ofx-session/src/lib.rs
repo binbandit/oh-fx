@@ -1,8 +1,11 @@
 mod fixed_field;
 mod fx_sessions;
+mod generation_fact_codec;
 mod history_snapshot;
 mod json_fields;
 mod process_presentation;
+mod profile_usage_runtime;
+mod profile_usage_store;
 mod prompt_history_store;
 mod result_store;
 mod session;
@@ -30,6 +33,8 @@ mod spawn_gate;
 mod turn_summary;
 
 pub use fx_sessions::FxSessions;
+pub use profile_usage_runtime::{ProfileUsage, ProfileUsageError};
+pub use profile_usage_store::UsageStoreError;
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{SESSIONS_V2_VARIABLE, sessions_v2_variable_is_on};
 pub use session_children::ChildSessions;

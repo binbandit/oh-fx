@@ -16,7 +16,7 @@ pub use display_width::{
     should_wrap_at, starts_display_unit, status_prefix_end, suffix_by_width, trim_break_whitespace,
     visible_width, wrap_cut_ignoring_ansi,
 };
-pub use fmt::{lowercase_hex, parse_unsigned, shell_word};
+pub use fmt::{fixed_decimal, lowercase_hex, parse_unsigned, shell_word};
 pub use language_script::{Profile, ProseProfiles, Script, dominant_script, prose_profiles};
 pub use model_context_encoding::write_scalar;
 pub use text_utils::{

@@ -25,6 +25,7 @@ mod tool_result_limits;
 mod tool_set;
 mod types;
 mod ui;
+mod usage_report;
 mod workspace_menu;
 
 pub use additional_roots::LiveAdditionalRoots;
@@ -117,5 +118,9 @@ pub use ui::{
     QuestionRequest, SavedFileChange, SavedToolCall, StatuslineItem, StatuslineToggles,
     ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity,
     WorkspaceIdentitySource,
+};
+pub use usage_report::{
+    GenerationFact, ModelUsage, PendingMarker, UsageCompleteness, UsageCoverage, UsageIncident,
+    UsageReport, UsageReportError, UsageScope, UsageTotals, build_rolling_report, format_utc_date,
 };
 pub use workspace_menu::{DirectoryAccess, WorkspaceMenu, WorkspaceMenuEntry};
