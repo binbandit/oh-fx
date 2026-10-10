@@ -6,7 +6,7 @@ use super::LegacySession;
 use super::durable_turn::{
     ConversationTurn, Execution, LegacyTurn, SavedResult, Steering, TurnClose,
 };
-use crate::result_store::{make_handle, preview, store_result};
+use crate::result_store::{make_handle, preview, store_new_results};
 use crate::session_codec::{SessionMetadata, encode_session_metadata};
 use crate::session_display_metadata::history_title;
 use crate::session_error::SessionError;
@@ -141,9 +141,12 @@ impl Converted {
     }
 
     pub(crate) fn write(&self, copy: &PrivateDir) -> Result<(), SessionError> {
-        for result in &self.results {
-            store_result(copy, &result.handle, &result.text)?;
-        }
+        store_new_results(
+            copy,
+            self.results
+                .iter()
+                .map(|result| (result.handle.as_str(), result.text.as_str())),
+        )?;
         let mut log = Vec::new();
         for (seq, event) in (1_u64..).zip(&self.events) {
             log.extend(encode_conversation_frame(

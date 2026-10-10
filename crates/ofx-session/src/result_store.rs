@@ -1,8 +1,11 @@
+use std::io::Write as _;
+
 use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
 use crate::session_error::SessionError;
+use crate::session_log::managed_file::{create_managed_file, sync_dir};
 
 pub(crate) const PREVIEW_BYTES: usize = 4 * 1024;
 pub(crate) const RESULT_UNAVAILABLE: &str =
@@ -43,6 +46,31 @@ pub(crate) fn store_result(
     let results = session.open_or_create_child(TOOL_RESULTS_DIR)?;
     results.replace(handle, text.as_bytes())?;
     Ok(())
+}
+
+pub(crate) fn store_new_results<'a>(
+    session: &PrivateDir,
+    results: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), SessionError> {
+    let mut results = results.into_iter().peekable();
+    if results.peek().is_none() {
+        return Ok(());
+    }
+    let dir = session.open_or_create_child(TOOL_RESULTS_DIR)?;
+    for (handle, text) in results {
+        if !is_valid_handle(handle) {
+            return Err(SessionError::InvalidConversationEvent);
+        }
+        match create_managed_file(&dir, handle) {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                rustix::fs::fsync(&file)?;
+            }
+            Err(SessionError::SessionAlreadyExists) => dir.replace(handle, text.as_bytes())?,
+            Err(error) => return Err(error),
+        }
+    }
+    sync_dir(&dir)
 }
 
 struct ResultReader {
