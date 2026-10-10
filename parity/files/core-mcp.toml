@@ -19,7 +19,7 @@ note = "Page expiry, refresh decisions, failed-refresh retention with retry back
 upstream = "src/core/mcp/catalog_refresh.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/catalog_refresh.rs"]
-note = "A tool list is listed again when it expired or a tools/list_changed notification made it stale, before a call, right after the notification or after the listing then in flight, and on reload, as docs/differences/mcp.md records. A refresh in flight shows refreshing, a call waits for one that fetches a pending change and otherwise goes ahead with the last list as upstream's does, a call is refused with McpToolCatalogChanged while a change stays unfetched, a call whose deadline passes before tools/call is sent fails with McpRequestTimedOut as upstream's operation check does, a failed or abandoned refresh keeps the tools with failed_refresh and its retry backoff, and an unchanged list keeps its snapshot. Auth partitions, legacy session and credential recovery, and listener restarts are missing."
+note = "A tool list is listed again when it expired or a tools/list_changed notification made it stale, before a call, right after the notification or after the listing then in flight, and on reload, as docs/differences/mcp.md records. A refresh in flight shows refreshing, a call waits for one that fetches a pending change and otherwise goes ahead with the last list as upstream's does, a call is refused with McpToolCatalogChanged while a change stays unfetched, a call whose deadline passes before tools/call is sent fails with McpRequestTimedOut as upstream's operation check does, a failed or abandoned refresh keeps the tools with failed_refresh and its retry backoff, an unchanged list keeps its snapshot, and a listing that meets a 401 or a dead grant marks the server. Auth partitions, legacy session and credential recovery, and listener restarts are missing."
 
 [[file]]
 upstream = "src/core/mcp/catalog_state.zig"
@@ -128,7 +128,7 @@ note = "tools/list paging under the tool cap with each page's expiry, tool valid
 upstream = "src/core/mcp/health.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/health.rs", "crates/ofx-mcp/src/local_inspection.rs"]
-note = "Health rendering, the /mcp summary, the startup notice, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; OAuth states report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
+note = "Health rendering, the /mcp summary with its needs auth count and /mcp auth hint, the startup notice, the none, configured, authenticated and required auth states with the needs_auth status that a pending challenge or a dead grant sets, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; loadStoredCredentialsForHealthSnapshot waits for oh-fx mcp list."
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
@@ -156,6 +156,7 @@ note = "Server requests the client does not serve are refused; elicitation forms
 upstream = "src/core/mcp/legacy_http_sse.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/legacy_http_sse.rs"]
+note = "The discovery stream and the message posts remember the joined WWW-Authenticate header of a 401, or a 403 with a challenge, as rememberAuthChallenge does."
 
 [[file]]
 upstream = "src/core/mcp/legacy_sse.zig"
@@ -166,7 +167,7 @@ modules = ["crates/ofx-mcp/src/legacy_sse.rs"]
 upstream = "src/core/mcp/legacy_streamable_http.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/legacy_streamable_http.rs"]
-note = "Sessions, JSON and SSE responses, Last-Event-ID resumption, the notification stream and teardown exist; OAuth challenges are missing, so a 401 fails with McpAuthenticationRequired."
+note = "Sessions, JSON and SSE responses, Last-Event-ID resumption, the notification stream and teardown exist, and a 401, or a 403 with a challenge, remembers the joined WWW-Authenticate header as rememberAuthChallenge does; a 401 on the notification stream ends it without marking the server, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/legacy_url_completion.zig"
@@ -176,8 +177,8 @@ modules = []
 [[file]]
 upstream = "src/core/mcp/mcp_auth.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/mcp_auth.rs", "crates/ofx-mcp/src/mcp_auth/authorization.rs", "crates/ofx-mcp/src/mcp_auth/metadata.rs", "crates/ofx-mcp/src/oauth_uri.rs"]
-note = "Credentials, canonicalResource, the loopback and secure URL policy, refreshCredentials with the none, client_secret_post and client_secret_basic token endpoint methods, the invalid_grant rejection rule, JSON content type checks, token expiry, protected resource and authorization server discovery with the issuer checks, configured, metadata document and dynamically registered clients, the scope policy, PKCE S256, the loopback callback (in ofx-auth's browser_callback.rs) and the code exchange behind authorizeInteractive exist; challenges, automated authorization, the Slack bridge and revocation are missing."
+modules = ["crates/ofx-mcp/src/mcp_auth.rs", "crates/ofx-mcp/src/mcp_auth/authorization.rs", "crates/ofx-mcp/src/mcp_auth/challenge.rs", "crates/ofx-mcp/src/mcp_auth/metadata.rs", "crates/ofx-mcp/src/oauth_uri.rs"]
+note = "Credentials, canonicalResource, the loopback and secure URL policy, refreshCredentials with the none, client_secret_post and client_secret_basic token endpoint methods, the invalid_grant rejection rule, JSON content type checks, token expiry, protected resource and authorization server discovery with the issuer checks, configured, metadata document and dynamically registered clients, the scope policy, PKCE S256, the loopback callback (in ofx-auth's browser_callback.rs) and the code exchange behind authorizeInteractive, collectAuthenticateHeader and parseChallenge, the challenged resource_metadata URL, the challenge scope rule and the issuer mismatch details exist; automated authorization, the Slack bridge and revocation are missing."
 
 [[file]]
 upstream = "src/core/mcp/mcp_auth_store.zig"
@@ -201,7 +202,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), authenticateServer with authenticationServer's checks, the feature tool name among the reserved names, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; the deferred ask connections (required profile servers and approved project servers at ask startup outside a terminal, and the optional profile servers when a search, a selection or a feature call needs them, with the start's error reported to the selection and the feature call as McpConnectionTimedOut for a missed startup timeout, as connectServerCancellable names it, and a start dropped by cancellation recorded as failed with Cancelled, with the available_on_demand input of the model catalog) exist; ACP host channels, permission-filtered tool counts, the authentication input of the model catalog, the deferred connection that has_tool makes for a call and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section with its authentication input, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), authenticateServer with authenticationServer's checks, the feature tool name among the reserved names, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; the deferred ask connections (required profile servers and approved project servers at ask startup outside a terminal, and the optional profile servers when a search, a selection or a feature call needs them, with the start's error reported to the selection and the feature call as McpConnectionTimedOut for a missed startup timeout, as connectServerCancellable names it, and a start dropped by cancellation recorded as failed with Cancelled, with the available_on_demand input of the model catalog) exist; ACP host channels, permission-filtered tool counts, the deferred connection that has_tool makes for a call and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -217,7 +218,7 @@ modules = []
 upstream = "src/core/mcp/model_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/model_catalog.rs"]
-note = "The <mcp_servers> section with its 4 KiB budget, name order, encoding, truncation marker and notice, and the availability change notice with its eight-line bound exist. The available_on_demand state exists, with its classification in classify_availability. The authentication_required state waits for OAuth, and the loaded marker for always-loaded servers waits for ACP, which alone supplies them, as docs/differences/mcp.md records."
+note = "The <mcp_servers> section with its 4 KiB budget, name order, encoding, truncation marker and notice, and the availability change notice with its eight-line bound exist. The available_on_demand and authentication_required states exist, with their classification in classify_availability. The loaded marker for always-loaded servers waits for ACP, which alone supplies them, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/mrtr.zig"
@@ -262,8 +263,8 @@ note = "Selected schemas with the merged server instructions, the truncation mar
 [[file]]
 upstream = "src/core/mcp/server_auth.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/server_auth.rs"]
-note = "Static headers, header_env and bearer_token_env resolve when a server connects; loadStoredCredentials and the stored bearer, refreshed and saved before a request as refreshSharedCredentials does, and authenticate behind oh-fx mcp auth, which refuses a server that never reads stored grants as docs/differences/mcp.md records, exist; challenges, the failed state after a later refresh failure, automated authorization and logout are missing."
+modules = ["crates/ofx-mcp/src/server_auth.rs", "crates/ofx-mcp/src/auth_state.rs"]
+note = "Static headers, header_env and bearer_token_env resolve when a server connects; loadStoredCredentials and the stored bearer, refreshed and saved before a request as refreshSharedCredentials does, markReauthenticationRequired with its generation fence, authenticate behind oh-fx mcp auth, which refuses a server that never reads stored grants as docs/differences/mcp.md records, storePendingChallenge, markAuthenticationRequired and the legacy captureAuthHeader exist. A later 401 or refresh failure retires the connection, and a refresh failure that a resource, prompt or completion request meets leaves the server connected, as docs/differences/mcp.md records. authenticatedPost for the 2026-07-28 protocol, automated authorization and logout are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_connection.zig"
@@ -291,13 +292,13 @@ modules = []
 upstream = "src/core/mcp/server_transport.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_transport.rs", "crates/ofx-mcp/src/transport.rs"]
-note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder and server instructions exist; upstream's startup failure messages with the child's exit and stderr, the 2026-07-28 discovery path and OAuth-authenticated connections are missing."
+note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder, server instructions and the authentication messages of a startup that meets a 401 or a dead grant exist; upstream's startup failure messages with the child's exit and stderr and the 2026-07-28 discovery path are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource, template and prompt counts, the freshness and retry fields of the tool, resource, template and prompt catalogs, and the model summary for the <mcp_servers> section, which marks no server always loaded, since only ACP clients supply such servers, as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, serverAuthenticationState and the needs auth failure text, the freshness and retry fields of the tool, resource, template and prompt catalogs, and the model summary for the <mcp_servers> section, which marks no server always loaded, since only ACP clients supply such servers, as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"
@@ -337,7 +338,7 @@ modules = ["crates/ofx-mcp/src/tool_names.rs"]
 upstream = "src/core/mcp/tool_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/tool_operations.rs"]
-note = "Tool calls from the published snapshot with the response frame cap and progress notifications exist; input-required results are missing."
+note = "Tool calls from the published snapshot with the response frame cap and progress notifications exist, and a call that meets a 401 or a dead grant marks the server as captureLegacyStreamableAuth does; input-required results are missing."
 
 [[file]]
 upstream = "src/core/mcp/tool_result.zig"
@@ -349,7 +350,7 @@ note = "Image and audio items and binary resources are described rather than sen
 upstream = "src/core/mcp/tool_search.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/tool_search.rs"]
-note = "Ranked search over the tools of ready servers with their tags, titles, description, schema and server instruction prefixes, exact server scope with server_not_found and server_failed, bounded encoded descriptions and the result budget with their context_limit records and notices, schema selection within mcp_selected_schema_bytes with its notices, and authentication_required for a failed server whose bearer_token_env variable is missing exist. The tools selected within the budget are loaded for the next step. OAuth challenges, catalog auth witnesses, scoped access views and permission rules are missing until OAuth and scoped access land, as docs/differences/mcp.md records."
+note = "Ranked search over the tools of ready servers with their tags, titles, description, schema and server instruction prefixes, exact server scope with server_not_found and server_failed, bounded encoded descriptions and the result budget with their context_limit records and notices, schema selection within mcp_selected_schema_bytes with its notices, and authentication_required for a server that needs authentication or a failed server whose bearer_token_env variable is missing exist. The tools selected within the budget are loaded for the next step. Catalog auth witnesses, scoped access views and permission rules are missing until auth partitions and scoped access land, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/tool_snapshot.zig"
