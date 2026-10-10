@@ -3,24 +3,33 @@ use std::io::Write as _;
 use ofx_config::PrivateDir;
 
 use super::LegacySession;
-use super::durable_turn::{Execution, LegacyTurn, SavedResult, Steering, TurnClose};
-use crate::result_store::{make_handle, preview, store_result};
+use super::durable_turn::{
+    ConversationTurn, Execution, LegacyTurn, SavedResult, Steering, TurnClose,
+};
+use crate::result_store::{make_handle, preview, store_new_results};
 use crate::session_codec::{SessionMetadata, encode_session_metadata};
 use crate::session_display_metadata::history_title;
 use crate::session_error::SessionError;
 use crate::session_event::{
-    ArtifactCompleteness, AssistantEvent, ConversationEvent, ConversationState, FileEvidence,
-    InterruptedEvent, SteeringEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
-    encode_conversation_frame,
+    ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, ConversationEvent,
+    ConversationState, FileEvidence, InterruptedEvent, SteeringEvent, ToolResultEvent,
+    TurnCompletedEvent, UserEvent, encode_conversation_frame,
 };
 use crate::session_log::managed_file::{create_managed_file, sync_dir};
-use crate::session_log::{EVENTS_FILE, MANIFEST_FILE};
+use crate::session_log::{ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 
 pub(crate) struct Converted {
     metadata: SessionMetadata,
-    turns: Vec<Vec<ConversationEvent>>,
+    events: Vec<ConversationEvent>,
+    history_len: usize,
     results: Vec<StoredResult>,
+}
+
+struct LogBuilder {
+    state: ConversationState,
+    events: Vec<ConversationEvent>,
+    timestamp_ms: i64,
 }
 
 struct StoredResult {
@@ -30,8 +39,13 @@ struct StoredResult {
 
 impl LegacySession {
     pub(super) fn convert(self) -> Result<Converted, SessionError> {
+        let history_len = self.turns.len();
+        let prompts = self.turns.iter().filter_map(|turn| match turn {
+            LegacyTurn::Conversation(turn) => Some(turn.user.as_str()),
+            LegacyTurn::Compacted(_) => None,
+        });
         let metadata = SessionMetadata {
-            title: history_title(self.turns.iter().map(|turn| turn.user.as_str())),
+            title: history_title(history_len, prompts),
             id: self.id,
             origin_workspace_root: self.origin_workspace_root,
             workspace_root: self.workspace_root,
@@ -43,18 +57,69 @@ impl LegacySession {
         };
         encode_session_metadata(&metadata)?;
         let mut results = Vec::new();
-        let turns = self
-            .turns
-            .into_iter()
-            .map(|turn| turn_events(turn, &mut results))
-            .collect::<Result<Vec<_>, _>>()?;
-        let converted = Converted {
-            metadata,
-            turns,
-            results,
+        let mut log = LogBuilder {
+            state: ConversationState::default(),
+            events: Vec::new(),
+            timestamp_ms: metadata.updated_at_ms,
         };
-        converted.replay(|_, _| Ok(()))?;
-        Ok(converted)
+        for (index, turn) in self.turns.into_iter().enumerate() {
+            let batch = match turn {
+                LegacyTurn::Compacted(compacted) => {
+                    let active = index > 0 && index == self.context_history_start;
+                    let covers_through_seq = if active {
+                        log.coverage(compacted.removed_turn_count)?
+                    } else {
+                        log.state.latest_checkpoint_coverage()
+                    };
+                    vec![ConversationEvent::ContextCheckpoint(
+                        ContextCheckpointEvent {
+                            covers_through_seq,
+                            summary: compacted.summary,
+                        },
+                    )]
+                }
+                LegacyTurn::Conversation(turn) => turn_events(*turn, &mut results)?,
+            };
+            log.append(batch)?;
+        }
+        Ok(Converted {
+            metadata,
+            events: log.events,
+            history_len,
+            results,
+        })
+    }
+}
+
+impl LogBuilder {
+    fn append(&mut self, batch: Vec<ConversationEvent>) -> Result<(), SessionError> {
+        for event in &batch {
+            let seq = self.state.next_seq()?;
+            self.state.apply(seq, self.timestamp_ms, event)?;
+        }
+        if self.state.has_pending_tool_calls() {
+            return Err(SessionError::UnresolvedToolCall);
+        }
+        self.events.extend(batch);
+        Ok(())
+    }
+
+    fn coverage(&self, turns: usize) -> Result<u64, SessionError> {
+        let latest = self.state.latest_checkpoint_coverage();
+        let cut = ProgressPoint {
+            turns,
+            ..ProgressPoint::default()
+        };
+        let mut progress = ConversationProgress::from_coverage(latest);
+        for (seq, event) in (1_u64..).zip(&self.events) {
+            if seq > latest {
+                progress.observe(seq, event, Some(cut))?;
+            }
+        }
+        if !progress.reached && cut != ProgressPoint::default() {
+            return Err(SessionError::InvalidContextHistoryStart);
+        }
+        Ok(progress.coverage)
     }
 }
 
@@ -69,56 +134,40 @@ impl Converted {
             created_at_ms: metadata.created_at_ms,
             updated_at_ms: metadata.updated_at_ms,
             conversation_language: metadata.conversation_language.clone(),
-            history_len: self.turns.len(),
+            history_len: self.history_len,
             has_checkpoint: false,
             source: SessionSource::OhFx,
         }
     }
 
     pub(crate) fn write(&self, copy: &PrivateDir) -> Result<(), SessionError> {
-        for result in &self.results {
-            store_result(copy, &result.handle, &result.text)?;
-        }
+        store_new_results(
+            copy,
+            self.results
+                .iter()
+                .map(|result| (result.handle.as_str(), result.text.as_str())),
+        )?;
         let mut log = Vec::new();
-        self.replay(|seq, event| {
+        for (seq, event) in (1_u64..).zip(&self.events) {
             log.extend(encode_conversation_frame(
                 seq,
                 self.metadata.updated_at_ms,
                 event,
             )?);
-            Ok(())
-        })?;
+        }
         let mut events = create_managed_file(copy, EVENTS_FILE)?;
         events.write_all(&log)?;
         events.sync_all()?;
         copy.replace(MANIFEST_FILE, &encode_session_metadata(&self.metadata)?)?;
         sync_dir(copy)
     }
-
-    fn replay(
-        &self,
-        mut visit: impl FnMut(u64, &ConversationEvent) -> Result<(), SessionError>,
-    ) -> Result<(), SessionError> {
-        let mut state = ConversationState::default();
-        for events in &self.turns {
-            for event in events {
-                let seq = state.next_seq()?;
-                state.apply(seq, self.metadata.updated_at_ms, event)?;
-                visit(seq, event)?;
-            }
-            if state.has_pending_tool_calls() {
-                return Err(SessionError::UnresolvedToolCall);
-            }
-        }
-        Ok(())
-    }
 }
 
 fn turn_events(
-    turn: LegacyTurn,
+    turn: ConversationTurn,
     results: &mut Vec<StoredResult>,
 ) -> Result<Vec<ConversationEvent>, SessionError> {
-    let LegacyTurn {
+    let ConversationTurn {
         user,
         work_id,
         execution,

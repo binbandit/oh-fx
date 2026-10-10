@@ -22,7 +22,8 @@ const USAGE: &str = "{\"billing\":\"complete\",\"api_duration_complete\":true,\"
 pub(crate) struct LegacyLog {
     id: String,
     workspace: String,
-    frames: Vec<(String, String)>,
+    generation: String,
+    frames: Vec<(String, String, Option<usize>)>,
     committed: Option<usize>,
     tail: String,
     display_title: Option<String>,
@@ -44,7 +45,8 @@ impl LegacyLog {
         Self {
             id: id.to_owned(),
             workspace: workspace.to_owned(),
-            frames: vec![("session_started".to_owned(), started)],
+            generation: GENERATION.to_owned(),
+            frames: vec![("session_started".to_owned(), started, None)],
             committed: None,
             tail: String::new(),
             display_title: None,
@@ -53,8 +55,26 @@ impl LegacyLog {
 
     #[must_use]
     pub(crate) fn frame(mut self, kind: &str, payload: &str) -> Self {
-        self.frames.push((kind.to_owned(), payload.to_owned()));
+        self.frames
+            .push((kind.to_owned(), payload.to_owned(), None));
         self
+    }
+
+    #[must_use]
+    pub(crate) fn frame_at(mut self, kind: &str, payload: &str, timestamp_ms: usize) -> Self {
+        self.frames
+            .push((kind.to_owned(), payload.to_owned(), Some(timestamp_ms)));
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn in_generation(mut self, generation: &str) -> Self {
+        generation.clone_into(&mut self.generation);
+        self
+    }
+
+    pub(crate) fn frame_count(&self) -> usize {
+        self.frames.len()
     }
 
     #[must_use]
@@ -89,13 +109,14 @@ impl LegacyLog {
 
     pub(crate) fn events(&self) -> String {
         let mut log = String::new();
-        for (index, (kind, payload)) in self.frames.iter().enumerate() {
+        for (index, (kind, payload, timestamp_ms)) in self.frames.iter().enumerate() {
             let seq = index + 1;
             let _ = writeln!(
                 log,
-                "{{\"schema_version\":1,\"log_generation\":\"{GENERATION}\",\"seq\":{seq},\"event_id\":\"{}\",\"timestamp_ms\":{},\"kind\":\"{kind}\",\"payload\":{payload}}}",
+                "{{\"schema_version\":1,\"log_generation\":\"{}\",\"seq\":{seq},\"event_id\":\"{}\",\"timestamp_ms\":{},\"kind\":\"{kind}\",\"payload\":{payload}}}",
+                self.generation,
                 event_id(seq),
-                seq * 10
+                timestamp_ms.unwrap_or(seq * 10)
             );
         }
         log
@@ -110,8 +131,9 @@ impl LegacyLog {
             .map(str::len)
             .sum();
         format!(
-            "{{\"schema_version\":1,\"session_id\":\"{}\",\"log_generation\":\"{GENERATION}\",\"through_seq\":{committed},\"through_event_id\":\"{}\",\"through_event_log_bytes\":{bytes}}}\n",
+            "{{\"schema_version\":1,\"session_id\":\"{}\",\"log_generation\":\"{}\",\"through_seq\":{committed},\"through_event_id\":\"{}\",\"through_event_log_bytes\":{bytes}}}\n",
             self.id,
+            self.generation,
             event_id(committed)
         )
     }
@@ -136,7 +158,7 @@ impl LegacyLog {
         let mut files = vec![
             ("authority.json".to_owned(), authority),
             ("events.jsonl".to_owned(), self.events() + &self.tail),
-            (format!("commit.{GENERATION}.json"), self.watermark()),
+            (format!("commit.{}.json", self.generation), self.watermark()),
             ("session.json".to_owned(), self.manifest()),
             ("commit.lock".to_owned(), String::new()),
         ];
@@ -380,11 +402,9 @@ fn logs_holding_what_oh_fx_cannot_convert_yet_stay_unreadable() {
         ),
         "done",
     );
-    let compacted = "{\"kind\":\"compacted_summary\",\"summary\":\"earlier\",\"removed_turn_count\":1,\"compaction_count\":1}";
     for log in [
         LegacyLog::started("legacy-later", "/work").turn(&image_turn),
         LegacyLog::started("legacy-later", "/work").turn(&replay_turn),
-        LegacyLog::started("legacy-later", "/work").turn(compacted),
         LegacyLog::started("legacy-later", "/work")
             .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT),
         LegacyLog::started("legacy-later", "/work").frame(
@@ -407,13 +427,14 @@ fn a_subagent_child_is_not_listed() {
         frames: log
             .frames
             .into_iter()
-            .map(|(kind, payload)| {
+            .map(|(kind, payload, timestamp_ms)| {
                 (
                     kind,
                     payload.replace(
                         &format!(",\"usage\":{USAGE}}}"),
                         &format!(",\"usage\":{USAGE},\"subagent_child\":true}}"),
                     ),
+                    timestamp_ms,
                 )
             })
             .collect(),
@@ -613,3 +634,5 @@ fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
         );
     }
 }
+
+mod replacements;

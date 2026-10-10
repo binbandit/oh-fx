@@ -11,9 +11,7 @@ pub(crate) const MAX_CONTROL_FILE_BYTES: usize = 16 * 1024;
 const MARKER_SCHEMA_VERSION: u64 = 1;
 const STORAGE_FORMAT: &str = "event_log_v1";
 const SOURCES: [&str; 2] = ["native_create", "legacy_migration"];
-const IDENTIFIER_BYTES: usize = 16;
-
-pub(crate) type Identifier = [u8; IDENTIFIER_BYTES];
+pub(crate) type Identifier = [u8; 16];
 
 pub(crate) fn holds_authority_marker(dir: &PrivateDir) -> Result<bool, SessionError> {
     entry_exists(dir, AUTHORITY_FILE)
@@ -43,17 +41,21 @@ fn names_session(marker: &Json<'_>, id: &str) -> bool {
 }
 
 pub(crate) fn parse_identifier(hex: &str) -> Option<Identifier> {
+    parse_hex(hex)
+}
+
+pub(crate) fn parse_hex<const BYTES: usize>(hex: &str) -> Option<[u8; BYTES]> {
     let lowercase = hex
         .bytes()
         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if !lowercase || hex.len() != IDENTIFIER_BYTES * 2 {
+    if !lowercase || hex.len() != BYTES * 2 {
         return None;
     }
-    let mut identifier = [0_u8; IDENTIFIER_BYTES];
-    for (index, byte) in identifier.iter_mut().enumerate() {
+    let mut bytes = [0_u8; BYTES];
+    for (index, byte) in bytes.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
     }
-    Some(identifier)
+    Some(bytes)
 }
 
 #[cfg(test)]

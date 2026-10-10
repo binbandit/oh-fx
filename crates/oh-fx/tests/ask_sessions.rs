@@ -1454,6 +1454,12 @@ fn ask_resume_last_opens_the_newest_session_of_this_workspace_saved_by_either_ag
 const V3_GENERATION: &str = "01010101010101010101010101010101";
 
 fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
+    save_schema_v3_turns_in_fx(home, &[V3_TURN])
+}
+
+const V3_TURN: &str = "{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered in fx 0.0.7\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}";
+
+fn save_schema_v3_turns_in_fx(home: &Home, turns: &[&str]) -> PathBuf {
     let fx = home.root.join(".fx");
     let session = fx.join("sessions").join(FX_ID);
     fs::create_dir_all(&session).expect("create an fx session");
@@ -1464,14 +1470,20 @@ fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
     let started = format!(
         "{{\"id\":\"{FX_ID}\",\"created_at_ms\":1,\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"conversation_language\":\"en\",\"preferences\":{{\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false}}}}"
     );
-    let turn = "{\"conversation_language\":\"en\",\"total_input_tokens\":7,\"total_output_tokens\":3,\"turn\":{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered in fx 0.0.7\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}}";
     let mut events = String::new();
     let checkpoint = "{\"checkpoint\":{\"version\":2,\"route_identity\":{\"connection_id\":\"vercel\",\"adapter_kind\":\"vercel_ai_gateway\",\"permission_review_model_id\":\"review\"},\"delivery\":\"possibly_sent\",\"turn_id\":1,\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant_source\":\"\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]},\"cause\":\"response_interrupted\",\"action\":\"continuing_response\",\"tool_state\":\"uncertain\",\"route_model\":\"openai/gpt-5\",\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":0,\"outstanding_reservation\":false}}";
-    for (seq, (kind, payload)) in (1_u64..).zip([
-        ("session_started", started.as_str()),
-        ("recovery_checkpoint_set", checkpoint),
-        ("history_turn_committed", turn),
-    ]) {
+    let mut frames = vec![("session_started", started)];
+    for turn in turns {
+        frames.push(("recovery_checkpoint_set", checkpoint.to_owned()));
+        frames.push((
+            "history_turn_committed",
+            format!(
+                "{{\"conversation_language\":\"en\",\"total_input_tokens\":7,\"total_output_tokens\":3,\"turn\":{turn}}}"
+            ),
+        ));
+    }
+    let committed = frames.len();
+    for (seq, (kind, payload)) in (1_u64..).zip(frames) {
         let _ = writeln!(
             events,
             "{{\"schema_version\":1,\"log_generation\":\"{V3_GENERATION}\",\"seq\":{seq},\"event_id\":\"{seq:032x}\",\"timestamp_ms\":{},\"kind\":\"{kind}\",\"payload\":{payload}}}",
@@ -1479,8 +1491,7 @@ fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
         );
     }
     let watermark = format!(
-        "{{\"schema_version\":1,\"session_id\":\"{FX_ID}\",\"log_generation\":\"{V3_GENERATION}\",\"through_seq\":3,\"through_event_id\":\"{:032x}\",\"through_event_log_bytes\":{}}}\n",
-        3,
+        "{{\"schema_version\":1,\"session_id\":\"{FX_ID}\",\"log_generation\":\"{V3_GENERATION}\",\"through_seq\":{committed},\"through_event_id\":\"{committed:032x}\",\"through_event_log_bytes\":{}}}\n",
         events.len()
     );
     let authority = format!(
@@ -1538,4 +1549,34 @@ fn ask_resumes_a_session_fx_saved_before_its_conversation_layout() {
         .collect();
     assert_eq!(after, untouched);
     assert!(!source.join("session.json").exists());
+}
+
+#[test]
+fn ask_resumes_a_session_fx_0_0_7_compacted_from_its_summary() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["continued"]))]);
+    let home = Home::new(&server.base_url());
+    let turn = |prompt: &str| {
+        format!(
+            "{{\"kind\":\"assistant\",\"user\":{{\"text\":\"{prompt}\",\"images\":[]}},\"assistant\":\"done\",\"execution\":{{\"schema_version\":4,\"tool_steps\":[],\"files\":[]}}}}"
+        )
+    };
+    let (first, second, third) = (
+        turn("FIRST_REMOVED"),
+        turn("SECOND_REMOVED"),
+        turn("kept after it"),
+    );
+    let summary = "{\"kind\":\"compacted_summary\",\"summary\":\"SUMMARY_OF_TWO_TURNS\",\"removed_turn_count\":2,\"compaction_count\":1}";
+    save_schema_v3_turns_in_fx(&home, &[&first, &second, summary, &third]);
+
+    let output = home.ask(&["ask", "--json", "--resume", FX_ID, "keep going"], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request = serde_json::to_string(&conversation(&server.requests()[0])).expect("request");
+    assert!(request.contains("SUMMARY_OF_TWO_TURNS"), "{request}");
+    assert!(request.contains("kept after it"), "{request}");
+    assert!(!request.contains("FIRST_REMOVED"), "{request}");
+    assert!(!request.contains("SECOND_REMOVED"), "{request}");
 }

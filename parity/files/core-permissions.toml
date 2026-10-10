@@ -67,5 +67,5 @@ note = "External targets, in-memory grants, permission-category names and canoni
 [[file]]
 upstream = "src/core/permissions/session_permission_state.zig"
 status = "partial"
-modules = ["crates/ofx-permissions/src/session_permission_state.rs"]
-note = "In-memory deduplicated session grants exist; schema validation, event generations, stable rule IDs and v1/v2 persisted migration are absent."
+modules = ["crates/ofx-permissions/src/session_permission_state.rs", "crates/ofx-session/src/session_migration/durable_state.rs"]
+note = "In-memory deduplicated session grants exist, and the persisted v1 and v2 rule sets of an fx schema-v3 session are validated as upstream validates them when it is imported, then left out like oh-fx's own; event generations, stable rule IDs and v1/v2 persisted migration are absent."

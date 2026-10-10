@@ -1,8 +1,11 @@
+use std::io::Write as _;
+
 use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
 use crate::session_error::SessionError;
+use crate::session_log::managed_file::{create_managed_file, sync_dir};
 
 pub(crate) const PREVIEW_BYTES: usize = 4 * 1024;
 pub(crate) const RESULT_UNAVAILABLE: &str =
@@ -43,6 +46,31 @@ pub(crate) fn store_result(
     let results = session.open_or_create_child(TOOL_RESULTS_DIR)?;
     results.replace(handle, text.as_bytes())?;
     Ok(())
+}
+
+pub(crate) fn store_new_results<'a>(
+    session: &PrivateDir,
+    results: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), SessionError> {
+    let mut results = results.into_iter().peekable();
+    if results.peek().is_none() {
+        return Ok(());
+    }
+    let dir = session.open_or_create_child(TOOL_RESULTS_DIR)?;
+    for (handle, text) in results {
+        if !is_valid_handle(handle) {
+            return Err(SessionError::InvalidConversationEvent);
+        }
+        match create_managed_file(&dir, handle) {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                rustix::fs::fsync(&file)?;
+            }
+            Err(SessionError::SessionAlreadyExists) => dir.replace(handle, text.as_bytes())?,
+            Err(error) => return Err(error),
+        }
+    }
+    sync_dir(&dir)
 }
 
 struct ResultReader {
@@ -152,6 +180,28 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = PrivateDir::open_or_create(&root.path().join("session")).unwrap();
         (root, dir)
+    }
+
+    #[test]
+    fn new_results_are_stored_privately_and_an_existing_handle_is_replaced() {
+        let (root, dir) = session();
+        store_new_results(&dir, []).unwrap();
+        assert!(!root.path().join("session/tool-results").exists());
+        let first = make_handle("call_1", "shell", "one");
+        let second = make_handle("call_2", "shell", "two");
+        store_result(&dir, &second, "stale").unwrap();
+        store_new_results(&dir, [(first.as_str(), "one"), (second.as_str(), "two")]).unwrap();
+        let results = root.path().join("session/tool-results");
+        for (handle, text) in [(&first, "one"), (&second, "two")] {
+            let path = results.join(handle);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert_eq!(
+            store_new_results(&dir, [("../escape", "x")]),
+            Err(SessionError::InvalidConversationEvent)
+        );
     }
 
     #[test]

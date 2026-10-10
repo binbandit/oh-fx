@@ -541,14 +541,18 @@ fn lowercase_digest(hex: &str) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
 }
 
 pub(crate) fn durable_text(value: Json<'_>) -> Option<String> {
+    String::from_utf8(durable_bytes(value)?).ok()
+}
+
+pub(crate) fn durable_bytes(value: Json<'_>) -> Option<Vec<u8>> {
     match value {
-        Json::String(text) => Some(text.into_owned()),
+        Json::String(text) => Some(text.into_owned().into_bytes()),
         Json::Object(entries) => match entries.entries() {
             [
                 (encoding, Json::String(scheme)),
                 (data, Json::String(encoded)),
             ] if encoding == "encoding" && scheme == "base64" && data == "data" => {
-                String::from_utf8(STANDARD.decode(encoded.as_bytes()).ok()?).ok()
+                STANDARD.decode(encoded.as_bytes()).ok()
             }
             _ => None,
         },

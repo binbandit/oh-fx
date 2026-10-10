@@ -1,14 +1,22 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ofx_config::ProviderId;
 use ofx_contract::ReasoningEffort;
+use sha2::{Digest, Sha256};
 
 use super::durable_turn::{LegacyTurn, history_turn, is_valid_work_id};
 use crate::json_fields::{Fields, Json, parse_json};
-use crate::session_authority::{Identifier, parse_identifier};
+use crate::session_authority::{Identifier, parse_hex, parse_identifier};
 use crate::session_codec::{SavedProvider, SessionPreferences, parse_saved_provider};
 use crate::session_error::SessionError;
 
 const ENVELOPE_SCHEMA_VERSION: u64 = 1;
 const LEGACY_CONNECTION: &str = "vercel";
+pub(super) const RAW_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+const REASONS: [&str; 4] = ["compaction", "migration", "recovery", "log_compaction"];
+const LOG_COMPACTION: &str = "log_compaction";
+
+pub(super) type Digest256 = [u8; 32];
 
 pub(super) struct Envelope {
     pub(super) generation: Identifier,
@@ -51,6 +59,24 @@ pub(super) enum Event {
     UsageCheckpointed,
     RecoverySet,
     RecoveryCleared,
+    ReplacementStarted(Replacement),
+    ReplacementChunk(Chunk),
+    ReplacementCommitted(Replacement),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Replacement {
+    pub(super) id: Identifier,
+    pub(super) log_rewrite: bool,
+    pub(super) encoded_bytes: u64,
+    pub(super) sha256: Digest256,
+    pub(super) chunk_count: u64,
+}
+
+pub(super) struct Chunk {
+    pub(super) replacement: Identifier,
+    pub(super) index: u64,
+    pub(super) bytes: Vec<u8>,
 }
 
 pub(super) fn decode_frame(line: &[u8]) -> Result<Envelope, SessionError> {
@@ -80,6 +106,11 @@ fn envelope(mut fields: Fields<'_>) -> Option<Envelope> {
         "usage_checkpointed" => usage_checkpointed(payload)?,
         "recovery_checkpoint_set" => recovery_set(payload)?,
         "recovery_checkpoint_cleared" => recovery_cleared(payload)?,
+        "state_replacement_started" => Event::ReplacementStarted(replacement_started(payload)?),
+        "state_replacement_chunk" => Event::ReplacementChunk(replacement_chunk(payload)?),
+        "state_replacement_committed" => {
+            Event::ReplacementCommitted(replacement_committed(payload)?)
+        }
         _ => return None,
     };
     fields.finish(Envelope {
@@ -108,7 +139,7 @@ fn started(payload: Json<'_>) -> Option<Started> {
     fields.finish(started)
 }
 
-fn preferences(value: Json<'_>) -> Option<SessionPreferences> {
+pub(super) fn preferences(value: Json<'_>) -> Option<SessionPreferences> {
     let mut fields = Fields::new(value)?;
     let (provider, model) = if let Some(connection) = fields.required("connection_id") {
         (connection.as_str()? == LEGACY_CONNECTION).then_some(())?;
@@ -186,6 +217,11 @@ fn turn_committed(payload: Json<'_>) -> Option<Event> {
 }
 
 fn associate_work(turn: &mut LegacyTurn, committed: Option<&str>) -> Option<()> {
+    let turn = match (turn, committed) {
+        (LegacyTurn::Compacted(_), None) => return Some(()),
+        (LegacyTurn::Compacted(_), Some(_)) => return None,
+        (LegacyTurn::Conversation(turn), _) => turn,
+    };
     match (committed, turn.work_id.as_deref()) {
         (None, None) => Some(()),
         (None, Some(_)) => None,
@@ -214,6 +250,60 @@ fn recovery_set(payload: Json<'_>) -> Option<Event> {
 
 fn recovery_cleared(payload: Json<'_>) -> Option<Event> {
     Fields::new(payload)?.finish(Event::RecoveryCleared)
+}
+
+fn replacement_started(payload: Json<'_>) -> Option<Replacement> {
+    let mut fields = Fields::new(payload)?;
+    let replacement_id = parse_identifier(&fields.string("replacement_id")?)?;
+    let reason = fields.string("reason")?;
+    REASONS.contains(&reason.as_str()).then_some(())?;
+    let replacement = replacement(&mut fields, replacement_id, reason == LOG_COMPACTION)?;
+    fields.finish(replacement)
+}
+
+fn replacement_committed(payload: Json<'_>) -> Option<Replacement> {
+    let mut fields = Fields::new(payload)?;
+    let replacement_id = parse_identifier(&fields.string("replacement_id")?)?;
+    let replacement = replacement(&mut fields, replacement_id, false)?;
+    fields.finish(replacement)
+}
+
+fn replacement(
+    fields: &mut Fields<'_>,
+    replacement_id: Identifier,
+    log_rewrite: bool,
+) -> Option<Replacement> {
+    let encoded_bytes = fields
+        .unsigned("encoded_bytes")
+        .filter(|bytes| *bytes > 0)?;
+    let sha256 = parse_hex(&fields.string("sha256")?)?;
+    let chunk_count = fields.unsigned("chunk_count").filter(|count| *count > 0)?;
+    Some(Replacement {
+        id: replacement_id,
+        log_rewrite,
+        encoded_bytes,
+        sha256,
+        chunk_count,
+    })
+}
+
+fn replacement_chunk(payload: Json<'_>) -> Option<Chunk> {
+    let mut fields = Fields::new(payload)?;
+    let replacement_id = parse_identifier(&fields.string("replacement_id")?)?;
+    let chunk_index = fields.unsigned("chunk_index")?;
+    let raw_bytes = fields
+        .unsigned("raw_bytes")
+        .filter(|bytes| (1..=RAW_CHUNK_BYTES).contains(bytes))?;
+    let chunk_sha256: Digest256 = parse_hex(&fields.string("chunk_sha256")?)?;
+    let bytes = STANDARD.decode(fields.text("base64")?.as_bytes()).ok()?;
+    let intact = u64::try_from(bytes.len()).ok() == Some(raw_bytes)
+        && Sha256::digest(&bytes).as_slice() == chunk_sha256;
+    intact.then_some(())?;
+    fields.finish(Chunk {
+        replacement: replacement_id,
+        index: chunk_index,
+        bytes,
+    })
 }
 
 fn usage(value: &Json<'_>) -> Option<()> {

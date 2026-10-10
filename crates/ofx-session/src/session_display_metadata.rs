@@ -30,9 +30,13 @@ pub(crate) fn prompt_title(prompt: &str) -> Option<String> {
     titled_prompt(prompt).and_then(first_line_title)
 }
 
-pub(crate) fn history_title<'a>(prompts: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    let mut prompts = prompts.into_iter().peekable();
-    prompts.peek()?;
+pub(crate) fn history_title<'a>(
+    turns: usize,
+    mut prompts: impl Iterator<Item = &'a str>,
+) -> Option<String> {
+    if turns == 0 {
+        return None;
+    }
     let title = prompts
         .find_map(titled_prompt)
         .and_then(first_line_title)

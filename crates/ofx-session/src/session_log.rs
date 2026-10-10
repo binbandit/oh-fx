@@ -34,7 +34,7 @@ use crate::session_replay::History;
 
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
-use conversation_progress::ProgressPoint;
+pub(crate) use conversation_progress::{ConversationProgress, ProgressPoint};
 use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,

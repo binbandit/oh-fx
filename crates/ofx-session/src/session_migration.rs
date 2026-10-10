@@ -1,6 +1,8 @@
 mod conversion;
+mod durable_state;
 mod durable_turn;
 mod legacy_frame;
+mod replay;
 
 use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
@@ -20,7 +22,8 @@ use crate::session_summary_codec::SessionSummary;
 
 pub(crate) use conversion::Converted;
 use durable_turn::LegacyTurn;
-use legacy_frame::{Envelope, Event, PreferenceChange, Started, decode_frame};
+use legacy_frame::decode_frame;
+use replay::Replay;
 
 const WATERMARK_SCHEMA_VERSION: u64 = 1;
 
@@ -34,20 +37,13 @@ pub(crate) struct LegacySession {
     preferences: SessionPreferences,
     subagent_child: bool,
     turns: Vec<LegacyTurn>,
+    context_history_start: usize,
 }
 
 struct Watermark {
     seq: u64,
     event_id: Identifier,
     bytes: u64,
-}
-
-struct Replay {
-    session: LegacySession,
-    generation: Identifier,
-    seq: u64,
-    event_id: Identifier,
-    recovery_set: bool,
 }
 
 pub(crate) fn holds_schema_v3(dir: &PrivateDir, id: &str) -> Result<bool, SessionError> {
@@ -115,7 +111,7 @@ fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionEr
     let committed = replay.seq == watermark.seq
         && replay.event_id == watermark.event_id
         && reader.offset() == watermark.bytes
-        && !replay.recovery_set;
+        && replay.settled();
     if committed {
         Ok(replay.session)
     } else {
@@ -147,98 +143,6 @@ fn watermark(document: Json<'_>, id: &str, generation: &Identifier) -> Option<Wa
             .filter(|bytes| *bytes > 0)?,
     };
     fields.finish(watermark)
-}
-
-impl Replay {
-    fn start(envelope: Envelope, id: &str) -> Result<Self, SessionError> {
-        let Envelope {
-            generation,
-            seq: 1,
-            event_id,
-            timestamp_ms,
-            event: Event::Started(started),
-        } = envelope
-        else {
-            return Err(SessionError::InvalidSessionFormat);
-        };
-        if started.id != id {
-            return Err(SessionError::InvalidSessionFormat);
-        }
-        Ok(Self {
-            session: LegacySession::started(started, timestamp_ms),
-            generation,
-            seq: 1,
-            event_id,
-            recovery_set: false,
-        })
-    }
-
-    fn apply(&mut self, envelope: Envelope) -> Result<(), SessionError> {
-        if envelope.generation != self.generation || Some(envelope.seq) != self.seq.checked_add(1) {
-            return Err(SessionError::InvalidSessionFormat);
-        }
-        let session = &mut self.session;
-        match envelope.event {
-            Event::Started(_) => return Err(SessionError::InvalidSessionFormat),
-            Event::PreferencesChanged(change) => session.change_preferences(change),
-            Event::WorkspaceRebound { previous, current } => {
-                if previous != session.workspace_root || current == session.workspace_root {
-                    return Err(SessionError::InvalidSessionFormat);
-                }
-                session.workspace_root = current;
-            }
-            Event::TurnCommitted {
-                conversation_language,
-                turn,
-            } => {
-                session.turns.push(turn);
-                session.conversation_language = conversation_language;
-                self.recovery_set = false;
-            }
-            Event::UsageCheckpointed => {}
-            Event::RecoverySet => self.recovery_set = true,
-            Event::RecoveryCleared => self.recovery_set = false,
-        }
-        session.updated_at_ms = envelope.timestamp_ms;
-        self.seq = envelope.seq;
-        self.event_id = envelope.event_id;
-        Ok(())
-    }
-}
-
-impl LegacySession {
-    fn started(started: Started, timestamp_ms: i64) -> Self {
-        Self {
-            id: started.id,
-            origin_workspace_root: started.origin_workspace_root,
-            workspace_root: started.workspace_root,
-            created_at_ms: started.created_at_ms,
-            updated_at_ms: timestamp_ms,
-            conversation_language: started.conversation_language,
-            preferences: started.preferences,
-            subagent_child: started.subagent_child,
-            turns: Vec::new(),
-        }
-    }
-
-    fn change_preferences(&mut self, change: PreferenceChange) {
-        let preferences = &mut self.preferences;
-        if let Some(provider) = change.provider {
-            preferences.provider = provider;
-        }
-        if let Some(model) = change.model {
-            preferences.model = model;
-        }
-        if let Some(effort) = change.effort {
-            preferences.effort = effort;
-        }
-        if let Some(fast_mode) = change.fast_mode {
-            preferences.fast_mode = fast_mode;
-        }
-        if let Some(ultrafast_mode) = change.ultrafast_mode {
-            preferences.ultrafast_mode = ultrafast_mode;
-        }
-    }
 }
 
 #[cfg(test)]
