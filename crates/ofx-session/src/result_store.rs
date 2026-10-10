@@ -134,11 +134,18 @@ fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) {
         pack.extend_from_slice(PACK_NULL);
         return;
     };
-    if let Ok(text) = std::str::from_utf8(bytes) {
+    if std::str::from_utf8(bytes).is_ok() {
+        pack.reserve(bytes.len() + 2);
         pack.push(b'"');
-        for byte in text.bytes() {
-            push_escaped(pack, byte);
+        let mut plain = 0;
+        for (index, byte) in bytes.iter().enumerate() {
+            if escaped_len(*byte) > 1 {
+                pack.extend_from_slice(&bytes[plain..index]);
+                push_escaped(pack, *byte);
+                plain = index + 1;
+            }
         }
+        pack.extend_from_slice(&bytes[plain..]);
         pack.push(b'"');
         return;
     }
@@ -161,12 +168,8 @@ fn push_escaped(pack: &mut Vec<u8>, byte: u8) {
         b'\n' => b'n',
         b'\r' => b'r',
         b'\t' => b't',
-        0x00..=0x1f => {
-            pack.extend_from_slice(format!("\\u{byte:04x}").as_bytes());
-            return;
-        }
         _ => {
-            pack.push(byte);
+            pack.extend_from_slice(format!("\\u{byte:04x}").as_bytes());
             return;
         }
     };
@@ -547,5 +550,24 @@ mod tests {
             text
         );
         assert!(fits_diff_pack(None, None));
+    }
+
+    #[test]
+    fn a_diff_pack_escapes_text_as_json_does() {
+        let every_control: String = (0_u8..0x20).map(char::from).collect();
+        for text in [
+            String::new(),
+            "plain".to_owned(),
+            every_control,
+            "\"q\" \\ \u{7f} caf\u{e9} \u{2028} \u{1f600}".to_owned(),
+            "\n".repeat(3),
+        ] {
+            let (_, pack) = diff_content_pack("call", Some(text.as_bytes()), None);
+            let expected = format!(
+                "{{\"previous_content\":{},\"after_content\":null}}",
+                serde_json::to_string(&text).unwrap()
+            );
+            assert_eq!(String::from_utf8(pack).unwrap(), expected);
+        }
     }
 }
