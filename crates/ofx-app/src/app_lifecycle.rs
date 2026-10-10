@@ -12,7 +12,8 @@ use std::time::Duration;
 use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{
-    BoxFuture, DynamicTools, Notice, NoticeTone, PermissionMode, UiCommand, UiEvent,
+    BoxFuture, DynamicTools, HookRegistrationError, Notice, NoticeTone, PermissionMode, UiCommand,
+    UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
@@ -43,6 +44,7 @@ use crate::app_upgrade_runtime::{
 use crate::codex_provider::{DetachedRefreshes, SubscriptionEndpoints};
 use crate::file_mention_runtime::WorkspaceFileMentions;
 use crate::herdr::{Herdr, HerdrObserver};
+use crate::hooks;
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
 use crate::skill_mention_runtime::SkillMentions;
@@ -231,6 +233,7 @@ enum SessionError {
     Terminal(TerminalError),
     AgentStopped(Option<String>),
     Relaunch(RelaunchFailure),
+    Hooks(HookRegistrationError),
 }
 
 impl fmt::Display for SessionError {
@@ -245,6 +248,7 @@ impl fmt::Display for SessionError {
             }
             Self::AgentStopped(None) => write!(formatter, "oh-fx: the agent stopped unexpectedly"),
             Self::Relaunch(failure) => write!(formatter, "{failure}"),
+            Self::Hooks(error) => write!(formatter, "oh-fx: {error}"),
         }
     }
 }
@@ -281,6 +285,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         sender.send(UiEvent::Notice { notice });
     }
     let lifecycle = Herdr::from_env().map(Arc::new);
+    let hooks = hooks::configure(lifecycle.as_ref()).map_err(SessionError::Hooks)?;
     let upgrade = InteractiveUpgrade::start(
         sender.clone(),
         session.relaunch_args,
@@ -315,6 +320,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         lifecycle: lifecycle.as_ref().map(|client| {
             Box::new(HerdrObserver(Arc::clone(client))) as Box<dyn ofx_tui::ForegroundLifecycle>
         }),
+        hooks,
         steering: Some(Box::new(WaitingSteering(Arc::clone(&steering)))),
         opening: session.opening,
         statusline: session.setup.statusline(),

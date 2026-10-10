@@ -326,6 +326,7 @@ mod tests {
             file_mentions: None,
             skill_catalog: None,
             lifecycle: None,
+            hooks: ofx_contract::HookView::default(),
             steering: None,
             opening: Opening::Welcome,
             statusline: ofx_contract::StatuslineToggles::default(),

@@ -4,6 +4,7 @@ mod auto_classifier;
 mod compactor_settings;
 mod file_evidence;
 mod history_turn;
+mod hooks;
 mod ids;
 mod model_capabilities;
 mod modes;
@@ -34,6 +35,10 @@ pub use history_turn::{
     INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, LogFailure, RecordedOutput,
     RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy, RecoveryToolState,
     RestoredHistory, StepResult, TurnEnd, TurnStop,
+};
+pub use hooks::{
+    AttentionKind, AttentionRequiredInput, HookInvocation, HookRegistrationError, HookRuntime,
+    HookScope, HookView,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{
