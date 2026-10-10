@@ -138,7 +138,7 @@ note = "Display-title derivation exists, the title of the display.json sidecar l
 upstream = "src/core/session/session_event.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_event.rs", "crates/ofx-session/src/session_migration/legacy_frame.rs"]
-note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, command output replays on tool results and an interrupted turn's cancelled command round-trip, committed file presentations round-trip and give resumed edit rows their path and line counts, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing. The schema-v3 envelopes of fx's older sessions are decoded and reduced for their import, except recovery checkpoints and state replacements, which come with the rest of NEW-G."
+note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, command output replays on tool results and an interrupted turn's cancelled command round-trip, committed file presentations round-trip and give resumed edit rows their path and line counts, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing. The schema-v3 envelopes of fx's older sessions are decoded and reduced for their import, with the recovery checkpoints a later turn settled dropped; checkpoint payloads, a checkpoint left set, and state replacements come with the rest of NEW-G."
 
 [[file]]
 upstream = "src/core/session/session_json.zig"
@@ -162,7 +162,7 @@ note = "Modern append/replay exists, and a matching recovery checkpoint stays pe
 upstream = "src/core/session/session_migration.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_migration.rs"]
-note = "Reads the committed prefix of the schema-v3 semantic event log fx 0.0.1 to 0.0.7 wrote, as loadSchemaV3ReadOnly does, and converts an ordinary conversation into oh-fx's copy of the fx session instead of rewriting it in place, as docs/differences/sessions.md records. Recovery checkpoints, state replacements, and turn fields oh-fx cannot write yet keep a session hidden, and the v1 and v2 session.json snapshots of builds before fx's public repository, with the preference seeding they need, come with the rest of NEW-G."
+note = "Reads the committed prefix of the schema-v3 semantic event log fx 0.0.1 to 0.0.7 wrote, as loadSchemaV3ReadOnly does, and converts an ordinary conversation into oh-fx's copy of the fx session instead of rewriting it in place, as docs/differences/sessions.md records. A recovery checkpoint left set at the watermark, state replacements, base64 text, and turn fields oh-fx cannot write yet keep a session hidden, and the v1 and v2 session.json snapshots of builds before fx's public repository, with the preference seeding they need, come with the rest of NEW-G."
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
