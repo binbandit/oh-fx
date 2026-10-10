@@ -13,18 +13,19 @@ note = "A wasm32 shim for 64-bit atomics; oh-fx builds no wasm32 target, and its
 upstream = "src/core/mcp/catalog_freshness.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/catalog_freshness.rs"]
-note = "Page expiry, refresh decisions, failed-refresh retention with retry backoff and explicit refresh requests exist for resource and template catalogs; auth partitions, content digests, generation checks and the refreshing state are missing until OAuth and tool catalog freshness land."
+note = "Page expiry, refresh decisions, failed-refresh retention with retry backoff and explicit refresh requests exist for tool, resource, template and prompt catalogs, and the refreshing state for tool lists, the only catalogs upstream marks refreshing; auth partitions, content digests and generation checks are missing until OAuth lands, and a refreshed tool list replaces the snapshot only when its tools differ."
 
 [[file]]
 upstream = "src/core/mcp/catalog_refresh.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/catalog_refresh.rs"]
+note = "A tool list is listed again when it expired or a tools/list_changed notification made it stale, before a call, right after the notification or after the listing then in flight, and on reload, as docs/differences/mcp.md records. A refresh in flight shows refreshing, a call waits for one that fetches a pending change and otherwise goes ahead with the last list as upstream's does, a call is refused with McpToolCatalogChanged while a change stays unfetched, a call whose deadline passes before tools/call is sent fails with McpRequestTimedOut as upstream's operation check does, a failed or abandoned refresh keeps the tools with failed_refresh and its retry backoff, and an unchanged list keeps its snapshot. Auth partitions, legacy session and credential recovery, and listener restarts are missing."
 
 [[file]]
 upstream = "src/core/mcp/catalog_state.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/feature_catalog.rs"]
-note = "The resource read cache entry exists in feature_catalog.rs; the tool and feature catalog snapshot structs, their digests and the capability record are missing."
+modules = ["crates/ofx-mcp/src/feature_catalog.rs", "crates/ofx-mcp/src/server_connection.rs"]
+note = "The resource read cache entry exists in feature_catalog.rs, and the tool catalog snapshot with its freshness metadata in server_connection.rs; the feature catalog snapshot structs, their digests and the capability record are missing."
 
 [[file]]
 upstream = "src/core/mcp/command_provider.zig"
@@ -121,13 +122,13 @@ note = "Resource and template list pages, the catalog builders, resources/read r
 upstream = "src/core/mcp/features/tools.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/features/tools.rs"]
-note = "tools/list paging under the tool cap, tool validation and tools/call result parsing exist; the per-scope catalog cache shared with resources and prompts is missing."
+note = "tools/list paging under the tool cap with each page's expiry, tool validation and tools/call result parsing exist; the per-scope catalog cache shared with resources and prompts is missing."
 
 [[file]]
 upstream = "src/core/mcp/health.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/health.rs", "crates/ofx-mcp/src/local_inspection.rs"]
-note = "Health rendering, the /mcp summary, the startup notice, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; OAuth states and tool catalog expiry report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
+note = "Health rendering, the /mcp summary, the startup notice, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; OAuth states report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
@@ -294,7 +295,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, the freshness and retry fields of the tool, resource, template and prompt catalogs, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"
@@ -321,8 +322,9 @@ note = "Endpoint and header validation exist; MCP POST transport, cancellation c
 
 [[file]]
 upstream = "src/core/mcp/tool_catalog.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/server_transport.rs", "crates/ofx-mcp/src/features/tools.rs"]
+note = "tools/list paging with each page's expiry and the earliest expiry across pages exists; auth identities across pages, modern HTTP header schema checks and catalog auth witnesses are missing until OAuth and the 2026-07-28 protocol land."
 
 [[file]]
 upstream = "src/core/mcp/tool_names.zig"
@@ -353,8 +355,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/tool_subscription.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/server_connection.rs", "crates/ofx-mcp/src/feature_catalog.rs", "crates/ofx-mcp/src/server_views.rs"]
+note = "Legacy tools, resources and prompts list_changed notifications become invalidation generations that a refresh clears only through the generation it saw, and health reports a legacy subscription as active, stopped or unavailable; the modern subscriptions/listen half is out of scope with the 2026-07-28 protocol, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/workspace_config.zig"

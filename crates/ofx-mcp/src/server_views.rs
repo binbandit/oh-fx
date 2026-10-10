@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use ofx_text::encode_terminal_safe;
 
@@ -117,8 +116,9 @@ fn describe_connection(
     let templates = features.snapshot::<ResourceTemplate>();
     let prompts = features.snapshot::<Prompt>();
     let advertises_resources = capabilities.resources.is_some();
+    let tools = client.tool_snapshot();
     snapshot.counts = CapabilityCounts {
-        tools: Some(client.tool_catalog().tools.len()),
+        tools: Some(tools.catalog.tools.len()),
         resources: capability_count(
             advertises_resources,
             resources.is_some(),
@@ -135,8 +135,9 @@ fn describe_connection(
             prompts.as_ref().map_or(0, |catalog| catalog.items.len()),
         ),
     };
-    let tools_stale = client.tools_stale.load(Ordering::Acquire);
+    let tools_invalidated = client.tools_invalidation.pending();
     let catalogs = [
+        Some(tools.metadata),
         resources.map(|catalog| catalog.metadata),
         templates.map(|catalog| catalog.metadata),
         prompts.map(|catalog| catalog.metadata),
@@ -145,15 +146,8 @@ fn describe_connection(
     snapshot.cache_freshness = catalogs
         .iter()
         .flatten()
-        .map(|metadata| cache_freshness(*metadata, now_ms, tools_stale))
-        .fold(
-            if tools_stale {
-                CacheFreshness::Stale
-            } else {
-                CacheFreshness::Fresh
-            },
-            CacheFreshness::max,
-        );
+        .map(|metadata| cache_freshness(*metadata, now_ms, tools_invalidated))
+        .fold(CacheFreshness::Unavailable, CacheFreshness::max);
     snapshot.retry_attempt = catalogs
         .iter()
         .flatten()
@@ -187,6 +181,7 @@ fn cache_freshness(metadata: SnapshotMetadata, now_ms: u64, invalidated: bool) -
     match effective_freshness(metadata, now_ms, invalidated) {
         Freshness::Fresh => CacheFreshness::Fresh,
         Freshness::Stale => CacheFreshness::Stale,
+        Freshness::Refreshing => CacheFreshness::Refreshing,
         Freshness::FailedRefresh => CacheFreshness::FailedRefresh,
     }
 }
@@ -226,6 +221,45 @@ mod tests {
             health_failure(true, ConnectionState::Disconnected, None),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn a_stdio_change_subscription_stays_active_after_its_process_ends() {
+        let script = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}'; exit 0 ;;
+  esac
+done
+"#;
+        let server = Arc::new(Server::new(
+            McpServerConfig::stdio(
+                "fixture",
+                "/bin/sh",
+                vec!["-c".to_owned(), script.to_owned()],
+            ),
+            crate::server_transport::ConnectOptions::default(),
+            Arc::default(),
+        ));
+        server.start().await;
+        let Lifecycle::Ready(client) = server.lifecycle() else {
+            panic!("the server is not ready");
+        };
+        for _ in 0..200 {
+            if !client.is_running() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let snapshot = snapshot_server(&server);
+        assert_eq!(snapshot.connection, ConnectionState::Failed);
+        assert_eq!(snapshot.subscription, SubscriptionState::Active);
+        server.stop(crate::transport::ShutdownMode::Immediate).await;
     }
 
     #[test]

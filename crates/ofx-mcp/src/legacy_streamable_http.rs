@@ -874,6 +874,7 @@ mod tests {
                     })),
                     ..CallOptions::default()
                 },
+                Instant::now() + Duration::from_secs(10),
             )
             .await
             .unwrap();
@@ -993,7 +994,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             client
-                .call_tool("remote_tool", "{}", CallOptions::default())
+                .call_tool(
+                    "remote_tool",
+                    "{}",
+                    CallOptions::default(),
+                    Instant::now() + Duration::from_secs(10)
+                )
                 .await,
             Err(McpError::McpSessionExpired)
         );
@@ -1025,7 +1031,12 @@ mod tests {
             .await
             .unwrap();
         let outcome = client
-            .call_tool("remote_tool", "{}", CallOptions::default())
+            .call_tool(
+                "remote_tool",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -1051,7 +1062,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             client
-                .call_tool("remote_tool", "{}", CallOptions::default())
+                .call_tool(
+                    "remote_tool",
+                    "{}",
+                    CallOptions::default(),
+                    Instant::now() + Duration::from_secs(10)
+                )
                 .await,
             Err(McpError::MissingFinalResponse)
         );
@@ -1076,7 +1092,12 @@ mod tests {
             .await
             .unwrap();
         client
-            .call_tool("remote_tool", "{}", CallOptions::default())
+            .call_tool(
+                "remote_tool",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         let answer = server
@@ -1115,13 +1136,19 @@ mod tests {
             .unwrap();
         assert_eq!(client.tool_catalog().tools[0].name, "before");
         assert!(server.wait_for(|request| request.method == "GET").await);
-        let mut refreshed = client.current_tools().await.unwrap();
+        let mut refreshed = client
+            .refresh_tools(Instant::now() + Duration::from_secs(5))
+            .await
+            .catalog;
         for _ in 0..100 {
             if refreshed.tools[0].name == "after" {
                 break;
             }
             sleep(Duration::from_millis(20)).await;
-            refreshed = client.current_tools().await.unwrap();
+            refreshed = client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+                .catalog;
         }
         assert_eq!(refreshed.tools[0].name, "after");
         client.shutdown(ShutdownMode::ProcessExit).await;
@@ -1154,7 +1181,12 @@ mod tests {
             .await
             .unwrap();
         let outcome = client
-            .call_tool("before", "{}", CallOptions::default())
+            .call_tool(
+                "before",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -1162,7 +1194,15 @@ mod tests {
             client.next_notification().await,
             Some(ServerNotification::ToolsListChanged)
         );
-        assert_eq!(client.current_tools().await.unwrap().tools[0].name, "after");
+        assert_eq!(
+            client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+                .catalog
+                .tools[0]
+                .name,
+            "after"
+        );
         client.shutdown(ShutdownMode::ProcessExit).await;
     }
 
@@ -1184,7 +1224,12 @@ mod tests {
             .await
             .unwrap();
         let outcome = client
-            .call_tool("remote_tool", "{}", CallOptions::default())
+            .call_tool(
+                "remote_tool",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -1217,7 +1262,12 @@ mod tests {
             .unwrap();
         assert!(
             client
-                .call_tool("remote_tool", "{}", CallOptions::default())
+                .call_tool(
+                    "remote_tool",
+                    "{}",
+                    CallOptions::default(),
+                    Instant::now() + Duration::from_secs(10)
+                )
                 .await
                 .is_err()
         );

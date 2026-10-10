@@ -100,7 +100,7 @@ pub(crate) enum Transport {
 impl Transport {
     pub(crate) fn listening(&self) -> bool {
         match self {
-            Self::Stdio(transport) => transport.is_running(),
+            Self::Stdio(_) => true,
             Self::Http(transport) => transport.listening(),
             Self::Sse(transport) => transport.is_running(),
         }
