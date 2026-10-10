@@ -62,6 +62,7 @@ mod response_language;
 mod steering;
 mod turn_ledger;
 mod turn_log;
+mod turn_trace;
 
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
@@ -77,6 +78,7 @@ use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted, retried_
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
+use turn_trace::ToolTrail;
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
@@ -91,6 +93,7 @@ const SUMMARIZE_PROMPT: &str = "Summarize what you just did.";
 const EMPTY_RESPONSE_TEXT: &str = "Done.";
 const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority.\n</response_language_control>";
 const SILENT_STEPS_BEFORE_SUMMARY: u32 = 2;
+const TERMINAL_VALIDATION_RETRY: &str = "terminal_validation_retry";
 const TOOL_CANCEL_GRACE: Duration = Duration::from_secs(2);
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const MAX_TOOL_ARGUMENTS_PREVIEW_BYTES: usize = 4 * 1024;
@@ -221,6 +224,7 @@ struct Turn {
     stop: StopState,
     trace: TraceContext,
     selected_tools: SelectedTools,
+    trail: ToolTrail,
 }
 
 #[derive(Default)]
@@ -312,6 +316,7 @@ pub struct Agent {
     recovery_pause: RecoveryPause,
     lifecycle: Option<LifecycleContext>,
     compaction_trace: &'static Ring<CompactionEvent>,
+    next_trace: Option<TraceContext>,
 }
 
 impl Agent {
@@ -363,6 +368,7 @@ impl Agent {
             recovery_pause: RecoveryPause::default(),
             lifecycle: None,
             compaction_trace: &COMPACTION_TRACE,
+            next_trace: None,
         }
     }
 
@@ -542,7 +548,7 @@ impl Agent {
             .await
     }
 
-    fn new_turn(&self, id: TurnId, prompt: &str) -> Turn {
+    fn new_turn(&self, id: TurnId, prompt: &str, trace: TraceContext) -> Turn {
         Turn {
             id,
             start: self.history.len(),
@@ -567,11 +573,9 @@ impl Agent {
             restored: RestoredReply::default(),
             steps: 0,
             stop: StopState::default(),
-            trace: TraceContext {
-                turn_id: ofx_trace::next_turn_id(),
-                ..TraceContext::default()
-            },
+            trace,
             selected_tools: SelectedTools::default(),
+            trail: ToolTrail::default(),
         }
     }
 
@@ -623,17 +627,34 @@ impl Agent {
             };
         }
         self.close_interrupted_turns(self.continues_steering());
-        let mut turn = self.new_turn(id, prompt);
+        let trace = self.next_trace.take().unwrap_or_else(|| TraceContext {
+            turn_id: ofx_trace::next_turn_id(),
+            ..TraceContext::default()
+        });
+        let mut turn = self.new_turn(id, prompt, trace);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
             self.restore_recovered(&mut turn, recovered);
         }
+        turn_trace::prompt_start(turn.trace, prompt, &self.config.model);
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
+        let outcome_kind = turn_trace::outcome_kind(&result, &turn.trail, cancel.is_cancelled());
         let (outcome, final_text, mut failure, ending) = match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
                 self.keep_partial_turn(turn.start, &partial);
+                if turn.trail.finish.is_none() {
+                    turn_trace::cancel_observed(turn.trace, turn.trail.cancelled_in_tools);
+                    turn_trace::interrupted_persisted(
+                        turn.trace,
+                        &turn_trace::Interrupted {
+                            prompt,
+                            partial: &partial,
+                            trail: &turn.trail,
+                        },
+                    );
+                }
                 (
                     TurnOutcome::Interrupted,
                     String::new(),
@@ -666,6 +687,7 @@ impl Agent {
                     Ending::Discarded
                 } else if spoke {
                     self.keep_partial_turn(turn.start, &partial);
+                    turn_trace::stream_failure_persisted(turn.trace, prompt, &partial);
                     Ending::Stopped(TurnStop::Failed)
                 } else {
                     self.keep_partial_turn(turn.start, "");
@@ -686,6 +708,7 @@ impl Agent {
             turn_id: id,
             outcome,
         });
+        turn_trace::prompt_finish(turn.trace, outcome_kind);
         if outcome == TurnOutcome::Completed {
             self.last_reply = Some(LastReply {
                 turn: self.turn_starts.len().saturating_sub(1),
@@ -806,9 +829,9 @@ impl Agent {
         let servers = self.mcp_servers_section(turn.id, events);
         let mut step = 0;
         loop {
-            self.stop_at_step_limit(turn.id, step, events)?;
-            let step_cancel = self.begin_model_step(turn, events, cancel)?;
+            self.stop_at_step_limit(turn, step, events)?;
             turn.trace.step_id = ofx_trace::next_step_id();
+            let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
@@ -816,8 +839,20 @@ impl Agent {
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             let messages = self.request_messages(turn);
+            turn.trail.gateway_messages = instructions.len() + messages.len();
+            turn_trace::step_begin(
+                turn.trace,
+                step + 1,
+                self.config.step_limit,
+                turn.trail.gateway_messages,
+            );
             let request = self.turn_request(turn, &instructions, &messages, events);
             let (measured, body) = self.measure(turn, &request).unzip();
+            turn_trace::before_provider_preflight(
+                turn.trace,
+                &self.config.model,
+                turn.trail.gateway_messages,
+            );
             match self
                 .preflight(turn, request, measured.as_ref(), events, cancel)
                 .await
@@ -880,8 +915,10 @@ impl Agent {
                     Reply::Rejected => continue,
                 };
             if let Some(failure) = malformed_provider_calls(&completion.tool_calls) {
+                turn_trace::malformed_provider_call(turn.trace, &failure);
                 return Err(Stop::failed(failure));
             }
+            turn_trace::step_completion(turn.trace, step + 1, &completion);
             step += 1;
             turn.steps = step;
             let more_steps = allows_step(self.config.step_limit, step);
@@ -922,7 +959,10 @@ impl Agent {
                 self.run_batch(turn, completion, more_steps, events, cancel)
                     .await
             }
-            _ => Err(Stop::failed(TurnFailure::InvalidCompletion)),
+            _ => {
+                turn_trace::invalid_tool_finish(turn.trace, &completion);
+                Err(Stop::failed(TurnFailure::InvalidCompletion))
+            }
         }
     }
 
@@ -1060,6 +1100,25 @@ impl Agent {
     }
 
     fn provider_options(&self, turn: &mut Turn, events: EventSink<'_>) -> ProviderOptions<'_> {
+        let options = self.selected_provider_options(turn, events);
+        turn_trace::provider_options(
+            turn.trace,
+            &turn_trace::ProviderOptionsTrace {
+                model: &self.config.model,
+                fast_mode: turn.fast_mode,
+                effort: self.config.reasoning_effort.as_deref(),
+                reasoning_selected: options.reasoning_effort.is_some(),
+                fast_selected: options.fast,
+            },
+        );
+        options
+    }
+
+    fn selected_provider_options(
+        &self,
+        turn: &mut Turn,
+        events: EventSink<'_>,
+    ) -> ProviderOptions<'_> {
         let Some(known) = &self.capabilities else {
             return ProviderOptions::default();
         };
@@ -1192,6 +1251,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Attempt {
         let turn_id = turn.id;
+        let trace = turn.trace;
         let mut streamed_text = StreamText::default();
         let mut streamed_bytes = 0;
         let mut admitted = false;
@@ -1199,6 +1259,7 @@ impl Agent {
         let mut sink = |event: StreamEvent| match event {
             StreamEvent::Admitted => {
                 admitted = true;
+                turn_trace::provider_admitted(trace, request.model);
                 if let Some(status) = pending.take() {
                     events(UiEvent::Recovery { turn_id, status });
                 }
@@ -1342,12 +1403,15 @@ impl Agent {
             })
             .collect();
         let all_malformed = !malformed.is_empty() && malformed.iter().all(Option::is_some);
-        let hooked = self
+        let Some(hooked) = self
             .pre_tool_use(turn, &completion.tool_calls, &malformed, cancel)
             .await
-            .ok_or_else(|| Stop::Interrupted {
-                partial: completion.content.clone().unwrap_or_default(),
-            })?;
+        else {
+            turn.trail.cancelled_in_tools = true;
+            return Err(Stop::Interrupted {
+                partial: completion.content.unwrap_or_default(),
+            });
+        };
         let (calls, mut rejected) = self.record_tool_step(completion, malformed, hooked);
         let mut feedback = Vec::new();
         let ran = self
@@ -1358,14 +1422,16 @@ impl Agent {
                 .into_iter()
                 .map(|(call_id, text)| ChatMessage::permission_feedback(call_id, text)),
         );
+        turn.trail.cancelled_in_tools = matches!(ran, Err(Stop::Interrupted { .. }));
         ran?;
-        self.settle_batch_retries(turn, all_malformed, more_steps, events)
+        self.settle_batch_retries(turn, all_malformed, calls.len(), more_steps, events)
     }
 
     fn settle_batch_retries(
         &mut self,
         turn: &mut Turn,
         all_malformed: bool,
+        calls: usize,
         more_steps: bool,
         events: EventSink<'_>,
     ) -> Result<Option<String>, Stop> {
@@ -1380,6 +1446,11 @@ impl Agent {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
             }
+            turn_trace::repeated_tool_failure(
+                turn.trace,
+                &TurnFailure::RepeatedMalformedArguments,
+                calls,
+            );
             return Err(self.stop_with_notice(
                 turn.id,
                 events,
@@ -1394,12 +1465,18 @@ impl Agent {
             events(UiEvent::SystemNotice {
                 text: REPEATED_SHELL_VALIDATION_NOTICE.to_owned(),
             });
+            turn.trail.finish = Some(TERMINAL_VALIDATION_RETRY);
             return Ok(Some(String::new()));
         }
         if failures_repeated {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
             }
+            turn_trace::repeated_tool_failure(
+                turn.trace,
+                &TurnFailure::RepeatedShellExecutionFailure,
+                calls,
+            );
             return Err(self.stop_with_notice(
                 turn.id,
                 events,
@@ -1505,11 +1582,18 @@ impl Agent {
         } in outcomes
         {
             feedback.extend(given.map(|text| (call.id.clone(), text)));
+            turn.trail.last_call = Some((call.id.clone(), call.name.clone()));
             let Some(output) = output else {
+                if executed {
+                    turn.trail.active = Some((call.id.clone(), call.name.clone()));
+                }
                 continue;
             };
             turn.selected_tools.record(&output);
             let status = output.status;
+            if executed && status == ToolResultStatus::Success {
+                turn.trail.completed.push(call.name.clone());
+            }
             if executed {
                 let saved = self.saved_arguments(call);
                 turn.shell_failures.observe(
@@ -1644,13 +1728,14 @@ impl Agent {
 
     fn stop_at_step_limit(
         &mut self,
-        turn_id: TurnId,
+        turn: &Turn,
         step: u64,
         events: EventSink<'_>,
     ) -> Result<(), Stop> {
         if !allows_step(self.config.step_limit, step) {
+            turn_trace::step_limit_reached(turn.trace, step, self.config.step_limit, &turn.trail);
             return Err(self.stop_with_notice(
-                turn_id,
+                turn.id,
                 events,
                 STEP_LIMIT_NOTICE,
                 TurnFailure::StepLimitReached,
@@ -1813,6 +1898,11 @@ impl Agent {
             && turn.silent_tool_steps >= SILENT_STEPS_BEFORE_SUMMARY
         {
             turn.summary_requested = true;
+            turn_trace::continuation_injected(
+                turn.silent_tool_steps,
+                completion.content.as_deref(),
+                completion.provider_replay.is_some(),
+            );
             if completion.provider_replay.is_some() {
                 self.history.push(ChatMessage::Assistant {
                     content: completion.content,
