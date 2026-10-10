@@ -98,6 +98,18 @@ pub enum SessionError {
     InvalidUsageSnapshot,
     #[error("UsageCapacityExceeded")]
     UsageCapacityExceeded,
+    #[error("UsageSidecarSessionMismatch")]
+    UsageSidecarSessionMismatch,
+    #[error("UnsupportedUsageSidecar")]
+    UnsupportedUsageSidecar,
+    #[error("SessionRecoveryNotNeeded")]
+    SessionRecoveryNotNeeded,
+    #[error("SessionRecoveryRequiresCurrentSchema")]
+    SessionRecoveryRequiresCurrentSchema,
+    #[error("SessionRecoveryBoundaryInvalid")]
+    SessionRecoveryBoundaryInvalid,
+    #[error("SessionRecoveryIndeterminate")]
+    SessionRecoveryIndeterminate,
     #[error(transparent)]
     Storage(DurableError),
     #[error("{0:?}")]

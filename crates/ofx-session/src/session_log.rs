@@ -1,6 +1,7 @@
 mod conversation_archive;
 mod conversation_history;
 mod conversation_progress;
+mod conversation_recovery;
 mod conversation_writer;
 pub(crate) mod managed_file;
 mod turn_events;
@@ -42,6 +43,10 @@ pub(crate) use conversation_archive::{check_conversation, load_archive};
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 pub(crate) use conversation_progress::{ConversationProgress, ProgressPoint};
+pub(crate) use conversation_recovery::{
+    ConversationRecovery, RecoveredArtifact, RecoveredLog, classify_conversation_recovery,
+    copy_conversation_recovery_prefix, recovered_log,
+};
 use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,

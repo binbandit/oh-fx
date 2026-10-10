@@ -232,7 +232,7 @@ fn managed_entries_are_safe(dir: &PrivateDir) -> bool {
     true
 }
 
-fn is_managed_name(name: &str) -> bool {
+pub(crate) fn is_managed_name(name: &str) -> bool {
     (1..=MAX_MANAGED_NAME_BYTES).contains(&name.len())
         && name
             .bytes()

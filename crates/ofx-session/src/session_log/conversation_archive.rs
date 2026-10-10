@@ -131,7 +131,7 @@ fn read_turns(dir: &PrivateDir) -> Result<ArchiveBuilder, SessionError> {
 }
 
 #[derive(Default)]
-struct ArchiveBuilder {
+pub(super) struct ArchiveBuilder {
     turns: Vec<ArchivedTurn>,
     raw_turn_count: usize,
     compaction_count: usize,
@@ -151,7 +151,11 @@ impl ArchiveBuilder {
         self.open_turn_from.unwrap_or(self.last_seq)
     }
 
-    fn apply(&mut self, seq: u64, event: ConversationEvent) -> Result<(), SessionError> {
+    pub(super) fn into_turns(self) -> Vec<ArchivedTurn> {
+        self.turns
+    }
+
+    pub(super) fn apply(&mut self, seq: u64, event: ConversationEvent) -> Result<(), SessionError> {
         self.last_seq = seq;
         match event {
             ConversationEvent::User(user) => {

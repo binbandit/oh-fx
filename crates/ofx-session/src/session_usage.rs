@@ -23,6 +23,10 @@ const MAX_IDENTIFIER_BYTES: usize = 8 * 1024;
 pub(crate) const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const RICH_SCHEMA_VERSION: u64 = 3;
 const SUPPORTED_SCHEMAS: [u64; 2] = [2, 3];
+
+pub(crate) fn supports_snapshot_schema(schema_version: u64) -> bool {
+    SUPPORTED_SCHEMAS.contains(&schema_version)
+}
 const SNAPSHOT_FIELDS: usize = 23;
 const MODEL_FIELDS: usize = 10;
 const LEGACY_SNAPSHOT_FIELDS: usize = 18;
@@ -602,7 +606,7 @@ fn parse_fields(value: &Json<'_>) -> Option<Result<UsageSnapshot, UsageSnapshotE
     let legacy = object.len() == LEGACY_SNAPSHOT_FIELDS;
     if !legacy {
         let schema_version = object.get("schema_version")?.as_u64()?;
-        if object.len() != SNAPSHOT_FIELDS || !SUPPORTED_SCHEMAS.contains(&schema_version) {
+        if object.len() != SNAPSHOT_FIELDS || !supports_snapshot_schema(schema_version) {
             return None;
         }
     }

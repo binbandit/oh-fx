@@ -631,3 +631,4 @@ fn sessions_fx_saved_before_its_conversation_layout_are_listed_and_marked() {
 }
 
 mod migration;
+mod recovery;

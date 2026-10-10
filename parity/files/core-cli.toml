@@ -19,7 +19,7 @@ note = "Its message prefix, missing debug_trace lines and corrected character wi
 upstream = "src/core/cli/cli_surface.zig"
 status = "partial"
 modules = ["crates/ofx-cli/src/cli_surface/mod.rs", "crates/ofx-cli/src/command_specs/mod.rs", "crates/oh-fx/src/main.rs", "crates/oh-fx/src/doctor_command.rs", "crates/oh-fx/src/github_workflow.rs", "crates/oh-fx/src/session_command.rs", "crates/oh-fx/src/sessions_command.rs", "crates/oh-fx/src/status_command.rs", "crates/oh-fx/src/usage_command.rs", "crates/oh-fx/src/workspace_command.rs"]
-note = "CLI parsing/help and supported command dispatch, including status, usage, workspace, doctor, sessions, session last, session <id> and session migrate on the v1 store, session migrate's sessions v2 refusal, and the pr and issue draft and publish workflows, exist; ACP, the sessions v2 doctor, listing, session summary and detail, and the session recovery runtime remain unavailable."
+note = "CLI parsing/help and supported command dispatch, including status, usage, workspace, doctor, sessions, session last, session <id>, session migrate and session recover on the v1 store, session migrate's sessions v2 refusal, and the pr and issue draft and publish workflows, exist; ACP and the sessions v2 doctor, listing, session summary, detail and recovery remain unavailable."
 
 [[file]]
 upstream = "src/core/cli/doctor_runtime.zig"

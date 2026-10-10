@@ -169,3 +169,48 @@ fn oversized_snapshots_are_not_written() {
     );
     assert!(!fixture.sidecar().exists());
 }
+
+#[test]
+fn recovery_repairs_damaged_accounting_and_refuses_foreign_or_unsupported_records() {
+    let fixture = Fixture::new();
+    let classify = || has_recoverable_corruption(&fixture.dir, SESSION_ID);
+    assert_eq!(classify(), Ok(false));
+    fixture.put(FRESH.as_bytes());
+    assert_eq!(classify(), Ok(false));
+    for repairable in [&b""[..], b"not json", b"[]", b"{\"schema_version\":1}"] {
+        fixture.put(repairable);
+        assert_eq!(
+            classify(),
+            Ok(true),
+            "{}",
+            String::from_utf8_lossy(repairable)
+        );
+    }
+    for (record, error) in [
+        (
+            FRESH.replace("AbCdEfGhIjKl", "SomeoneElse0"),
+            SessionError::UsageSidecarSessionMismatch,
+        ),
+        (
+            FRESH.replace("{\"schema_version\":1,", "{\"schema_version\":2,"),
+            SessionError::UnsupportedUsageSidecar,
+        ),
+        (
+            FRESH.replace(
+                "\"snapshot\":{\"schema_version\":3,",
+                "\"snapshot\":{\"schema_version\":9,",
+            ),
+            SessionError::UnsupportedUsageSidecar,
+        ),
+        (
+            FRESH.replace("{\"schema_version\":1,", "{\"schema_version\":-1,"),
+            SessionError::UnsupportedUsageSidecar,
+        ),
+    ] {
+        fixture.put(record.as_bytes());
+        assert_eq!(classify(), Err(error), "{record}");
+    }
+    fixture.put(FRESH.as_bytes());
+    fs::set_permissions(fixture.sidecar(), fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(classify(), Err(SessionError::InvalidUsageSidecar));
+}

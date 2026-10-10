@@ -1,10 +1,13 @@
 use std::process::ExitCode;
 
-use ofx_app::{SessionDetailSnapshot, SessionMigrationSnapshot, SessionSummarySnapshot};
+use ofx_app::{
+    SessionDetailSnapshot, SessionMigrationSnapshot, SessionRecoverySnapshot,
+    SessionSummarySnapshot,
+};
 use ofx_cli::{
     Command, LaunchModifiers, OutputFormat, SessionAction, SessionArgs, SessionTarget, TopLevelKind,
 };
-use ofx_session::{ListScope, SessionError};
+use ofx_session::{ListScope, SessionError, SessionRecoveryStatus};
 
 use crate::sessions_command::{Failure, answer, open_saved_sessions, open_writable_sessions};
 
@@ -19,6 +22,7 @@ pub(crate) fn run(args: &SessionArgs, modifiers: &LaunchModifiers) -> ExitCode {
             Err(Failure::Lookup(MIGRATION_UNAVAILABLE.to_owned()))
         }
         SessionAction::Migrate(id) => migrate(id, args.format),
+        SessionAction::Recover(id) if !selects_v2 => return recover(id, args.format),
         SessionAction::Detail(SessionTarget::Last) if !selects_v2 => latest(args.format),
         SessionAction::Detail(SessionTarget::Id(id)) if !selects_v2 => describe(id, args.format),
         _ => return crate::not_available(&Command::Session(args.clone())),
@@ -75,4 +79,22 @@ fn migrate(id: &str, format: OutputFormat) -> Result<String, Failure> {
         migration: &migration,
     }
     .render(format))
+}
+
+fn recover(id: &str, format: OutputFormat) -> ExitCode {
+    let recovery =
+        match open_writable_sessions().and_then(|store| store.recover(id).map_err(Failure::from)) {
+            Ok(recovery) => recovery,
+            Err(failure) => return answer(TopLevelKind::Session, format, Err(failure)),
+        };
+    let text = SessionRecoverySnapshot {
+        recovery: &recovery,
+    }
+    .render(format);
+    let write_failure = crate::command_write_failure(TopLevelKind::Session);
+    if recovery.status == SessionRecoveryStatus::Recovered {
+        crate::print(text.as_bytes(), write_failure)
+    } else {
+        crate::fail(&text, write_failure)
+    }
 }

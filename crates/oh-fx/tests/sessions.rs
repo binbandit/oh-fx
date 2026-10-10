@@ -916,3 +916,165 @@ fn session_migrate_says_why_it_cannot_run() {
         );
     }
 }
+
+fn append_to(path: &Path, bytes: &[u8]) {
+    let mut log = fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open a log");
+    std::io::Write::write_all(&mut log, bytes).expect("append to a log");
+}
+
+fn recovered_id(text: &str) -> String {
+    text.lines()
+        .find_map(|line| line.strip_prefix("resume: oh-fx --resume "))
+        .expect("a resume line")
+        .to_owned()
+}
+
+#[test]
+fn session_recover_copies_the_good_turns_of_a_damaged_session() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "kept turn");
+    let id = ids(&home.listed(&[]))[0].clone();
+    let log = home
+        .root
+        .join("data/oh-fx/sessions")
+        .join(&id)
+        .join("events.jsonl");
+    let healthy = refused(&home.session(&["recover", &id], &[]));
+    assert_eq!(
+        healthy,
+        (
+            String::new(),
+            "oh-fx session: recovery was refused because the session has a valid commit boundary; resume it normally\n".to_owned()
+        )
+    );
+    append_to(&log, b"invalid\n");
+    let before = fs::read(&log).expect("read the log");
+
+    let text = described(&home.session(&["recover", &id], &[]));
+    let copy = recovered_id(&text);
+    assert_eq!(
+        text,
+        format!(
+            "[session recovery] copied {id} to {copy}\nhistory_turns: 1\nresume: oh-fx --resume {copy}\n"
+        )
+    );
+    let json: Value = serde_json::from_str(&described(
+        &home.session(&["recover", "--id", &id, "--json"], &[]),
+    ))
+    .expect("a JSON result");
+    assert_eq!(json["kind"], "session_recovery");
+    assert_eq!(json["source_id"], id.as_str());
+    assert_eq!(json["status"], "recovered");
+    assert_eq!(json["history_turns"], 1);
+    assert_eq!(json.get("usage_incomplete"), None);
+    assert_eq!(fs::read(&log).expect("read the log"), before);
+    let detail = described(&home.session(&[&copy], &[]));
+    assert!(detail.contains("[user]\nkept turn\n"), "{detail}");
+}
+
+#[test]
+fn session_recover_reports_unauthenticated_artifacts_with_a_failing_status() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    save_in_fx(&home, "fx-replayed", "workspace", "Replayed in fx", &[]);
+    rewrite_fx_log(
+        &home,
+        "fx-replayed",
+        &fx_shell_turn(
+            "\"fx-command-replay-00112233445566778899aabbccddeeff\"",
+            "4",
+        ),
+    );
+    let session = home.root.join(".fx/sessions/fx-replayed");
+    for directory in ["tool-results", "logs", "logs/commands"] {
+        fs::create_dir_all(session.join(directory)).expect("create a side folder");
+        private(&session.join(directory), 0o700);
+    }
+    for (path, bytes) in [
+        (
+            "tool-results/result-shell-0011223344556677-8899aabbccddeeff.txt",
+            "a.t",
+        ),
+        (
+            "logs/commands/fx-command-replay-00112233445566778899aabbccddeeff",
+            "fx!!",
+        ),
+    ] {
+        fs::write(session.join(path), bytes).expect("write an artifact");
+        private(&session.join(path), 0o600);
+    }
+    append_to(&session.join("events.jsonl"), b"{\"torn");
+    let before = fx_tree(&home);
+
+    let output = home.session(&["recover", "fx-replayed"], &[]);
+    let (stdout, stderr) = refused(&output);
+    assert_eq!(stderr, "");
+    let copy = recovered_id(&stdout);
+    assert_eq!(
+        stdout,
+        format!(
+            "[session recovery] copied fx-replayed to {copy}\nhistory_turns: 1\nwarning: legacy command artifacts could not be authenticated\nresume: oh-fx --resume {copy}\n"
+        )
+    );
+    assert_eq!(fx_tree(&home), before);
+}
+
+#[test]
+fn session_recover_says_why_it_cannot_run() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    let sessions = home.root.join("data/oh-fx/sessions");
+    save_in_fx(&home, "fx-unreadable", "workspace", "Unreadable", &[]);
+    fs::write(
+        home.root.join(".fx/sessions/fx-unreadable/events.jsonl"),
+        "invalid\n",
+    )
+    .expect("break the log");
+    fs::create_dir_all(&sessions).expect("create the sessions directory");
+    for directory in [home.root.join("data/oh-fx"), sessions.clone()] {
+        private(&directory, 0o700);
+    }
+    break_session(&sessions, "broken-session");
+    for (id, code, message) in [
+        ("missing", "SessionNotFound", "record not found"),
+        ("../x", "InvalidSessionId", "invalid session id"),
+        (
+            "fx-unreadable",
+            "SessionRecoveryBoundaryInvalid",
+            "no exact trustworthy recovery boundary was found; the source was left unchanged",
+        ),
+        (
+            "broken-session",
+            "SessionRecoveryRequiresCurrentSchema",
+            "recovery supports conversation logs and schema-v3 event logs; migrate snapshot sessions first",
+        ),
+    ] {
+        assert_eq!(
+            refused(&home.session(&["recover", id], &[])),
+            (String::new(), format!("oh-fx session: {message}\n")),
+            "{id}"
+        );
+        assert_eq!(
+            refused(&home.session(&["recover", id, "--json"], &[])),
+            (
+                format!(
+                    "{}\n",
+                    json!({"kind": "session", "error": message, "code": code})
+                ),
+                String::new()
+            ),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        refused(&home.session(&["recover", "missing"], &[("OH_FX_SESSIONS_V2", "1")])),
+        (
+            String::new(),
+            "oh-fx: session is not available yet\n".to_owned()
+        )
+    );
+}

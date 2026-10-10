@@ -74,3 +74,29 @@ impl SessionMigration {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRecoveryStatus {
+    Recovered,
+    RecoveredWithUnverifiedArtifacts,
+    Indeterminate,
+}
+
+impl SessionRecoveryStatus {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Recovered => "recovered",
+            Self::RecoveredWithUnverifiedArtifacts => "recovered_with_unverified_artifacts",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecovery {
+    pub source_session_id: String,
+    pub recovered_session_id: String,
+    pub history_len: usize,
+    pub usage_incomplete: bool,
+    pub status: SessionRecoveryStatus,
+}
