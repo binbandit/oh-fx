@@ -20,12 +20,6 @@ pub(super) struct RecoveryFile {
 }
 
 #[derive(Serialize)]
-struct FileWire<'a> {
-    conversation_seq: u64,
-    checkpoint: CheckpointWire<'a>,
-}
-
-#[derive(Serialize)]
 struct CheckpointWire<'a> {
     version: u64,
     turn_id: u64,
@@ -57,7 +51,7 @@ struct UserWire<'a> {
 struct ExecutionWire<'a> {
     schema_version: u64,
     tool_steps: Vec<StepWire<'a>>,
-    files: &'a [FileEvidence],
+    files: Vec<&'a FileEvidence>,
     steering: Vec<SteeringWire<'a>>,
     #[serde(serialize_with = "turn_summary::serialize")]
     turn_summary: Option<TurnSummary>,
@@ -132,47 +126,53 @@ pub(super) fn recovery_file(
         .map(|step| step_wire(step, &mut spilled))
         .collect::<Option<Vec<_>>>()
         .ok_or(invalid)?;
-    let file = FileWire {
-        conversation_seq,
-        checkpoint: CheckpointWire {
-            version: CHECKPOINT_VERSION,
-            turn_id: checkpoint.turn_id,
-            user: UserWire {
-                text: &checkpoint.user,
-                images: NoItems,
-            },
-            assistant_source: &checkpoint.assistant_source,
-            execution: ExecutionWire {
-                schema_version: EXECUTION_SCHEMA_VERSION,
-                tool_steps,
-                files: &execution.files,
-                steering: execution.steering.iter().map(steering_wire).collect(),
-                turn_summary: execution.turn_summary,
-            },
-            cause: checkpoint.cause,
-            action: checkpoint.action,
-            tool_state: checkpoint.tool_state,
-            authority: AuthorityWire {
-                provider: &checkpoint.provider,
-                model: &checkpoint.model,
-                credential_source: checkpoint.credential_source,
-                credential_identity: checkpoint.credential_identity.as_deref(),
-            },
-            requested_fast_mode: checkpoint.requested_fast_mode,
-            fast_mode: checkpoint.fast_mode,
-            requested_ultrafast_mode: checkpoint.ultrafast.map(|(requested, _)| requested),
-            ultrafast_mode: checkpoint.ultrafast.map(|(_, effective)| effective),
-            max_provider_attempts: checkpoint.max_provider_attempts,
-            consumed_provider_attempts: checkpoint.consumed_provider_attempts,
-            outstanding_reservation: checkpoint.outstanding_reservation,
+    let ultrafast = checkpoint
+        .ultrafast
+        .filter(|(requested, effective)| *requested || *effective);
+    let wire = CheckpointWire {
+        version: CHECKPOINT_VERSION,
+        turn_id: checkpoint.turn_id,
+        user: UserWire {
+            text: &checkpoint.user,
+            images: NoItems,
         },
+        assistant_source: &checkpoint.assistant_source,
+        execution: ExecutionWire {
+            schema_version: EXECUTION_SCHEMA_VERSION,
+            tool_steps,
+            files: execution
+                .files
+                .iter()
+                .filter(|file| !file.path.is_empty())
+                .collect(),
+            steering: execution.steering.iter().map(steering_wire).collect(),
+            turn_summary: execution.turn_summary,
+        },
+        cause: checkpoint.cause,
+        action: checkpoint.action,
+        tool_state: checkpoint.tool_state,
+        authority: AuthorityWire {
+            provider: &checkpoint.provider,
+            model: &checkpoint.model,
+            credential_source: checkpoint.credential_source,
+            credential_identity: checkpoint.credential_identity.as_deref(),
+        },
+        requested_fast_mode: checkpoint.requested_fast_mode,
+        fast_mode: checkpoint.fast_mode,
+        requested_ultrafast_mode: ultrafast.map(|(requested, _)| requested),
+        ultrafast_mode: ultrafast.map(|(_, effective)| effective),
+        max_provider_attempts: checkpoint.max_provider_attempts,
+        consumed_provider_attempts: checkpoint.consumed_provider_attempts,
+        outstanding_reservation: checkpoint.outstanding_reservation,
     };
-    let encoded = serde_json::to_vec(&file.checkpoint).map_err(|_| invalid)?;
+    let encoded = serde_json::to_vec(&wire).map_err(|_| invalid)?;
     if encoded.len() > EMERGENCY_CEILING_BYTES {
         return Ok(None);
     }
-    let mut bytes = serde_json::to_vec(&file).map_err(|_| invalid)?;
-    bytes.push(b'\n');
+    let mut bytes =
+        format!("{{\"conversation_seq\":{conversation_seq},\"checkpoint\":").into_bytes();
+    bytes.extend_from_slice(&encoded);
+    bytes.extend_from_slice(b"}\n");
     decode_recovery_file(&bytes, conversation_seq)?.ok_or(invalid)?;
     Ok(Some(RecoveryFile { bytes, spilled }))
 }

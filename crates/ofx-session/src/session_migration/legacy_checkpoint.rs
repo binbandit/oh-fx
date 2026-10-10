@@ -5,13 +5,15 @@ use crate::json_fields::{Fields, Json};
 use crate::session_codec::recovery_checkpoint::{
     ACTIONS, CAUSES, CREDENTIAL_SOURCES, durable_text, lowercase_digest, one_of, tool_state,
 };
-use crate::session_codec::{SavedProvider, parse_saved_provider};
+use crate::session_codec::{SavedProvider, is_valid_model, parse_saved_provider};
 use crate::session_event::InterruptReason;
 
 const DELIVERIES: [&str; 2] = ["possibly_sent", "definitely_unsent"];
 const LEGACY_CONNECTION: &str = "vercel";
 const LEGACY_ADAPTER: &str = "vercel_ai_gateway";
 const MAX_ROUTE_FIELD_BYTES: usize = 4096;
+const GATEWAY_FOREIGN_SOURCES: [&str; 3] =
+    ["chatgpt_subscription", "grok_subscription", "configured"];
 
 pub(super) enum LegacyCheckpoint {
     Archived(Box<ConversationTurn>),
@@ -136,7 +138,7 @@ impl Authority {
     fn bare(provider: ProviderId, fields: &mut Fields<'_>) -> Option<Self> {
         Some(Self {
             provider: SavedProvider::new(provider, None)?,
-            model: durable_text(fields.required("route_model")?)?,
+            model: model(fields.required("route_model")?)?,
             credential_source: None,
             credential_identity: None,
         })
@@ -146,10 +148,13 @@ impl Authority {
 fn authority(value: Json<'_>) -> Option<Authority> {
     let mut fields = Fields::new(value)?;
     let provider = parse_saved_provider(&fields.required("provider")?)?;
-    let model = durable_text(fields.required("model")?)?;
+    let model = model(fields.required("model")?)?;
     let credential_source = match fields.required("credential_source")? {
         Json::Null => None,
-        source => Some(one_of(&source, &CREDENTIAL_SOURCES)?),
+        source => Some(
+            one_of(&source, &CREDENTIAL_SOURCES)
+                .filter(|source| authorizes(provider.id(), source))?,
+        ),
     };
     let credential_identity = match fields.required("credential_identity")? {
         Json::Null => None,
@@ -168,6 +173,20 @@ fn authority(value: Json<'_>) -> Option<Authority> {
         credential_source,
         credential_identity,
     })
+}
+
+fn model(value: Json<'_>) -> Option<String> {
+    durable_text(value).filter(|model| is_valid_model(model))
+}
+
+fn authorizes(provider: &ProviderId, source: &str) -> bool {
+    source == "host_managed"
+        || match provider {
+            ProviderId::Gateway => !GATEWAY_FOREIGN_SOURCES.contains(&source),
+            ProviderId::Codex => source == "chatgpt_subscription",
+            ProviderId::Grok => source == "grok_subscription",
+            ProviderId::Configured(_) => source == "configured",
+        }
 }
 
 fn legacy_route_is_valid(route: &Json<'_>, version: u64) -> bool {

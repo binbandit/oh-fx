@@ -203,6 +203,64 @@ fn a_checkpoint_too_large_to_save_is_left_out_as_upstream_leaves_it() {
     assert!(!copy.join("recovery.json").exists());
 }
 
+fn saved_recovery(fixture: &Fixture, id: &str, checkpoint: &str) -> String {
+    let log = LegacyLog::started_007(id).frame("recovery_checkpoint_set", &set(checkpoint));
+    written(fixture, &log);
+    let dir = copy_dir(fixture, id);
+    assert!(read_checkpoint(&dir, 0).unwrap().is_some());
+    fs::read_to_string(
+        fixture
+            .root
+            .path()
+            .join("copies")
+            .join(id)
+            .join("recovery.json"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_checkpoint_writes_its_ultra_pair_only_once_either_is_set() {
+    let fixture = Fixture::new();
+    let with_pair = |requested: bool, effective: bool| {
+        checkpoint_007("ok").replace(
+            "\"fast_mode\":false,\"max",
+            &format!("\"fast_mode\":false,\"requested_ultrafast_mode\":{requested},\"ultrafast_mode\":{effective},\"max"),
+        )
+    };
+    let unset = saved_recovery(&fixture, "legacy-ultra-unset", &with_pair(false, false));
+    assert!(!unset.contains("ultrafast"), "{unset}");
+    let set_pair = saved_recovery(&fixture, "legacy-ultra-set", &with_pair(true, false));
+    assert!(
+        set_pair.contains("\"requested_ultrafast_mode\":true,\"ultrafast_mode\":false"),
+        "{set_pair}"
+    );
+}
+
+#[test]
+fn a_checkpoint_drops_file_evidence_without_a_path_and_keeps_a_host_managed_credential() {
+    let fixture = Fixture::new();
+    let evidence = |path: &str| {
+        format!(
+            "{{\"path\":\"{path}\",\"new_path\":null,\"tool_call_id\":\"call_1\",\"tool_name\":\"read_file\",\"action\":\"read\",\"status\":\"success\",\"model_view_covers_full_file\":false,\"stale\":false}}"
+        )
+    };
+    let checkpoint = checkpoint_007("ok")
+        .replace(
+            "\"files\":[]",
+            &format!("\"files\":[{},{}]", evidence(""), evidence("src/main.rs")),
+        )
+        .replace("\"provider\":\"gateway\"", "\"provider\":\"codex\"")
+        .replace("\"ai_gateway_api_key\"", "\"host_managed\"");
+    let saved = saved_recovery(&fixture, "legacy-evidence", &checkpoint);
+    assert!(saved.contains("\"path\":\"src/main.rs\""), "{saved}");
+    assert!(!saved.contains("\"path\":\"\""), "{saved}");
+    assert!(
+        saved.contains("\"provider\":\"codex\",\"model\":\"openai/gpt-5\",\"credential_source\":\"host_managed\""),
+        "{saved}"
+    );
+}
+
 #[test]
 fn a_replaced_state_can_carry_the_recovery_it_left_open() {
     let fixture = Fixture::new();
@@ -277,6 +335,23 @@ fn a_checkpoint_upstream_would_refuse_or_oh_fx_cannot_keep_hides_the_session() {
                 "\"fast_mode\":false,\"max",
                 "\"fast_mode\":false,\"ultrafast_mode\":false,\"max",
             ),
+        ),
+        (
+            "empty model",
+            base.replace("\"model\":\"openai/gpt-5\"", "\"model\":\"\""),
+        ),
+        (
+            "padded model",
+            base.replace("\"model\":\"openai/gpt-5\"", "\"model\":\"openai/gpt-5 \""),
+        ),
+        (
+            "credential of another provider",
+            base.replace("\"provider\":\"gateway\"", "\"provider\":\"codex\""),
+        ),
+        (
+            "padded legacy model",
+            REQUEST_CHECKPOINT[14..REQUEST_CHECKPOINT.len() - 1]
+                .replace("\"route_model\":\"", "\"route_model\":\" "),
         ),
         (
             "legacy route",
