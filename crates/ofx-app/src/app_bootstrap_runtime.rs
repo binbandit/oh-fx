@@ -18,10 +18,10 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools, HookView,
-    LiveAdditionalRoots, LivePermissionMode, McpServersCatalog, ModelControls, ModelProvider,
-    PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles,
-    Tool, is_provider_search_alias, parse_tool_args_object, provider_search_description,
+    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, HookView, LiveAdditionalRoots,
+    LivePermissionMode, McpServersCatalog, ModelControls, ModelProvider, PermissionMode,
+    QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool,
+    is_provider_search_alias, parse_tool_args_object, provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_agent_runtime::Emit;
 use crate::app_mcp_runtime::{McpHost, McpSources};
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
+use crate::app_subagent_runtime::{ChildFactory, Delegation};
 use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
@@ -373,8 +373,7 @@ impl Profile {
             approvals: approvals.clone(),
             project: project.clone(),
             skills: Arc::clone(&skills),
-            mcp: ParentCatalog::shared(mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>)),
-            mcp_servers: Arc::new(McpServers::new(mcp.clone(), false)),
+            mcp: mcp.clone(),
             workspace_root: self.workspace_root.clone(),
             additional_roots: additional_roots.clone(),
             permission_mode: permission_mode.clone(),
