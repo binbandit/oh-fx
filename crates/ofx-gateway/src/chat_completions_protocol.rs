@@ -14,6 +14,7 @@ use ofx_contract::{
 use ofx_images::load_verified_snapshot;
 use serde::Serialize;
 
+use crate::responses_protocol::UsageCounts;
 pub(crate) use crate::secret_mask::mask_configured_secrets;
 use crate::tool_call_ids::{Projection, ProjectionError};
 
@@ -575,6 +576,8 @@ struct UsageCounters {
     input: Option<u64>,
     output: Option<u64>,
     total: Option<u64>,
+    cached: Option<u64>,
+    reasoning: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -636,6 +639,20 @@ impl Reducer {
 
     pub(crate) fn take_failure_detail(&mut self) -> Option<String> {
         self.failure_detail.take()
+    }
+
+    pub(crate) fn take_generation_id(&mut self) -> Option<String> {
+        self.generation_id.take()
+    }
+
+    pub(crate) fn usage_counts(&self) -> UsageCounts {
+        UsageCounts {
+            input: self.usage.input,
+            output: self.usage.output,
+            cache_read: self.usage.cached,
+            cache_write: None,
+            reasoning: self.usage.reasoning,
+        }
     }
 
     pub(crate) fn accept(&mut self, data: &[u8], cancelled: bool) -> ProtocolResult<Deltas> {
@@ -954,11 +971,15 @@ impl Reducer {
             input: token_count(fields, "prompt_tokens")?,
             output: token_count(fields, "completion_tokens")?,
             total: token_count(fields, "total_tokens")?,
+            cached: detail_count(fields, "prompt_tokens_details", "cached_tokens"),
+            reasoning: detail_count(fields, "completion_tokens_details", "reasoning_tokens"),
         };
         let merged = UsageCounters {
             input: incoming.input.or(self.usage.input),
             output: incoming.output.or(self.usage.output),
             total: incoming.total.or(self.usage.total),
+            cached: incoming.cached.or(self.usage.cached),
+            reasoning: incoming.reasoning.or(self.usage.reasoning),
         };
         let mut final_fields = self.final_fields;
         if is_final {
@@ -1041,6 +1062,7 @@ impl Reducer {
                 input_tokens: self.usage.input,
                 output_tokens: self.usage.output,
             },
+            billing: None,
             provider_replay: None,
         })
     }
@@ -1124,6 +1146,14 @@ fn index_value(value: &Json<'_>) -> ProtocolResult<usize> {
         .as_i64()
         .and_then(|number| usize::try_from(number).ok())
         .ok_or(ProtocolError::InvalidChunk)
+}
+
+fn detail_count(fields: &Object<'_>, details: &str, key: &str) -> Option<u64> {
+    non_null(fields, details)?
+        .as_object()?
+        .get(key)?
+        .as_i64()
+        .and_then(|number| u64::try_from(number).ok())
 }
 
 fn token_count(fields: &Object<'_>, key: &str) -> ProtocolResult<Option<u64>> {

@@ -1,6 +1,5 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
     BoxFuture, CODEX_ORIGINATOR, ChatMessage, Completion, FinishReason, ModelProvider,
@@ -15,12 +14,13 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::chat_completions::{
-    ChunkSource, SendFailure, http_failure, sanitized, send, transport_failure,
+    ChunkSource, SendFailure, http_failure, now_ms, sanitized, send, transport_failure,
 };
 use crate::chat_completions_protocol::mask_configured_secrets;
 use crate::responses_protocol::{
     Delta, FailureCause, Reducer, ReplayLimits, ResponsesCompletion, ResponsesError,
-    ResponsesFinish, StreamLimits, push_json_string, select_replay_parts, write_input, write_tools,
+    ResponsesFinish, StreamLimits, push_json_string, select_replay_parts, subscription_billing,
+    write_input, write_tools,
 };
 use crate::stall_watch::StallWatch;
 
@@ -359,14 +359,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(0)
-}
-
 fn validate_model(model: &str) -> Result<(), ResponsesError> {
     if model.is_empty()
         || model.len() > MAX_MODEL_BYTES
@@ -552,11 +544,16 @@ fn into_completion(
             return Err(error);
         }
     };
+    let billing = completion
+        .generation_id
+        .and_then(|id| subscription_billing(id, "codex", model, now_ms(), completion.usage))
+        .map(Box::new);
     Ok(Completion {
         content: completion.content,
         tool_calls: completion.tool_calls,
         finish_reason,
-        usage: completion.usage,
+        usage: completion.usage.usage(),
+        billing,
         provider_replay: completion.provider_state.map(|parts_json| ProviderReplay {
             source: replay_source(model),
             parts_json,

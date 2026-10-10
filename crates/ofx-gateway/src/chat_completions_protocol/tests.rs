@@ -310,6 +310,40 @@ fn chat_completions_progress_usage_can_finalize_in_a_trailer_but_cannot_decrease
 }
 
 #[test]
+fn chat_completions_usage_keeps_cached_and_reasoning_details_and_the_stream_id() {
+    let mut reducer = new_reducer(&test_request());
+    for chunk in [
+        r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":6}}}"#,
+        r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":null,"completion_tokens_details":{"reasoning_tokens":2}}}"#,
+        r#"{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":"many"},"completion_tokens_details":{"reasoning_tokens":-1}}}"#,
+        "[DONE]",
+    ] {
+        accept(&mut reducer, chunk).unwrap();
+    }
+    let completion = reducer.finish(false).unwrap();
+    assert_eq!(
+        completion.usage,
+        Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(3),
+        }
+    );
+    assert_eq!(
+        reducer.usage_counts(),
+        UsageCounts {
+            input: Some(10),
+            output: Some(3),
+            cache_read: Some(6),
+            cache_write: None,
+            reasoning: Some(2),
+        }
+    );
+    assert_eq!(completion.billing, None);
+    assert_eq!(reducer.take_generation_id().as_deref(), Some("chatcmpl-1"));
+    assert_eq!(reducer.take_generation_id(), None);
+}
+
+#[test]
 fn chat_completions_accepts_usage_totals_that_do_not_add_up() {
     let mut reducer = new_reducer(&test_request());
     accept(&mut reducer, TEST_TEXT).unwrap();

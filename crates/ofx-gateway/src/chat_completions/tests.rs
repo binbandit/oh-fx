@@ -492,6 +492,7 @@ fn connection(
     headers: &[(&str, &str)],
 ) -> ResolvedConnection {
     ResolvedConnection {
+        id: "portkey".to_owned(),
         chat_url: format!("{base_url}/chat/completions"),
         bearer_token: bearer.map(str::to_owned),
         headers: headers
@@ -540,6 +541,60 @@ async fn stream_text(
         .stream(&request.borrowed(), &mut sink, &CancellationToken::new())
         .await;
     (outcome, text)
+}
+
+#[tokio::test]
+async fn a_connection_that_reports_usage_is_billed_exactly_under_its_id() {
+    let usage = r#"{"prompt_tokens":40,"completion_tokens":9,"total_tokens":49,"prompt_tokens_details":{"cached_tokens":32},"completion_tokens_details":{"reasoning_tokens":4}}"#;
+    let reply = |id: &str, usage: &str| {
+        let identity = if id.is_empty() {
+            String::new()
+        } else {
+            format!(r#""id":"{id}","#)
+        };
+        Reply::sse(&[
+            format!(r#"{{{identity}"choices":[{{"index":0,"delta":{{"content":"ok"}}}}]}}"#),
+            format!(
+                r#"{{{identity}"choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}],"usage":{usage}}}"#
+            ),
+            "[DONE]".to_owned(),
+        ])
+    };
+    let server = FakeServer::start([
+        reply("chatcmpl-exact", usage),
+        reply("", usage),
+        reply("chatcmpl-partial", r#"{"prompt_tokens":40}"#),
+        Reply::sse(&chat_text_events(&["ok"])),
+    ]);
+    let provider = portkey(&server);
+    let mut billings = Vec::new();
+    for _ in 0..4 {
+        let (outcome, _) = stream_text(&provider, &test_request()).await;
+        let completion = outcome.unwrap();
+        billings.push(completion.billing);
+    }
+    let exact = billings[0].clone().unwrap();
+    assert_eq!(exact.generation_id, "chatcmpl-exact");
+    assert_eq!(exact.model, "portkey/opaque/local-model:8b");
+    assert!(exact.total_cost.abs() < f64::EPSILON);
+    assert_eq!(
+        (
+            exact.input_tokens,
+            exact.output_tokens,
+            exact.cache_read_tokens,
+            exact.cache_write_tokens,
+            exact.reasoning_tokens,
+        ),
+        (40, 9, 32, 0, Some(4))
+    );
+    assert!(exact.created_at_ms > 0);
+    let anonymous = billings[1].clone().unwrap();
+    assert!(anonymous.generation_id.starts_with("local-"));
+    assert_eq!(anonymous.generation_id.len(), "local-".len() + 32);
+    assert_eq!(billings[2], None);
+    let testkit = billings[3].clone().unwrap();
+    assert_eq!(testkit.generation_id, "chatcmpl-testkit");
+    assert_eq!((testkit.input_tokens, testkit.output_tokens), (12, 3));
 }
 
 #[tokio::test]

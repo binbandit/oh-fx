@@ -6,7 +6,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ids::ToolCallId;
 use crate::tool_dispatch::ToolSpec;
-use crate::types::{ChatMessage, FinishReason, ProviderReplay, ToolCall, ToolChoice, Usage};
+use crate::types::{
+    ChatMessage, FinishReason, ProviderBilling, ProviderReplay, ToolCall, ToolChoice, Usage,
+};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -56,12 +58,13 @@ impl<F: FnMut(StreamEvent) + Send> StreamSink for F {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Completion {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: FinishReason,
     pub usage: Usage,
+    pub billing: Option<Box<ProviderBilling>>,
     pub provider_replay: Option<ProviderReplay>,
 }
 

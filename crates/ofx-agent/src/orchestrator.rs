@@ -935,7 +935,7 @@ impl Agent {
             };
             let completion =
                 match self.settle_reply(turn, completion, &step_cancel, cancel, events)? {
-                    Reply::Accepted(completion) => completion,
+                    Reply::Accepted(completion) => *completion,
                     Reply::Steered => {
                         step += 1;
                         continue;

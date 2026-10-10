@@ -788,6 +788,7 @@ name = "ofx-gateway"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "getrandom 0.4.3",
  "ofx-config",
  "ofx-contract",
  "ofx-http",

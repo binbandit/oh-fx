@@ -95,6 +95,7 @@ impl ModelProvider for Provider {
                         tool_calls: Vec::new(),
                         finish_reason: FinishReason::Stop,
                         usage: Usage::default(),
+                        billing: None,
                         provider_replay: None,
                     })
                 }
@@ -122,6 +123,7 @@ fn probe_completion(probes: usize, arguments: &str) -> Completion {
         tool_calls: vec![ToolCall::new(format!("probe-{probes}"), "probe", arguments)],
         finish_reason: FinishReason::ToolCalls,
         usage: Usage::default(),
+        billing: None,
         provider_replay: None,
     }
 }

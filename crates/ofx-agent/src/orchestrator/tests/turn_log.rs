@@ -1,6 +1,6 @@
 use ofx_contract::{
-    DeliveryOutcome, FileChangeStats, FileEvidence, HistoryCut, HistoryTurn, RecoveryPoint,
-    RecoveryProgress, RequestTicket, RestoredHistory, TurnEnd,
+    DeliveryOutcome, FileChangeStats, FileEvidence, HistoryCut, HistoryTurn, ProviderBilling,
+    RecoveryPoint, RecoveryProgress, RequestTicket, RestoredHistory, TurnEnd,
 };
 
 use super::*;
@@ -34,10 +34,11 @@ pub(super) enum Logged {
     RecoveryCleared,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Accounted {
     Begun(u64),
     Finished(u64, DeliveryOutcome),
+    Exact(u64, String),
     Lines(u32, u32),
 }
 
@@ -56,6 +57,21 @@ pub(super) struct MemoryLog {
 }
 
 impl MemoryLog {
+    fn settle(&self, settled: Accounted) -> Result<(), LogFailure> {
+        let mut accounted = self.accounted.lock().unwrap();
+        accounted.push(settled);
+        let count = accounted
+            .iter()
+            .filter(|entry| matches!(entry, Accounted::Finished(..) | Accounted::Exact(..)))
+            .count();
+        match self.refused_settlement {
+            Some(code) if count > self.settlements_kept => Err(LogFailure {
+                code: code.to_owned(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
     pub(super) fn shared() -> (Box<Self>, Arc<Mutex<Vec<Logged>>>) {
         let log = Box::<Self>::default();
         let entries = Arc::clone(&log.entries);
@@ -252,18 +268,18 @@ impl ConversationLog for MemoryLog {
         ticket: RequestTicket,
         outcome: DeliveryOutcome,
     ) -> Result<(), LogFailure> {
-        let mut accounted = self.accounted.lock().unwrap();
-        accounted.push(Accounted::Finished(ticket.sequence, outcome));
-        let settled = accounted
-            .iter()
-            .filter(|entry| matches!(entry, Accounted::Finished(..)))
-            .count();
-        match self.refused_settlement {
-            Some(code) if settled > self.settlements_kept => Err(LogFailure {
-                code: code.to_owned(),
-            }),
-            _ => Ok(()),
-        }
+        self.settle(Accounted::Finished(ticket.sequence, outcome))
+    }
+
+    fn finish_exact_request(
+        &self,
+        ticket: RequestTicket,
+        billing: &ProviderBilling,
+    ) -> Result<(), LogFailure> {
+        self.settle(Accounted::Exact(
+            ticket.sequence,
+            billing.generation_id.clone(),
+        ))
     }
 
     fn record_committed_lines(&self, change: FileChangeStats) {
