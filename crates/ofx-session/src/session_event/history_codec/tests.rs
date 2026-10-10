@@ -452,3 +452,67 @@ fn history_snapshot_codec_rejects_truncated_and_corrupt_payloads() {
     compaction[last] = 1;
     assert!(decode_history_envelope(&compaction).is_none());
 }
+
+fn text_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = word(u64::try_from(text.len()).unwrap()).to_vec();
+    bytes.extend(text.as_bytes());
+    bytes
+}
+
+#[test]
+fn history_snapshot_codec_keeps_command_replays_in_upstream_layout() {
+    let handle = "fx-command-replay-1.bin";
+    let mut result = ToolResultEvent::new(
+        "c1",
+        "shell",
+        ToolResultStatus::Success,
+        handle,
+        2,
+        ArtifactCompleteness::Complete,
+    );
+    result.command_replay_ref = Some(handle.to_owned());
+    result.command_replay_bytes = Some(29);
+    let bytes = encoded(&envelope(
+        2,
+        5,
+        ConversationEvent::ToolResult(result.clone()),
+    ));
+    let mut tail = vec![0, 1];
+    tail.extend(text_bytes(handle));
+    tail.push(1);
+    tail.extend(word(29));
+    tail.extend([0, 0]);
+    assert!(bytes.ends_with(&tail), "{bytes:?}");
+    round_trip(&envelope(
+        2,
+        5,
+        ConversationEvent::ToolResult(result.clone()),
+    ));
+
+    let mut interrupted = InterruptedEvent::new(InterruptReason::Cancelled, None);
+    interrupted.command_replay_ref = Some(handle.to_owned());
+    interrupted.command_replay_bytes = Some(29);
+    interrupted.command_artifact_ref = Some("fx-command-artifact-1.log".to_owned());
+    let mut expected = Vec::new();
+    expected.extend(word(3));
+    expected.extend(word(4));
+    expected.extend(word(6));
+    expected.extend([6, 0, 0, 1]);
+    expected.extend(text_bytes(handle));
+    expected.push(1);
+    expected.extend(word(29));
+    expected.push(1);
+    expected.extend(text_bytes("fx-command-artifact-1.log"));
+    expected.extend(word(0));
+    expected.extend([0, 0]);
+    let event = ConversationEvent::Interrupted(interrupted.clone());
+    assert_eq!(encoded(&envelope(4, 6, event.clone())), expected);
+    round_trip(&envelope(4, 6, event));
+
+    result.command_replay_bytes = None;
+    let unpaired = encoded(&envelope(2, 5, ConversationEvent::ToolResult(result)));
+    assert!(decode_history_envelope(&unpaired).is_none());
+    interrupted.command_replay_ref = None;
+    let unpaired = encoded(&envelope(4, 6, ConversationEvent::Interrupted(interrupted)));
+    assert!(decode_history_envelope(&unpaired).is_none());
+}

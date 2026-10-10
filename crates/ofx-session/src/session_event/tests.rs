@@ -393,6 +393,10 @@ fn frame_values_are_read_only_in_the_forms_upstream_writes() {
         accepted[0].replace("{}", "{\"turn_summary\":{\"turn_duration_ms\":1.0}}"),
         accepted[1].replace("\"x\"", "[120]"),
         accepted[2].replace("\"provider_executed\"", "1"),
+        replay_frames()[0].replace(
+            "\"command_replay_bytes\":29",
+            "\"command_replay_bytes\":\"29\"",
+        ),
     ];
     for frame in refused {
         assert_eq!(
@@ -846,4 +850,111 @@ fn a_commands_process_presentation_is_framed_as_upstream_frames_it() {
         panic!("a tool result");
     };
     assert_eq!(read.command_process_presentation, None);
+}
+
+const REPLAY: &str =
+    "fx-command-replay-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.bin";
+
+fn replay_frames() -> [String; 2] {
+    let result = format!(
+        "{{\"tool_result\":{{\"call_id\":\"call-ls\",\"tool_name\":\"shell\",\"status\":\"success\",\"artifact_ref\":\"{REPLAY}\",\"tool_image_handle\":null,\"output_bytes\":12,\"stored_bytes\":12,\"completeness\":\"complete\",\"preview\":\"a.txt\\nb.txt\\n\",\"provider_native\":false,\"created_at_ms\":7,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":\"{REPLAY}\",\"command_replay_bytes\":29,\"command_process_presentation\":{{\"exit_code\":0}},\"terminal_action_presentation\":null}}}}"
+    );
+    let interrupted = format!(
+        "{{\"interrupted\":{{\"reason\":\"cancelled\",\"partial_text\":\"Running the tests.\",\"command_replay_ref\":\"{REPLAY}\",\"command_replay_bytes\":29,\"command_artifact_ref\":\"fx-command-artifact-1.log\",\"files\":[],\"turn_summary\":null}}}}"
+    );
+    [result, interrupted].map(|event| {
+        format!("{{\"schema_version\":3,\"seq\":2,\"timestamp_ms\":3,\"event\":{event}}}\n")
+    })
+}
+
+#[test]
+fn command_replays_from_upstream_frames_round_trip_byte_for_byte() {
+    for frame in replay_frames() {
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(2, 3, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+    }
+    let [result, interrupted] = replay_frames();
+    let ConversationEvent::ToolResult(result) = decode(&result).unwrap() else {
+        panic!("a tool result");
+    };
+    assert_eq!(result.command_replay_ref.as_deref(), Some(REPLAY));
+    assert_eq!(result.command_replay_bytes, Some(29));
+    assert_eq!(result.artifact_ref, REPLAY);
+    let ConversationEvent::Interrupted(interrupted) = decode(&interrupted).unwrap() else {
+        panic!("an interruption");
+    };
+    assert_eq!(interrupted.command_replay_ref.as_deref(), Some(REPLAY));
+    assert_eq!(interrupted.command_replay_bytes, Some(29));
+    assert_eq!(
+        interrupted.command_artifact_ref.as_deref(),
+        Some("fx-command-artifact-1.log")
+    );
+}
+
+#[test]
+fn command_replays_reject_what_upstream_rejects() {
+    let [result, interrupted] = replay_frames();
+    let refused = [
+        result.replace(",\"command_replay_bytes\":29", ""),
+        result.replace(
+            &format!("\"command_replay_ref\":\"{REPLAY}\""),
+            "\"command_replay_ref\":null",
+        ),
+        result.replace(
+            &format!("\"command_replay_ref\":\"{REPLAY}\""),
+            "\"command_replay_ref\":\"\"",
+        ),
+        result.replace(
+            &format!("\"command_replay_ref\":\"{REPLAY}\""),
+            &format!(
+                "\"command_replay_ref\":\"{}\"",
+                "r".repeat(MAX_IDENTITY_BYTES + 1)
+            ),
+        ),
+        result.replace(
+            &format!("\"command_replay_ref\":\"{REPLAY}\""),
+            "\"command_replay_ref\":7",
+        ),
+        result.replace("\"command_replay_bytes\":29", "\"command_replay_bytes\":-1"),
+        result.replace(
+            "\"command_replay_bytes\":29",
+            "\"command_replay_bytes\":2.5",
+        ),
+        interrupted.replace(
+            "\"command_replay_bytes\":29",
+            "\"command_replay_bytes\":null",
+        ),
+        interrupted.replace(&format!("\"command_replay_ref\":\"{REPLAY}\","), ""),
+        interrupted.replace("\"fx-command-artifact-1.log\"", "\"\""),
+        interrupted.replace("\"fx-command-artifact-1.log\"", "{}"),
+    ];
+    for frame in refused {
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
+        );
+    }
+    let kept = [
+        interrupted.replace(
+            &format!("\"command_replay_ref\":\"{REPLAY}\",\"command_replay_bytes\":29,"),
+            "",
+        ),
+        interrupted.replace(
+            ",\"command_artifact_ref\":\"fx-command-artifact-1.log\"",
+            "",
+        ),
+    ];
+    for frame in kept {
+        assert!(decode(&frame).is_ok(), "{frame}");
+    }
+    let ConversationEvent::ToolResult(mut unpaired) = decode(&result).unwrap() else {
+        panic!("a tool result");
+    };
+    unpaired.command_replay_bytes = None;
+    assert_eq!(
+        encode_conversation_frame(1, 1, &ConversationEvent::ToolResult(unpaired)),
+        Err(SessionError::InvalidConversationEvent)
+    );
 }
