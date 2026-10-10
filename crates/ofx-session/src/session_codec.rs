@@ -11,7 +11,7 @@ use crate::session_error::SessionError;
 use crate::session_layout::is_valid_session_id;
 use crate::session_store_paths::is_valid_workspace_root;
 
-const SESSION_METADATA_SCHEMA_VERSION: u8 = 4;
+pub(crate) const SESSION_METADATA_SCHEMA_VERSION: u8 = 4;
 pub(crate) const MAX_SESSION_METADATA_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_SESSION_TITLE_BYTES: usize = 240;
 const MAX_MODEL_BYTES: usize = 1024;

@@ -25,7 +25,7 @@ note = "CLI parsing/help and supported command dispatch, including status, usage
 upstream = "src/core/cli/doctor_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/doctor_runtime.rs"]
-note = "Workspace, config, MCP config, auth, startup, state, session count, git and gh checks exist; per-session doctor diagnostics with guarded cleanup and the sessions v2 doctor are missing."
+note = "Workspace, config, MCP config, auth, startup, state, the per-session diagnostics of up to 64 session folders with their recovery guidance and truncation warning, session count, git and gh checks exist; the guarded cleanup upstream runs for a cleanup_candidate is never reached, since its inspection reports none, and the sessions v2 doctor is missing."
 
 [[file]]
 upstream = "src/core/cli/usage_cli_runtime.zig"
