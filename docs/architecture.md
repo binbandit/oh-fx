@@ -96,6 +96,7 @@ Each file in [`differences/`](differences/) records the deliberate differences f
 - [Codex](differences/codex.md): the Codex transport and its model catalog.
 - [Compaction](differences/compaction.md): manual and automatic compaction and the summary request.
 - [Settings files](differences/config.md): reading and writing `settings.json`.
+- [Vercel AI Gateway](differences/gateway.md): the gateway request, its transport, and its trace lines.
 - [Hooks](differences/hooks.md): lifecycle reporting to Herdr and command hooks.
 - [Markdown](differences/markdown.md): assistant markdown and syntax highlighting.
 - [MCP](differences/mcp.md): server configuration, transports, tools, and notices.

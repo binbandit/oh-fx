@@ -19,8 +19,8 @@ note = "Project/global instructions and delivery budgets exist; model prompt ove
 [[file]]
 upstream = "src/builtins/gateway.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/chat_completions.rs"]
-note = "Custom/Codex requests exist; Vercel gateway credential transport and web-search backend selection are absent."
+modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/chat_completions.rs", "crates/ofx-gateway/src/gateway.rs"]
+note = "Custom/Codex requests exist, and the Vercel AI Gateway provider builds agent requests, including the GLM 5.2 body user agent, and maps HTTP failures and stream finishes; its credentials and route, credits, the model catalog, web-search backends, the OAuth transport and API-key validation are absent."
 
 [[file]]
 upstream = "src/builtins/gateway/permission_reviewer.zig"

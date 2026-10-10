@@ -49,6 +49,7 @@ fn traced_summarizer<'a>(
         options: ProviderOptions {
             reasoning_effort: Some("high"),
             fast: true,
+            prompt_caching: false,
         },
         reasoning_efforts,
         conversation,
@@ -125,6 +126,7 @@ async fn a_request_after_the_conversation_sends_it_unchanged_then_the_request() 
         provider_options: ProviderOptions {
             reasoning_effort: Some("high"),
             fast: false,
+            prompt_caching: false,
         },
         session_id: None,
     };

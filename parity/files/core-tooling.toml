@@ -61,8 +61,8 @@ note = "Conservative serialized input caps for web-search workers are unimplemen
 [[file]]
 upstream = "src/core/tooling/model_tool_schema.zig"
 status = "partial"
-modules = ["crates/ofx-tools/src/filesystem/read_file.rs", "crates/ofx-gateway/src/chat_completions.rs"]
-note = "Existing tools carry static JSON schemas and gateway serialization; generic nested union/schema builder and complete built-in schema set are absent."
+modules = ["crates/ofx-tools/src/filesystem/read_file.rs", "crates/ofx-gateway/src/chat_completions.rs", "crates/ofx-gateway/src/vercel_protocol.rs"]
+note = "Existing tools carry static JSON schemas, serialized for chat completions and in the Vercel AI Gateway's flattened function envelope; generic nested union/schema builder and complete built-in schema set are absent."
 
 [[file]]
 upstream = "src/core/tooling/result_commit.zig"

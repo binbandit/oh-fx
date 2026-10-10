@@ -1121,6 +1121,7 @@ fn reasoning_effort_and_fast_mode_follow_the_text_settings() {
         tail(ProviderOptions {
             reasoning_effort: Some("high"),
             fast: true,
+            prompt_caching: false,
         }),
         r#","parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"service_tier":"priority","text":{"verbosity":"low"},"reasoning":{"effort":"high","summary":"auto"}}"#
     );
@@ -1134,6 +1135,7 @@ fn reasoning_effort_and_fast_mode_follow_the_text_settings() {
             tail(ProviderOptions {
                 reasoning_effort: Some(effort),
                 fast: false,
+                prompt_caching: false,
             }),
             format!(
                 r#","parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"text":{{"verbosity":"low"}},"reasoning":{{"effort":"{sent}","summary":"auto"}}}}"#

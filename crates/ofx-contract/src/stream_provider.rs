@@ -26,6 +26,7 @@ pub struct ModelRequest<'a> {
 pub struct ProviderOptions<'a> {
     pub reasoning_effort: Option<&'a str>,
     pub fast: bool,
+    pub prompt_caching: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
