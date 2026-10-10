@@ -38,10 +38,12 @@ struct SeenRequest {
     fast: bool,
 }
 
+type Projection = (String, Vec<String>, bool, bool);
+
 struct FakeProvider {
     scripts: Mutex<VecDeque<Script>>,
     requests: Mutex<Vec<SeenRequest>>,
-    projections: Mutex<Vec<(String, bool, bool)>>,
+    projections: Mutex<Vec<Projection>>,
     bodies: Mutex<Vec<String>>,
     sessions: Mutex<Vec<Option<String>>>,
 }
@@ -65,7 +67,7 @@ impl FakeProvider {
         self.requests.lock().unwrap().clone()
     }
 
-    fn projections(&self) -> Vec<(String, bool, bool)> {
+    fn projections(&self) -> Vec<Projection> {
         self.projections.lock().unwrap().clone()
     }
 
@@ -155,13 +157,18 @@ impl ModelProvider for FakeProvider {
     fn project_replay(
         &self,
         replay: &ProviderReplay,
+        calls: &[ToolCall],
         text: bool,
         reasoning: bool,
     ) -> Result<Option<ProviderReplay>, ProviderError> {
+        let ids = calls
+            .iter()
+            .map(|call| call.id.as_str().to_owned())
+            .collect();
         self.projections
             .lock()
             .unwrap()
-            .push((replay.parts_json.clone(), text, reasoning));
+            .push((replay.parts_json.clone(), ids, text, reasoning));
         if replay.parts_json == "invalid" {
             return Err(ProviderError::new(
                 ProviderErrorKind::Protocol,
@@ -2808,7 +2815,10 @@ async fn empty_answers_keep_only_the_reasoning_part_of_their_replay() {
         EMPTY_RESPONSE_TEXT
     );
     run(&mut agent, "next").await;
-    assert_eq!(provider.projections(), [("parts".to_owned(), false, true)]);
+    assert_eq!(
+        provider.projections(),
+        [("parts".to_owned(), Vec::new(), false, true)]
+    );
     assert_eq!(
         provider.requests()[1].messages[1],
         ChatMessage::Assistant {
