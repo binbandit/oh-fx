@@ -6,7 +6,7 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ofx_agent::{CompactionEvent, ToolCallTrace};
+use ofx_agent::{CompactionEvent, ToolCallTrace, TraceRings};
 use ofx_contract::{PermissionMode, ReasoningEffort, is_provider_search_alias};
 use ofx_text::mask_secrets;
 use ofx_trace::{NetworkTrace, Sequenced};
@@ -34,6 +34,7 @@ pub(crate) struct TraceFacts {
     pub(crate) processing: bool,
     pub(crate) stream_active: bool,
     pub(crate) queued: usize,
+    pub(crate) rings: TraceRings,
 }
 
 pub(super) struct Snapshot {
@@ -73,6 +74,7 @@ struct Timestamp(i64);
 
 impl Snapshot {
     pub(super) fn capture(facts: TraceFacts) -> Self {
+        let rings = facts.rings;
         let trace_log = ofx_trace::active_log_path()
             .map(Path::to_path_buf)
             .or_else(|| std::env::var_os(LOG_VARIABLE).map(PathBuf::from));
@@ -97,9 +99,9 @@ impl Snapshot {
                 tmux: std::env::var_os("TMUX").is_some(),
                 cmux: std::env::var_os("CMUX_WORKSPACE_ID").is_some(),
             },
-            compaction: ofx_agent::compaction_trace(),
-            tool_calls: ofx_agent::tool_call_trace(),
-            network: ofx_trace::network_trace(),
+            compaction: rings.compaction.snapshot(),
+            tool_calls: rings.tool_calls.snapshot(),
+            network: rings.network.snapshot(),
             tail,
         }
     }

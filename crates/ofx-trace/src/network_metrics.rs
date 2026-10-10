@@ -92,14 +92,6 @@ impl NetworkCall {
     }
 }
 
-pub fn network_trace() -> NetworkTrace {
-    NETWORK_CALLS.snapshot()
-}
-
-pub fn reset_network_trace() {
-    NETWORK_CALLS.reset();
-}
-
 impl NetworkRing {
     pub const fn new() -> Self {
         Self {

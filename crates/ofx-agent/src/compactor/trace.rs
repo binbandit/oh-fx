@@ -1,6 +1,6 @@
 use std::fmt;
 
-use ofx_trace::{Ring, Sequenced, TraceContext};
+use ofx_trace::{Ring, TraceContext};
 
 const TRACE_SCOPE: &str = "context_compaction";
 const RING_CAPACITY: usize = 64;
@@ -75,14 +75,6 @@ impl CompactionTraceKind {
 
 pub(crate) fn unrecorded(detail: fmt::Arguments<'_>) {
     ofx_trace::log(TRACE_SCOPE, detail);
-}
-
-pub fn compaction_trace() -> Vec<Sequenced<CompactionEvent>> {
-    COMPACTION_TRACE.snapshot()
-}
-
-pub fn reset_compaction_trace() {
-    COMPACTION_TRACE.reset();
 }
 
 impl Tracer {

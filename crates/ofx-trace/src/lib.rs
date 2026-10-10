@@ -11,7 +11,7 @@ pub use debug_trace::{
 pub use json_preview::keyless_json_preview;
 pub use network_metrics::{
     NETWORK_CALLS, NetworkCall, NetworkCallKind, NetworkLifetime, NetworkRing, NetworkTrace,
-    NetworkTurnRollup, network_trace, reset_network_trace,
+    NetworkTurnRollup,
 };
 pub use preview::{preview, terminal_preview};
 pub use ring::{Ring, Sequenced};

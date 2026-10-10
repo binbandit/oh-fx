@@ -48,17 +48,12 @@ async fn trace_saves_a_private_report_of_the_session_and_offers_it_to_the_clipbo
         "{summary}"
     );
     assert!(report.contains("\n## Current State\nagent_step_limit: "));
-    let problems = report
-        .split("\n## Problems\n")
-        .nth(1)
-        .and_then(|rest| rest.split("\n## ").next())
-        .unwrap();
-    assert!(
-        !problems.contains("- report captured an active turn"),
-        "{problems}"
-    );
-    assert!(report.contains("\n## Context Compaction\n"));
-    assert!(report.contains("\n## Network Calls\n"));
+    assert!(report.contains(
+        "\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n"
+    ));
+    assert!(report.contains("\n## Context Compaction\n(none recorded)\n"));
+    assert!(report.contains("\n## Network Calls\n(none recorded)\n"));
+    assert!(report.contains("\n## Tool Calls\n(none recorded)\n"));
     assert!(report.contains("\n## Runtime Context\nTERM: "));
     assert!(server.requests().is_empty());
 }

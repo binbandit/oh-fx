@@ -18,6 +18,7 @@ fn facts() -> TraceFacts {
         processing: false,
         stream_active: false,
         queued: 0,
+        rings: TraceRings::process(),
     }
 }
 

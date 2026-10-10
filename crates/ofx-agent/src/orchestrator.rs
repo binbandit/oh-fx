@@ -28,7 +28,7 @@ use ofx_contract::{
     tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
-use ofx_trace::{NETWORK_CALLS, NetworkRing, Ring, TraceContext};
+use ofx_trace::{NetworkRing, Ring, TraceContext};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -37,7 +37,6 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_steps::allows_step;
 use crate::approvals::Approvals;
 use crate::assistant_stream::normalize_assistant_text_for_display;
-use crate::compactor::trace::COMPACTION_TRACE;
 use crate::compactor::{CompactionError, CompactionEvent, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::gateway_step::Meter;
@@ -50,7 +49,8 @@ use crate::prompt_context::Calibration;
 use crate::recovery_pause::RecoveryPause;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 use crate::tool_admission::{ShellExecutionFailureRetry, ShellValidationRetry};
-use crate::tool_call_metrics::{TOOL_CALL_TRACE, ToolCallOutcome, ToolCallRecord, ToolCallRing};
+use crate::tool_call_metrics::{ToolCallOutcome, ToolCallRecord, ToolCallRing};
+use crate::trace_rings::TraceRings;
 use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
@@ -339,6 +339,7 @@ impl Agent {
         config: AgentConfig,
     ) -> Self {
         let (tool_specs, provider_executed) = read_tools(&tools);
+        let rings = TraceRings::process();
         let Offer {
             specs: offered_specs,
             guidance: tool_guidance,
@@ -378,11 +379,19 @@ impl Agent {
             steering: None,
             recovery_pause: RecoveryPause::default(),
             lifecycle: None,
-            compaction_trace: &COMPACTION_TRACE,
-            tool_call_trace: &TOOL_CALL_TRACE,
-            network_calls: &NETWORK_CALLS,
+            compaction_trace: rings.compaction,
+            tool_call_trace: rings.tool_calls,
+            network_calls: rings.network,
             next_trace: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_trace_rings(mut self, rings: TraceRings) -> Self {
+        self.compaction_trace = rings.compaction;
+        self.tool_call_trace = rings.tool_calls;
+        self.network_calls = rings.network;
+        self
     }
 
     #[must_use]
