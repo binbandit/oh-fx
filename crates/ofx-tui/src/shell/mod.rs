@@ -41,8 +41,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ofx_contract::{
-    HistoryEntry, ModelControls, PermissionMode, SessionScope, StatuslineToggles, TurnId,
-    UiCommand, WorkspaceIdentitySource,
+    AttentionKind, AttentionRequiredInput, HistoryEntry, HookInvocation, HookScope, HookView,
+    ModelControls, PermissionMode, SessionScope, StatuslineToggles, TurnId, UiCommand,
+    WorkspaceIdentitySource,
 };
 use ofx_markdown::{Completions, MarkdownProcessor};
 
@@ -139,6 +140,7 @@ pub struct ShellOptions {
     pub file_mentions: Option<Box<dyn FileMentionSource>>,
     pub skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     pub lifecycle: Option<Box<dyn ForegroundLifecycle>>,
+    pub hooks: HookView,
     pub steering: Option<Box<dyn SteeringQueue>>,
     pub opening: Opening,
     pub statusline: StatuslineToggles,
@@ -352,10 +354,22 @@ struct Setup {
 }
 
 impl<'a> Shell<'a> {
-    fn foreground(&self, state: ForegroundState, status: Option<&[u8]>) {
+    fn foreground(&self, state: ForegroundState) {
         if let Some(observer) = &self.options.lifecycle {
-            observer.report(state, status);
+            observer.report(state, None);
         }
+    }
+
+    fn attention_required(&self, turn_id: TurnId, kind: AttentionKind) {
+        self.options
+            .hooks
+            .run_attention_required(&AttentionRequiredInput {
+                invocation: HookInvocation {
+                    scope: HookScope::Interactive,
+                    turn_id,
+                },
+                kind,
+            });
     }
 
     fn bootstrap(
@@ -1560,6 +1574,7 @@ mod tests {
             file_mentions: None,
             skill_catalog: None,
             lifecycle: None,
+            hooks: HookView::default(),
             steering: None,
             opening: Opening::Welcome,
             statusline: StatuslineToggles::default(),

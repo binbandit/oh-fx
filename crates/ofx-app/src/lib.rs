@@ -18,6 +18,7 @@ mod doctor_runtime;
 mod feedback_command;
 mod file_mention_runtime;
 mod herdr;
+mod hooks;
 mod mcp_commands;
 mod model_cache_runtime;
 mod modes;

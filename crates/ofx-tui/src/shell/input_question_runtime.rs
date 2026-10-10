@@ -1,4 +1,4 @@
-use ofx_contract::{QuestionRequest, RequestId, TurnId, UiCommand};
+use ofx_contract::{AttentionKind, QuestionRequest, RequestId, TurnId, UiCommand};
 
 use super::Shell;
 use super::question_prompt::{Decision, FreeformEdit, Insertion, QuestionPrompt};
@@ -39,8 +39,9 @@ impl Shell<'_> {
         }
         if let Some(displaced) = self.question.replace(QuestionPrompt::new(request)) {
             self.answer_question(displaced.request_id, None);
+        } else {
+            self.attention_required(turn_id, AttentionKind::Question);
         }
-        self.foreground(super::ForegroundState::Blocked, Some(b"question"));
         self.invalidate();
     }
 

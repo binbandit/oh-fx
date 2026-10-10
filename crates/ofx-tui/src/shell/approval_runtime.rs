@@ -1,6 +1,6 @@
 use ofx_contract::{
-    ApprovalAnswer, ApprovalDecision, ApprovalOrigin, ApprovalRequest, PermissionMode, TurnId,
-    UiCommand,
+    ApprovalAnswer, ApprovalDecision, ApprovalOrigin, ApprovalRequest, AttentionKind,
+    PermissionMode, TurnId, UiCommand,
 };
 
 use super::Shell;
@@ -242,8 +242,9 @@ impl Shell<'_> {
                 request_id: displaced.request.id,
                 answer: ApprovalDecision::Deny.into(),
             });
+        } else {
+            self.attention_required(turn_id, AttentionKind::Permission);
         }
-        self.foreground(super::ForegroundState::Blocked, Some(b"permission"));
         self.invalidate();
     }
 
