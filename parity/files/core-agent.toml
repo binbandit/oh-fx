@@ -145,8 +145,8 @@ note = "Cancelled partial turns, completed tool outputs and steering at its tool
 [[file]]
 upstream = "src/core/agent/runtime/lifecycle.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/approvals.rs"]
-note = "Prepared calls and cancellation lifecycle exist; durable stop/attention checkpoints and transport publication authority are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/approvals.rs", "crates/ofx-tui/src/shell/mod.rs"]
+note = "Prepared calls and cancellation lifecycle exist, and the interactive shell dispatches the AttentionRequired checkpoint; the PreToolUse, Stop and PostTurnEnd checkpoints, durable stop/attention checkpoints and transport publication authority are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/model_response_recovery.zig"

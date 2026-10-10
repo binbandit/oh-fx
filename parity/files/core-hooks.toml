@@ -1,17 +1,20 @@
 [[file]]
 upstream = "src/core/hooks/common.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-contract/src/hooks.rs"]
+note = "Re-exports the scope, invocation and registration error that oh-fx carries; the limits and the view, handler and dispatch errors land with the events that use them."
 
 [[file]]
 upstream = "src/core/hooks/definitions.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-contract/src/hooks/definitions.rs"]
+note = "Scope kinds, the invocation, the attention kinds and AttentionRequired input, the handler name limit and the registration errors exist; the hook kind table, the PreToolUse, Stop and PostTurnEnd inputs, actions and outcomes, the other limits and the handler and dispatch errors are missing. The invocation carries its scope kind and turn only, as docs/differences/hooks.md records."
 
 [[file]]
 upstream = "src/core/hooks/hooks.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-contract/src/hooks.rs"]
+note = "Re-exports the definitions and runtime that oh-fx carries so far."
 
 [[file]]
 upstream = "src/core/hooks/prompt.zig"
@@ -20,8 +23,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/hooks/runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-contract/src/hooks/runtime.rs"]
+note = "Handler name validation, duplicate refusal per event, freezing into a shared view that holds nothing when no handler registered, and ordered AttentionRequired dispatch exist; PreToolUse, Stop and PostTurnEnd registration and dispatch are missing. Freezing consumes the runtime and handlers write no trace lines, as docs/differences/hooks.md records."
 
 [[file]]
 upstream = "src/core/hooks/tool.zig"
