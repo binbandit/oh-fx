@@ -1,5 +1,7 @@
 use std::fs;
 
+use base64::Engine;
+
 use super::*;
 use crate::image_data::tests::{test_jpeg, test_jpeg_behind_metadata, test_png_header};
 
@@ -277,4 +279,137 @@ fn more_than_twenty_request_images_lower_the_pixel_limit() {
     assert_eq!(cache.withhold_oversized_images(&messages[..0]), None);
     let twenty = [user("many", parts(&messages[0]).1[..20].to_vec())];
     assert_eq!(cache.withhold_oversized_images(&twenty), None);
+}
+
+fn tool_image(bytes: &[u8], mime_type: &str) -> ToolImage {
+    ToolImage {
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        mime_type: mime_type.to_owned(),
+        source_ref: None,
+    }
+}
+
+fn tool(content: &str, images: Vec<ToolImage>) -> ChatMessage {
+    ChatMessage::Tool {
+        call_id: ofx_contract::ToolCallId::new("call_frame"),
+        tool_name: "read_file".to_owned(),
+        content: content.to_owned(),
+        status: ofx_contract::ToolResultStatus::Success,
+        images,
+    }
+}
+
+fn tool_parts(message: &ChatMessage) -> (&str, &[ToolImage]) {
+    match message {
+        ChatMessage::Tool {
+            content, images, ..
+        } => (content, images),
+        _ => panic!("expected a tool message"),
+    }
+}
+
+#[test]
+fn request_projection_withholds_unsafe_tool_images_without_changing_history() {
+    let messages = [tool(
+        "<path>frame.png</path>",
+        vec![
+            tool_image(&test_png_header(3420, 2224), "image/png"),
+            tool_image(&test_jpeg(8001, 1), "image/jpeg"),
+            tool_image(&test_png_header(1, 1), "image/png"),
+        ],
+    )];
+
+    let normal = withhold_tool_images(&messages, 8000, 4096).unwrap();
+    let strict = withhold_tool_images(&messages, 2000, 4096).unwrap();
+
+    assert_eq!(tool_parts(&normal[0]).1.len(), 2);
+    let (content, images) = tool_parts(&strict[0]);
+    assert_eq!(images.len(), 1);
+    assert_eq!(
+        content,
+        "[Image not sent: image/png is 3420x2224 pixels; this request permits at most 2000 per side and 5 MiB encoded per image. If this tool result names a local file, use an available image tool to save a smaller copy, then read_file the copy. If no tool or path is available, ask the user; ask before installing software.]\n[Image not sent: image/jpeg is 8001x1 pixels; this request permits at most 2000 per side and 5 MiB encoded per image. If this tool result names a local file, use an available image tool to save a smaller copy, then read_file the copy. If no tool or path is available, ask the user; ask before installing software.]\n<path>frame.png</path>"
+    );
+    assert_eq!(tool_parts(&messages[0]).1.len(), 3);
+    let safe = [tool(
+        "ok",
+        vec![tool_image(&test_png_header(1, 1), "image/png")],
+    )];
+    assert_eq!(withhold_tool_images(&safe, 8000, 4096), None);
+}
+
+#[test]
+fn tool_images_with_unverifiable_data_or_unsupported_types_are_withheld() {
+    let messages = [tool(
+        "result",
+        vec![
+            tool_image(b"not an image", "image/png"),
+            tool_image(&test_png_header(1, 1), "image/bmp"),
+            ToolImage {
+                data: String::new(),
+                mime_type: "image/png".to_owned(),
+                source_ref: Some("host:original".to_owned()),
+            },
+        ],
+    )];
+
+    let projected = withhold_tool_images(&messages, 8000, 4096).unwrap();
+
+    let (content, images) = tool_parts(&projected[0]);
+    assert!(images.is_empty());
+    assert!(content.starts_with("[Image not sent: its dimensions could not be verified. If this tool result names a local file"));
+    assert!(content.contains("[Image not sent: image/bmp is 1x1 pixels;"));
+    assert!(content.contains("[Image not sent: only a host source reference was supplied; this request permits at most 8000 per side and 5 MiB encoded per image. Host source reference: \"host:original\"."));
+    assert!(content.ends_with("]\nresult"));
+}
+
+#[test]
+fn request_image_notices_remain_bounded_without_mutating_retained_text() {
+    let content = "x".repeat(2048);
+    let messages = [tool(
+        &content,
+        vec![tool_image(&test_jpeg(8001, 1), "image/jpeg")],
+    )];
+
+    let projected = withhold_tool_images(&messages, 8000, 512).unwrap();
+
+    let (text, images) = tool_parts(&projected[0]);
+    assert!(text.len() <= 512);
+    assert!(text.starts_with("[Image not sent:"));
+    assert!(images.is_empty());
+    assert_eq!(tool_parts(&messages[0]).0.len(), 2048);
+}
+
+#[test]
+fn request_image_notices_preserve_utf8_at_every_byte_limit() {
+    let content = "é界𐐀 tail";
+    for notice in ["", "ASCII ", "é", "界", "𐐀"] {
+        let full = format!("{notice}{content}");
+        for limit in 0..=full.len() {
+            let output = prepend_image_notice(notice, content, limit);
+            assert!(output.len() <= limit, "{notice:?} {limit}");
+            if limit == full.len() {
+                assert_eq!(output, full);
+            }
+        }
+    }
+}
+
+#[test]
+fn request_image_count_includes_tool_images_in_the_pixel_limit() {
+    let snapshots = Snapshots::new();
+    let path = snapshots.write("image-1-0000000000000001.bin", &test_png_header(3000, 10));
+    let tool_images = (0..20)
+        .map(|_| tool_image(&test_png_header(10, 10), "image/png"))
+        .collect();
+    let messages = [
+        user("look", vec![snapshot(1, &path, "image/png")]),
+        tool("frames", tool_images),
+    ];
+
+    let projected = AttachmentDimensionCache::default()
+        .withhold_oversized_images(&messages)
+        .unwrap();
+
+    assert!(parts(&projected[0]).1.is_empty());
+    assert_eq!(tool_parts(&projected[1]).1.len(), 20);
 }

@@ -9,6 +9,7 @@ use ofx_contract::{
     CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
     PreparedCall, ProviderReplay, ReasoningEffort, RecoveryToolState, ReplaySource,
     RootUserRequests, StreamSink, SubagentStatus, ToolActivity, ToolCallId, ToolChoice, ToolEffect,
+    ToolImage,
 };
 
 use super::*;
@@ -456,6 +457,13 @@ impl PreparedCall for EchoCall {
                     effort: ReasoningEffort::Named("high".to_owned()),
                 });
                 return ToolOutput::success("status published");
+            }
+            if self.arguments.contains("picture") {
+                return ToolOutput::success("<path>shot.png</path>").with_images(vec![ToolImage {
+                    data: "cG5n".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                    source_ref: None,
+                }]);
             }
             if self.arguments.contains("whole") {
                 return ToolOutput::success(format!("echo {}", self.arguments))

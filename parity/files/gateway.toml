@@ -8,7 +8,7 @@ note = "Custom chat-completions transport, admitted before it connects, with its
 upstream = "src/gateway/chat_completions_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/chat_completions_protocol.rs"]
-note = "Function selection, request validation, provider-executed history refusal, streaming reduction, and user image content parts from verified snapshots exist; tool image follow-up messages and provider replay projection are incomplete, alongside documented gateway-dialect differences."
+note = "Function selection, request validation, provider-executed history refusal, streaming reduction, user image content parts from verified snapshots, and the user message that follows a tool run with its images (denied results left out) exist; provider replay projection is incomplete, alongside documented gateway-dialect differences."
 
 [[file]]
 upstream = "src/gateway/client.zig"
@@ -77,7 +77,7 @@ note = "Codex permission-review transport is implemented; shared reviewer routin
 upstream = "src/gateway/responses_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/responses_protocol.rs"]
-note = "Responses argument, text and reasoning reconciliation exists, user images are written as input_image parts from verified snapshots, and function call starts and streamed argument chunks are reported where upstream calls on_tool_start and on_tool_input; tool image outputs, preverified vision images, and the request budget checks are absent, and provisional tool status rows are tracked by OH-6."
+note = "Responses argument, text and reasoning reconciliation exists, user images are written as input_image parts from verified snapshots, tool images are written into the function_call_output array with upstream's `Tool error: ` prefix on failures, and function call starts and streamed argument chunks are reported where upstream calls on_tool_start and on_tool_input; preverified vision images and the request budget checks are absent, and provisional tool status rows are tracked by OH-6."
 
 [[file]]
 upstream = "src/gateway/sse.zig"

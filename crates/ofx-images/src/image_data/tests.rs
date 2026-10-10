@@ -225,7 +225,7 @@ fn image_dimension_parsing_stays_bounded_on_truncated_and_mutated_headers() {
     };
     for seed in &seeds {
         for length in 0..=seed.len() {
-            image_dimensions(&seed[..length]);
+            expect_encoded_agrees_with_raw(&seed[..length]);
         }
     }
     for round in 0..4000 {
@@ -235,7 +235,7 @@ fn image_dimension_parsing_stays_bounded_on_truncated_and_mutated_headers() {
             bytes[index] = u8::try_from(next() & 0xff).unwrap();
         }
         let length = usize::try_from(next()).unwrap() % (bytes.len() + 1);
-        image_dimensions(&bytes[..length]);
+        expect_encoded_agrees_with_raw(&bytes[..length]);
     }
 }
 
@@ -262,4 +262,29 @@ fn host_recovery_notices_quote_the_source_reference() {
         out,
         "Host source reference: \"host:\\\"shot\\\"\". Use an available host-provided tool that accepts this reference to make a new copy at most 8000 pixels per side and 5 MiB encoded, then return the copy as image data. If no suitable host tool or source is available, ask the user for a smaller image.]\n"
     );
+}
+
+fn expect_encoded_agrees_with_raw(bytes: &[u8]) {
+    assert_eq!(
+        encoded_image_dimensions(&STANDARD.encode(bytes)),
+        image_dimensions(bytes),
+        "{bytes:?}"
+    );
+}
+
+#[test]
+fn encoded_image_dimensions_agree_with_raw_headers_at_every_truncation() {
+    for fixture in [
+        test_png_header(3420, 2224),
+        test_jpeg(3420, 2224),
+        test_gif(640, 480),
+        test_webp_lossy(2001, 17),
+        test_webp_lossless(16384, 3),
+        test_webp_extended(5000, 2),
+    ] {
+        for length in 0..=fixture.len() {
+            expect_encoded_agrees_with_raw(&fixture[..length]);
+        }
+    }
+    assert_eq!(encoded_image_dimensions("not base64 at all"), None);
 }

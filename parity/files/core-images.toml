@@ -13,7 +13,7 @@ modules = []
 upstream = "src/core/images/image_data.zig"
 status = "partial"
 modules = ["crates/ofx-images/src/image_data.rs"]
-note = "Media type sniffing, dimension probing of raw and positional PNG, JPEG, GIF, and WebP headers, the request image limits and count, and the host recovery notice exist. Dimensions of base64 data, tool image parsing and validation, and source references are absent; writeDownscaledNotice has no caller upstream."
+note = "Media type sniffing, dimension probing of raw, positional, and base64 PNG, JPEG, GIF, and WebP headers, the supported media types, the request image limits and a count that includes tool images, and the host recovery notice exist. Tool image parsing and validation and source references are absent; writeDownscaledNotice has no caller upstream."
 
 [[file]]
 upstream = "src/core/images/png_downscale.zig"

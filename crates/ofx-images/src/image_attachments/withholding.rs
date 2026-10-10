@@ -145,9 +145,12 @@ fn write_withheld_tool_image_notice(out: &mut String, image: &ToolImage, max_dim
 }
 
 fn prepend_image_notice(notice: &str, content: &str, limit: usize) -> String {
-    let notice = &notice[..notice.floor_char_boundary(limit)];
-    let content = &content[..content.floor_char_boundary(limit.saturating_sub(notice.len()))];
-    format!("{notice}{content}")
+    let kept_content = content.floor_char_boundary(limit.saturating_sub(notice.len()));
+    format!(
+        "{}{}",
+        &notice[..notice.floor_char_boundary(limit)],
+        &content[..kept_content]
+    )
 }
 
 fn probe_snapshot_dimensions(path: &str) -> Option<Dimensions> {

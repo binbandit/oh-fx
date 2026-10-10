@@ -1,5 +1,7 @@
 use std::fs;
 
+use ofx_contract::{ToolCallId, ToolImage, ToolResultStatus};
+
 use super::*;
 use crate::test_sources::{CapturedImages, user_with_images};
 
@@ -109,5 +111,58 @@ fn responses_images_use_captured_bytes_and_reject_unavailable_snapshots() {
     assert_eq!(
         ResponsesError::Image(AttachmentError::FileNotFound).to_string(),
         "FileNotFound"
+    );
+}
+
+fn tool_with_images(id: &str, content: &str, status: ToolResultStatus) -> ChatMessage {
+    ChatMessage::Tool {
+        call_id: ToolCallId::new(id),
+        tool_name: "read_file".to_owned(),
+        content: content.to_owned(),
+        status,
+        images: vec![ToolImage {
+            data: "cG5n".to_owned(),
+            mime_type: "image/png".to_owned(),
+            source_ref: None,
+        }],
+    }
+}
+
+#[test]
+fn responses_write_tool_images_into_the_function_call_output() {
+    let messages = [
+        assistant(None, vec![call("read_1", "read_file", "{}")]),
+        tool_with_images("read_1", "result", ToolResultStatus::Success),
+    ];
+
+    assert!(
+        raw_input(&messages).unwrap().ends_with(concat!(
+            r#"{"type":"function_call_output","call_id":"read_1","output":[{"type":"input_text","text":"result"},"#,
+            r#"{"type":"input_image","image_url":"data:image/png;base64,cG5n"}]}"#,
+        ))
+    );
+}
+
+#[test]
+fn responses_mark_failed_tool_image_results_as_tool_errors() {
+    let messages = [
+        assistant(None, vec![call("read_1", "read_file", "{}")]),
+        tool_with_images("read_1", "denied", ToolResultStatus::Failure),
+        assistant(None, vec![call("read_2", "read_file", "{}")]),
+        tool_with_images("read_2", "", ToolResultStatus::Success),
+    ];
+
+    let items = input(&messages, &[None; 4]).unwrap();
+
+    assert_eq!(
+        items[1]["output"],
+        json!([
+            {"type": "input_text", "text": "Tool error: denied"},
+            {"type": "input_image", "image_url": "data:image/png;base64,cG5n"},
+        ])
+    );
+    assert_eq!(
+        items[3]["output"],
+        json!([{"type": "input_image", "image_url": "data:image/png;base64,cG5n"}])
     );
 }
