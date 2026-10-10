@@ -1,5 +1,5 @@
 use ofx_cli::RequestedResume;
-use ofx_session::{ResumeTarget, SessionError, SessionStore};
+use ofx_session::{RememberedSession, ResumeTarget, SessionError, SessionSource, SessionStore};
 
 use super::failure_line;
 use crate::app_bootstrap_runtime::Profile;
@@ -14,10 +14,10 @@ pub(super) fn open_requested(
     profile: &mut Profile,
     requested: &RequestedResume,
 ) -> Result<Option<Resumption>, String> {
-    let target = match requested {
+    let (target, remember) = match requested {
         RequestedResume::Pick => return available(store).map(|_| None),
-        RequestedResume::Last => ResumeTarget::Last,
-        RequestedResume::Id(id) => ResumeTarget::Id(id.clone()),
+        RequestedResume::Last => (ResumeTarget::Last, true),
+        RequestedResume::Id(id) => (ResumeTarget::Id(id.clone()), true),
         RequestedResume::Remembered => remembered_target(available(store)?)?,
     };
     let session =
@@ -27,10 +27,7 @@ pub(super) fn open_requested(
                 ResumeFailure::Selection(error) => failure_line(&error),
             },
         )?;
-    Ok(Some(Resumption {
-        session,
-        remember: *requested != RequestedResume::Remembered,
-    }))
+    Ok(Some(Resumption { session, remember }))
 }
 
 fn available<'a>(
@@ -39,9 +36,11 @@ fn available<'a>(
     store.map_err(|error| failure_line(error))
 }
 
-fn remembered_target(store: &SessionStore) -> Result<ResumeTarget, String> {
-    match store.remembered_session_id() {
-        Ok(Some(id)) => Ok(ResumeTarget::Id(id)),
+fn remembered_target(store: &SessionStore) -> Result<(ResumeTarget, bool), String> {
+    match store.remembered_session() {
+        Ok(Some(RememberedSession { id, source })) => {
+            Ok((ResumeTarget::Id(id), source == SessionSource::Fx))
+        }
         Ok(None) => Err(NO_REMEMBERED_SESSION.to_owned()),
         Err(_) => Err(REMEMBERED_SESSION_UNAVAILABLE.to_owned()),
     }
