@@ -136,9 +136,9 @@ mod tests {
     fn a_newer_auth_generation_suppresses_a_stale_reauthentication_mark() {
         let state = AuthState::default();
         state.set_credentials_loaded(true);
-        let stale = state.generation();
+        let earlier = state.generation();
         state.credentials_installed();
-        state.mark_reauthentication_required(stale);
+        state.mark_reauthentication_required(earlier);
         assert_eq!(
             state.authentication(&config(true)),
             AuthenticationState::Authenticated

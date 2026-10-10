@@ -9,6 +9,7 @@ use ofx_text::{
 use serde_json::Value;
 
 use crate::features::tools::{Tool, ToolCatalog};
+use crate::health::AuthenticationState;
 use crate::server_lifecycle::{Lifecycle, Server};
 use crate::tool_mcp_registry::{Projection, SchemaLimits, project, selected_schema};
 use crate::tool_names::{ToolNames, is_identifier_byte, tags_for};
@@ -359,9 +360,20 @@ fn bounded_encoded(value: &str, max_bytes: usize) -> (String, usize) {
 fn authentication_required(servers: &[Arc<Server>], query: &str) -> Option<String> {
     servers.iter().find_map(|server| {
         let config = &server.config;
-        if !contains_complete_identity(query, &config.name)
-            || !matches!(server.lifecycle(), Lifecycle::Failed(_))
-        {
+        if !contains_complete_identity(query, &config.name) {
+            return None;
+        }
+        if server.auth.authentication(config) == AuthenticationState::Required {
+            return Some(format!(
+                r#"{{"tools":[],"count":0,"authentication_required":{{"server":{},"interactive":true,"message":{}}}}}"#,
+                encoded_json(&config.name),
+                encoded_json(&format!(
+                    "Run /mcp auth {} --open in an interactive oh-fx session.",
+                    config.name
+                )),
+            ));
+        }
+        if !matches!(server.lifecycle(), Lifecycle::Failed(_)) {
             return None;
         }
         let environment = config

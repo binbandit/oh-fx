@@ -105,6 +105,7 @@ async fn authorize(
         &http(),
         &server.url,
         config,
+        &Challenge::default(),
         None,
         &open,
         &CancellationToken::new(),
@@ -150,6 +151,7 @@ async fn an_interactive_authorization_registers_a_client_and_exchanges_the_code(
         &http(),
         &server.url.replacen("http", "HTTP", 1),
         &ClientConfig::default(),
+        &Challenge::default(),
         Some("tools.read"),
         &open,
         &CancellationToken::new(),
@@ -247,6 +249,7 @@ async fn a_configured_client_skips_registration_and_uses_its_secret() {
         &http(),
         &server.url,
         &config,
+        &Challenge::default(),
         None,
         &open,
         &CancellationToken::new(),
@@ -283,6 +286,7 @@ async fn a_client_metadata_document_is_the_client_id_when_the_server_supports_it
         &http(),
         &server.url,
         &config,
+        &Challenge::default(),
         None,
         &open,
         &CancellationToken::new(),
@@ -318,12 +322,17 @@ async fn the_callback_must_return_the_state_and_the_expected_issuer() {
             &http(),
             &server.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()
         )
         .await,
-        Ok(AuthorizationResult::IssuerMismatch)
+        Ok(AuthorizationResult::IssuerMismatch(IssuerMismatch {
+            source: IssuerMismatchSource::AuthorizationResponse,
+            expected: origin.clone(),
+            returned: format!("{origin}/"),
+        }))
     );
     let (_, open) = browser(approving);
     assert_eq!(
@@ -331,6 +340,7 @@ async fn the_callback_must_return_the_state_and_the_expected_issuer() {
             &http(),
             &server.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()
@@ -345,6 +355,7 @@ async fn the_callback_must_return_the_state_and_the_expected_issuer() {
             &http(),
             &server.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()
@@ -359,6 +370,7 @@ async fn the_callback_must_return_the_state_and_the_expected_issuer() {
             &http(),
             &server.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()
@@ -394,6 +406,7 @@ async fn authorization_stops_before_the_browser_on_bad_metadata() {
             &http(),
             &server.url,
             &config,
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()
@@ -408,6 +421,7 @@ async fn authorization_stops_before_the_browser_on_bad_metadata() {
             &http(),
             &unreachable.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()
@@ -421,6 +435,7 @@ async fn authorization_stops_before_the_browser_on_bad_metadata() {
             &http(),
             &server.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &refused,
             &CancellationToken::new()
@@ -444,6 +459,7 @@ async fn a_cancelled_wait_for_the_browser_ends_promptly() {
             &http(),
             &server.url,
             &ClientConfig::default(),
+            &Challenge::default(),
             None,
             &open,
             &cancel
@@ -461,7 +477,7 @@ fn token_endpoint_methods_follow_upstreams_preference() {
         );
         match parse_authorization_metadata(bytes.as_bytes(), "https://login.example.com").unwrap() {
             MetadataOutcome::Metadata(metadata) => *metadata,
-            MetadataOutcome::IssuerMismatch => panic!("the issuer matches"),
+            MetadataOutcome::IssuerMismatch(_) => panic!("the issuer matches"),
         }
     };
     let basic_only = parsed("");
@@ -492,23 +508,29 @@ fn scopes_union_the_previous_grant_without_duplicates() {
     let configured = ["tools.call tools.admin".to_owned()];
     let metadata = ["meta".to_owned()];
     assert_eq!(
-        requested_scope(&configured, &metadata, Some("tools.read tools.call"), true),
+        requested_scope(
+            &configured,
+            None,
+            &metadata,
+            Some("tools.read tools.call"),
+            true
+        ),
         Ok(Some(
             "tools.read tools.call tools.admin offline_access".to_owned()
         ))
     );
     assert_eq!(
-        requested_scope(&[], &metadata, None, false),
+        requested_scope(&[], None, &metadata, None, false),
         Ok(Some("meta".to_owned()))
     );
-    assert_eq!(requested_scope(&[], &[], None, false), Ok(None));
+    assert_eq!(requested_scope(&[], None, &[], None, false), Ok(None));
     assert_eq!(
-        requested_scope(&["bad\"scope".to_owned()], &[], None, false),
+        requested_scope(&["bad\"scope".to_owned()], None, &[], None, false),
         Err(McpError::InvalidOAuthScope)
     );
     let many: Vec<String> = (0..65).map(|index| format!("s{index}")).collect();
     assert_eq!(
-        requested_scope(&many, &[], None, false),
+        requested_scope(&many, None, &[], None, false),
         Err(McpError::TooManyOAuthScopes)
     );
 }
@@ -521,11 +543,11 @@ fn redirects_keep_the_exact_state_and_issuer() {
     .unwrap();
     assert_eq!(
         validate_authorization_response("state-1", "https://login.example.com", true, &response),
-        Ok(IssuerCheck::Matched)
+        Ok(None)
     );
     assert_eq!(
         validate_authorization_response("state-1", "https://login.example.com/", true, &response),
-        Ok(IssuerCheck::Mismatch)
+        Ok(Some("https://login.example.com".to_owned()))
     );
     assert_eq!(
         validate_authorization_response("state-2", "https://login.example.com", true, &response),
@@ -638,6 +660,7 @@ async fn a_configured_callback_port_redirects_to_localhost_and_must_be_free() {
             &http(),
             &server.url,
             &config,
+            &Challenge::default(),
             None,
             &open,
             &CancellationToken::new()

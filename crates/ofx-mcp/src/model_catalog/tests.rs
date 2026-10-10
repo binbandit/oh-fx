@@ -171,6 +171,18 @@ fn availability_follows_the_connection_authentication_and_deferred_state() {
             Availability::Ready,
         ),
         (
+            ConnectionState::Ready,
+            Auth::Required,
+            false,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Failed,
+            Auth::Configured,
+            false,
+            Availability::Failed,
+        ),
+        (
             ConnectionState::Disconnected,
             Auth::None,
             false,
