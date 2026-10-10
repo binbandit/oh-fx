@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ofx_auth::{ChatGptError, SignInFailure, sign_in_failure};
 use ofx_config::{ProviderId, save_provider_model};
 use ofx_contract::{BoxFuture, CapabilityResolver, Notice, NoticeTone, UiEvent};
+use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
 
 use super::{Controller, ControllerState};
@@ -12,6 +13,8 @@ use crate::user_settings;
 
 const PROVIDER_TOPIC: &str = "provider";
 const AUTH_TOPIC: &str = "auth";
+const AUTH_SCOPE: &str = "auth";
+const CHATGPT_SOURCE: &str = "chatgpt_subscription";
 const PROVIDER_BUSY: &str =
     "Provider switching is unavailable until active and queued work finishes.";
 const PROVIDER_MISSING: &str =
@@ -40,7 +43,7 @@ impl SignInControl {
     }
 
     pub(super) fn reopen(&self) {
-        ofx_auth::open_url(&self.url);
+        open_sign_in_browser(&self.url);
     }
 }
 
@@ -97,7 +100,7 @@ impl Controller {
 
     pub(super) async fn choose_login(&mut self, name: &str) {
         if ProviderId::parse(name) == Some(ProviderId::Codex) {
-            self.begin_sign_in().await;
+            self.begin_sign_in("ChatGPT").await;
         } else {
             self.select_provider(name).await;
         }
@@ -123,6 +126,10 @@ impl Controller {
             }
             Err(ChatGptError::Cancelled) => self.drop_waiting_prompts(),
             Err(error) => {
+                trace_log!(
+                    AUTH_SCOPE,
+                    "login failed source={CHATGPT_SOURCE} err={error}"
+                );
                 self.drop_waiting_prompts();
                 self.state.emit(UiEvent::Notice {
                     notice: sign_in_notice(error),
@@ -203,19 +210,19 @@ impl Controller {
         match routed {
             Ok(route) => self.adopt(switch.provider(), route),
             Err(Refusal::Notice(notice)) => self.state.emit(UiEvent::Notice { notice }),
-            Err(Refusal::SignIn) => self.begin_sign_in().await,
+            Err(Refusal::SignIn) => self.begin_sign_in("Codex").await,
         }
     }
 
-    async fn begin_sign_in(&mut self) {
-        let Some(oauth) = self.state.setup.chatgpt_oauth() else {
-            return self.state.emit(UiEvent::Notice {
-                notice: sign_in_notice(ChatGptError::CredentialStorageUnavailable),
-            });
+    async fn begin_sign_in(&mut self, login: &'static str) {
+        let started = match self.state.setup.chatgpt_oauth() {
+            Some(oauth) => oauth.start_sign_in().await,
+            None => Err(ChatGptError::CredentialStorageUnavailable),
         };
-        let sign_in = match oauth.start_sign_in().await {
+        let sign_in = match started {
             Ok(sign_in) => sign_in,
             Err(error) => {
+                trace_log!(AUTH_SCOPE, "{login} login failed err={error}");
                 return self.state.emit(UiEvent::Notice {
                     notice: sign_in_notice(error),
                 });
@@ -224,7 +231,7 @@ impl Controller {
         let url = sign_in.authorization_url().to_owned();
         self.state.emit(UiEvent::SignInStarted { url: url.clone() });
         if self.state.setup.opens_browser() {
-            ofx_auth::open_url(&url);
+            open_sign_in_browser(&url);
         }
         let cancel = CancellationToken::new();
         let stop = cancel.clone();
@@ -277,6 +284,12 @@ impl Controller {
             (None, _) => true,
             (Some(_), Err(_)) => false,
         }
+    }
+}
+
+fn open_sign_in_browser(url: &str) {
+    if !ofx_auth::open_url(url) {
+        trace_log!(AUTH_SCOPE, "login browser launcher failed");
     }
 }
 
