@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use ofx_contract::{
     BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall, Tool, ToolActivity,
-    ToolContext, ToolEffect, ToolOutput, ToolSpec, format_plain_action, parse_strict_json_value,
-    parse_tool_args_object,
+    ToolContext, ToolEffect, ToolOutput, ToolSpec, format_plain_action,
+    format_tool_execution_error_json, parse_strict_json_value, parse_tool_args_object,
 };
 use ofx_text::write_scalar;
 use serde_json::Value;
@@ -97,7 +97,7 @@ impl PreparedCall for SelectCall {
         self.description.clone()
     }
 
-    fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+    fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         Box::pin(async move {
             let name = match self.name {
                 Ok(name) => name,
@@ -106,7 +106,14 @@ impl PreparedCall for SelectCall {
             let Some(runtime) = self.runtime else {
                 return ToolOutput::failure(NO_RUNTIME);
             };
-            match runtime.tool_schema(&name).await {
+            let Some(projection) = context
+                .cancellation
+                .run_until_cancelled(runtime.tool_schema(&name))
+                .await
+            else {
+                return ToolOutput::failure(format_tool_execution_error_json(NAME, "Cancelled"));
+            };
+            match projection {
                 None => ToolOutput::failure(format!(
                     "Dynamic MCP tool not found or not allowed: {name}"
                 )),

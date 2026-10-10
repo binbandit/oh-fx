@@ -233,3 +233,73 @@ async fn selecting_lists_the_owning_servers_expired_tool_list_again_first() {
         refreshed.content
     );
 }
+
+const STALLING: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      if [ -f "$STATE/listed" ]; then touch "$STATE/stalled"; cat > /dev/null; exit 0; fi
+      touch "$STATE/listed"
+      reply "$id" '{"tools":[{"name":"echo","inputSchema":{"type":"object"}}],"ttlMs":1}' ;;
+  esac
+done
+"#;
+
+#[tokio::test]
+async fn cancelling_the_turn_ends_a_selection_waiting_on_a_stalled_tool_list() {
+    let state = tempfile::tempdir().unwrap();
+    let mut config = McpServerConfig::stdio(
+        "fixture",
+        "/bin/sh",
+        vec!["-c".to_owned(), STALLING.to_owned()],
+    );
+    config.env.push(crate::mcp_contract::EnvVar {
+        key: "STATE".to_owned(),
+        value: state.path().to_string_lossy().into_owned(),
+    });
+    let runtime = Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![config],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ));
+    runtime.connect(StartupPhase::All).await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let cancellation = CancellationToken::new();
+    let selecting = tokio::spawn(
+        McpSelectTool::new(Some(runtime))
+            .prepare(r#"{"name":"mcp_fixture_echo"}"#)
+            .unwrap()
+            .execute(ToolContext::new(
+                ToolCallId::new("select"),
+                cancellation.clone(),
+                PathAccess::WorkspaceOnly,
+            )),
+    );
+    let stalled = state.path().join("stalled");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !stalled.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cancellation.cancel();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(1), selecting)
+        .await
+        .expect("the selection ends once cancelled")
+        .unwrap();
+    assert_eq!(output.status, ToolResultStatus::Failure);
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "Cancelled")
+    );
+}
