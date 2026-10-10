@@ -11,7 +11,7 @@ use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, ChildStore};
-use ofx_config::{SelectionError, Settings};
+use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
     PendingRecovery, ResumeTarget, RouteCredential, SavedProvider, SessionDisposal, SessionError,
@@ -150,7 +150,7 @@ fn select(
 ) -> Result<Option<String>, ResumeFailure> {
     let preferences = &session.metadata().preferences;
     let provider = preferences.provider.id();
-    if !Settings::routes(provider) {
+    if !profile.settings().routes(provider) {
         return Ok(Some(provider.label().to_owned()));
     }
     profile

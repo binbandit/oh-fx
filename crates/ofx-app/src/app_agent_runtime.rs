@@ -6045,41 +6045,45 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_saved_with_a_provider_oh_fx_cannot_use_continues_with_the_current_one() {
-        let codex = FakeServer::start([codex_text("first answer")]);
-        let catalog = codex_catalog(false, 2);
-        let mut settings = codex_settings();
-        settings["session_titles"] = json!(false);
-        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
-        chat(&mut harness, &["first question"]).await;
-        let id = saved_sessions(&harness.home)[0]["id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let home = harness.finish().await;
-        let manifest = home
-            .path()
-            .join("data/sessions")
-            .join(&id)
-            .join("session.json");
-        let mut metadata: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-        metadata["provider"] = json!("gateway");
-        metadata["model"] = json!("openai/gpt-5");
-        fs::write(&manifest, metadata.to_string()).unwrap();
+        for (provider, label) in [
+            (json!("gateway"), "gateway"),
+            (
+                json!({"name": "fx-only", "binding": "ab".repeat(32)}),
+                "fx-only",
+            ),
+        ] {
+            let codex = FakeServer::start([codex_text("first answer")]);
+            let catalog = codex_catalog(false, 2);
+            let mut settings = codex_settings();
+            settings["session_titles"] = json!(false);
+            let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+            chat(&mut harness, &["first question"]).await;
+            let id = saved_sessions(&harness.home)[0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let home = harness.finish().await;
+            let manifest = home
+                .path()
+                .join("data/sessions")
+                .join(&id)
+                .join("session.json");
+            let mut metadata: Value =
+                serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+            metadata["provider"] = provider;
+            metadata["model"] = json!("openai/gpt-5");
+            metadata["effort"] = json!("low");
+            fs::write(&manifest, metadata.to_string()).unwrap();
 
-        let mut harness =
-            Harness::resuming(home, &settings, codex_endpoints(&codex, &catalog), &id).await;
-        let shown = notices_of(&mut harness, "/status").await;
-        assert!(
-            shown.contains(&(
-                NoticeTone::Warning,
-                "session".to_owned(),
-                "This session was saved with the gateway provider, which oh-fx cannot use yet; it continues with codex.".to_owned()
-            )),
-            "{shown:?}"
-        );
-        let saved: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-        assert_eq!(saved["provider"], "codex");
-        assert_eq!(saved["model"], CODEX_MODEL);
+            let mut harness =
+                Harness::resuming(home, &settings, codex_endpoints(&codex, &catalog), &id).await;
+            let shown = notices_of(&mut harness, "/status").await;
+            assert!(shown.contains(&rebind_notice(label)), "{label}: {shown:?}");
+            let saved: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+            assert_eq!(saved["provider"], "codex", "{label}");
+            assert_eq!(saved["model"], CODEX_MODEL, "{label}");
+            assert_eq!(saved["effort"], "low", "{label}");
+        }
     }
 
     const FX_ID: &str = "fx0123456789";

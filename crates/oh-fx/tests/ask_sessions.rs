@@ -1240,7 +1240,9 @@ fn a_failed_command_saves_its_process_presentation_as_upstream_frames_it() {
 
 const FX_ID: &str = "fx0123456789";
 
-fn save_in_fx(home: &Home) -> PathBuf {
+const GATEWAY: &str = "\"gateway\"";
+
+fn save_in_fx(home: &Home, provider: &str) -> PathBuf {
     let fx = home.root.join(".fx");
     let session = fx.join("sessions").join(FX_ID);
     fs::create_dir_all(&session).expect("create an fx session");
@@ -1249,7 +1251,7 @@ fn save_in_fx(home: &Home) -> PathBuf {
             .expect("make an fx folder private");
     }
     let manifest = format!(
-        "{{\"schema_version\":4,\"id\":\"{FX_ID}\",\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
+        "{{\"schema_version\":4,\"id\":\"{FX_ID}\",\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":{provider},\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
     );
     let mut events = String::new();
     for (seq, event) in (1_u64..).zip([
@@ -1288,7 +1290,7 @@ fn ask_resumes_an_fx_session_from_a_copy_on_the_current_provider() {
         Reply::sse(&chat_text_events(&["again"])),
     ]);
     let home = Home::new(&server.base_url());
-    let source = save_in_fx(&home);
+    let source = save_in_fx(&home, GATEWAY);
     let untouched = fx_files(&source);
 
     let output = home.ask(&["ask", "--json", "--resume", FX_ID, "keep going"], &[]);
@@ -1334,7 +1336,7 @@ fn ask_resumes_an_fx_session_from_a_copy_on_the_current_provider() {
 fn ask_refuses_an_fx_session_that_fx_has_open() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url());
-    let source = save_in_fx(&home);
+    let source = save_in_fx(&home, GATEWAY);
     let lock = fs::File::open(source.join("session.lock")).expect("open fx's lock");
     lock.lock().expect("hold fx's lock");
 
@@ -1346,4 +1348,39 @@ fn ask_refuses_an_fx_session_that_fx_has_open() {
     );
     assert!(home.session_ids().is_empty());
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn ask_continues_an_fx_session_saved_on_a_provider_oh_fx_does_not_define() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["continued"]))]);
+    let home = Home::new(&server.base_url());
+    let binding = "ab".repeat(32);
+    let source = save_in_fx(
+        &home,
+        &format!("{{\"name\":\"fx-only\",\"binding\":\"{binding}\"}}"),
+    );
+    let untouched = fx_files(&source);
+
+    let output = home.ask(&["ask", "--json", "--resume", FX_ID, "keep going"], &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "oh-fx ask: This session was saved with the fx-only provider, which oh-fx cannot use yet; it continues with portkey.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["final_output"], "continued");
+    assert_eq!(
+        texts(&conversation(&server.requests()[0])),
+        [
+            "user: asked in fx",
+            "assistant: answered in fx",
+            "user: keep going"
+        ]
+    );
+    let metadata = home.metadata(FX_ID);
+    assert_eq!(metadata["provider"]["name"], "portkey");
+    assert_eq!(metadata["model"], "@openai/gpt-4o");
+    assert_eq!(metadata["effort"], "high");
+    assert_eq!(fx_files(&source), untouched);
 }
