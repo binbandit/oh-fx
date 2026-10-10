@@ -55,7 +55,7 @@ pub struct ExecutionFailure<'a> {
     pub suggestion: Option<&'a str>,
 }
 
-pub(crate) fn pre_tool_use_blocked_json(tool_name: &str, reason: &str) -> String {
+pub fn pre_tool_use_blocked_json(tool_name: &str, reason: &str) -> String {
     tool_execution_failure_json(&ExecutionFailure {
         tool_name,
         message: reason,
@@ -63,6 +63,15 @@ pub(crate) fn pre_tool_use_blocked_json(tool_name: &str, reason: &str) -> String
         suggestion: Some(
             "Do not retry the same tool call unchanged. Adjust the request or use an allowed alternative.",
         ),
+    })
+}
+
+pub fn pre_tool_use_failed_closed_json(tool_name: &str) -> String {
+    tool_execution_failure_json(&ExecutionFailure {
+        tool_name,
+        message: "Tool use was blocked because a pre-execution lifecycle check failed.",
+        details: &[],
+        suggestion: Some("Do not retry unchanged. Adjust the request or try a safer alternative."),
     })
 }
 
@@ -316,6 +325,18 @@ fn masked(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_tool_use_blocks_render_upstreams_failure_envelopes() {
+        assert_eq!(
+            pre_tool_use_blocked_json("read_file", "policy held this call"),
+            r#"{"error":{"type":"tool_execution_failed","tool_name":"read_file","message":"policy held this call","suggestion":"Do not retry the same tool call unchanged. Adjust the request or use an allowed alternative."}}"#
+        );
+        assert_eq!(
+            pre_tool_use_failed_closed_json("shell"),
+            r#"{"error":{"type":"tool_execution_failed","tool_name":"shell","message":"Tool use was blocked because a pre-execution lifecycle check failed.","suggestion":"Do not retry unchanged. Adjust the request or try a safer alternative."}}"#
+        );
+    }
 
     #[test]
     fn tool_output_errors_are_structured_or_active_legacy_failures() {

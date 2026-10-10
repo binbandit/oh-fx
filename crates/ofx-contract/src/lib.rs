@@ -37,8 +37,9 @@ pub use history_turn::{
     RestoredHistory, StepResult, TurnEnd, TurnStop,
 };
 pub use hooks::{
-    AttentionKind, AttentionRequiredInput, HookInvocation, HookRegistrationError, HookRuntime,
-    HookScope, HookView, PostTurnEndInput,
+    AttentionKind, AttentionRequiredInput, HookDispatchError, HookHandlerError, HookInvocation,
+    HookRegistrationError, HookRuntime, HookScope, HookView, PostTurnEndInput, PreToolUseAction,
+    PreToolUseInput, PreToolUseOutcome,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{
@@ -87,8 +88,9 @@ pub use tool_result_errors::{
     CONTEXT_DEFERRED_TOOL_OUTPUT, DEFERRED_TOOL_OUTPUT, DetailValue, ExecutionFailure, ReviewHold,
     ToolPermissionDenialReason, filesystem_access_denied_json, format_tool_execution_error_json,
     is_tool_output_error, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    shell_request_invalid_field_count, tool_execution_failure_json, tool_permission_denial_reason,
-    tool_permission_denied_json, tool_review_held_json, valued_execution_failure_json,
+    pre_tool_use_blocked_json, pre_tool_use_failed_closed_json, shell_request_invalid_field_count,
+    tool_execution_failure_json, tool_permission_denial_reason, tool_permission_denied_json,
+    tool_review_held_json, valued_execution_failure_json,
 };
 pub use tool_result_limits::{
     DEFAULT_MAX_TOOL_RESULT_BYTES, bound_model_output, prepare_model_output,
