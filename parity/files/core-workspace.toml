@@ -19,8 +19,8 @@ note = "Symbolic branch and gitdir/worktree metadata reads, absent detached/malf
 [[file]]
 upstream = "src/core/workspace/diagnostics.zig"
 status = "partial"
-modules = ["crates/ofx-trace/src/ring.rs", "crates/ofx-agent/src/compactor/trace.rs"]
-note = "The bounded ring the diagnostic rings share and the compaction snapshot and session reset exist; the network, tool-call, render and model-catalog rings and their lifetime statistics are unimplemented."
+modules = ["crates/ofx-trace/src/ring.rs", "crates/ofx-agent/src/compactor/trace.rs", "crates/ofx-agent/src/tool_call_metrics.rs"]
+note = "The bounded ring the diagnostic rings share, the compaction and tool-call snapshots with the tool-call lifetime statistics, and their session reset exist; the network, render and model-catalog rings are unimplemented."
 
 [[file]]
 upstream = "src/core/workspace/directory_completion_job.zig"
@@ -107,9 +107,9 @@ modules = ["crates/ofx-workspace/src/statusline_identity.rs", "crates/ofx-tui/sr
 
 [[file]]
 upstream = "src/core/workspace/tool_call_metrics.zig"
-status = "todo"
-modules = []
-note = "Tool-call payload diagnostic ring and lifetime rollups are unimplemented."
+status = "ported"
+modules = ["crates/ofx-agent/src/tool_call_metrics.rs"]
+note = "The 64-call ring with 64-byte names, 1,200-byte arguments and 2,000-byte results kept with their full sizes, web_fetch kept without payloads, the five outcomes and the lifetime counts are ported. The agent records each local call it settles: an executed call by its result, a panicked one as runtime_failed, one cancelled before it ran as rejected, and the parent's rejections and denials as rejected; provider-executed calls and calls the project gate deferred are not recorded, as upstream's are not. Cuts end at a character boundary, as docs/differences/trace.md records."
 
 [[file]]
 upstream = "src/core/workspace/unicode_simple_fold.zig"
