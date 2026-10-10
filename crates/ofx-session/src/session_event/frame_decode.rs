@@ -1,5 +1,6 @@
 use ofx_contract::{ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus};
 
+use super::file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
 use super::{
     AssistantEvent, CONVERSATION_SCHEMA_VERSION, ContextCheckpointEvent, ConversationEnvelope,
     ConversationEvent, FileEvidence, FileEvidenceAction, InterruptedEvent, SavedReplay,
@@ -126,7 +127,9 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         review_feedback: fields.fixed("review_feedback")?,
         created_at_ms: fields.or("created_at_ms", 0, |value| value.as_i64())?,
         permission_feedback: fields.or("permission_feedback", Vec::new(), strings)?,
-        committed_file_presentation: fields.fixed("committed_file_presentation")?,
+        committed_file_presentation: fields.nullable("committed_file_presentation", |value| {
+            file_presentation(value).map(|presentation| Some(Box::new(presentation)))
+        })?,
         command_replay_ref: fields
             .nullable("command_replay_ref", |value| string(value).map(Some))?,
         command_replay_bytes: fields
@@ -156,18 +159,60 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
     })
 }
 
-fn strings(value: Json<'_>) -> Option<Vec<String>> {
+fn file_presentation(value: Json<'_>) -> Option<CommittedFilePresentation> {
+    let mut fields = Fields::new(value)?;
+    let presentation = CommittedFilePresentation {
+        path: fields.string("path")?,
+        kind: tag(&fields.required("kind")?)?,
+        lines: list(fields.required("lines")?, presentation_line)?,
+        additions: fields.unsigned("additions")?,
+        deletions: fields.unsigned("deletions")?,
+        truncated: fields.flag("truncated")?,
+        previous_content: fields.nullable("previous_content", |value| string(value).map(Some))?,
+        after_content: fields.nullable("after_content", |value| string(value).map(Some))?,
+        lifecycle_id: fields.nullable("lifecycle_id", |value| lifecycle_id(value).map(Some))?,
+        content_handle: fields.nullable("content_handle", |value| string(value).map(Some))?,
+    };
+    fields.finish(presentation)
+}
+
+fn presentation_line(value: Json<'_>) -> Option<PresentationLine> {
+    let mut fields = Fields::new(value)?;
+    let line = PresentationLine {
+        kind: tag(&fields.required("kind")?)?,
+        old_line: fields.nullable("old_line", |value| line_number(&value).map(Some))?,
+        new_line: fields.nullable("new_line", |value| line_number(&value).map(Some))?,
+        text: fields.string("text")?,
+    };
+    fields.finish(line)
+}
+
+fn line_number(value: &Json<'_>) -> Option<u32> {
+    u32::try_from(value.as_u64()?).ok()
+}
+
+fn lifecycle_id(value: Json<'_>) -> Option<LifecycleId> {
+    let mut fields = Fields::new(value)?;
+    let id = LifecycleId {
+        turn_id: fields.unsigned("turn_id")?,
+        call_id: fields.string("call_id")?,
+    };
+    fields.finish(id)
+}
+
+fn list<T>(value: Json<'_>, item: impl Fn(Json<'_>) -> Option<T>) -> Option<Vec<T>> {
     let Json::Array(items) = value else {
         return None;
     };
-    items.into_iter().map(string).collect()
+    items.into_iter().map(item).collect()
+}
+
+fn strings(value: Json<'_>) -> Option<Vec<String>> {
+    list(value, string)
 }
 
 fn files(value: Json<'_>) -> Option<Vec<FileEvidence>> {
-    let Json::Array(items) = value else {
-        return None;
-    };
-    items.into_iter().map(file_evidence).collect()
+    list(value, file_evidence)
 }
 
 fn file_evidence(value: Json<'_>) -> Option<FileEvidence> {

@@ -138,7 +138,7 @@ note = "Display-title derivation exists; the display.json sidecar belongs to the
 upstream = "src/core/session/session_event.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_event.rs"]
-note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, command output replays on tool results and an interrupted turn's cancelled command round-trip, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
+note = "Modern conversation event encoding and sequencing exist, file evidence on turn ends is read and kept, upstream's turn summaries are read and kept, a command result's process presentation round-trips, command output replays on tool results and an interrupted turn's cancelled command round-trip, committed file presentations round-trip and give resumed edit rows their path and line counts, provider-executed tool calls and provider-native results round-trip, and tool results keep their permission feedback; image attachment/tool-image payloads and complete interrupted child/execution presentation payloads are missing."
 
 [[file]]
 upstream = "src/core/session/session_json.zig"

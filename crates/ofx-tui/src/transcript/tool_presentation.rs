@@ -118,6 +118,12 @@ impl ToolActivityRow {
             row.title = encoded_target(&format_unknown_action(&call.tool_name));
         }
         let (outcome, label) = row.saved_outcome(call.status, &call.output);
+        let file_change = call
+            .file_change
+            .filter(|_| outcome == ToolOutcome::Completed && row.is_file_mutation());
+        if let (Some(change), Some(action)) = (&file_change, row.label.as_mut()) {
+            action.target = encoded_target(&change.path);
+        }
         let command = call
             .process
             .filter(|_| matches!(outcome, ToolOutcome::Completed | ToolOutcome::Failed))
@@ -129,7 +135,10 @@ impl ToolActivityRow {
             }
             None => row
                 .saved_subagent_status(&call.arguments, &call.output, outcome, label)
-                .unwrap_or_else(|| row.settled(outcome, label, None, None)),
+                .unwrap_or_else(|| {
+                    let stats = file_change.and_then(|change| stats_suffix(change.stats));
+                    row.settled(outcome, label, stats.as_deref(), None)
+                }),
         };
         row
     }
@@ -536,9 +545,9 @@ fn encoded_target(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use ofx_contract::{
-        Concurrency, ReasoningEffort, ReviewFailure, ReviewHold, SubagentActionState,
-        SubagentStatus, ToolEffect, format_subagent_plain_action, tool_permission_denied_json,
-        tool_review_held_json,
+        Concurrency, ReasoningEffort, ReviewFailure, ReviewHold, SavedFileChange,
+        SubagentActionState, SubagentStatus, ToolEffect, format_subagent_plain_action,
+        tool_permission_denied_json, tool_review_held_json,
     };
 
     use super::*;
@@ -1271,8 +1280,68 @@ mod tests {
             status,
             output: output.to_owned(),
             process: None,
+            file_change: None,
         })
         .status
+    }
+
+    #[test]
+    fn saved_file_changes_show_the_path_and_lines_their_presentation_saved() {
+        let saved_change = |tool: &str, status: ToolResultStatus, path: &str, additions: u32| {
+            ToolActivityRow::saved(SavedToolCall {
+                call_id: ToolCallId::new("call"),
+                tool_name: tool.to_owned(),
+                arguments: "{}".to_owned(),
+                description: Some(description(
+                    ToolActivity::Edit,
+                    Some(("Editing", "Edited", "link/lib.rs")),
+                    "Editing link/lib.rs",
+                )),
+                status,
+                output: "edited".to_owned(),
+                process: None,
+                file_change: Some(SavedFileChange {
+                    path: path.to_owned(),
+                    stats: FileChangeStats {
+                        additions,
+                        deletions: 1,
+                    },
+                }),
+            })
+            .status
+        };
+        let outside = "/srv/outside/lib.rs";
+        let cases = [
+            (
+                saved_change("edit_file", ToolResultStatus::Success, outside, 2),
+                "Edited /srv/outside/lib.rs +2 / -1",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved_change("write_file", ToolResultStatus::Success, outside, 0),
+                "Edited /srv/outside/lib.rs -1",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved_change("edit_file", ToolResultStatus::Success, "a\u{1b}[2Jb", 0),
+                "Edited a\\x1b[2Jb -1",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved_change("edit_file", ToolResultStatus::Failure, outside, 2),
+                "Failed link/lib.rs",
+                ToolOutcome::Failed,
+            ),
+            (
+                saved_change("read_file", ToolResultStatus::Success, outside, 2),
+                "Edited link/lib.rs",
+                ToolOutcome::Completed,
+            ),
+        ];
+        for (status, phrase, outcome) in cases {
+            assert_eq!(status.phrase, phrase);
+            assert_eq!(status.outcome, Some(outcome));
+        }
     }
 
     #[test]
@@ -1383,6 +1452,7 @@ mod tests {
             status,
             output: output.to_owned(),
             process,
+            file_change: None,
         })
         .status
     }
@@ -1484,6 +1554,7 @@ mod tests {
                 status,
                 output: output.to_owned(),
                 process: None,
+                file_change: None,
             })
             .status
         };
