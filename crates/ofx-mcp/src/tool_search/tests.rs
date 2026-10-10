@@ -181,10 +181,6 @@ async fn a_server_scope_names_an_unknown_or_failed_server() {
         search(&runtime, "monitors", Some("absent")).model_output,
         SERVER_NOT_FOUND
     );
-    assert_eq!(
-        search_within(&runtime, "monitors", Some("absent"), 16384).model_output,
-        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
-    );
     let Lifecycle::Failed(failure) = runtime_server(&runtime, "broken").lifecycle() else {
         panic!("the server failed");
     };
@@ -545,5 +541,176 @@ async fn a_search_lists_an_expired_tool_list_again_first() {
             .await
             .model_output,
         LISTED
+    );
+}
+
+async fn ask_search(runtime: &Arc<McpRuntime>, query: &str, server: Option<&str>) -> String {
+    McpToolSearch::search_tools(
+        Arc::clone(runtime),
+        McpSearchRequest {
+            query: Arc::new(PreparedQuery::prepare(query.to_owned()).unwrap()),
+            server: server.map(str::to_owned),
+            host: McpSearchHost::Ask {
+                result_bytes: 16384,
+            },
+        },
+    )
+    .await
+    .model_output
+}
+
+fn started(runtime: &McpRuntime, name: &str) -> bool {
+    !matches!(runtime_server(runtime, name).lifecycle(), Lifecycle::Idle)
+}
+
+fn availability(runtime: &McpRuntime) -> Vec<(String, crate::model_catalog::Availability)> {
+    runtime
+        .model_catalog()
+        .into_iter()
+        .map(|server| (server.name, server.availability))
+        .collect()
+}
+
+#[tokio::test]
+async fn ask_starts_optional_servers_only_when_a_search_needs_them() {
+    use crate::model_catalog::Availability::{AvailableOnDemand, Ready};
+    let fixture = Fixture::new();
+    let mut docs = fixture.server("docs", &[("read", "Read docs")]);
+    docs.required = true;
+    let runtime = Arc::new(runtime(
+        vec![
+            docs,
+            fixture.server("datadog", DATADOG),
+            fixture.server("other", &[("list", "List things")]),
+        ],
+        &[],
+    ));
+    runtime.connect_for_ask(false).await;
+    assert!(started(&runtime, "docs"));
+    assert!(!started(&runtime, "datadog") && !started(&runtime, "other"));
+    assert_eq!(
+        availability(&runtime),
+        [
+            ("docs".to_owned(), Ready),
+            ("datadog".to_owned(), AvailableOnDemand),
+            ("other".to_owned(), AvailableOnDemand),
+        ]
+    );
+    assert_eq!(
+        ask_search(&runtime, "monitors", Some("absent")).await,
+        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
+    );
+    assert_eq!(
+        ask_search(&runtime, "datadog monitor incidents", Some("datadog")).await,
+        LISTED
+    );
+    assert!(started(&runtime, "datadog"));
+    assert!(!started(&runtime, "other"));
+    let output: Value = serde_json::from_str(&ask_search(&runtime, "other", None).await).unwrap();
+    assert_eq!(output["tools"][0]["name"], "mcp_other_list");
+    assert!(started(&runtime, "other"));
+    assert_eq!(
+        availability(&runtime),
+        [
+            ("docs".to_owned(), Ready),
+            ("datadog".to_owned(), Ready),
+            ("other".to_owned(), Ready),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ask_reports_a_server_that_fails_to_start_for_a_scoped_search() {
+    let runtime = Arc::new(runtime(vec![failing("broken")], &[]));
+    runtime.connect_for_ask(false).await;
+    assert!(!started(&runtime, "broken"));
+    let output: Value =
+        serde_json::from_str(&ask_search(&runtime, "anything", Some("broken")).await).unwrap();
+    assert_eq!(output["state"], "server_failed");
+    assert!(
+        output["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("MCP server 'broken' is unavailable: MCP server exited with code 3")
+    );
+}
+
+#[tokio::test]
+async fn an_unscoped_ask_search_dropped_while_servers_start_records_them_as_cancelled() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.path().join("hold"), "").unwrap();
+    let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));
+    runtime.connect_for_ask(false).await;
+    let searching = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { ask_search(&runtime, "datadog", None).await }
+    });
+    let settled = |wanted: fn(&Lifecycle) -> bool| {
+        let runtime = Arc::clone(&runtime);
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !wanted(&runtime_server(&runtime, "datadog").lifecycle()) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+    settled(|lifecycle| matches!(lifecycle, Lifecycle::Starting)).await;
+    searching.abort();
+    assert!(searching.await.unwrap_err().is_cancelled());
+    settled(|lifecycle| matches!(lifecycle, Lifecycle::Failed(failure) if failure == "Cancelled"))
+        .await;
+    std::fs::remove_file(fixture.path().join("hold")).unwrap();
+    let output: Value = serde_json::from_str(
+        &tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            ask_search(&runtime, "datadog", Some("datadog")),
+        )
+        .await
+        .expect("a later search answers at once"),
+    )
+    .unwrap();
+    assert_eq!(output["state"], "server_failed");
+    assert_eq!(
+        output["error"],
+        "MCP server 'datadog' is unavailable: Cancelled"
+    );
+}
+
+#[tokio::test]
+async fn a_terminal_ask_starts_every_server_before_the_turn() {
+    let fixture = Fixture::new();
+    let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));
+    runtime.connect_for_ask(true).await;
+    assert!(started(&runtime, "datadog"));
+    assert_eq!(
+        ask_search(&runtime, "monitors", Some("absent")).await,
+        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
+    );
+}
+
+#[tokio::test]
+async fn the_shell_never_starts_a_server_for_a_search() {
+    let fixture = Fixture::new();
+    let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));
+    let output = McpToolSearch::search_tools(
+        Arc::clone(&runtime),
+        McpSearchRequest {
+            query: Arc::new(PreparedQuery::prepare("datadog".to_owned()).unwrap()),
+            server: Some("absent".to_owned()),
+            host: McpSearchHost::Interactive,
+        },
+    )
+    .await;
+    assert_eq!(output.model_output, SERVER_NOT_FOUND);
+    assert!(!started(&runtime, "datadog"));
+    assert_eq!(
+        availability(&runtime),
+        [(
+            "datadog".to_owned(),
+            crate::model_catalog::Availability::Unavailable
+        )]
     );
 }

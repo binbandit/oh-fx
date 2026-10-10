@@ -23,6 +23,7 @@ pub enum Availability {
     Disabled,
     Failed,
     Unavailable,
+    AvailableOnDemand,
 }
 
 impl Availability {
@@ -33,6 +34,7 @@ impl Availability {
             Self::Disabled => "disabled",
             Self::Failed => "failed",
             Self::Unavailable => "unavailable",
+            Self::AvailableOnDemand => "available_on_demand",
         }
     }
 }
@@ -65,7 +67,13 @@ impl From<&ServerSummary> for BaselineEntry {
     }
 }
 
-pub(crate) fn classify_availability(connection: ConnectionState) -> Availability {
+pub(crate) fn classify_availability(
+    connection: ConnectionState,
+    deferred_for_ask: bool,
+) -> Availability {
+    if deferred_for_ask && connection == ConnectionState::Disconnected {
+        return Availability::AvailableOnDemand;
+    }
     match classify(connection) {
         Status::Disabled => Availability::Disabled,
         Status::Connecting => Availability::Discovering,

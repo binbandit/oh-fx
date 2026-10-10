@@ -53,11 +53,13 @@ pub(crate) fn snapshot_server(server: &Server) -> ServerSnapshot {
     snapshot
 }
 
-pub(crate) fn model_summary(server: &Server) -> ServerSummary {
+pub(crate) fn model_summary(server: &Server, deferred_pending: bool) -> ServerSummary {
     let (connection, client, _) = observe(server);
+    let deferred_for_ask = deferred_pending
+        && decide_startup(&server.config, StartupPhase::AskStartup) == StartupDecision::Deferred;
     ServerSummary {
         name: server.config.name.clone(),
-        availability: classify_availability(connection),
+        availability: classify_availability(connection, deferred_for_ask),
         tool_count: client
             .filter(|_| connection == ConnectionState::Ready)
             .map(|client| client.tool_catalog().tools.len()),
@@ -245,7 +247,7 @@ done
             crate::server_transport::ConnectOptions::default(),
             Arc::default(),
         ));
-        server.start().await;
+        server.start().await.unwrap();
         let Lifecycle::Ready(client) = server.lifecycle() else {
             panic!("the server is not ready");
         };

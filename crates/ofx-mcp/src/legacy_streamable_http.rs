@@ -6,6 +6,7 @@ use std::time::Duration;
 use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE, WWW_AUTHENTICATE};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -17,7 +18,7 @@ use crate::mcp_contract::HttpHeader;
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::streamable_http::{MediaType, parse_media_type, validate_header_value};
-use crate::timing::{sleep, spawn, timeout, timeout_at};
+use crate::timing::{sleep, spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
     Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
     ShutdownMode, TransportRequest,
@@ -268,9 +269,13 @@ impl LegacyHttpClient {
 
 impl Drop for LegacyHttpClient {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
+        let stopped = self.shared.stopping.swap(true, Ordering::AcqRel);
         if let Some(listener) = lock(&self.listener).take() {
             listener.abort();
+        }
+        if !stopped && let Ok(runtime) = Handle::try_current() {
+            let shared = Arc::clone(&self.shared);
+            spawn_on(&runtime, async move { shared.terminate_session().await });
         }
     }
 }

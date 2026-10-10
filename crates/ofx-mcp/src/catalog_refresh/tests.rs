@@ -107,7 +107,7 @@ async fn started_with(config: McpServerConfig) -> Arc<Server> {
         ConnectOptions::default(),
         Arc::new(AtomicU64::new(0)),
     ));
-    server.start().await;
+    let _ = server.start().await;
     server
 }
 
