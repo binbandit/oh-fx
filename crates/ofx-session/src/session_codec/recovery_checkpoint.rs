@@ -479,7 +479,7 @@ fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {
     fields.finish(result)
 }
 
-fn file_evidence(value: Json<'_>) -> Option<FileEvidence> {
+pub(crate) fn file_evidence(value: Json<'_>) -> Option<FileEvidence> {
     let mut fields = Fields::new(value)?;
     let file = FileEvidence {
         path: durable_text(fields.required("path")?)?,
@@ -540,7 +540,7 @@ fn lowercase_digest(hex: &str) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
     Some(digest)
 }
 
-fn durable_text(value: Json<'_>) -> Option<String> {
+pub(crate) fn durable_text(value: Json<'_>) -> Option<String> {
     match value {
         Json::String(text) => Some(text.into_owned()),
         Json::Object(entries) => match entries.entries() {
@@ -556,7 +556,7 @@ fn durable_text(value: Json<'_>) -> Option<String> {
     }
 }
 
-fn list<T>(value: Json<'_>, item: impl Fn(Json<'_>) -> Option<T>) -> Option<Vec<T>> {
+pub(crate) fn list<T>(value: Json<'_>, item: impl Fn(Json<'_>) -> Option<T>) -> Option<Vec<T>> {
     match value {
         Json::Array(items) => items.into_iter().map(item).collect(),
         _ => None,
@@ -577,7 +577,7 @@ fn one_of(value: &Json<'_>, tags: &[&'static str]) -> Option<&'static str> {
     tags.iter().copied().find(|tag| *tag == text)
 }
 
-fn tag<T: WireTag>(value: &Json<'_>) -> Option<T> {
+pub(crate) fn tag<T: WireTag>(value: &Json<'_>) -> Option<T> {
     T::from_tag(value.as_str()?)
 }
 

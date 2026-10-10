@@ -1,4 +1,8 @@
+use ofx_config::PrivateDir;
+
+use crate::json_fields::{Json, parse_json};
 use crate::session_event::{ConversationEvent, UserEvent};
+use crate::session_log::managed_file::read_managed_file;
 use crate::session_log::{SavedHistory, SavedTurn};
 
 const MAX_TITLE_WORDS: usize = 8;
@@ -6,6 +10,9 @@ pub const MAX_TITLE_BYTES: usize = 240;
 const FALLBACK_TITLE: &str = "Untitled session";
 const PROMPT_TRIM: &[char] = &[' ', '\t', '\r', '\n'];
 const LINE_TRIM: &[char] = &[' ', '\t', '\r'];
+const SIDECAR_FILE: &str = "display.json";
+const MAX_SIDECAR_BYTES: usize = 16 * 1024;
+const SIDECAR_SCHEMA_VERSION: u64 = 1;
 
 pub(crate) fn derive_display_title(history: &SavedHistory) -> String {
     history
@@ -21,6 +28,28 @@ pub(crate) fn derive_display_title(history: &SavedHistory) -> String {
 
 pub(crate) fn prompt_title(prompt: &str) -> Option<String> {
     titled_prompt(prompt).and_then(first_line_title)
+}
+
+pub(crate) fn history_title<'a>(prompts: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut prompts = prompts.into_iter().peekable();
+    prompts.peek()?;
+    let title = prompts
+        .find_map(titled_prompt)
+        .and_then(first_line_title)
+        .unwrap_or_else(|| FALLBACK_TITLE.to_owned());
+    Some(title)
+}
+
+pub(crate) fn read_sidecar_title(dir: &PrivateDir) -> Option<String> {
+    let bytes = read_managed_file(dir, SIDECAR_FILE, MAX_SIDECAR_BYTES).ok()??;
+    let sidecar = parse_json(&bytes).ok()?;
+    let optional_text =
+        |key| matches!(sidecar.get(key)?, Json::Null | Json::String(_)).then_some(());
+    (sidecar.get("schema_version")?.as_u64()? == SIDECAR_SCHEMA_VERSION).then_some(())?;
+    optional_text("preview")?;
+    optional_text("origin_workspace_root")?;
+    let title = sidecar.get("title")?.as_str()?;
+    (!title.is_empty()).then(|| title.to_owned())
 }
 
 fn first_line_title(prompt: &str) -> Option<String> {
