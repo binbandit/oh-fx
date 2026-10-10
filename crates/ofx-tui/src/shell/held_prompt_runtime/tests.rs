@@ -137,6 +137,46 @@ fn every_prompt_typed_ahead_of_a_sign_in_is_dropped_with_it() {
 }
 
 #[test]
+fn esc_drops_the_held_prompt_at_once_so_the_next_prompt_is_sent_and_held() {
+    let mut test = TestShell::start();
+    hold(&mut test, "fix the tests");
+    test.deliver(UiEvent::SignInStarted {
+        url: "https://auth.example/oauth/authorize?state=s".to_owned(),
+    });
+    press(&mut test, b"\x1b[27u");
+    press(&mut test, b"again\r");
+    assert_eq!(test.shell.composer.text(), "");
+    assert_eq!(
+        test.sent()[1..],
+        [
+            UiCommand::CancelSignIn,
+            UiCommand::Submit {
+                prompt: "again".to_owned(),
+                skills: Vec::new(),
+            },
+        ]
+    );
+    test.deliver(UiEvent::SignInEnded);
+    test.deliver(UiEvent::HeldPromptDropped);
+    test.deliver(UiEvent::Notice {
+        notice: Notice::new(NoticeTone::Warning, "auth", SIGNED_OUT),
+    });
+    test.deliver(UiEvent::PromptHeld);
+    assert_eq!(
+        states(&test),
+        [("again".to_owned(), SubmissionState::Held, None)]
+    );
+    let screen = test.screen();
+    assert_eq!(
+        screen
+            .matches("! auth: Codex needs a subscription login.")
+            .count(),
+        2,
+        "{screen}"
+    );
+}
+
+#[test]
 fn prompts_typed_ahead_of_a_sign_in_start_in_order_once_it_switches() {
     let mut test = TestShell::start();
     typed_ahead_of_a_sign_in(&mut test);
