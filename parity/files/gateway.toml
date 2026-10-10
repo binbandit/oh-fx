@@ -13,8 +13,8 @@ note = "Function selection, request validation, provider-executed history refusa
 [[file]]
 upstream = "src/gateway/client.zig"
 status = "partial"
-modules = ["crates/ofx-gateway/src/client.rs"]
-note = "Request and HTTP failure helpers exist, the bounded GET the Codex catalog and version lookups use writes runBoundedHttpOperation's bounded termination lines, and the agent path's ten-minute mid-stream stall watchdog runs on the Codex and custom transports; Vercel-specific client endpoints with their attempt, pool, SSE and resolved-model trace lines, hosted-provider integration and the gateway's own connection-setup and patient response-head waits are absent."
+modules = ["crates/ofx-gateway/src/client.rs", "crates/ofx-gateway/src/client/sse_stream.rs", "crates/ofx-gateway/src/client/resolved_model.rs"]
+note = "Request and HTTP failure helpers exist, the bounded GET the Codex catalog and version lookups use writes runBoundedHttpOperation's bounded termination lines, the agent path's ten-minute mid-stream stall watchdog runs on the gateway, Codex and custom transports, and the Vercel AI Gateway agent-path attempt (upstream's headers, one agent-owned attempt with no response-head timeout, HTTP failures) reduces the stream's metadata, errors, text, reasoning, usage and finish with the attempt, request, per-event SSE, SSE termination and resolved-model trace lines; tool-call and provider-result events, provider replay, generation metadata and billing, transport-owned retries, the connection pool and its lines, the hosted-provider integration and the generation lookup are absent."
 
 [[file]]
 upstream = "src/gateway/generation_usage.zig"
@@ -95,16 +95,19 @@ note = "Portable wire-ID projection, collision handling, and protection of opaqu
 upstream = "src/gateway/vercel_failure_diagnostics.zig"
 status = "todo"
 modules = []
+note = "Its schema and request-shape diagnostics feed only the network ring and the /trace Network Calls section, which arrive with trace slice 4."
 
 [[file]]
 upstream = "src/gateway/vercel_model_policy.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-gateway/src/vercel_model_policy.rs"]
+note = "The xai parallel tool calls flag exists; the fallback context windows and the intrinsic Fast capability arrive with the gateway route that consumes them."
 
 [[file]]
 upstream = "src/gateway/vercel_protocol.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-gateway/src/vercel_protocol.rs"]
+note = "The agent request body (prompt lanes, grouped tool results with denial outputs, the flattened tool envelope, tool choice, output limit, reasoning with max sent as xhigh, Fast, caching and xai provider options, replayed parts and metadata, call id projection, and user images as file parts) and its history validation exist; the tool-image follow-up message, the structured response format, the pending tool review body, provider routing and Ultrafast options, selectReplayParts and the request shape summary are absent, and parseGatewayCompletion has no upstream caller."
 
 [[file]]
 upstream = "src/gateway/web_search.zig"

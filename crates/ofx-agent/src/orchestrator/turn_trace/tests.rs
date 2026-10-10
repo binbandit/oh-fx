@@ -43,6 +43,10 @@ fn each_turn_ending_has_upstreams_outcome_kind() {
         kind(&provider("IncompleteStream", None)),
         "stream_interrupted"
     );
+    assert_eq!(
+        kind(&provider("StreamInterrupted", None)),
+        "stream_interrupted"
+    );
     assert_eq!(kind(&provider("BadRequest", Some(400))), "http_error");
     let persistence = Err(Stop::failed(TurnFailure::Persistence(
         ofx_contract::LogFailure {

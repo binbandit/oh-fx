@@ -1,6 +1,7 @@
 mod chat_completions;
 mod chat_completions_protocol;
 mod client;
+mod gateway;
 mod gateway_error_format;
 mod model_catalog;
 mod openai_codex;
@@ -14,8 +15,11 @@ mod stall_watch;
 #[cfg(test)]
 mod test_sources;
 mod tool_call_ids;
+mod vercel_model_policy;
+mod vercel_protocol;
 
 pub use chat_completions::ChatCompletionsProvider;
+pub use gateway::{GatewayCredential, GatewayEndpoints, GatewayProvider};
 pub use model_catalog::CatalogFailure;
 pub use openai_codex::{
     CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh,

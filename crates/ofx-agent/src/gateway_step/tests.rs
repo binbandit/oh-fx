@@ -57,6 +57,11 @@ fn failures_settle_as_upstream_classifies_their_results() {
         failure_settlement(&unfinished),
         Settlement::Finished(MISSING_FINISH)
     );
+    let interrupted = failure(ProviderErrorKind::TransportInterrupted, "StreamInterrupted");
+    assert_eq!(
+        failure_settlement(&interrupted),
+        Settlement::Finished(MISSING_FINISH)
+    );
     assert_eq!(failure_settlement(&not_found), Settlement::Answered(520));
     assert_eq!(failure_settlement(&unavailable), Settlement::Answered(503));
     assert_eq!(failure_settlement(&reset), Settlement::Failed("ReadFailed"));

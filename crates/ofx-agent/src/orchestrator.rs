@@ -1191,7 +1191,7 @@ impl Agent {
         events: EventSink<'_>,
     ) -> ProviderOptions<'_> {
         let Some(known) = &self.capabilities else {
-            return ProviderOptions::default();
+            return conversation_options(ProviderOptions::default());
         };
         let options = known
             .model
@@ -1203,7 +1203,7 @@ impl Agent {
                 text: format!("{FAST_UNAVAILABLE_NOTICE}\n"),
             });
         }
-        options
+        conversation_options(options)
     }
 
     async fn complete(
@@ -2224,6 +2224,13 @@ impl Agent {
                 provider_replay: None,
             });
         }
+    }
+}
+
+fn conversation_options(options: ProviderOptions<'_>) -> ProviderOptions<'_> {
+    ProviderOptions {
+        prompt_caching: true,
+        ..options
     }
 }
 
