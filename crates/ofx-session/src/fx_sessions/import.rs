@@ -17,7 +17,9 @@ use crate::session_log::managed_file::{
 use crate::session_log::{
     EVENTS_FILE, MANIFEST_FILE, SESSION_LOCK_FILE, read_metadata, staging_name,
 };
-use crate::session_migration::{Converted, holds_schema_v3, read_schema_v3, schema_v3_watermark};
+use crate::session_migration::{
+    Converted, holds_schema_v3, read_schema_v3, schema_v3_watermark, source_log,
+};
 
 const IMPORT_MARKER: &str = "fx-import.json";
 const MARKER_VERSION: u64 = 1;
@@ -159,11 +161,11 @@ fn stage(
             return Err(SessionError::FxCompactionUnfinished);
         }
     }
-    let before = source_stamp(source).map_err(|_| SessionError::FxSessionUnreadable)?;
+    let before = source_stamp(source, id).map_err(|_| SessionError::FxSessionUnreadable)?;
     let contents = contents(fx, source, id)?;
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
-    match owned_copy(source, sessions, &staging, before, &contents) {
+    match owned_copy(source, sessions, &staging, id, before, &contents) {
         Ok(imported) => Ok((staging, imported)),
         Err(error) => {
             remove_created_dir(sessions, &staging);
@@ -191,6 +193,7 @@ fn owned_copy(
     source: &PrivateDir,
     sessions: &PrivateDir,
     staging: &str,
+    id: &str,
     before: ImportSource,
     contents: &Contents,
 ) -> Result<Imported, SessionError> {
@@ -204,7 +207,7 @@ fn owned_copy(
             converted.write(&copy)?;
         }
     }
-    if source_stamp(source)? != before {
+    if source_stamp(source, id)? != before {
         return Err(SessionError::FxSessionOpen);
     }
     let lock = copy
@@ -286,7 +289,7 @@ fn widened<Field: Into<Wide>, Wide>(value: Field) -> Wide {
     value.into()
 }
 
-fn source_stamp(source: &PrivateDir) -> Result<ImportSource, SessionError> {
+fn source_stamp(source: &PrivateDir, id: &str) -> Result<ImportSource, SessionError> {
     let manifest = if present(source, MANIFEST_FILE)? {
         Some(file_stamp(source, MANIFEST_FILE)?)
     } else {
@@ -298,7 +301,7 @@ fn source_stamp(source: &PrivateDir) -> Result<ImportSource, SessionError> {
     };
     Ok(ImportSource {
         manifest,
-        events: file_stamp(source, EVENTS_FILE)?,
+        events: file_stamp(source, source_log(source, id)?)?,
         watermark,
     })
 }
@@ -311,7 +314,7 @@ pub(crate) fn outdated(fx: &PrivateDir, copy: &PrivateDir, id: &str) -> bool {
 }
 
 fn stale(source: &PrivateDir, copy: &PrivateDir, id: &str, marker: &Marker) -> bool {
-    !source_stamp(source).is_ok_and(|current| current == marker.source)
+    !source_stamp(source, id).is_ok_and(|current| current == marker.source)
         && untouched(copy, id, marker)
 }
 
