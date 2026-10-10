@@ -210,6 +210,7 @@ mod tests {
     use super::*;
     use crate::catalog_freshness::Freshness;
     use crate::features::common::ResourceData;
+    use crate::features::resources::Details;
 
     #[test]
     fn resource_invalidations_clear_only_through_the_generation_a_refresh_saw() {
@@ -230,7 +231,7 @@ mod tests {
         let resource = |uri: &str| Resource {
             uri: uri.to_owned(),
             name: "a".to_owned(),
-            title: None,
+            details: Details::default(),
         };
         let items: Arc<[Resource]> = Arc::from(vec![resource("a://")]);
         catalogs.record_failed_refresh(&items, 10);

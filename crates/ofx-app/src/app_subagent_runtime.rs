@@ -190,17 +190,20 @@ impl ChildAgents for ChildFactory {
 
     fn work_tools(&self) -> WorkTools {
         let executions = self.executions.separate();
-        let tools = tool_set::ask_tools(
-            &self.workspace_root,
-            &executions,
-            self.command_timeout,
-            &self.permission_mode,
-            self.skills.tool(),
-            self.skills.search(),
-            ToolHooks {
-                additional_roots: self.additional_roots.clone(),
-                ..ToolHooks::default()
-            },
+        let tools = tool_set::with_features(
+            tool_set::ask_tools(
+                &self.workspace_root,
+                &executions,
+                self.command_timeout,
+                &self.permission_mode,
+                self.skills.tool(),
+                self.skills.search(),
+                ToolHooks {
+                    additional_roots: self.additional_roots.clone(),
+                    ..ToolHooks::default()
+                },
+            ),
+            self.mcp.clone(),
         );
         WorkTools {
             tools,

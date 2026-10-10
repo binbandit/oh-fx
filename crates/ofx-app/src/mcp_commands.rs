@@ -858,6 +858,8 @@ mod tests {
             identity: identity.to_owned(),
             name: name.to_owned(),
             title: title.map(str::to_owned),
+            description: None,
+            mime_type: None,
         };
         assert_eq!(
             render_resource_listing(
@@ -963,6 +965,7 @@ mod tests {
         }
         let argument = |name: &str, required: bool| PromptArgument {
             name: name.to_owned(),
+            description: None,
             required,
         };
         let item = |name: &str, title: Option<&str>, description: Option<&str>| PromptSummary {

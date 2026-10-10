@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -26,6 +26,7 @@ use crate::server_transport::ConnectOptions;
 use crate::server_views::{health_failure, model_summary, snapshot_server};
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
 use crate::timing::{sleep, spawn, spawn_on};
+use crate::tool_mcp_feature_dispatch::NAME as FEATURES_TOOL;
 use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
 use crate::tool_names::ToolNames;
 use crate::transport::ShutdownMode;
@@ -42,6 +43,7 @@ pub struct McpRuntime {
     catalog_generation: Arc<AtomicU64>,
     published: Mutex<Published>,
     workspace_diagnostics: Mutex<Vec<WorkspaceDiagnostic>>,
+    installed: AtomicBool,
     reloading: tokio::sync::Mutex<()>,
 }
 
@@ -69,9 +71,11 @@ impl McpRuntime {
     pub fn new(
         load: NativeConfigLoad,
         options: ConnectOptions,
-        reserved: Vec<String>,
+        mut reserved: Vec<String>,
         limits: SchemaLimits,
     ) -> Self {
+        reserved.push(FEATURES_TOOL.to_owned());
+        let installed = hosts_anything(&load);
         let catalog_generation = Arc::new(AtomicU64::new(0));
         let servers = load
             .configs
@@ -93,8 +97,13 @@ impl McpRuntime {
             catalog_generation,
             published: Mutex::new(Published::default()),
             workspace_diagnostics: Mutex::new(load.workspace_diagnostics),
+            installed: AtomicBool::new(installed),
             reloading: tokio::sync::Mutex::new(()),
         }
+    }
+
+    pub(crate) fn installed(&self) -> bool {
+        self.installed.load(Ordering::Acquire)
     }
 
     pub fn connect(&self, phase: StartupPhase) -> Settling {
@@ -299,6 +308,7 @@ impl McpRuntime {
         if cancel.is_cancelled() {
             return Err(ReloadCancelled);
         }
+        let installs = hosts_anything(&candidate);
         let retained_authority: Vec<String> = candidate
             .configs
             .iter()
@@ -357,6 +367,9 @@ impl McpRuntime {
         let previous = std::mem::replace(&mut *lock(&self.servers), desired.clone());
         unpublished.armed = false;
         *lock(&self.workspace_diagnostics) = candidate.workspace_diagnostics;
+        if installs {
+            self.installed.store(true, Ordering::Release);
+        }
         self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         let removed: Vec<Arc<Server>> = previous
             .into_iter()
@@ -418,6 +431,10 @@ async fn await_feature_server(server: &Server, deadline: Instant) -> Result<(), 
         sleep(STARTUP_POLL).await;
     }
     Ok(())
+}
+
+fn hosts_anything(load: &NativeConfigLoad) -> bool {
+    !load.configs.is_empty() || !load.workspace_diagnostics.is_empty()
 }
 
 fn approved_workspace(config: &McpServerConfig) -> bool {
@@ -591,7 +608,7 @@ mod tests {
     use crate::feature_catalog::Snapshot;
     use crate::features::common::ResourceData;
     use crate::features::prompts::{PromptContentKind, PromptRole};
-    use crate::features::resources::Resource;
+    use crate::features::resources::{Details, Resource};
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
     use crate::project_config::WorkspaceDiagnosticCause;
 
@@ -1249,6 +1266,53 @@ done
     }
 
     #[tokio::test]
+    async fn a_runtime_is_installed_once_a_published_load_has_servers_or_project_errors() {
+        let state = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        let runtime = runtime(Vec::new());
+        assert!(!runtime.installed());
+        runtime
+            .reconcile(load(Vec::new()), true, true, &cancel)
+            .await
+            .unwrap();
+        assert!(!runtime.installed());
+        let broken = McpServerConfig {
+            required: true,
+            restart_limit: 0,
+            ..config("broken", "exit 3", state.path())
+        };
+        assert!(matches!(
+            runtime
+                .reconcile(load(vec![broken]), true, true, &cancel)
+                .await,
+            Ok(ReloadOutcome::RetainedRequiredFailure(_))
+        ));
+        assert!(!runtime.installed());
+        runtime
+            .reconcile(
+                load(vec![config("one", SERVER, state.path())]),
+                true,
+                true,
+                &cancel,
+            )
+            .await
+            .unwrap();
+        assert!(runtime.installed());
+        runtime
+            .reconcile(load(Vec::new()), true, true, &cancel)
+            .await
+            .unwrap();
+        assert!(runtime.installed());
+        let mut diagnosed = load(Vec::new());
+        diagnosed.workspace_diagnostics = vec![WorkspaceDiagnostic::new(
+            WorkspaceDiagnosticCause::InvalidJson,
+        )];
+        let reported = McpRuntime::new(diagnosed, ConnectOptions::default(), Vec::new(), limits());
+        assert!(reported.installed());
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
     async fn health_reports_connected_servers_and_project_configuration_errors() {
         let state = tempfile::tempdir().unwrap();
         let runtime = runtime(Vec::new());
@@ -1525,7 +1589,7 @@ done
             items: Arc::from(vec![Resource {
                 uri: "memory://stale".to_owned(),
                 name: "stale".to_owned(),
-                title: None,
+                details: Details::default(),
             }]),
             metadata: SnapshotMetadata::fresh(u64::MAX),
         };

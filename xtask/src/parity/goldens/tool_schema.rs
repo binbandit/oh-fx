@@ -64,7 +64,7 @@ pub(super) fn properties(
     limit: usize,
 ) -> Result<(String, BTreeSet<String>), String> {
     let property = Regex::new(
-        r#"^\s*\.\{\s*\.name = ("[^"\n]*"),\s*\.json_type = \.(string|integer),\s*(?:\.shape = &\.\{ \.enum_values = ([a-z_]+)\[0\.\.\] \},\s*)?\.description = ("[^"\n]*"),?\s*\},"#,
+        r#"^\s*\.\{\s*\.name = ("[^"\n]*"),\s*\.json_type = \.(string|integer|object),\s*(?:\.shape = &\.\{ \.enum_values = (?:([a-z_]+)\[0\.\.\]|&\.\{ ([^{}\n]*) \}) \},\s*)?\.description = ("[^"\n]*"),?\s*\},"#,
     )
     .map_err(|error| error.to_string())?;
     let mut rest = source;
@@ -78,8 +78,8 @@ pub(super) fn properties(
         if !names.insert(name.to_owned()) {
             return Err("duplicate property name".to_owned());
         }
-        let shape = match captures.get(3) {
-            Some(declaration) => {
+        let shape = match (captures.get(3), captures.get(4)) {
+            (Some(declaration), _) => {
                 let values = enums
                     .iter()
                     .find(|(name, _)| *name == declaration.as_str())
@@ -87,9 +87,13 @@ pub(super) fn properties(
                     .1;
                 format!(r#","enum":[{values}]"#)
             }
-            None => String::new(),
+            (None, Some(inline)) => format!(
+                r#","enum":[{}]"#,
+                strings(inline.as_str(), limit)?.join(",")
+            ),
+            (None, None) => String::new(),
         };
-        let description = string(&captures[4], limit)?;
+        let description = string(&captures[5], limit)?;
         if description == r#""""# {
             return Err("an empty description needs a writer audit".to_owned());
         }
