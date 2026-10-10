@@ -14,7 +14,7 @@ use ofx_agent::{
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
     ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, default_mode,
-    open_store, recovered_turn,
+    open_store, recovered_turn, session_lookup_message,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskLayout, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -172,6 +172,15 @@ impl From<SessionError> for Failure {
         match error {
             SessionError::OneOffSessionNotResumable => {
                 Self::notice(error.to_string(), CHILD_SESSION_NOT_RESUMABLE)
+            }
+            SessionError::FxSessionOpen
+            | SessionError::FxCompactionUnfinished
+            | SessionError::FxSessionUnreadable => {
+                let code = error.to_string();
+                match session_lookup_message(&code) {
+                    Some(message) => Self::notice(code, message),
+                    None => Self::code(code),
+                }
             }
             _ => Self::code(error.to_string()),
         }
@@ -726,6 +735,10 @@ fn web_fetch_progress(mode: OutputMode) -> Option<WebFetchProgress> {
     Some(Arc::new(|line: &str| {
         let _ = write_stderr(&format!("{line}\n"));
     }))
+}
+
+pub(crate) fn warn(notice: &str) {
+    let _ = write_stderr(&format!("oh-fx ask: {notice}\n"));
 }
 
 fn write_stderr(text: &str) -> io::Result<()> {

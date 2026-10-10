@@ -4,6 +4,7 @@ use ofx_session::{ResumeTarget, SessionError, SessionStore};
 use super::failure_line;
 use crate::app_bootstrap_runtime::Profile;
 use crate::app_session_runtime::{ResumeFailure, ResumedSession, Resumption};
+use crate::output_contracts::sessions::session_lookup_message;
 
 const NO_REMEMBERED_SESSION: &str = "oh-fx: no remembered session for this workspace; choose one with oh-fx -r or oh-fx --resume <id>";
 const REMEMBERED_SESSION_UNAVAILABLE: &str = "oh-fx: the remembered session ID could not be read; choose one with oh-fx -r or oh-fx --resume <id>";
@@ -67,6 +68,11 @@ fn session_failure_line(error: SessionError) -> String {
         }
         SessionError::UnsupportedSessionSchema => {
             "oh-fx: saved session uses an unsupported version and cannot be resumed by this oh-fx build."
+        }
+        SessionError::FxSessionOpen
+        | SessionError::FxCompactionUnfinished
+        | SessionError::FxSessionUnreadable => {
+            return failure_line(&session_lookup_message(&error.to_string()).unwrap_or_default());
         }
         other => return failure_line(&other),
     };

@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::os::fd::AsFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ofx_config::PrivateDir;
@@ -9,7 +9,7 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
-use crate::fx_sessions::FxSessions;
+use crate::fx_sessions::{FxSessions, Imported, import_from_fx};
 use crate::session_catalog_cache::{CatalogIndex, CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
@@ -21,7 +21,7 @@ use crate::session_log::managed_file::{
 };
 use crate::session_log::{
     LOCK_DEADLINE, SavedSession, SessionDisposal, WritableSession, delete_session, load_session,
-    now_ms, resume_session, start_session,
+    now_ms, resume_held_session, resume_session, start_session,
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
@@ -100,6 +100,7 @@ pub struct SessionStore {
     workspace_root: String,
     writable: bool,
     lock_deadline: Duration,
+    fx_home: Option<PathBuf>,
 }
 
 impl SessionStore {
@@ -115,6 +116,7 @@ impl SessionStore {
             workspace_root,
             writable: true,
             lock_deadline: LOCK_DEADLINE,
+            fx_home: None,
         })
     }
 
@@ -131,6 +133,7 @@ impl SessionStore {
             workspace_root,
             writable: false,
             lock_deadline: LOCK_DEADLINE,
+            fx_home: None,
         })
     }
 
@@ -154,10 +157,46 @@ impl SessionStore {
         )
     }
 
+    #[must_use]
+    pub fn with_fx_home(mut self, home: PathBuf) -> Self {
+        self.fx_home = Some(home);
+        self
+    }
+
     pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
-        let mut session = self.open_within(id, self.lock_deadline)?;
+        let mut session = match self.import_from_fx(id)? {
+            Some(imported) => self.open_imported(id, imported)?,
+            None => self.open_within(id, self.lock_deadline)?,
+        };
         self.move_here(&mut session)?;
         Ok(session)
+    }
+
+    pub(crate) fn open_imported(
+        &self,
+        id: &str,
+        imported: Imported,
+    ) -> Result<WritableSession, SessionError> {
+        let sessions = self
+            .writable_sessions()
+            .map_err(|_| SessionError::SessionNotFound)?;
+        let session = resumable(resume_held_session(
+            sessions,
+            id,
+            imported.copy,
+            imported.lock,
+        )?)?;
+        let _ = session.seal_import(imported.source);
+        Ok(session)
+    }
+
+    fn import_from_fx(&self, id: &str) -> Result<Option<Imported>, SessionError> {
+        match (&self.fx_home, self.writable_sessions()) {
+            (Some(home), Ok(sessions)) if is_valid_session_id(id) => {
+                import_from_fx(home, sessions, id)
+            }
+            _ => Ok(None),
+        }
     }
 
     pub fn open_without_waiting(&self, id: &str) -> Result<WritableSession, SessionError> {
@@ -180,11 +219,7 @@ impl SessionStore {
         {
             return Err(SessionError::OneOffSessionNotResumable);
         }
-        let session = resume_session(sessions, id, deadline)?;
-        if session.metadata().subagent_child {
-            return Err(SessionError::OneOffSessionNotResumable);
-        }
-        Ok(session)
+        resumable(resume_session(sessions, id, deadline)?)
     }
 
     pub fn children(&self, parent_id: &str) -> Result<ChildSessions, SessionError> {
@@ -268,6 +303,7 @@ impl SessionStore {
             workspace_root: self.workspace_root.clone(),
             writable: self.writable,
             lock_deadline: self.lock_deadline,
+            fx_home: self.fx_home.clone(),
         })
     }
 
@@ -432,6 +468,13 @@ fn parse_remembered_session_id(bytes: &[u8]) -> Result<&str, SessionError> {
         .ok()
         .filter(|id| is_valid_session_id(id))
         .ok_or(SessionError::InvalidRememberedSession)
+}
+
+fn resumable(session: WritableSession) -> Result<WritableSession, SessionError> {
+    if session.metadata().subagent_child {
+        return Err(SessionError::OneOffSessionNotResumable);
+    }
+    Ok(session)
 }
 
 #[cfg(test)]

@@ -619,14 +619,16 @@ impl Controller {
             let (opened, continues) = self
                 .persistence
                 .as_mut()
-                .map_or((None, false), |persistence| {
+                .map_or((Vec::new(), false), |persistence| {
                     persistence.open(&mut self.agent)
                 });
             if let Some(title) = resumed_title {
                 self.state.session_title.set(Some(&title));
             }
             self.bind_children();
-            self.session_notice(opened);
+            for notice in opened {
+                self.session_notice(Some(notice));
+            }
             self.continue_recovery(continues);
             if resuming {
                 self.ask_for_a_login();
@@ -1589,7 +1591,9 @@ mod tests {
 
     use super::*;
     use crate::app_bootstrap_runtime::{Launch, Profile};
-    use crate::app_session_runtime::{LaunchOverrides, ResumedSession, Resumption, session_route};
+    use crate::app_session_runtime::{
+        LaunchOverrides, ResumedSession, Resumption, open_store, session_route,
+    };
     use crate::codex_provider::SubscriptionEndpoints;
 
     mod sign_out;
@@ -1854,9 +1858,7 @@ mod tests {
             id: &str,
         ) -> Self {
             let (mut profile, setup) = profile_setup(&home, settings, endpoints).await;
-            let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
-            let store =
-                SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
+            let store = open_store(&profile).unwrap();
             let Ok(session) =
                 ResumedSession::open(&store, &mut profile, &ResumeTarget::Id(id.to_owned()))
             else {
@@ -6029,6 +6031,144 @@ mod tests {
             )),
             "{shown:?}"
         );
+    }
+
+    fn rebind_notice(saved: &str) -> (NoticeTone, String, String) {
+        (
+            NoticeTone::Warning,
+            "session".to_owned(),
+            format!(
+                "This session was saved with the {saved} provider, which oh-fx cannot use yet; it continues with codex."
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_session_saved_with_a_provider_oh_fx_cannot_use_continues_with_the_current_one() {
+        for (provider, label) in [
+            (json!("gateway"), "gateway"),
+            (
+                json!({"name": "fx-only", "binding": "ab".repeat(32)}),
+                "fx-only",
+            ),
+        ] {
+            let codex = FakeServer::start([codex_text("first answer")]);
+            let catalog = codex_catalog(false, 2);
+            let mut settings = codex_settings();
+            settings["session_titles"] = json!(false);
+            let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+            chat(&mut harness, &["first question"]).await;
+            let id = saved_sessions(&harness.home)[0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let home = harness.finish().await;
+            let manifest = home
+                .path()
+                .join("data/sessions")
+                .join(&id)
+                .join("session.json");
+            let mut metadata: Value =
+                serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+            metadata["provider"] = provider;
+            metadata["model"] = json!("openai/gpt-5");
+            metadata["effort"] = json!("low");
+            fs::write(&manifest, metadata.to_string()).unwrap();
+
+            let mut harness =
+                Harness::resuming(home, &settings, codex_endpoints(&codex, &catalog), &id).await;
+            let shown = notices_of(&mut harness, "/status").await;
+            assert!(shown.contains(&rebind_notice(label)), "{label}: {shown:?}");
+            let saved: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+            assert_eq!(saved["provider"], "codex", "{label}");
+            assert_eq!(saved["model"], CODEX_MODEL, "{label}");
+            assert_eq!(saved["effort"], "low", "{label}");
+        }
+    }
+
+    const FX_ID: &str = "fx0123456789";
+
+    fn save_in_fx(home: &std::path::Path, prompts: &[&str]) -> std::path::PathBuf {
+        let fx = home.join(".fx");
+        let session = fx.join("sessions").join(FX_ID);
+        fs::create_dir_all(&session).unwrap();
+        for directory in [&fx, &fx.join("sessions"), &session] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let manifest = format!(
+            "{{\"schema_version\":4,\"id\":\"{FX_ID}\",\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
+        );
+        let events: String = (0_u64..)
+            .zip(prompts)
+            .flat_map(|(turn, prompt)| {
+                [
+                    json!({"user": {"text": prompt, "images": [], "work_id": null}}),
+                    json!({"assistant": {"text": "done in fx", "provider_replay": null, "standalone_response": false}}),
+                    json!({"turn_completed": {"files": [], "turn_summary": null}}),
+                ]
+                .into_iter()
+                .zip(1_u64..)
+                .map(move |(event, offset)| {
+                    let frame = json!({"schema_version": 3, "seq": turn * 3 + offset, "timestamp_ms": 2, "event": event});
+                    format!("{frame}\n")
+                })
+            })
+            .collect();
+        for (name, bytes) in [
+            ("session.json", manifest),
+            ("events.jsonl", events),
+            ("session.lock", String::new()),
+        ] {
+            fs::write(session.join(name), bytes).unwrap();
+            fs::set_permissions(session.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        session
+    }
+
+    #[tokio::test]
+    async fn an_fx_session_follows_fx_until_its_model_is_changed_in_the_shell() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 8);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let endpoints = || codex_endpoints(&codex, &catalog);
+        let home = codex_home();
+        let fx = save_in_fx(home.path(), &["asked in fx"]);
+        let copy = home.path().join("data/sessions").join(FX_ID);
+        let saved = || -> Value {
+            serde_json::from_slice(&fs::read(copy.join("session.json")).unwrap()).unwrap()
+        };
+
+        let mut harness = Harness::resuming(home, &settings, endpoints(), FX_ID).await;
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(shown.contains(&rebind_notice("gateway")), "{shown:?}");
+        let home = harness.finish().await;
+        assert_eq!(saved()["provider"], "codex");
+
+        save_in_fx(home.path(), &["asked in fx", "followed up in fx"]);
+        let mut harness = Harness::resuming(home, &settings, endpoints(), FX_ID).await;
+        let shown = notices_of(&mut harness, &format!("/model {OTHER_CODEX_MODEL}")).await;
+        assert!(shown.contains(&rebind_notice("gateway")), "{shown:?}");
+        assert_eq!(
+            fs::read(copy.join("events.jsonl")).unwrap(),
+            fs::read(fx.join("events.jsonl")).unwrap()
+        );
+        let home = harness.finish().await;
+        assert_eq!(saved()["model"], OTHER_CODEX_MODEL);
+
+        save_in_fx(
+            home.path(),
+            &["asked in fx", "followed up in fx", "asked again in fx"],
+        );
+        let mut harness = Harness::resuming(home, &settings, endpoints(), FX_ID).await;
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(!shown.contains(&rebind_notice("gateway")), "{shown:?}");
+        let _home = harness.finish().await;
+        let log = fs::read_to_string(copy.join("events.jsonl")).unwrap();
+        assert!(log.contains("followed up in fx"), "{log}");
+        assert!(!log.contains("asked again in fx"), "{log}");
+        assert_eq!(saved()["provider"], "codex");
+        assert_eq!(saved()["model"], OTHER_CODEX_MODEL);
     }
 
     #[tokio::test]

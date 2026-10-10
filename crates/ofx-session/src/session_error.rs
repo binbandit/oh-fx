@@ -82,6 +82,12 @@ pub enum SessionError {
     NoReadableSessions,
     #[error("OneOffSessionNotResumable")]
     OneOffSessionNotResumable,
+    #[error("FxSessionOpen")]
+    FxSessionOpen,
+    #[error("FxCompactionUnfinished")]
+    FxCompactionUnfinished,
+    #[error("FxSessionUnreadable")]
+    FxSessionUnreadable,
     #[error(transparent)]
     Storage(DurableError),
     #[error("{0:?}")]

@@ -8,16 +8,16 @@ use super::*;
 use crate::session_store::{ListScope, SessionStore};
 use crate::session_summary_codec::ResumablePage;
 
-struct Saved<'a> {
-    id: &'a str,
-    workspace: &'a str,
-    title: Option<&'a str>,
-    prompts: &'a [&'a str],
-    modified_s: u64,
+pub(super) struct Saved<'a> {
+    pub(super) id: &'a str,
+    pub(super) workspace: &'a str,
+    pub(super) title: Option<&'a str>,
+    pub(super) prompts: &'a [&'a str],
+    pub(super) modified_s: u64,
 }
 
 impl Saved<'_> {
-    fn manifest(&self) -> String {
+    pub(super) fn manifest(&self) -> String {
         let title = self
             .title
             .map(|title| format!("\"title\":\"{title}\","))
@@ -29,7 +29,7 @@ impl Saved<'_> {
         )
     }
 
-    fn events(&self) -> String {
+    pub(super) fn events(&self) -> String {
         let mut log = String::new();
         for (turn, prompt) in (0_u64..).zip(self.prompts) {
             for (offset, event) in [
@@ -47,15 +47,15 @@ impl Saved<'_> {
         log
     }
 
-    fn write(&self, sessions: &Path) {
+    pub(super) fn write(&self, sessions: &Path) {
         self.write_with(sessions, &self.manifest());
     }
 
-    fn write_with(&self, sessions: &Path, manifest: &str) {
+    pub(super) fn write_with(&self, sessions: &Path, manifest: &str) {
         self.write_files(sessions, manifest, &self.events());
     }
 
-    fn write_files(&self, sessions: &Path, manifest: &str, events: &str) {
+    pub(super) fn write_files(&self, sessions: &Path, manifest: &str, events: &str) {
         let dir = sessions.join(self.id);
         fs::create_dir_all(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -77,12 +77,12 @@ impl Saved<'_> {
     }
 }
 
-struct Home {
+pub(super) struct Home {
     root: tempfile::TempDir,
 }
 
 impl Home {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let home = Self {
             root: tempfile::tempdir().unwrap(),
         };
@@ -93,27 +93,27 @@ impl Home {
         home
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         self.root.path()
     }
 
-    fn fx_profile(&self) -> PathBuf {
+    pub(super) fn fx_profile(&self) -> PathBuf {
         self.path().join(".fx")
     }
 
-    fn fx_sessions(&self) -> PathBuf {
+    pub(super) fn fx_sessions(&self) -> PathBuf {
         self.fx_profile().join("sessions")
     }
 
-    fn own_sessions(&self) -> PathBuf {
+    pub(super) fn own_sessions(&self) -> PathBuf {
         self.path().join("data/oh-fx/sessions")
     }
 
-    fn store(&self, workspace: &str) -> SessionStore {
+    pub(super) fn store(&self, workspace: &str) -> SessionStore {
         SessionStore::open(&self.path().join("data/oh-fx"), workspace).unwrap()
     }
 
-    fn listed(&self, workspace: &str, scope: ListScope) -> ResumablePage {
+    pub(super) fn listed(&self, workspace: &str, scope: ListScope) -> ResumablePage {
         self.store(workspace)
             .catalog_with_fx(&FxSessions::open(self.path()))
             .unwrap()
@@ -121,7 +121,7 @@ impl Home {
     }
 }
 
-fn ids(page: &ResumablePage) -> Vec<&str> {
+pub(super) fn ids(page: &ResumablePage) -> Vec<&str> {
     page.summaries
         .iter()
         .map(|summary| summary.id.as_str())
@@ -319,7 +319,7 @@ fn listing_fx_sessions_never_writes_into_fx_folder() {
     assert!(home.own_sessions().join(".resume-catalog").exists());
 }
 
-fn snapshot(root: &Path) -> Vec<(PathBuf, u64, i64, i64, u32)> {
+pub(super) fn snapshot(root: &Path) -> Vec<(PathBuf, u64, i64, i64, u32)> {
     let mut entries = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
@@ -402,11 +402,11 @@ fn a_missing_shared_or_linked_fx_folder_lists_nothing() {
 
 const REPLAY: &str = "\"fx-command-replay-00112233445566778899aabbccddeeff\"";
 
-fn frame(seq: u64, event: &str) -> String {
+pub(super) fn frame(seq: u64, event: &str) -> String {
     format!("{{\"schema_version\":3,\"seq\":{seq},\"timestamp_ms\":2,\"event\":{event}}}\n")
 }
 
-fn shell_events(replay_ref: &str, replay_bytes: &str) -> Vec<String> {
+pub(super) fn shell_events(replay_ref: &str, replay_bytes: &str) -> Vec<String> {
     let call = "{\"tool_call\":{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\",\"argument_integrity\":\"valid\",\"provisional_id\":null,\"provider_result\":null,\"final_identity\":\"valid\",\"provenance\":\"fx_local\"}}";
     let result = format!(
         "{{\"tool_result\":{{\"call_id\":\"call-1\",\"tool_name\":\"shell\",\"status\":\"success\",\"artifact_ref\":\"result-shell-0011223344556677-8899aabbccddeeff.txt\",\"tool_image_handle\":null,\"output_bytes\":3,\"stored_bytes\":3,\"completeness\":\"complete\",\"preview\":\"a.txt\",\"provider_native\":false,\"created_at_ms\":2,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":{replay_ref},\"command_replay_bytes\":{replay_bytes},\"command_process_presentation\":null,\"terminal_action_presentation\":null}}}}"
@@ -420,7 +420,7 @@ fn shell_events(replay_ref: &str, replay_bytes: &str) -> Vec<String> {
     ]
 }
 
-fn log_of(events: &[String]) -> String {
+pub(super) fn log_of(events: &[String]) -> String {
     events
         .iter()
         .zip(1_u64..)
@@ -428,11 +428,11 @@ fn log_of(events: &[String]) -> String {
         .collect()
 }
 
-fn shell_turn(replay_ref: &str, replay_bytes: &str) -> String {
+pub(super) fn shell_turn(replay_ref: &str, replay_bytes: &str) -> String {
     log_of(&shell_events(replay_ref, replay_bytes))
 }
 
-fn shell_turn_without_its_call() -> String {
+pub(super) fn shell_turn_without_its_call() -> String {
     let mut events = shell_events("null", "null");
     events.remove(1);
     log_of(&events)
@@ -447,7 +447,7 @@ fn shell_turn_cancelled_with_its_replay() -> String {
     log_of(&events)
 }
 
-fn shell_turn_with_an_unknown_event() -> String {
+pub(super) fn shell_turn_with_an_unknown_event() -> String {
     let mut events = shell_events("null", "null");
     events.insert(3, "{\"unknown\":{}}".to_owned());
     log_of(&events)
