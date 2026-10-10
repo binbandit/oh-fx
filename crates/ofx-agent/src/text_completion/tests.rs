@@ -18,21 +18,21 @@ fn request(messages: &[ChatMessage]) -> ModelRequest<'_> {
     }
 }
 
-fn answered(text: &str) -> Result<Outcome, Cancelled> {
-    Ok(Outcome {
+fn answered(text: &str) -> Outcome {
+    Outcome {
         reply: Ok(text.to_owned()),
         usage: Usage::default(),
-    })
+    }
 }
 
-fn unusable(reason: Reason, detail: &str) -> Result<Outcome, Cancelled> {
-    Ok(Outcome {
+fn unusable(reason: Reason, detail: &str) -> Outcome {
+    Outcome {
         reply: Err(Failure {
             reason,
             detail: detail.to_owned(),
         }),
         usage: Usage::default(),
-    })
+    }
 }
 
 #[tokio::test]
@@ -65,7 +65,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     let calls = ScriptedProvider::new(vec![Ok(calling(call))]);
     assert_eq!(
         complete(&calls, &request(&messages), 1024, &cancel).await,
-        unusable(Reason::ToolCall, "")
+        Ok(unusable(Reason::ToolCall, ""))
     );
     let truncated = ScriptedProvider::new(vec![Err(failure(
         ProviderErrorKind::Protocol,
@@ -73,7 +73,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     ))]);
     assert_eq!(
         complete(&truncated, &request(&messages), 1024, &cancel).await,
-        unusable(Reason::Incomplete, "finish_reason=length bytes=0")
+        Ok(unusable(Reason::Incomplete, "finish_reason=length bytes=0"))
     );
     let unfinished = ScriptedProvider::new(vec![Ok(Completion {
         finish_reason: FinishReason::ToolCalls,
@@ -81,12 +81,15 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     })]);
     assert_eq!(
         complete(&unfinished, &request(&messages), 1024, &cancel).await,
-        unusable(Reason::Incomplete, "finish_reason=tool_calls bytes=7")
+        Ok(unusable(
+            Reason::Incomplete,
+            "finish_reason=tool_calls bytes=7"
+        ))
     );
     let oversized = ScriptedProvider::new(vec![Ok(text("0123456789"))]);
     assert_eq!(
         complete(&oversized, &request(&messages), 9, &cancel).await,
-        unusable(Reason::Truncated, "bytes=10")
+        Ok(unusable(Reason::Truncated, "bytes=10"))
     );
     let refused = ScriptedProvider::new(vec![Err(failure(
         ProviderErrorKind::InvalidRequest,
@@ -94,7 +97,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     ))]);
     assert_eq!(
         complete(&refused, &request(&messages), 1024, &cancel).await,
-        unusable(Reason::Provider, "kind=invalid_request detail=")
+        Ok(unusable(Reason::Provider, "kind=invalid_request detail="))
     );
     assert_eq!(refused.seen().len(), 1);
     let broken = ScriptedProvider::new(vec![Err(failure(
@@ -103,7 +106,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     ))]);
     assert_eq!(
         complete(&broken, &request(&messages), 1024, &cancel).await,
-        unusable(Reason::Transport, "err=InvalidFinishReason")
+        Ok(unusable(Reason::Transport, "err=InvalidFinishReason"))
     );
 }
 
@@ -143,7 +146,7 @@ async fn a_provider_error_detail_is_masked_and_kept_to_one_safe_line() {
     })]);
     assert_eq!(
         complete(&unmapped, &request(&messages), 1024, &cancel).await,
-        unusable(Reason::Provider, "kind=provider_error detail=")
+        Ok(unusable(Reason::Provider, "kind=provider_error detail="))
     );
 }
 
@@ -165,7 +168,7 @@ async fn transient_failures_are_retried_before_anything_streams() {
     let started = tokio::time::Instant::now();
     assert_eq!(
         complete(&provider, &request(&messages), 1024, &cancel).await,
-        answered("the notes")
+        Ok(answered("the notes"))
     );
     assert_eq!(provider.seen().len(), 3);
     assert_eq!(started.elapsed(), Duration::from_millis(3_250));
