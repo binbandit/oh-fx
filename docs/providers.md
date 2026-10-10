@@ -92,7 +92,7 @@ With `auth.type` set to `bearer`, oh-fx owns the `Authorization` header and refu
 | `tool_choice_mode` | no | `"omit"` (default) never sends `tool_choice`; `"send"` sends `"auto"` or `"required"` when tools are offered. |
 | `max_tokens_parameter` | no | The request field that carries the output limit: `"max_tokens"` (default) or `"max_completion_tokens"`, which OpenAI reasoning models and Azure OpenAI require. |
 | `reviewer_model` | no | Model id for the automatic permission reviewer. It is validated now and used once the reviewer lands. |
-| `model_metadata` | no | Per-model `context_window`, `max_output_tokens`, `supports_tool_use`, `supports_vision`. `max_output_tokens` becomes the request's output limit and must be smaller than `context_window`; otherwise the connection fails to load with `InvalidModelMetadata`. The `supports_*` flags are validated but not used yet. |
+| `model_metadata` | no | Per-model `context_window`, `max_output_tokens`, `supports_tool_use`, `supports_vision`. `max_output_tokens` becomes the request's output limit and must be smaller than `context_window`; otherwise the connection fails to load with `InvalidModelMetadata`. `supports_vision: true` lets `ask --image` send images to that model as `image_url` content parts; a model with an entry but without it refuses images, and a model without an entry cannot be confirmed to take them. `supports_tool_use` is validated but not used yet. |
 
 Unknown fields are rejected so that a typo cannot silently change where requests go. Validation errors keep upstream's names, for example `oh-fx: InvalidBaseUrl` or `oh-fx: UnknownField`.
 

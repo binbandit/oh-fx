@@ -244,7 +244,7 @@ fn a_late_help_reply_over_an_effort_column_keeps_left_for_the_cursor() {
                 capabilities: ModelCapabilities {
                     reasoning_efforts: vec!["low".to_owned(), "high".to_owned()],
                     supports_fast_mode: false,
-                    context_window: None,
+                    ..ModelCapabilities::default()
                 },
                 max_output_tokens: None,
             }],

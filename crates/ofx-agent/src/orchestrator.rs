@@ -13,8 +13,8 @@ use ofx_contract::{
     AutoCompactPercent, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
     DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
-    FinishReason, GatedAction, HookScope, HookView, LogFailure, McpServersCatalog,
-    McpServersSection, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
+    FinishReason, GatedAction, HookScope, HookView, ImageAttachment, ImageInputSupport, LogFailure,
+    McpServersCatalog, McpServersSection, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
     ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ModelRequest, PathAccess,
     PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
     RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure, ReviewHold,
@@ -148,6 +148,8 @@ pub enum TurnFailure {
     Compaction(CompactionError),
     Persistence(LogFailure),
     RecoveryPaused,
+    ModelImageCapabilityUnavailable,
+    SubscriptionNativeImageUnavailable,
 }
 
 impl TurnFailure {
@@ -167,6 +169,8 @@ impl TurnFailure {
             Self::Compaction(error) => error.code(),
             Self::Persistence(failure) => &failure.code,
             Self::RecoveryPaused => "RecoveryPaused",
+            Self::ModelImageCapabilityUnavailable => "ModelImageCapabilityUnavailable",
+            Self::SubscriptionNativeImageUnavailable => "SubscriptionNativeImageUnavailable",
         }
     }
 }
@@ -539,6 +543,17 @@ impl Agent {
         self.run_turn_with_skills(prompt, &[], events, cancel).await
     }
 
+    pub async fn run_turn_with_images(
+        &mut self,
+        prompt: &str,
+        images: Vec<ImageAttachment>,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> TurnReport {
+        self.run_prompt(prompt, images, &[], None, events, cancel)
+            .await
+    }
+
     pub fn run_turn_with_skills<'a>(
         &'a mut self,
         prompt: &'a str,
@@ -556,7 +571,8 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> TurnReport {
-        self.run_prompt(prompt, skills, None, events, cancel).await
+        self.run_prompt(prompt, Vec::new(), skills, None, events, cancel)
+            .await
     }
 
     pub async fn continue_turn(
@@ -566,7 +582,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> TurnReport {
         let prompt = recovered.prompt.clone();
-        self.run_prompt(&prompt, &[], Some(recovered), events, cancel)
+        self.run_prompt(&prompt, Vec::new(), &[], Some(recovered), events, cancel)
             .await
     }
 
@@ -635,6 +651,7 @@ impl Agent {
     async fn run_prompt(
         &mut self,
         prompt: &str,
+        images: Vec<ImageAttachment>,
         skills: &[SkillBinding],
         recovered: Option<RecoveredTurn>,
         events: EventSink<'_>,
@@ -666,7 +683,7 @@ impl Agent {
         self.close_interrupted_turns(self.continues_steering());
         let mut turn = self.new_turn(id, prompt, trace);
         self.turn_starts.push(turn.start);
-        self.history.push(self.turn_message(prompt));
+        self.history.push(self.turn_message(prompt, images));
         if let Some(recovered) = recovered {
             self.restore_recovered(&mut turn, recovered);
         }
@@ -865,6 +882,7 @@ impl Agent {
         let mut step = 0;
         loop {
             self.stop_at_step_limit(turn, step, events)?;
+            self.require_image_input(cancel).await?;
             let entered = enter_step(turn, step);
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
@@ -1092,6 +1110,30 @@ impl Agent {
             CapabilityLookup::Cancelled => return Err(Stop::interrupted()),
         });
         Ok(())
+    }
+
+    async fn require_image_input(&mut self, cancel: &CancellationToken) -> Result<(), Stop> {
+        let carries_images = self.history.iter().any(
+            |message| matches!(message, ChatMessage::User { images, .. } if !images.is_empty()),
+        );
+        if !carries_images {
+            return Ok(());
+        }
+        self.resolve_capabilities(cancel).await?;
+        let support = self
+            .capabilities
+            .as_ref()
+            .map(|known| known.model.image_input_support)
+            .unwrap_or_default();
+        match support {
+            ImageInputSupport::Native => Ok(()),
+            ImageInputSupport::Unknown => {
+                Err(Stop::failed(TurnFailure::ModelImageCapabilityUnavailable))
+            }
+            ImageInputSupport::NonNative => Err(Stop::failed(
+                TurnFailure::SubscriptionNativeImageUnavailable,
+            )),
+        }
     }
 
     fn turn_request<'a>(

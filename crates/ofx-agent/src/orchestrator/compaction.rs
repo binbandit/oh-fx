@@ -185,13 +185,15 @@ impl Agent {
             .calibration
             .as_ref()
             .filter(|calibration| calibration.model == request.model);
-        let measure = |body: &str| {
-            let cost = RequestCost::measure(body);
+        let measure = |body: &str, has_images: bool| {
+            let cost = RequestCost::measure(body, has_images);
             calibration.map_or(cost, |calibration| cost.calibrated(calibration))
         };
         let body = self.provider.request_body(request)?;
-        let cost = RequestCost::measure(&body);
-        let cost = calibration.map_or(cost, |calibration| cost.calibrated(calibration));
+        let has_images = request.messages.iter().any(
+            |message| matches!(message, ChatMessage::User { images, .. } if !images.is_empty()),
+        );
+        let cost = measure(&body, has_images);
         let fixed = ModelRequest {
             messages: &[],
             ..*request
@@ -199,7 +201,7 @@ impl Agent {
         let fixed_tokens = self
             .provider
             .request_body(&fixed)
-            .map(|body| measure(&body).estimated_tokens);
+            .map(|body| measure(&body, false).estimated_tokens);
         Some((Measured { cost, fixed_tokens }, body))
     }
 
@@ -465,7 +467,10 @@ impl Agent {
         size.correction = self
             .calibration
             .as_ref()
-            .filter(|calibration| calibration.model == self.config.model)
+            .filter(|calibration| {
+                calibration.model == self.config.model
+                    && calibration.request.image_identity.is_none()
+            })
             .map(|calibration| Correction {
                 estimated: calibration.request.text_tokens,
                 measured: calibration.exact_input_tokens,
