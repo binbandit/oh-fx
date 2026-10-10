@@ -336,7 +336,7 @@ fn launch_modifiers_the_drafts_cannot_honor_yet_fail_before_any_request() {
     for (args, feature) in [
         (&["--sessions-v2", "issue"][..], "--sessions-v2"),
         (
-            &["--context-limit", "mcp_description_bytes=1", "issue"],
+            &["--context-limit", "image_adapter_output_bytes=1", "issue"],
             "--context-limit",
         ),
     ] {
