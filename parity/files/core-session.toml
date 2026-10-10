@@ -69,7 +69,7 @@ note = "Append and recent-entry loading exist; clearWorkspace is missing; invali
 upstream = "src/core/session/result_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/result_store.rs"]
-note = "Stored result handles and previews exist; paged ResultReader, image snapshots and compactor content packs are missing."
+note = "Stored result handles and previews exist, and a committed checkpoint's tool images are stored as image artifacts; paged ResultReader, image snapshots, diff content packs and compactor content packs are missing."
 
 [[file]]
 upstream = "src/core/session/session.zig"
@@ -109,7 +109,7 @@ note = "Only the subagent control directory exists, with a child's owner marker 
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_codec.rs"]
-note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, approval feedback, and review feedback marks written and restored as upstream does; the legacy connection preferences and older checkpoint versions only older fx sessions hold come with their import (NEW-G)."
+note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, approval feedback, review feedback marks, prompt images, provider results, argument repair, and each result's stored output, file presentation, command output replay, and tool images written and restored as upstream does; terminal presentations come with the terminal tool, and the legacy connection preferences and older checkpoint versions only older fx sessions hold come with their import (NEW-G)."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"

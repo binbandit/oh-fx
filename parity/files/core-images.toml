@@ -10,8 +10,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/images/image_data.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/image_data.rs"]
+note = "The checks upstream applies to saved images exist: media type sniffing, base64 and size limits, source references, and tool image blocks. Image loading for requests and the host recovery notice come with image attachments."
 
 [[file]]
 upstream = "src/core/images/png_downscale.zig"

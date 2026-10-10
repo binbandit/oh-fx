@@ -1143,6 +1143,25 @@ fn a_compaction_prepared_checkpoint_is_committed_when_the_session_opens() {
     );
 }
 
+fn event_kinds(log: &[String]) -> Vec<&'static str> {
+    log.iter()
+        .map(|line| {
+            [
+                "user",
+                "context_checkpoint",
+                "tool_call",
+                "tool_result",
+                "interrupted",
+                "assistant",
+                "turn_completed",
+            ]
+            .into_iter()
+            .find(|kind| line.contains(&format!("\"event\":{{\"{kind}\"")))
+            .unwrap_or("other")
+        })
+        .collect()
+}
+
 #[test]
 fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
     let fixture = Fixture::new();
@@ -1216,25 +1235,8 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
     assert!(!session.holds_recovery());
     assert!(!fixture.path(RECOVERY_FILE).exists());
     let log = fixture.log();
-    let kinds: Vec<&str> = log
-        .iter()
-        .map(|line| {
-            [
-                "user",
-                "context_checkpoint",
-                "tool_call",
-                "tool_result",
-                "interrupted",
-                "assistant",
-                "turn_completed",
-            ]
-            .into_iter()
-            .find(|kind| line.contains(&format!("\"event\":{{\"{kind}\"")))
-            .unwrap_or("other")
-        })
-        .collect();
     assert_eq!(
-        kinds,
+        event_kinds(&log),
         [
             "user",
             "assistant",

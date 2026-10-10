@@ -133,8 +133,8 @@ note = "Both implementations saturate byte counters, split spans on ASCII whites
 [[file]]
 upstream = "src/core/shared/types.zig"
 status = "partial"
-modules = ["crates/ofx-contract/src/types.rs", "crates/ofx-contract/src/ui.rs", "crates/ofx-contract/src/file_evidence.rs"]
-note = "Core messages, file evidence, permission/review/events and usage contracts exist, tool calls carry upstream's provider result and execution provenance, and turn summaries with their token progress exist; image attachments, the other rich persisted presentations and diagnostic metrics are absent."
+modules = ["crates/ofx-contract/src/types.rs", "crates/ofx-contract/src/ui.rs", "crates/ofx-contract/src/file_evidence.rs", "crates/ofx-contract/src/persisted_result.rs"]
+note = "Core messages, file evidence, permission/review/events and usage contracts exist, tool calls carry upstream's provider result and execution provenance, turn summaries with their token progress exist, and image attachments and the persisted result fields a recovery checkpoint carries (stored output, file presentations, command output replays, tool images) exist; terminal presentations and diagnostic metrics are absent."
 
 [[file]]
 upstream = "src/core/shared/unicode_display_data.zig"

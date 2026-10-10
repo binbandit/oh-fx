@@ -2158,6 +2158,75 @@ fn a_resumed_shell_continues_a_paused_response_on_its_own() {
 }
 
 #[test]
+fn a_resumed_shell_continues_a_paused_turn_and_keeps_every_field_its_checkpoint_saved() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["First answer."])),
+        Reply::sse(&chat_text_events(&["Build fixed."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first question\r");
+    wait(&session, "First answer.");
+    exit(session);
+    let id = home.only_session();
+    let replay = format!("fx-command-replay-{}.bin", "0a".repeat(32));
+    save_paused(&home, &id, CONFIGURED_IDENTITY, |checkpoint| {
+        checkpoint["user"]["images"] = json!([{
+            "id": 1, "path": "/Users/me/shot.png", "media_type": "image/png",
+            "snapshot_path": "images/shot-1.png", "snapshot_sha256": "ab"
+        }]);
+        checkpoint["tool_state"] = json!("confirmed");
+        checkpoint["action"] = json!("continuing_after_tool");
+        checkpoint["execution"]["tool_steps"] = json!([{
+            "assistant": null,
+            "provider_replay": null,
+            "tool_calls": [{"id": "call_1", "name": "shell", "arguments_json": "{\"command\":\"ls\"}", "provider_result": null}],
+            "tool_results": [{
+                "tool_call_id": "call_1", "tool_name": "shell", "status": "success",
+                "output": "a.rs\n", "output_handle": null, "preview": null,
+                "output_bytes": 5, "stored_output_bytes": 5, "truncated": false,
+                "provider_native": false, "review_feedback": false,
+                "created_at_ms": 1_700_000_000_002_i64, "permission_feedback": [],
+                "committed_file_presentation": null,
+                "command_output_replay": {"kind": "available", "handle": replay, "framed_bytes": 22},
+                "command_process_presentation": {"kind": "exit_code", "value": 0},
+                "terminal_action_presentation": null
+            }]
+        }]);
+    });
+
+    let session = home.shell(&["-c"], "session resumed: first question");
+    wait(&session, "Build fixed.");
+    exit(session);
+    assert!(!home.sessions().join(&id).join("recovery.json").exists());
+    let frames = home.frames(&id);
+    assert_eq!(
+        kinds(&frames),
+        [
+            "user",
+            "assistant",
+            "turn_completed",
+            "user",
+            "tool_call",
+            "tool_result",
+            "assistant",
+            "turn_completed"
+        ]
+    );
+    let images = &frames[3]["event"]["user"]["images"];
+    assert_eq!(images[0]["path"], "/Users/me/shot.png");
+    assert_eq!(images[0]["snapshot_sha256"], "ab");
+    let result = &frames[5]["event"]["tool_result"];
+    assert_eq!(result["created_at_ms"], 1_700_000_000_002_i64);
+    assert_eq!(result["command_replay_ref"], replay.as_str());
+    assert_eq!(result["command_replay_bytes"], 22);
+    assert_eq!(
+        result["command_process_presentation"],
+        json!({"exit_code": 0})
+    );
+}
+
+#[test]
 fn a_resumed_shell_restarts_a_paused_reply_without_showing_it_twice() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["First answer."])),

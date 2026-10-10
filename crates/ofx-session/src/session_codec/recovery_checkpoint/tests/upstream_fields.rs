@@ -165,9 +165,7 @@ fn checkpoint_images_follow_upstreams_snapshot_and_inline_rules() {
     );
     let inline_png = format!("{{\"encoding\":\"base64\",\"data\":\"{PNG_DATA}\"}}");
     for image in [
-        format!(
-            "{{\"id\":2,\"path\":\"clip.png\",\"media_type\":\"image/png\",\"snapshot_sha256\":\"x\",\"inline_blob\":0}}"
-        ),
+        "{\"id\":2,\"path\":\"clip.png\",\"media_type\":\"image/png\",\"snapshot_sha256\":\"x\",\"inline_blob\":0}".to_owned(),
         format!(
             "{{\"id\":2,\"path\":\"clip.png\",\"media_type\":\"image/png\",\"snapshot_sha256\":\"x\",\"inline_data\":{inline_png},\"inline_blob\":0}}"
         ),
