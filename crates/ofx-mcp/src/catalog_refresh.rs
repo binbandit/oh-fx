@@ -4,8 +4,7 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::catalog_freshness::{
-    Freshness, RefreshAction, SnapshotMetadata, begin_refresh, decide_refresh, failed_refresh,
-    request_refresh,
+    RefreshAction, SnapshotMetadata, begin_refresh, decide_refresh, failed_refresh, request_refresh,
 };
 use crate::error::McpError;
 use crate::features::tools::ToolCatalog;
@@ -17,6 +16,7 @@ use crate::timing::timeout_at;
 pub(crate) struct Refreshed {
     pub(crate) catalog: Arc<ToolCatalog>,
     pub(crate) replaced: bool,
+    pub(crate) in_flight: bool,
 }
 
 impl McpClient {
@@ -29,8 +29,9 @@ impl McpClient {
         loop {
             let mut settled = pin!(self.tools_settled.notified());
             settled.as_mut().enable();
-            if lock(&self.tools).metadata.freshness != Freshness::Refreshing {
-                return Ok(self.refresh_tools(deadline).await);
+            let refreshed = self.refresh_tools(deadline).await;
+            if !refreshed.in_flight {
+                return Ok(refreshed);
             }
             if timeout_at(deadline, settled).await.is_err() {
                 return Err(McpError::McpRequestTimedOut);
@@ -52,6 +53,7 @@ impl McpClient {
                 return Refreshed {
                     catalog: Arc::clone(&snapshot.catalog),
                     replaced: false,
+                    in_flight: action == RefreshAction::AlreadyRefreshing,
                 };
             }
             let source = snapshot.metadata;
@@ -66,6 +68,7 @@ impl McpClient {
             return Refreshed {
                 catalog: self.tool_catalog(),
                 replaced: false,
+                in_flight: false,
             };
         };
         pending.source = None;
@@ -79,6 +82,7 @@ impl McpClient {
         Refreshed {
             catalog: Arc::clone(&snapshot.catalog),
             replaced,
+            in_flight: false,
         }
     }
 }

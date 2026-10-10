@@ -233,6 +233,16 @@ impl Server {
         }
     }
 
+    async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
+        if client
+            .settled_tools(deadline)
+            .await
+            .is_ok_and(|refreshed| refreshed.replaced)
+        {
+            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
     pub(crate) async fn running_client(
         self: &Arc<Self>,
         deadline: Instant,
@@ -346,7 +356,7 @@ async fn watch(server: Weak<Server>, connection: Connection) {
                 let deadline = Instant::now() + connection.client.operation_timeout;
                 if connection
                     .stop
-                    .run_until_cancelled(current.refresh_tools(&connection.client, deadline))
+                    .run_until_cancelled(current.follow_tool_change(&connection.client, deadline))
                     .await
                     .is_none()
                 {

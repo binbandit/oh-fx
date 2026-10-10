@@ -223,6 +223,7 @@ async fn a_refresh_in_flight_shows_refreshing_and_others_keep_the_last_list() {
         .refresh_tools(Instant::now() + Duration::from_secs(5))
         .await;
     assert!(!concurrent.replaced);
+    assert!(concurrent.in_flight);
     assert_eq!(concurrent.catalog.tools[0].name, "alpha");
     assert!(refreshing.await.unwrap());
     assert_eq!(client.tool_catalog().tools[0].name, "beta");
@@ -343,5 +344,41 @@ async fn a_call_whose_own_list_uses_up_its_deadline_never_reaches_the_server() {
     assert_eq!(lists(state.path()), 2);
     assert!(call_directly(&client, &alpha).await);
     assert_eq!(lines(state.path(), "calls"), 1);
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn a_change_notified_while_a_list_is_in_flight_is_listed_once_that_list_ends() {
+    let state = tempfile::tempdir().unwrap();
+    let server = started(state.path()).await;
+    let alpha = advertised(&server);
+    let client = ready_client(&server);
+    write(state.path(), "slow", "");
+    client.request_tool_refresh();
+    let refreshing = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+                .replaced
+        })
+    };
+    while lists(state.path()) < 2 {
+        sleep(Duration::from_millis(5)).await;
+    }
+    std::fs::remove_file(state.path().join("slow")).unwrap();
+    write(state.path(), "name", "beta");
+    write(state.path(), "notify", "");
+    assert!(call_directly(&client, &alpha).await);
+    assert!(!refreshing.await.unwrap());
+    let listed = Instant::now() + Duration::from_secs(5);
+    while client.tool_catalog().tools[0].name != "beta" && Instant::now() < listed {
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(client.tool_catalog().tools[0].name, "beta");
+    assert_eq!(lists(state.path()), 3);
+    assert!(!client.tools_invalidation.pending());
+    assert_eq!(health(&server).0, CacheFreshness::Fresh);
     server.stop(ShutdownMode::Immediate).await;
 }
