@@ -81,7 +81,7 @@ note = "Resource, template and prompt listing, resource reads and prompt gets ex
 upstream = "src/core/mcp/feature_result.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/feature_result.rs", "crates/ofx-mcp/src/feature_operations.rs"]
-note = "The untrusted-data envelopes for every mcp_features action and the unsupported envelope are written in feature_result.rs, and the resource and prompt summaries live in feature_operations.rs. Binary resource contents and prompt images are described as unsent instead of attached, as docs/differences/mcp.md records."
+note = "The untrusted-data envelopes for every mcp_features action and the unsupported envelope are written in feature_result.rs, and the resource and prompt summaries live in feature_operations.rs. A resource read attaches its supported image blobs (resourceImages) and a prompt get the images of its messages (promptImages), and both describe them as image content."
 
 [[file]]
 upstream = "src/core/mcp/feature_snapshot.zig"
@@ -343,7 +343,7 @@ note = "Tool calls from the published snapshot with the response frame cap and p
 upstream = "src/core/mcp/tool_result.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/tool_result.rs"]
-note = "Image and audio items and binary resources are described rather than sent, as recorded in docs/differences/mcp.md."
+note = "Supported image items and embedded image resources are attached to the result with parseToolImages before their data is replaced with an image content note, a result whose images cannot be used fails with the image error name, and audio and other binary contents are described as unsent."
 
 [[file]]
 upstream = "src/core/mcp/tool_search.zig"

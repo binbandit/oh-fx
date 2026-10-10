@@ -1,10 +1,12 @@
-use ofx_contract::{ToolOutput, prepare_model_output};
+use ofx_contract::{ToolOutput, format_tool_execution_error_json, prepare_model_output};
+use ofx_images::{parse_tool_images, supported_media_type};
 use ofx_jsonrpc::RpcError;
 use ofx_text::sanitize_model_text_owned;
 use serde_json::{Map, Value};
 
 use crate::features::tools::ToolCallOutcome;
 
+pub(crate) const IMAGE_CONTENT: &str = "image content";
 const UNSUPPORTED_MEDIA: &str = "unsupported media; content was not sent to the model";
 pub(crate) const UNSENT_BINARY_RESOURCE: &str = "binary resource content was not sent to the model";
 const TEXT_FIELDS: [&str; 4] = ["text", "data", "blob", "content"];
@@ -19,15 +21,28 @@ pub(crate) fn model_output(
     match outcome {
         ToolCallOutcome::Complete(complete) => {
             let mut result = complete.result;
+            let mut images = Vec::new();
             if let Some(content) = result.get_mut("content") {
+                if let Value::Array(items) = content {
+                    images = match parse_tool_images(items) {
+                        Ok(images) => images,
+                        Err(error) => {
+                            return ToolOutput::failure(format_tool_execution_error_json(
+                                prefixed_name,
+                                &error.to_string(),
+                            ));
+                        }
+                    };
+                }
                 project_media_for_text(content);
             }
             let text = serialize_capped(server, tool, &result, max_bytes);
-            if complete.is_error {
+            let output = if complete.is_error {
                 ToolOutput::failure(text)
             } else {
                 ToolOutput::success(text)
-            }
+            };
+            output.with_images(images)
         }
         ToolCallOutcome::ProtocolFailure(error) => ToolOutput::failure(prepare_model_output(
             prefixed_name,
@@ -78,19 +93,42 @@ fn project_media_block(item: &mut Value) {
         return;
     };
     match object.get("type").and_then(Value::as_str) {
-        Some("image" | "audio") => {
+        Some(kind @ ("image" | "audio")) => {
+            let image = kind == "image" && declares_supported_image(object);
             object.swap_remove("data");
-            object.insert("delivery".to_owned(), Value::from(UNSUPPORTED_MEDIA));
+            object.insert(
+                "delivery".to_owned(),
+                Value::from(if image {
+                    IMAGE_CONTENT
+                } else {
+                    UNSUPPORTED_MEDIA
+                }),
+            );
         }
         Some("resource") => {
             if let Some(resource) = object.get_mut("resource").and_then(Value::as_object_mut)
                 && resource.swap_remove("blob").is_some()
             {
-                resource.insert("delivery".to_owned(), Value::from(UNSENT_BINARY_RESOURCE));
+                let image = declares_supported_image(resource);
+                resource.insert(
+                    "delivery".to_owned(),
+                    Value::from(if image {
+                        IMAGE_CONTENT
+                    } else {
+                        UNSENT_BINARY_RESOURCE
+                    }),
+                );
             }
         }
         _ => {}
     }
+}
+
+fn declares_supported_image(object: &Map<String, Value>) -> bool {
+    object
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .is_some_and(supported_media_type)
 }
 
 fn serialize_capped(server: &str, tool: &str, result: &Value, max_bytes: usize) -> String {
@@ -202,11 +240,13 @@ fn sanitize(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::ToolResultStatus;
+    use ofx_contract::{DEFAULT_MAX_TOOL_RESULT_BYTES, ToolImage, ToolResultStatus};
     use serde_json::json;
 
     use super::*;
     use crate::features::tools::ToolCallResult;
+
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP0cAAAAASUVORK5CYII=";
 
     fn complete(result: Value, is_error: bool) -> ToolCallOutcome {
         ToolCallOutcome::Complete(ToolCallResult {
@@ -242,24 +282,121 @@ mod tests {
     }
 
     #[test]
-    fn media_is_described_instead_of_sent() {
+    fn tool_result_extracts_all_content() {
+        let output = model_output(
+            "server",
+            "tool",
+            "mcp__server__tool",
+            complete(
+                json!({"content":[
+                    {"type":"text","text":"hello "},
+                    {"type":"image","data":PNG,"mimeType":"image/png"},
+                    {"type":"text","text":"world"}
+                ]}),
+                false,
+            ),
+            DEFAULT_MAX_TOOL_RESULT_BYTES,
+        );
+        let parsed: Value = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(parsed["server"], "server");
+        let content = &parsed["result"]["content"];
+        assert_eq!(content[0]["text"], "hello ");
+        assert!(content[1].get("data").is_none());
+        assert_eq!(
+            output.images(),
+            [ToolImage {
+                data: PNG.to_owned(),
+                mime_type: "image/png".to_owned(),
+                source_ref: None,
+            }]
+        );
+        assert_eq!(content[2]["text"], "world");
+    }
+
+    #[test]
+    fn images_are_sent_and_other_media_is_described_instead() {
         let output = model_output(
             "s",
             "t",
             "mcp_s_t",
             complete(
                 json!({"content":[
-                    {"type":"image","data":"aGk=","mimeType":"image/png"},
+                    {"type":"image","data":PNG,"mimeType":"image/png"},
+                    {"type":"image","data":"aGk=","mimeType":"image/svg+xml"},
                     {"type":"audio","data":"aGk=","mimeType":"audio/wav"},
-                    {"type":"resource","resource":{"uri":"file:///a","blob":"aGk="}}
+                    {"type":"resource","resource":{"uri":"file:///a","blob":"aGk="}},
+                    {"type":"resource","resource":{"uri":"file:///b.png","blob":PNG,"mimeType":"image/png"}}
                 ]}),
                 false,
             ),
             4096,
         );
-        assert!(!output.content.contains("aGk="));
+        assert_eq!(output.status, ToolResultStatus::Success);
+        assert!(!output.content.contains("aGk=") && !output.content.contains(PNG));
+        assert_eq!(output.content.matches(IMAGE_CONTENT).count(), 2);
         assert_eq!(output.content.matches(UNSUPPORTED_MEDIA).count(), 2);
-        assert!(output.content.contains(UNSENT_BINARY_RESOURCE));
+        assert_eq!(output.content.matches(UNSENT_BINARY_RESOURCE).count(), 1);
+        assert_eq!(output.images().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_call_keeps_its_images() {
+        let output = model_output(
+            "s",
+            "t",
+            "mcp_s_t",
+            complete(
+                json!({"content":[{"type":"image","data":PNG,"mimeType":"image/png"}],"isError":true}),
+                true,
+            ),
+            4096,
+        );
+        assert_eq!(output.status, ToolResultStatus::Failure);
+        assert_eq!(output.images().len(), 1);
+    }
+
+    #[test]
+    fn an_unusable_image_fails_the_call_with_its_error_name() {
+        for (image, error) in [
+            (
+                json!({"type":"image","data":"aGk=","mimeType":"image/png"}),
+                "UnsupportedImageType",
+            ),
+            (
+                json!({"type":"image","data":PNG,"mimeType":"image/jpeg"}),
+                "InvalidImage",
+            ),
+            (
+                json!({"type":"image","mimeType":"image/png"}),
+                "InvalidImage",
+            ),
+        ] {
+            let output = model_output(
+                "s",
+                "t",
+                "mcp_s_t",
+                complete(json!({ "content": [image] }), false),
+                4096,
+            );
+            assert_eq!(output.status, ToolResultStatus::Failure);
+            assert_eq!(
+                output.content,
+                format_tool_execution_error_json("mcp_s_t", error)
+            );
+            assert!(output.images().is_empty());
+        }
+        let nine = vec![json!({"type":"image","data":PNG,"mimeType":"image/png"}); 9];
+        let output = model_output(
+            "s",
+            "t",
+            "mcp_s_t",
+            complete(json!({ "content": nine }), false),
+            4096,
+        );
+        assert_eq!(
+            output.content,
+            format_tool_execution_error_json("mcp_s_t", "ImageLimitExceeded")
+        );
     }
 
     #[test]
@@ -270,7 +407,7 @@ mod tests {
             "mcp_s_t",
             complete(
                 json!({"content":[
-                    {"type":"image","data":"aGk=","mimeType":"image/png","annotations":{"priority":1}},
+                    {"type":"image","data":PNG,"mimeType":"image/png","annotations":{"priority":1}},
                     {"type":"resource","resource":{"blob":"aGk=","uri":"file:///a","mimeType":"application/pdf"}}
                 ]}),
                 false,
@@ -280,7 +417,7 @@ mod tests {
         assert_eq!(
             output.content,
             format!(
-                r#"{{"server":"s","tool":"t","result":{{"content":[{{"type":"image","annotations":{{"priority":1}},"mimeType":"image/png","delivery":"{UNSUPPORTED_MEDIA}"}},{{"type":"resource","resource":{{"mimeType":"application/pdf","uri":"file:///a","delivery":"{UNSENT_BINARY_RESOURCE}"}}}}]}}}}"#
+                r#"{{"server":"s","tool":"t","result":{{"content":[{{"type":"image","annotations":{{"priority":1}},"mimeType":"image/png","delivery":"{IMAGE_CONTENT}"}},{{"type":"resource","resource":{{"mimeType":"application/pdf","uri":"file:///a","delivery":"{UNSENT_BINARY_RESOURCE}"}}}}]}}}}"#
             )
         );
     }

@@ -1249,3 +1249,65 @@ fn the_mcp_command_reads_a_resource() {
     shown(&session, "MCP resource read failed: McpResourceNotFound.");
     exit(session);
 }
+
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP0cAAAAASUVORK5CYII=";
+
+fn image_fixture(home: &Home) -> Value {
+    let script = FIXTURE_SERVER.replace(
+        r#"'{"content":[{"type":"text","text":"echoed"}]}'"#,
+        &format!(
+            r#"'{{"content":[{{"type":"text","text":"echoed"}},{{"type":"image","data":"{PNG}","mimeType":"image/png"}}]}}'"#
+        ),
+    );
+    json!({"fixture": {"command": "/bin/sh", "args": [home.script("fixture.sh", &script)]}})
+}
+
+fn see_images(home: &Home) {
+    let path = home.root.join("config/oh-fx/settings.json");
+    let text = fs::read_to_string(&path).expect("read settings");
+    let mut settings: Value = serde_json::from_str(&text).expect("parse settings");
+    settings["providers"]["local"]["model_metadata"] =
+        json!({"local-model": {"supports_vision": true}});
+    fs::write(&path, settings.to_string()).expect("write settings");
+}
+
+fn ask_for_an_mcp_image(vision: bool) -> Vec<RecordedRequest> {
+    let server = FakeServer::start([
+        select_echo(),
+        echo_call(),
+        Reply::sse(&chat_text_events(&["a pixel"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    if vision {
+        see_images(&home);
+    }
+    home.profile_servers(&image_fixture(&home));
+    let output = home.ask(&["ask", "--full-access", "echo hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    requests
+}
+
+#[test]
+fn ask_sends_the_images_an_mcp_tool_returns_to_a_vision_model() {
+    let requests = ask_for_an_mcp_image(true);
+    let body = requests[2].body_text();
+    let expected = format!(
+        r#"{{"role":"tool","content":"{{\"server\":\"fixture\",\"tool\":\"echo\",\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"echoed\"}},{{\"type\":\"image\",\"mimeType\":\"image/png\",\"delivery\":\"image content\"}}]}}}}","tool_call_id":"call_1"}},{{"role":"user","content":[{{"type":"text","text":"The tool \"mcp_fixture_echo\" returned 1 image(s)."}},{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{PNG}"}}}}]}}]"#
+    );
+    assert!(body.contains(&expected), "{body}");
+}
+
+#[test]
+fn mcp_tool_images_stay_out_of_requests_to_unconfirmed_models() {
+    let requests = ask_for_an_mcp_image(false);
+    let result = last_tool_result(&requests[2]);
+    assert!(
+        result.starts_with("[Tool images were retained but not sent: oh-fx could not confirm image input support for this model"),
+        "{result}"
+    );
+    assert!(result.contains(r#""delivery":"image content""#), "{result}");
+    assert!(!requests[2].body_text().contains("image_url"));
+}

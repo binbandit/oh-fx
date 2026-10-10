@@ -13,6 +13,7 @@ ofx-auth.workspace = true
 ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-http.workspace = true
+ofx-images.workspace = true
 ofx-jsonrpc.workspace = true
 ofx-text.workspace = true
 ofx-trace.workspace = true

@@ -1,3 +1,4 @@
+use ofx_images::MAX_RESULT_FRAME_BYTES;
 use tokio::time::Instant;
 
 use crate::error::McpError;
@@ -7,7 +8,6 @@ use crate::server_connection::McpClient;
 use crate::transport::{McpTransport, ProgressSink, ServerRequestPolicy, TransportRequest};
 
 pub(crate) const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
-const MAX_RESULT_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const RESPONSE_FRAME_OVERHEAD_BYTES: usize = 16 * 1024;
 
 #[derive(Clone)]
