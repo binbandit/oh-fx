@@ -674,3 +674,34 @@ fn a_schema_v3_session_oh_fx_cannot_convert_yet_is_refused() {
     assert!(staging_left(&home).is_empty());
     assert_eq!(snapshot(&home.fx_profile()), before);
 }
+
+#[test]
+fn a_watermark_fx_publishes_later_refreshes_an_untouched_copy() {
+    let home = Home::new();
+    let pending = || {
+        LegacyLog::started(ID, WORKSPACE)
+            .turn(&reply("acknowledged", "kept"))
+            .turn(&reply("written before fx stopped", "published later"))
+    };
+    pending().committed_through(4).write(&home.fx_sessions());
+    drop(importing(&home).resume(ID).unwrap());
+    assert_eq!(
+        home.store(WORKSPACE).load(ID).unwrap().history.turns.len(),
+        1
+    );
+    let events = fx_file(&home, "events.jsonl");
+    let manifest = fx_file(&home, "session.json");
+
+    let watermark = home
+        .fx_sessions()
+        .join(ID)
+        .join(format!("commit.{GENERATION}.json"));
+    fs::write(&watermark, pending().watermark()).unwrap();
+    assert_eq!(fx_file(&home, "events.jsonl"), events);
+    assert_eq!(fx_file(&home, "session.json"), manifest);
+    drop(importing(&home).resume(ID).unwrap());
+    assert_eq!(
+        home.store(WORKSPACE).load(ID).unwrap().history.turns.len(),
+        2
+    );
+}

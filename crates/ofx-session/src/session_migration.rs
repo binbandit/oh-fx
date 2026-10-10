@@ -75,6 +75,26 @@ pub(crate) fn summarize_schema_v3(
     Ok(Some(converted.summary(read_sidecar_title(dir))))
 }
 
+pub(crate) fn schema_v3_watermark(dir: &PrivateDir) -> Result<Option<String>, SessionError> {
+    if !holds_authority_marker(dir)? {
+        return Ok(None);
+    }
+    let Some(events) = open_managed_file(dir, EVENTS_FILE, Access::ReadOnly)? else {
+        return Ok(None);
+    };
+    let length = events.metadata()?.len();
+    let LineRead::Line(first) = LineReader::new(&events, 0, length)?.next_line()? else {
+        return Ok(None);
+    };
+    Ok(decode_frame(&first)
+        .ok()
+        .map(|envelope| watermark_name(&envelope.generation)))
+}
+
+fn watermark_name(generation: &Identifier) -> String {
+    format!("commit.{}.json", lowercase_hex(generation))
+}
+
 fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionError> {
     require_schema_v3(dir, id)?;
     let events = open_managed_file(dir, EVENTS_FILE, Access::ReadOnly)?
@@ -108,8 +128,7 @@ fn read_watermark(
     id: &str,
     generation: &Identifier,
 ) -> Result<Watermark, SessionError> {
-    let name = format!("commit.{}.json", lowercase_hex(generation));
-    let bytes = read_managed_file(dir, &name, MAX_CONTROL_FILE_BYTES)?
+    let bytes = read_managed_file(dir, &watermark_name(generation), MAX_CONTROL_FILE_BYTES)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let document = parse_json(&bytes).map_err(|_| SessionError::InvalidSessionFormat)?;
     watermark(document, id, generation).ok_or(SessionError::InvalidSessionFormat)

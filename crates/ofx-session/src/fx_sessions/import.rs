@@ -17,7 +17,7 @@ use crate::session_log::managed_file::{
 use crate::session_log::{
     EVENTS_FILE, MANIFEST_FILE, SESSION_LOCK_FILE, read_metadata, staging_name,
 };
-use crate::session_migration::{Converted, holds_schema_v3, read_schema_v3};
+use crate::session_migration::{Converted, holds_schema_v3, read_schema_v3, schema_v3_watermark};
 
 const IMPORT_MARKER: &str = "fx-import.json";
 const MARKER_VERSION: u64 = 1;
@@ -47,6 +47,7 @@ struct FileStamp {
 pub(crate) struct ImportSource {
     manifest: Option<FileStamp>,
     events: FileStamp,
+    watermark: Option<FileStamp>,
 }
 
 pub(crate) struct Imported {
@@ -81,6 +82,7 @@ pub(crate) fn seal(copy: &PrivateDir, id: &str, source: ImportSource) -> Result<
         "source": {
             "session_json": source.manifest.map(stamp_json),
             "events_jsonl": stamp_json(source.events),
+            "commit_json": source.watermark.map(stamp_json),
         },
         "copy": {
             "log_bytes": state.log_bytes,
@@ -290,9 +292,14 @@ fn source_stamp(source: &PrivateDir) -> Result<ImportSource, SessionError> {
     } else {
         None
     };
+    let watermark = match schema_v3_watermark(source)? {
+        Some(name) if present(source, &name)? => Some(file_stamp(source, &name)?),
+        _ => None,
+    };
     Ok(ImportSource {
         manifest,
         events: file_stamp(source, EVENTS_FILE)?,
+        watermark,
     })
 }
 
@@ -455,6 +462,10 @@ pub(crate) fn read_marker(copy: &PrivateDir) -> Option<Marker> {
                 stamp => Some(stamp_from(stamp)?),
             },
             events: stamp_from(source.get("events_jsonl")?)?,
+            watermark: match source.get("commit_json") {
+                None | Some(Value::Null) => None,
+                Some(stamp) => Some(stamp_from(stamp)?),
+            },
         },
         copy: CopyState {
             log_bytes: copy.get("log_bytes")?.as_u64()?,
