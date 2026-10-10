@@ -59,8 +59,24 @@ fn parse_options_preserves_active_ask_flags_and_operands() {
     assert!(options.session.no_save);
     assert_eq!(options.timeout_ms, Some(123_000));
     assert_eq!(options.system_prompt.as_deref(), Some("second"));
-    assert!(options.images);
+    assert_eq!(options.image_paths, ["a.png"]);
     assert_eq!(prompt(&options), "hello world");
+}
+
+#[test]
+fn parse_options_keeps_every_image_path_in_argument_order() {
+    let options = parsed(&[
+        "--image", "b.png", "hello", "--image", "-a.png", "--image", "b.png",
+    ]);
+    assert_eq!(options.image_paths, ["b.png", "-a.png", "b.png"]);
+    assert_eq!(prompt(&options), "hello");
+    let options = parse_ask(vec![
+        OsString::from("--image"),
+        raw(b"\xff.png"),
+        OsString::from("hi"),
+    ])
+    .unwrap();
+    assert_eq!(options.image_paths, [raw(b"\xff.png")]);
 }
 
 #[test]

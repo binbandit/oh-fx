@@ -1,6 +1,7 @@
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::mem;
+use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -40,6 +41,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use tokio_util::sync::CancellationToken;
 
+use crate::ask_images::{ImageFailure, check_image_paths};
 use crate::ask_session::SavedAsk;
 use crate::command_echo::CommandEcho;
 use crate::permission_prompt;
@@ -267,10 +269,26 @@ pub(crate) fn run(args: &AskArgs, modifiers: &LaunchModifiers) -> ExitCode {
         Ok(prompt) => prompt,
         Err(error) => return report_argument_error(error),
     };
+    if let Err(failure) = check_image_paths(&args.image_paths) {
+        return report_image_failure(&failure, args.output.json);
+    }
     if let Some(feature) = unavailable_feature(args, modifiers) {
         return unavailable(&feature, args.output.json);
     }
     run_prompt(args, &prompt, modifiers)
+}
+
+fn report_image_failure(failure: &ImageFailure<'_>, json: bool) -> ExitCode {
+    if json {
+        let detail = format!("{}: {}", failure.error, failure.path.to_string_lossy());
+        return print_result(&RunResult::error(&detail));
+    }
+    let mut message = b"oh-fx ask: failed to attach image \"".to_vec();
+    message.extend_from_slice(failure.path.as_bytes());
+    message.extend_from_slice(format!("\": {}\n", failure.error.reason()).as_bytes());
+    let mut stderr = io::stderr().lock();
+    let _ = stderr.write_all(&message).and_then(|()| stderr.flush());
+    ExitCode::FAILURE
 }
 
 pub(crate) fn unavailable_launch(modifiers: &LaunchModifiers) -> Option<&'static str> {
@@ -344,7 +362,7 @@ pub(crate) fn unsupported_launch_modifier(modifiers: &LaunchModifiers) -> Option
 }
 
 fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<String> {
-    let ask = [(args.images, "--image")];
+    let ask = [(!args.image_paths.is_empty(), "--image")];
     if let Some(flag) = unsupported_launch_modifier(modifiers) {
         return Some(flag.to_owned());
     }

@@ -1,7 +1,8 @@
 [[file]]
 upstream = "src/core/images/image_attachments.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-images/src/image_attachments.rs", "crates/oh-fx/src/ask_images.rs"]
+note = "Loading a typed image path exists: path normalization, workspace or external resolution, the size limit, and the header sniff that `ask --image` checks. Snapshots, request encoding and withholding, placeholders and badges, inline path promotion, and the clipboard image are absent."
 
 [[file]]
 upstream = "src/core/images/image_commands.zig"
@@ -10,10 +11,12 @@ modules = []
 
 [[file]]
 upstream = "src/core/images/image_data.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-images/src/image_data.rs"]
+note = "Media type sniffing for PNG, JPEG, GIF, and WebP exists. Dimension probing, the request image limits, tool image parsing and validation, and the host recovery notice are absent; writeDownscaledNotice has no caller upstream."
 
 [[file]]
 upstream = "src/core/images/png_downscale.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "Upstream calls downscaleOversized only from tests at this pin: capture keeps the original bytes and requests withhold oversized images with a notice instead, so no product behavior uses the downscaler. Its PNG fixtures are rebuilt in Rust tests where needed."

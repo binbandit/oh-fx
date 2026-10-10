@@ -68,7 +68,7 @@ pub struct AskArgs {
     pub system_prompt: Option<String>,
     pub output: AskOutput,
     pub session: AskSession,
-    pub images: bool,
+    pub image_paths: Vec<OsString>,
     pub timeout_ms: Option<u64>,
     json_errors: bool,
 }
@@ -226,7 +226,7 @@ pub(crate) fn drafting_ask(prompt: String, auto: bool, layout: AskLayout) -> Ask
             ..AskOutput::default()
         },
         session: AskSession::default(),
-        images: false,
+        image_paths: Vec::new(),
         timeout_ms: None,
         json_errors: false,
     }
@@ -247,7 +247,7 @@ pub(crate) fn parse_ask(args: Vec<OsString>) -> Result<AskArgs, AskError> {
             system_prompt: None,
             output: AskOutput::default(),
             session: AskSession::default(),
-            images: false,
+            image_paths: Vec::new(),
             timeout_ms: None,
             json_errors,
         },
@@ -316,8 +316,7 @@ impl AskParser {
                 return Err(invalid);
             }
         } else if let Some(value) = self.stream.take_option("image", ValueForm::Separate) {
-            value.map_err(|_| missing)?;
-            self.args.images = true;
+            self.args.image_paths.push(value.map_err(|_| missing)?);
         } else if let Some(value) = self.stream.take_option("system", ValueForm::Separate) {
             let value = value.map_err(|_| missing)?;
             self.args.system_prompt = Some(value.into_string().map_err(|_| invalid)?);
@@ -381,7 +380,7 @@ impl AskParser {
             if session.resume.is_none()
                 || session.no_save
                 || !self.prompt_parts.is_empty()
-                || self.args.images
+                || !self.args.image_paths.is_empty()
             {
                 return Err(self.error(AskErrorKind::InvalidAskArgs));
             }
