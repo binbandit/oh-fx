@@ -1,10 +1,13 @@
 const FULL_WINDOW_OUTPUT_TOKENS: u32 = 32_768;
 const FULL_WINDOW_OUTPUT_DIVISOR: u32 = 8;
 
+use ofx_contract::ImageInputSupport;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
+    pub image_input_support: ImageInputSupport,
 }
 
 pub fn request_output_tokens(capabilities: Capabilities) -> Option<u32> {
@@ -37,6 +40,7 @@ mod tests {
             let capabilities = Capabilities {
                 context_window,
                 max_output_tokens,
+                image_input_support: ImageInputSupport::Unknown,
             };
             assert_eq!(request_output_tokens(capabilities), expected);
         }

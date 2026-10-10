@@ -2,11 +2,30 @@ use tokio_util::sync::CancellationToken;
 
 use crate::stream_provider::{BoxFuture, ProviderOptions};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ImageInputSupport {
+    #[default]
+    Unknown,
+    Native,
+    NonNative,
+}
+
+impl ImageInputSupport {
+    pub fn from_vision(supports_vision: bool) -> Self {
+        if supports_vision {
+            Self::Native
+        } else {
+            Self::NonNative
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelCapabilities {
     pub reasoning_efforts: Vec<String>,
     pub supports_fast_mode: bool,
     pub context_window: Option<u32>,
+    pub image_input_support: ImageInputSupport,
 }
 
 impl ModelCapabilities {
@@ -54,6 +73,7 @@ mod tests {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
             context_window: None,
+            image_input_support: ImageInputSupport::Unknown,
         }
     }
 

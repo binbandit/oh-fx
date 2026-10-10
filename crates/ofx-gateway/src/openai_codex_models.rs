@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ofx_contract::parse_strict_json_value;
-use ofx_contract::{CODEX_ORIGINATOR, ModelCapabilities, is_valid_reasoning_effort};
+use ofx_contract::{
+    CODEX_ORIGINATOR, ImageInputSupport, ModelCapabilities, is_valid_reasoning_effort,
+};
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
 use reqwest::StatusCode;
 use reqwest::header::ACCEPT;
@@ -189,7 +191,7 @@ fn listed_model(model: &Map<String, Value>) -> Option<CodexModel> {
         None | Some(Value::Null) => None,
         Some(window) => Some(u32::try_from(window.as_u64()?).ok()?).filter(|window| *window > 0),
     };
-    lists_value(model, "input_modalities", "image")?;
+    let supports_vision = lists_value(model, "input_modalities", "image")?;
     let supports_fast_mode = lists_value(model, "additional_speed_tiers", "fast")?;
     Some(CodexModel {
         id: slug.to_owned(),
@@ -197,6 +199,7 @@ fn listed_model(model: &Map<String, Value>) -> Option<CodexModel> {
             reasoning_efforts,
             supports_fast_mode,
             context_window,
+            image_input_support: ImageInputSupport::from_vision(supports_vision),
         },
     })
 }

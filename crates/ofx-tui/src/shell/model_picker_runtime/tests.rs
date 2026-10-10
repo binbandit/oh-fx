@@ -29,6 +29,7 @@ fn option(id: &str, efforts: &[&str], fast: bool) -> ModelOption {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
             context_window: Some(200_000),
+            ..ModelCapabilities::default()
         },
         max_output_tokens: None,
     }

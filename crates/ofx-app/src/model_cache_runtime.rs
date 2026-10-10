@@ -146,8 +146,10 @@ pub(crate) fn model_controls(
 }
 
 fn connection_capabilities(connection: &ProviderDefinition, model: &str) -> ModelCapabilities {
+    let capabilities = connection.capabilities(model);
     ModelCapabilities {
-        context_window: connection.capabilities(model).context_window,
+        context_window: capabilities.context_window,
+        image_input_support: capabilities.image_input_support,
         ..ModelCapabilities::default()
     }
 }
@@ -161,7 +163,7 @@ fn catalog_retry(failure: CatalogFailure) -> Option<CatalogRetry> {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::ReasoningEffort;
+    use ofx_contract::{ImageInputSupport, ReasoningEffort};
 
     use super::*;
 
@@ -177,6 +179,7 @@ mod tests {
                     reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
                     supports_fast_mode: fast,
                     context_window: None,
+                    image_input_support: ImageInputSupport::Unknown,
                 },
                 max_output_tokens: None,
             }],
