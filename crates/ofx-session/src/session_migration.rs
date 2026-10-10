@@ -18,7 +18,9 @@ use crate::session_children::has_owner_marker;
 use crate::session_codec::SessionPreferences;
 use crate::session_display_metadata::read_sidecar_title;
 use crate::session_error::SessionError;
-use crate::session_log::managed_file::{Access, open_managed_file, read_managed_file};
+use crate::session_log::managed_file::{
+    Access, entry_exists, open_managed_file, read_managed_file,
+};
 use crate::session_log::{EVENTS_FILE, read_metadata};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::SessionSummary;
@@ -30,6 +32,7 @@ use legacy_frame::decode_frame;
 use replay::Replay;
 
 const WATERMARK_SCHEMA_VERSION: u64 = 1;
+const UPGRADE_BACKUP_FILE: &str = "events.v3.backup";
 
 pub(crate) struct LegacySession {
     id: String,
@@ -52,7 +55,13 @@ struct Watermark {
 }
 
 pub(crate) fn holds_schema_v3(dir: &PrivateDir, id: &str) -> Result<bool, SessionError> {
-    Ok(holds_authority_marker(dir)? && read_metadata(dir, id).is_err())
+    if !holds_authority_marker(dir)? {
+        return Ok(false);
+    }
+    Ok(!matches!(
+        read_metadata(dir, id),
+        Ok(_) | Err(SessionError::InvalidSessionMetadata)
+    ))
 }
 
 pub(crate) fn read_schema_v3(
@@ -76,11 +85,30 @@ pub(crate) fn summarize_schema_v3(
     Ok(Some(converted.summary(read_sidecar_title(dir))))
 }
 
-pub(crate) fn schema_v3_watermark(dir: &PrivateDir) -> Result<Option<String>, SessionError> {
-    if !holds_authority_marker(dir)? {
+pub(crate) fn source_log(dir: &PrivateDir, id: &str) -> Result<&'static str, SessionError> {
+    if holds_schema_v3(dir, id)? {
+        schema_v3_log(dir)
+    } else {
+        Ok(EVENTS_FILE)
+    }
+}
+
+fn schema_v3_log(dir: &PrivateDir) -> Result<&'static str, SessionError> {
+    Ok(if entry_exists(dir, UPGRADE_BACKUP_FILE)? {
+        UPGRADE_BACKUP_FILE
+    } else {
+        EVENTS_FILE
+    })
+}
+
+pub(crate) fn schema_v3_watermark(
+    dir: &PrivateDir,
+    id: &str,
+) -> Result<Option<String>, SessionError> {
+    if !holds_schema_v3(dir, id)? {
         return Ok(None);
     }
-    let Some(events) = open_managed_file(dir, EVENTS_FILE, Access::ReadOnly)? else {
+    let Some(events) = open_managed_file(dir, schema_v3_log(dir)?, Access::ReadOnly)? else {
         return Ok(None);
     };
     let length = events.metadata()?.len();
@@ -98,7 +126,7 @@ fn watermark_name(generation: &Identifier) -> String {
 
 fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionError> {
     require_schema_v3(dir, id)?;
-    let events = open_managed_file(dir, EVENTS_FILE, Access::ReadOnly)?
+    let events = open_managed_file(dir, schema_v3_log(dir)?, Access::ReadOnly)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let length = events.metadata()?.len();
     let mut reader = LineReader::new(&events, 0, length)?;
