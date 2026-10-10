@@ -86,7 +86,7 @@ async fn an_automatic_compaction_records_each_stage_with_the_turn_and_step() {
     assert_eq!(
         details(&events),
         [
-            "decision=compact overflow=false request_bytes=150965 estimated_tokens=37756 text_tokens=37756 has_images=false image_baseline=false prior_input_tokens=null usable_tokens=44936 compact_at_tokens=35948 compact_at_percent=80 max_output_tokens=64",
+            "decision=compact overflow=false request_bytes=150977 estimated_tokens=37759 text_tokens=37759 has_images=false image_baseline=false prior_input_tokens=null usable_tokens=44936 compact_at_tokens=35948 compact_at_percent=80 max_output_tokens=64",
             "room after compaction after_tokens=8987 fixed_tokens=100 kept_tokens=3554 kept_used=10 compacted_tokens=17864",
             "model=test-model turns=1 earlier=false store=false",
             "compaction model call model=test-model after_conversation=true input_tokens=null cache_read_tokens=null cache_write_tokens=null output_tokens=2",
@@ -94,7 +94,7 @@ async fn an_automatic_compaction_records_each_stage_with_the_turn_and_step() {
             "compacted text over its room; its longest texts were clipped, whole in their saved turns tokens=37614 clipped_tokens=9498 limit=17864 clip_bytes=37500",
             "model=test-model summaries=1 shown_turns=1 turns=1 tools=1 entries=0 used=0 text_bytes=37966 fallback=none",
             "origin=automatic removed_turns=1 compaction_count=1 summary_bytes=37966 tools=1",
-            "request_bytes_before=150965 estimated_tokens_before=37756 summary_bytes=37966 tools=1",
+            "request_bytes_before=150977 estimated_tokens_before=37759 summary_bytes=37966 tools=1",
             "request after compaction estimated_tokens=9647 fixed_tokens=100 usable_tokens=44936 after_tokens=8987",
             "request after compaction exact_input_tokens=4321 estimated_tokens=9647",
         ]
@@ -142,13 +142,13 @@ async fn a_context_overflow_records_its_recovery_and_the_compaction_it_asks_for(
     assert_eq!(
         details(&events)[4..],
         [
-            "ledger request over its limit after clipping tokens=598 limit=192",
+            "ledger request over its limit after clipping tokens=598 limit=195",
             "compaction model call model=test-model after_conversation=false input_tokens=null cache_read_tokens=null cache_write_tokens=null output_tokens=2",
             "compaction notes: turns_noted=1/1 tool_notes=0 tools=1 entries=0 earlier_bytes=0 reply_bytes=47 after_conversation=false",
             "compacted text over its room with no text long enough to clip tokens=122 limit=22",
             "model=test-model summaries=1 shown_turns=1 turns=1 tools=1 entries=0 used=0 text_bytes=464 fallback=none",
             "origin=provider_overflow removed_turns=1 compaction_count=1 summary_bytes=464 tools=1",
-            "request_bytes_before=973 estimated_tokens_before=257 summary_bytes=464 tools=1",
+            "request_bytes_before=985 estimated_tokens_before=260 summary_bytes=464 tools=1",
             "request after compaction estimated_tokens=273 fixed_tokens=100 usable_tokens=111616 after_tokens=22323",
         ]
     );
