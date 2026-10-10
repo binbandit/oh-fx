@@ -303,3 +303,305 @@ async fn cancelling_the_turn_ends_a_selection_waiting_on_a_stalled_tool_list() {
         format_tool_execution_error_json(NAME, "Cancelled")
     );
 }
+
+#[tokio::test]
+async fn ask_starts_the_server_a_selected_name_belongs_to() {
+    let runtime = Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![McpServerConfig::stdio(
+                "fixture",
+                "/bin/sh",
+                vec!["-c".to_owned(), SERVER.to_owned()],
+            )],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ));
+    runtime.connect_for_ask(false).await;
+    let tool = McpSelectTool::new(Some(Arc::clone(&runtime)));
+    let output = run(&tool, r#"{"name":"mcp_fixture_echo"}"#).await;
+    assert_eq!(
+        output.status,
+        ToolResultStatus::Success,
+        "{}",
+        output.content
+    );
+    assert_eq!(output.selected_tools(), ["mcp_fixture_echo"]);
+}
+
+#[tokio::test]
+async fn ask_reports_why_the_server_a_selected_name_belongs_to_failed_to_start() {
+    let runtime = Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![McpServerConfig::stdio(
+                "broken",
+                "/bin/sh",
+                vec!["-c".to_owned(), "exit 3".to_owned()],
+            )],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ));
+    runtime.connect_for_ask(false).await;
+    let tool = McpSelectTool::new(Some(Arc::clone(&runtime)));
+    let output = run(&tool, r#"{"name":"mcp_broken_echo"}"#).await;
+    assert_eq!(output.status, ToolResultStatus::Failure);
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "McpServerExitedDuringStartup")
+    );
+    let again = run(&tool, r#"{"name":"mcp_broken_echo"}"#).await;
+    assert_eq!(
+        again.content,
+        "Dynamic MCP tool not found or not allowed: mcp_broken_echo"
+    );
+}
+
+const HELD: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      touch "$STATE/initializing"
+      while [ -f "$STATE/hold" ]; do sleep 0.05; done
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      reply "$id" '{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}' ;;
+  esac
+done
+"#;
+
+fn held(state: &std::path::Path, startup_timeout_ms: u32) -> Arc<McpRuntime> {
+    let mut config =
+        McpServerConfig::stdio("fixture", "/bin/sh", vec!["-c".to_owned(), HELD.to_owned()]);
+    config.startup_timeout_ms = startup_timeout_ms;
+    config.env.push(crate::mcp_contract::EnvVar {
+        key: "STATE".to_owned(),
+        value: state.to_string_lossy().into_owned(),
+    });
+    Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![config],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ))
+}
+
+#[tokio::test]
+async fn a_selection_cancelled_while_its_server_starts_records_the_start_as_cancelled() {
+    let state = tempfile::tempdir().unwrap();
+    std::fs::write(state.path().join("hold"), "").unwrap();
+    let runtime = held(state.path(), 30_000);
+    runtime.connect_for_ask(false).await;
+    let tool = McpSelectTool::new(Some(Arc::clone(&runtime)));
+    let cancellation = CancellationToken::new();
+    let selecting = tokio::spawn(
+        tool.prepare(r#"{"name":"mcp_fixture_echo"}"#)
+            .unwrap()
+            .execute(ToolContext::new(
+                ToolCallId::new("select"),
+                cancellation.clone(),
+                PathAccess::WorkspaceOnly,
+            )),
+    );
+    let initializing = state.path().join("initializing");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !initializing.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cancellation.cancel();
+    assert_eq!(
+        selecting.await.unwrap().content,
+        format_tool_execution_error_json(NAME, "Cancelled")
+    );
+    assert!(matches!(
+        runtime.current()[0].lifecycle(),
+        crate::server_lifecycle::Lifecycle::Failed(failure) if failure == "Cancelled"
+    ));
+    std::fs::remove_file(state.path().join("hold")).unwrap();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        run(&tool, r#"{"name":"mcp_fixture_echo"}"#),
+    )
+    .await
+    .expect("the next selection answers at once");
+    assert_eq!(
+        output.content,
+        "Dynamic MCP tool not found or not allowed: mcp_fixture_echo"
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_misses_its_startup_timeout_fails_the_selection_as_upstream_names_it() {
+    let state = tempfile::tempdir().unwrap();
+    std::fs::write(state.path().join("hold"), "").unwrap();
+    let runtime = held(state.path(), 200);
+    runtime.connect_for_ask(false).await;
+    let output = run(
+        &McpSelectTool::new(Some(Arc::clone(&runtime))),
+        r#"{"name":"mcp_fixture_echo"}"#,
+    )
+    .await;
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "McpConnectionTimedOut")
+    );
+}
+
+fn remote_runtime(url: &str) -> Arc<McpRuntime> {
+    Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![McpServerConfig::remote(
+                "fixture",
+                crate::mcp_contract::TransportType::Http,
+                url,
+            )],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ))
+}
+
+async fn cancel_when(runtime: &Arc<McpRuntime>, started: impl Future<Output = ()>) -> ToolOutput {
+    let cancellation = CancellationToken::new();
+    let selecting = tokio::spawn(
+        McpSelectTool::new(Some(Arc::clone(runtime)))
+            .prepare(r#"{"name":"mcp_fixture_echo"}"#)
+            .unwrap()
+            .execute(ToolContext::new(
+                ToolCallId::new("select"),
+                cancellation.clone(),
+                PathAccess::WorkspaceOnly,
+            )),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), started)
+        .await
+        .unwrap();
+    cancellation.cancel();
+    selecting.await.unwrap()
+}
+
+#[tokio::test]
+async fn a_start_cancelled_while_an_http_server_lists_its_tools_ends_the_session() {
+    use crate::test_support::{FakeServer, Reply};
+    let server = FakeServer::start(|request| match request.method.as_str() {
+        "DELETE" => Reply::status(204),
+        _ => match request.method_name().as_deref() {
+            Some("initialize") => Reply::json(&format!(
+                r#"{{"jsonrpc":"2.0","id":{},"result":{{"protocolVersion":"2025-11-25","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"fixture","version":"1"}}}}}}"#,
+                request.request_id().unwrap()
+            ))
+            .header("Mcp-Session-Id", "session-1"),
+            Some("tools/list") => Reply::sse(&[]).held_open(),
+            _ => Reply::status(202),
+        },
+    })
+    .await;
+    let runtime = remote_runtime(&server.url);
+    runtime.connect_for_ask(false).await;
+    let output = cancel_when(&runtime, async {
+        assert!(
+            server
+                .wait_for(|request| request.method_name().as_deref() == Some("tools/list"))
+                .await
+        );
+    })
+    .await;
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "Cancelled")
+    );
+    assert!(
+        server
+            .wait_for(|request| request.method == "DELETE"
+                && request.header("mcp-session-id") == Some("session-1"))
+            .await
+    );
+}
+
+const STALLED_LISTING: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      echo $$ > "$STATE/pid"
+      while :; do sleep 1; done ;;
+  esac
+done
+"#;
+
+fn still_running(pid: &str) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .is_ok_and(|output| {
+            let state = String::from_utf8_lossy(&output.stdout);
+            let state = state.trim();
+            !state.is_empty() && !state.starts_with('Z')
+        })
+}
+
+#[tokio::test]
+async fn a_start_cancelled_while_a_stdio_server_lists_its_tools_stops_the_server() {
+    let state = tempfile::tempdir().unwrap();
+    let mut config = McpServerConfig::stdio(
+        "fixture",
+        "/bin/sh",
+        vec!["-c".to_owned(), STALLED_LISTING.to_owned()],
+    );
+    config.env.push(crate::mcp_contract::EnvVar {
+        key: "STATE".to_owned(),
+        value: state.path().to_string_lossy().into_owned(),
+    });
+    let runtime = Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![config],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ));
+    runtime.connect_for_ask(false).await;
+    let recorded = state.path().join("pid");
+    let output = cancel_when(&runtime, async {
+        while std::fs::read_to_string(&recorded).map_or(true, |pid| pid.trim().is_empty()) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "Cancelled")
+    );
+    let pid = std::fs::read_to_string(&recorded)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while still_running(&pid) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        !still_running(&pid),
+        "server {pid} outlived its cancelled start"
+    );
+}

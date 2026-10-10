@@ -32,14 +32,13 @@ use crate::timing::{sleep, spawn, spawn_on};
 use crate::tool_mcp_dispatch::NAME as SELECT_TOOL;
 use crate::tool_mcp_feature_dispatch::NAME as FEATURES_TOOL;
 use crate::tool_mcp_registry::{Projection, SchemaLimits, publish_tools, schema_for};
-use crate::tool_names::ToolNames;
+use crate::tool_names::{ToolNames, matches_server};
 use crate::tool_search::{self, Search, SearchLimits};
 use crate::transport::ShutdownMode;
 
 const REQUIRED_FALLBACK: &str = "Check the trusted profile configuration and retry.";
 const STARTUP_POLL: Duration = Duration::from_millis(5);
 const DISCOVERING: &str = r#"{"tools":[],"count":0,"state":"discovering","retryable":true}"#;
-const SERVER_NOT_FOUND: &str = r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#;
 
 pub struct McpRuntime {
     servers: Mutex<Vec<Arc<Server>>>,
@@ -49,6 +48,7 @@ pub struct McpRuntime {
     limits: ContextLimits,
     catalog_generation: Arc<AtomicU64>,
     discovering: Arc<AtomicBool>,
+    ask: AtomicBool,
     published: Mutex<Published>,
     workspace_diagnostics: Mutex<Vec<WorkspaceDiagnostic>>,
     installed: AtomicBool,
@@ -103,6 +103,7 @@ impl McpRuntime {
             limits,
             catalog_generation,
             discovering: Arc::new(AtomicBool::new(false)),
+            ask: AtomicBool::new(false),
             published: Mutex::new(Published::default()),
             workspace_diagnostics: Mutex::new(load.workspace_diagnostics),
             installed: AtomicBool::new(installed),
@@ -126,6 +127,66 @@ impl McpRuntime {
         settling
     }
 
+    pub fn connect_for_ask(&self, terminal: bool) -> Settling {
+        self.ask.store(true, Ordering::Release);
+        self.connect(if terminal {
+            StartupPhase::All
+        } else {
+            StartupPhase::AskStartup
+        })
+    }
+
+    async fn start_deferred(&self) {
+        if !self.ask.load(Ordering::Acquire) {
+            return;
+        }
+        let deferred: Vec<Arc<Server>> = self
+            .current()
+            .into_iter()
+            .filter(|server| starts_on_demand(server))
+            .collect();
+        Settling::all(
+            deferred
+                .iter()
+                .map(|server| (Arc::clone(server), Step::Start)),
+        )
+        .await;
+        for server in &deferred {
+            await_startup(server).await;
+        }
+    }
+
+    async fn start_deferred_server(&self, name: &str) -> Result<(), McpError> {
+        if !self.ask.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let server = self
+            .current()
+            .into_iter()
+            .find(|server| server.config.name == name)
+            .ok_or(McpError::McpServerNotFound)?;
+        start_on_demand(&server).await
+    }
+
+    async fn start_deferred_tool(&self, name: &str) -> Result<(), McpError> {
+        if !self.ask.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        for server in self.current() {
+            if matches_server(name, &server.config.name) {
+                start_on_demand(&server).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn searches_after(&self, name: &str, error: &McpError) -> bool {
+        *error == McpError::McpAuthenticationRequired
+            || self.current().iter().any(|server| {
+                server.config.name == name && matches!(server.lifecycle(), Lifecycle::Failed(_))
+            })
+    }
+
     fn owner(&self, name: &str) -> Option<Arc<Server>> {
         let mut names = lock(&self.names);
         self.current().into_iter().find(|server| {
@@ -139,7 +200,8 @@ impl McpRuntime {
         })
     }
 
-    pub(crate) async fn tool_schema(&self, name: &str) -> Option<Projection> {
+    pub(crate) async fn tool_schema(&self, name: &str) -> Result<Option<Projection>, McpError> {
+        self.start_deferred_tool(name).await?;
         if let Some(server) = self.owner(name)
             && let Lifecycle::Ready(client) = server.lifecycle()
         {
@@ -147,25 +209,21 @@ impl McpRuntime {
                 .refresh_tools(&client, Instant::now() + client.operation_timeout)
                 .await;
         }
-        schema_for(
+        Ok(schema_for(
             &self.current(),
             &mut lock(&self.names),
             &self.reserved,
             name,
             SchemaLimits::from(&self.limits),
-        )
+        ))
     }
 
-    fn early_answer(&self, request: &McpSearchRequest) -> Option<McpSearchResult> {
-        let servers = self.current();
-        if matches!(request.host, McpSearchHost::Ask { .. })
-            && let Some(name) = request.server.as_deref()
-            && !servers.iter().any(|known| known.config.name == name)
-        {
-            return Some(McpSearchResult::plain(SERVER_NOT_FOUND));
-        }
+    fn early_answer(&self) -> Option<McpSearchResult> {
         (self.discovering.load(Ordering::Acquire)
-            && !servers.iter().any(|server| server.catalog().is_some()))
+            && !self
+                .current()
+                .iter()
+                .any(|server| server.catalog().is_some()))
         .then(|| McpSearchResult::plain(DISCOVERING))
     }
 
@@ -184,7 +242,7 @@ impl McpRuntime {
     }
 
     pub(crate) fn search(&self, request: &McpSearchRequest) -> McpSearchResult {
-        if let Some(answer) = self.early_answer(request) {
+        if let Some(answer) = self.early_answer() {
             return answer;
         }
         let mut search_result = self.limits.get(ContextLimitName::McpSearchResultBytes);
@@ -254,7 +312,13 @@ impl McpRuntime {
     pub fn model_catalog(&self) -> Vec<ServerSummary> {
         self.current()
             .iter()
-            .map(|server| model_summary(server))
+            .map(|server| {
+                model_summary(
+                    server,
+                    self.ask.load(Ordering::Acquire)
+                        && matches!(server.lifecycle(), Lifecycle::Idle),
+                )
+            })
             .collect()
     }
 
@@ -376,6 +440,7 @@ impl McpRuntime {
     }
 
     async fn feature_server(&self, server_name: &str) -> Result<(Arc<Server>, Instant), McpError> {
+        self.start_deferred_server(server_name).await?;
         let server = self
             .current()
             .into_iter()
@@ -510,6 +575,25 @@ impl McpRuntime {
 
     pub(crate) fn current(&self) -> Vec<Arc<Server>> {
         lock(&self.servers).clone()
+    }
+}
+
+fn starts_on_demand(server: &Server) -> bool {
+    decide_startup(&server.config, StartupPhase::AskDeferred) == StartupDecision::Connect
+}
+
+async fn start_on_demand(server: &Arc<Server>) -> Result<(), McpError> {
+    if !starts_on_demand(server) {
+        return Ok(());
+    }
+    let started = Box::pin(server.start()).await;
+    await_startup(server).await;
+    started
+}
+
+async fn await_startup(server: &Server) {
+    while matches!(server.lifecycle(), Lifecycle::Starting) {
+        sleep(STARTUP_POLL).await;
     }
 }
 
@@ -669,7 +753,9 @@ impl Drop for Settling {
 
 async fn settle(server: Arc<Server>, step: Step) {
     match step {
-        Step::Start => server.start().await,
+        Step::Start => {
+            let _ = server.start().await;
+        }
         Step::Stop(mode) => server.stop(mode).await,
     }
 }
@@ -707,7 +793,19 @@ impl McpToolSearch for McpRuntime {
         request: McpSearchRequest,
     ) -> BoxFuture<'static, McpSearchResult> {
         Box::pin(async move {
-            if self.early_answer(&request).is_none() {
+            match request.server.as_deref() {
+                Some(server) => {
+                    if let Err(error) = self.start_deferred_server(server).await
+                        && !self.searches_after(server, &error)
+                    {
+                        return McpSearchResult::plain(format!(
+                            r#"{{"tools":[],"count":0,"error":"{error}"}}"#
+                        ));
+                    }
+                }
+                None => self.start_deferred().await,
+            }
+            if self.early_answer().is_none() {
                 self.refresh_tool_lists(request.server.as_deref()).await;
             }
             match tokio::task::spawn_blocking(move || self.search(&request)).await {
@@ -1218,7 +1316,7 @@ done
         assert!(runtime.tools().is_empty());
         assert!(runtime.lists("mcp_fixture_alpha"));
         assert!(!runtime.lists("mcp_fixture_absent"));
-        let Some(Projection::Rejected { notice, .. }) =
+        let Ok(Some(Projection::Rejected { notice, .. })) =
             runtime.tool_schema("mcp_fixture_alpha").await
         else {
             panic!("the schema is rejected");
