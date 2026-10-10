@@ -34,7 +34,8 @@ use ofx_gateway::HttpFailure;
 use ofx_images::MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE;
 use ofx_mcp::{McpRuntime, ShutdownMode, render_workspace_diagnostic};
 use ofx_session::{
-    SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
+    SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, SessionStore,
+    sessions_v2_variable_is_on,
 };
 use ofx_text::encode_terminal_safe;
 use serde::{Serialize, Serializer};
@@ -611,16 +612,7 @@ async fn prepare_agent(
     let store = match &resumed {
         Some(_) => None,
         None if args.session.no_save => None,
-        None => match open_store(&profile) {
-            Ok(store) => Some(store),
-            Err(error) => {
-                write_stderr(&format!(
-                    "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
-                ))
-                .map_err(|error| Failure::written(&error))?;
-                None
-            }
-        },
+        None => new_session_store(&profile)?,
     };
     let mut agent = setup.agent(resumed.is_some() || store.is_some());
     let saved = match (resumed, store) {
@@ -649,6 +641,19 @@ async fn prepare_agent(
         recovered,
         images,
     })
+}
+
+fn new_session_store(profile: &Profile) -> Result<Option<SessionStore>, Failure> {
+    match open_store(profile) {
+        Ok(store) => Ok(Some(store)),
+        Err(error) => {
+            write_stderr(&format!(
+                "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
+            ))
+            .map_err(|error| Failure::written(&error))?;
+            Ok(None)
+        }
+    }
 }
 
 async fn start_mcp(

@@ -235,7 +235,7 @@ fn ask_codex_with_image(home: &Home, catalog: &FakeServer, codex: &FakeServer) -
         home.root.join("workspace/shot.png"),
         b"\x89PNG\r\n\x1a\nrest",
     )
-    .unwrap();
+    .expect("write the image");
     let models = format!("{}/backend-api/codex/models", catalog.base_url());
     let version = format!("{}/@openai/codex/latest", catalog.base_url());
     let responses = format!("{}/backend-api/codex/responses", codex.base_url());
