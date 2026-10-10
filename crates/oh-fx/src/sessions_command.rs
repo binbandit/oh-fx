@@ -13,6 +13,7 @@ use ofx_session::{FxSessions, ListScope, SessionError, SessionStore};
 
 pub(crate) enum Failure {
     Lookup(String),
+    Reported { code: String, message: String },
     Fatal(&'static str),
 }
 
@@ -46,6 +47,9 @@ pub(crate) fn answer(
             Some(message) => return report(kind, format, &code, message),
             None => code,
         },
+        Err(Failure::Reported { code, message }) => {
+            return report(kind, format, &code, &message);
+        }
         Err(Failure::Fatal(code)) => code.to_owned(),
     };
     let _ = writeln!(io::stderr(), "oh-fx: {failure}");

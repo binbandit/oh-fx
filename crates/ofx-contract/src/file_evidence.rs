@@ -61,14 +61,11 @@ pub struct FileEvidence {
 pub fn file_evidence_context(files: &[FileEvidence]) -> String {
     let mut out = CONTEXT_HEADER.to_owned();
     for file in files {
-        let status = match file.status {
-            ToolResultStatus::Success => "success",
-            ToolResultStatus::Failure => "failure",
-        };
         let _ = write!(
             out,
-            "\n- action={} status={status} path={}",
+            "\n- action={} status={} path={}",
             file.action.label(),
+            file.status.label(),
             file.path
         );
         if let Some(new_path) = &file.new_path {

@@ -140,20 +140,31 @@ pub(crate) fn restore_checkpoint(summary: &str) -> (String, Option<Payload>) {
             None,
         );
     };
+    match saved_payload(summary, json) {
+        Some(payload) => (render(&payload), Some(payload)),
+        None => (json.to_owned(), None),
+    }
+}
+
+pub fn checkpoint_model_text(summary: &str) -> Option<String> {
+    let json = summary.strip_prefix(MARKER)?;
+    Some(saved_payload(summary, json).map_or_else(|| json.to_owned(), |payload| render(&payload)))
+}
+
+fn saved_payload(summary: &str, json: &str) -> Option<Payload> {
     let payload = serde_json::from_str::<Value>(json)
         .ok()
         .as_ref()
         .and_then(Value::as_object)
         .and_then(payload_from);
-    if let Some(payload) = payload {
-        return (render(&payload), Some(payload));
+    if payload.is_none() {
+        trace::unrecorded(format_args!(
+            "checkpoint payload unreadable bytes={} err={}; using its raw text",
+            summary.len(),
+            CompactionError::InvalidCheckpoint
+        ));
     }
-    trace::unrecorded(format_args!(
-        "checkpoint payload unreadable bytes={} err={}; using its raw text",
-        summary.len(),
-        CompactionError::InvalidCheckpoint
-    ));
-    (json.to_owned(), None)
+    payload
 }
 
 fn saved_tools(tools: &[Tool]) -> Vec<SavedTool<'_>> {

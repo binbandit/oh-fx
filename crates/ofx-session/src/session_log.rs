@@ -1,3 +1,4 @@
+mod conversation_archive;
 mod conversation_history;
 mod conversation_progress;
 mod conversation_writer;
@@ -34,6 +35,10 @@ use crate::session_replay::History;
 use crate::session_usage::UsageSnapshot;
 use crate::session_usage_sidecar;
 
+pub(crate) use conversation_archive::load_archive;
+pub use conversation_archive::{
+    ArchivedSteering, ArchivedTurn, ExecutedStep, SessionArchive, TurnExecution,
+};
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 pub(crate) use conversation_progress::{ConversationProgress, ProgressPoint};

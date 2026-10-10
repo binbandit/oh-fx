@@ -803,10 +803,7 @@ impl WireTag for ToolResultStatus {
     const ALL: &'static [Self] = &[Self::Success, Self::Failure];
 
     fn tag(self) -> &'static str {
-        match self {
-            Self::Success => "success",
-            Self::Failure => "failure",
-        }
+        self.label()
     }
 }
 
