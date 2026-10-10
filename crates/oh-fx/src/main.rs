@@ -105,7 +105,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Permissions(format) => permissions_command::run(format),
             Command::Provider(target) => provider_command::run(target),
             Command::Status(format) => status_command::run(format),
-            Command::Usage(format) => usage_command::run(format),
+            Command::Usage(args) => usage_command::run(args),
             Command::Workspace(args) => workspace_command::run(&args),
             Command::Replay(args) => cli_replay::run(&args),
             Command::Pr(args) => github_workflow::run(Workflow::PullRequest, &args, &modifiers),

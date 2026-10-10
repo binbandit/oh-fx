@@ -2,6 +2,7 @@ use std::ffi::OsString;
 
 use ofx_auth::parse_login_provider;
 use ofx_config::ProviderId;
+use ofx_contract::UsageScope;
 use ofx_session::{ListScope, ResumeContinuation, is_valid_session_id};
 use ofx_text::parse_unsigned;
 
@@ -198,18 +199,27 @@ fn session_cursor(raw: &str) -> Option<ResumeContinuation> {
     })
 }
 
-pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub struct UsageArgs {
+    pub format: OutputFormat,
+    pub scope: UsageScope,
+}
+
+pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<UsageArgs, CliError> {
     let error = argument_error(TopLevelKind::Usage, ArgumentErrorCode::Usage, &args);
     let mut stream = ArgStream::new(args);
     let mut json = false;
     let mut period = false;
+    let mut scope = UsageScope::Days30;
     while stream.peek().is_some() {
         let seen = if stream.take_flag("--json") {
             &mut json
         } else if let Some(value) = stream.take_option("period", ValueForm::Separate) {
-            if !value.is_ok_and(|value| matches!(value.to_str(), Some("24h" | "7d" | "30d"))) {
-                return Err(error());
-            }
+            scope = value
+                .ok()
+                .and_then(|value| value.to_str().and_then(UsageScope::parse_cli_value))
+                .ok_or_else(&error)?;
             &mut period
         } else {
             return Err(error());
@@ -218,7 +228,10 @@ pub(crate) fn parse_usage(args: Vec<OsString>) -> Result<OutputFormat, CliError>
             return Err(error());
         }
     }
-    Ok(format_for(json))
+    Ok(UsageArgs {
+        format: format_for(json),
+        scope,
+    })
 }
 
 #[derive(Debug, Clone)]

@@ -32,13 +32,30 @@ fn fails<T: std::fmt::Debug>(result: Result<T, CliError>, check: impl Fn(&CliErr
 
 #[test]
 fn usage_arguments_accept_only_rolling_periods_and_one_json_flag() {
-    assert_eq!(parse_usage(os(&[])).unwrap(), OutputFormat::Text);
+    assert_eq!(
+        parse_usage(os(&[])).unwrap(),
+        UsageArgs {
+            format: OutputFormat::Text,
+            scope: UsageScope::Days30,
+        }
+    );
     assert_eq!(
         parse_usage(os(&["--json", "--period", "7d"])).unwrap(),
-        OutputFormat::Json
+        UsageArgs {
+            format: OutputFormat::Json,
+            scope: UsageScope::Days7,
+        }
     );
-    for period in ["24h", "7d", "30d"] {
-        assert!(parse_usage(os(&["--period", period])).is_ok(), "{period}");
+    for (period, scope) in [
+        ("24h", UsageScope::Hours24),
+        ("7d", UsageScope::Days7),
+        ("30d", UsageScope::Days30),
+    ] {
+        assert_eq!(
+            parse_usage(os(&["--period", period])).unwrap().scope,
+            scope,
+            "{period}"
+        );
     }
     for args in [
         &["--period"][..],

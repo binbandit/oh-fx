@@ -239,6 +239,24 @@ pub fn valid_credential_account_id(account_id: &str) -> bool {
         && account_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
+pub(crate) fn valid_gateway_generation_id(id: &str) -> bool {
+    id.len() == GATEWAY_GENERATION_ID_BYTES
+        && id
+            .strip_prefix(GATEWAY_GENERATION_ID_PREFIX)
+            .is_some_and(|suffix| {
+                suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || crockford_letter(byte))
+            })
+}
+
+const GATEWAY_GENERATION_ID_PREFIX: &str = "gen_";
+const GATEWAY_GENERATION_ID_BYTES: usize = 30;
+
+fn crockford_letter(byte: u8) -> bool {
+    byte.is_ascii_uppercase() && !matches!(byte, b'I' | b'L' | b'O' | b'U')
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FinishReason {
     Stop,
@@ -779,6 +797,33 @@ mod tests {
             assert!(!valid_credential_account_id(invalid), "{invalid:?}");
         }
         assert!(!valid_credential_account_id(&"a".repeat(1025)));
+    }
+
+    #[test]
+    fn gateway_generation_ids_are_crockford_ulids_behind_the_gen_prefix() {
+        assert!(valid_gateway_generation_id(
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        ));
+        assert!(valid_gateway_generation_id(
+            "gen_0123456789ABCDEFGHJKMNPQRS"
+        ));
+        for invalid in [
+            "",
+            "gen_",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FA",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAVX",
+            "GEN_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "gen-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAv",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAI",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAL",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAO",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FAU",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5FA_",
+            "gen_01ARZ3NDEKTSV4RRFFQ69G5Fé",
+        ] {
+            assert!(!valid_gateway_generation_id(invalid), "{invalid:?}");
+        }
     }
 
     #[test]

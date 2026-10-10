@@ -11,8 +11,9 @@ note = "oh-fx keeps the replay handles fx saved in its frames, as docs/differenc
 
 [[file]]
 upstream = "src/core/session/generation_fact_codec.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/generation_fact_codec.rs"]
+note = "Facts parse as fx writes them, with nine or ten fields and the web search count optional; the writer arrives with appends to the profile ledger."
 
 [[file]]
 upstream = "src/core/session/generation_usage_provider.zig"
@@ -45,13 +46,15 @@ note = "Signals the still-running background run_command processes of fx 0.0.7 a
 
 [[file]]
 upstream = "src/core/session/profile_usage_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/profile_usage_runtime.rs"]
+note = "Rolling reports are built from the durable ledger, with unresolved pending markers as pending incidents and a marker newer than the report as an incomplete one; the publisher sink, the recovered session usage input, the three-scope set the dashboard loads and the exit abandon arrive with session accounting, usage recovery and the dashboard."
 
 [[file]]
 upstream = "src/core/session/profile_usage_store.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/profile_usage_store.rs"]
+note = "Read-only loading exists: it creates nothing, waits up to 2 s for an existing usage.lock, retries when a lock appears during an unlocked read, keeps the first record of an id and one conflicting variant, and enforces the mode, link, record and size limits; appends, tail repair, the incremental index, compaction, the incident cap and the abandon flag arrive with session usage publication. The ledger lives in the oh-fx data directory, as docs/differences/usage.md records."
 
 [[file]]
 upstream = "src/core/session/prompt_history_provider.zig"
@@ -232,8 +235,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/session/usage_report.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-contract/src/usage_report.rs"]
+note = "Scopes, completeness, coverage, facts, pending markers, incidents, rolling reports and the UTC date label exist in ofx-contract, which the dashboard view will share; the session report, its activity and scope stepping arrive with session accounting and the /usage dashboard."
 
 [[file]]
 upstream = "src/core/session/web_fetch_artifacts.zig"
