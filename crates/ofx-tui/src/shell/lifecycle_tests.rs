@@ -2,40 +2,64 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ofx_contract::{
-    ApprovalOrigin, ApprovalRequest, ApprovalScope, CallDescription, Concurrency, PathAccess,
-    QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, ToolActivity, ToolCallId,
-    ToolEffect, TurnId, TurnOutcome, UiEvent,
+    ApprovalOrigin, ApprovalRequest, ApprovalScope, AttentionKind, CallDescription, Concurrency,
+    HookRuntime, HookScope, PathAccess, QuestionBatchEntry, QuestionOption, QuestionRequest,
+    RequestId, ToolActivity, ToolCallId, ToolEffect, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
+use super::ShellOptions;
 use super::test_shell::TestShell;
 use crate::host::{ForegroundLifecycle, ForegroundState};
 
-type Report = (String, Option<Vec<u8>>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Report {
+    State(&'static str),
+    Attention(HookScope, TurnId, AttentionKind),
+}
 
 #[derive(Clone, Default)]
 struct Reports(Arc<Mutex<Vec<Report>>>);
+
+impl Reports {
+    fn observe(&self, options: &mut ShellOptions) {
+        let mut hooks = HookRuntime::default();
+        let attention = self.clone();
+        hooks
+            .register_attention_required("test.attention_required", move |input| {
+                attention.0.lock().unwrap().push(Report::Attention(
+                    input.invocation.scope,
+                    input.invocation.turn_id,
+                    input.kind,
+                ));
+            })
+            .unwrap();
+        options.hooks = hooks.freeze();
+        options.lifecycle = Some(Box::new(self.clone()));
+    }
+
+    fn take(&self) -> Vec<Report> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
 
 impl ForegroundLifecycle for Reports {
     fn shutdown(&self) {}
 
     fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
-        let state = match state {
+        assert_eq!(status, None);
+        self.0.lock().unwrap().push(Report::State(match state {
             ForegroundState::Idle => "idle",
             ForegroundState::Working => "working",
             ForegroundState::Blocked => "blocked",
-        };
-        self.0
-            .lock()
-            .unwrap()
-            .push((state.to_owned(), status.map(<[u8]>::to_vec)));
+        }));
     }
 }
 
-fn question(turn: u64) -> UiEvent {
+fn question(turn: u64, id: u64) -> UiEvent {
     UiEvent::QuestionRequested {
         turn_id: TurnId::new(turn),
         request: QuestionRequest {
-            id: RequestId::new(turn),
+            id: RequestId::new(id),
             entries: vec![QuestionBatchEntry {
                 question: "Continue?".to_owned(),
                 options: vec![QuestionOption {
@@ -47,13 +71,13 @@ fn question(turn: u64) -> UiEvent {
     }
 }
 
-fn approval(turn: u64) -> UiEvent {
+fn approval(turn: u64, id: u64) -> UiEvent {
     UiEvent::ApprovalRequested {
         turn_id: TurnId::new(turn),
         request: Box::new(ApprovalRequest {
-            id: RequestId::new(turn),
+            id: RequestId::new(id),
             tool_name: "read_file".to_owned(),
-            call_id: ToolCallId::new("read"),
+            call_id: ToolCallId::new(format!("read-{id}")),
             description: CallDescription {
                 title: "Reading notes".to_owned(),
                 label: None,
@@ -76,13 +100,16 @@ fn approval(turn: u64) -> UiEvent {
     }
 }
 
+fn attention(turn: u64, kind: AttentionKind) -> Report {
+    Report::Attention(HookScope::Interactive, TurnId::new(turn), kind)
+}
+
 #[test]
-fn foreground_observer_ignores_invisible_questions_and_unmatched_turns() {
+fn foreground_observer_and_attention_hooks_ignore_invisible_prompts_and_unmatched_turns() {
     let reports = Reports::default();
-    let copy = reports.clone();
-    let mut test = TestShell::start_with(|options| options.lifecycle = Some(Box::new(copy)));
-    test.deliver(question(99));
-    test.deliver(approval(99));
+    let mut test = TestShell::start_with(|options| reports.observe(options));
+    test.deliver(question(99, 99));
+    test.deliver(approval(99, 99));
     test.deliver(UiEvent::TurnStarted {
         turn_id: TurnId::new(99),
     });
@@ -90,26 +117,56 @@ fn foreground_observer_ignores_invisible_questions_and_unmatched_turns() {
         turn_id: TurnId::new(99),
         outcome: TurnOutcome::Completed,
     });
-    assert!(reports.0.lock().unwrap().is_empty());
+    assert!(reports.take().is_empty());
     test.submit("work");
     test.deliver(UiEvent::TurnStarted {
         turn_id: TurnId::new(1),
     });
-    test.deliver(approval(1));
+    test.deliver(approval(1, 1));
     let _ = test.screen();
     let _ = test.screen();
-    test.deliver(question(1));
+    test.deliver(question(1, 1));
     test.deliver(UiEvent::TurnFinished {
         turn_id: TurnId::new(1),
         outcome: TurnOutcome::Interrupted,
     });
     assert_eq!(
-        *reports.0.lock().unwrap(),
+        reports.take(),
         [
-            ("working".to_owned(), None),
-            ("blocked".to_owned(), Some(b"permission".to_vec())),
-            ("blocked".to_owned(), Some(b"question".to_vec())),
-            ("idle".to_owned(), None)
+            Report::State("working"),
+            attention(1, AttentionKind::Permission),
+            attention(1, AttentionKind::Question),
+            Report::State("idle"),
         ]
     );
+}
+
+#[test]
+fn attention_hooks_run_only_when_a_prompt_becomes_active() {
+    let reports = Reports::default();
+    let mut test = TestShell::start_with(|options| reports.observe(options));
+    test.submit("work");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    reports.take();
+    test.deliver(approval(1, 1));
+    test.deliver(approval(1, 2));
+    test.deliver(question(1, 3));
+    test.deliver(question(1, 4));
+    assert_eq!(
+        reports.take(),
+        [
+            attention(1, AttentionKind::Permission),
+            attention(1, AttentionKind::Question),
+        ]
+    );
+    test.type_bytes(b"\x03");
+    test.step();
+    assert!(test.sent().iter().any(|command| matches!(
+        command,
+        UiCommand::Approval { request_id, .. } if *request_id == RequestId::new(2)
+    )));
+    test.deliver(approval(1, 5));
+    assert_eq!(reports.take(), [attention(1, AttentionKind::Permission)]);
 }

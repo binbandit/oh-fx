@@ -557,7 +557,7 @@ impl Shell<'_> {
         else {
             return;
         };
-        self.foreground(super::ForegroundState::Working, None);
+        self.foreground(super::ForegroundState::Working);
         self.outstanding[index].turn_id = Some(turn_id);
         match self.outstanding[index].state {
             SubmissionState::Cancelled => self.send(UiCommand::Cancel { turn_id }),
@@ -663,7 +663,7 @@ impl Shell<'_> {
         else {
             return;
         };
-        self.foreground(super::ForegroundState::Idle, None);
+        self.foreground(super::ForegroundState::Idle);
         let was_visible = self
             .outstanding
             .remove(index)
