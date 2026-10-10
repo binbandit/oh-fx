@@ -259,7 +259,9 @@ impl Server {
         let outcome = client
             .call_tool(name, arguments_json, options, deadline)
             .await;
-        if outcome.as_ref().err() == Some(&McpError::McpAuthenticationRequired) {
+        if let Err(error) = &outcome
+            && client.transport.lost_authentication(error)
+        {
             self.authentication_failed(&client);
         }
         Ok(outcome?)
