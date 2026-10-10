@@ -4,9 +4,11 @@ use ofx_contract::{
     ChatMessage, CompactionActivity, CompactionEnd, ModelRequest, ProviderError, ProviderErrorKind,
     ProviderOptions, TurnId, UiEvent,
 };
+use ofx_trace::TraceContext;
 use tokio_util::sync::CancellationToken;
 
 use super::{Agent, EventSink, LastReply, Stop, Turn, TurnFailure};
+use crate::compactor::trace::{self, CompactionTraceKind, Optional};
 use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Step, Summarizer};
 use crate::execution_memory::{history_turns, retain};
 use crate::prompt_context::{Calibration, RequestCost};
@@ -147,6 +149,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<Option<Compacted>, CompactionError> {
         let mut shown = CompactionShown::new(turn.id, events);
+        let context = turn.trace;
         let turn = &mut turn.compaction;
         let pending = turn.overflow == Overflow::Pending;
         let rebuilt = mem::take(&mut turn.rebuilt) && !pending;
@@ -154,7 +157,9 @@ impl Agent {
             let mut size = self.compaction_size(measured.fixed_tokens);
             size.request_tokens = Some(measured.cost.estimated_tokens);
             size.overflow = pending;
-            if !rebuilt && (pending || size.due()) {
+            let wants = !rebuilt && (pending || size.due());
+            self.trace_decision(context, wants, pending, measured, size);
+            if wants {
                 let conversation = (!pending).then_some(request);
                 self.set_compacting(true);
                 let compacted = self
@@ -173,17 +178,68 @@ impl Agent {
                     return Ok(compacted);
                 }
             } else if rebuilt
-                && size
+                && let Some(usable) = size
                     .usable_tokens
-                    .is_some_and(|usable| measured.cost.estimated_tokens > usable)
+                    .filter(|usable| measured.cost.estimated_tokens > *usable)
             {
+                trace::failure(
+                    self.compaction_trace,
+                    context,
+                    CompactionTraceKind::NoCompactableContext,
+                    format_args!(
+                        "estimated_tokens={} usable_tokens={usable}",
+                        measured.cost.estimated_tokens
+                    ),
+                );
                 return Err(CompactionError::ContextCapacityExceeded);
             }
         }
         if pending {
+            trace::failure(
+                self.compaction_trace,
+                context,
+                CompactionTraceKind::OverflowRecoveryIncomplete,
+                format_args!(
+                    "estimated_tokens={}",
+                    measured.map_or(0, |measured| measured.cost.estimated_tokens)
+                ),
+            );
             return Err(CompactionError::ContextCapacityExceeded);
         }
         Ok(None)
+    }
+
+    fn trace_decision(
+        &self,
+        context: TraceContext,
+        wants: bool,
+        pending: bool,
+        measured: &Measured,
+        size: Size,
+    ) {
+        let prior_input_tokens = self
+            .calibration
+            .as_ref()
+            .filter(|calibration| calibration.model == self.config.model)
+            .map(|calibration| calibration.exact_input_tokens);
+        trace::info_if(
+            wants,
+            self.compaction_trace,
+            context,
+            CompactionTraceKind::Decision,
+            format_args!(
+                "decision={} overflow={pending} request_bytes={} estimated_tokens={} text_tokens={} has_images=false image_baseline=false prior_input_tokens={} usable_tokens={} compact_at_tokens={} compact_at_percent={} max_output_tokens={}",
+                if wants { "compact" } else { "no_op" },
+                measured.cost.bytes,
+                measured.cost.estimated_tokens,
+                measured.cost.text_tokens,
+                Optional(prior_input_tokens),
+                Optional(size.usable_tokens),
+                Optional(size.compact_at_tokens),
+                self.config.auto_compact_percent.get(),
+                Optional(self.config.max_output_tokens),
+            ),
+        );
     }
 
     pub(super) fn adopt_compaction(
@@ -235,6 +291,7 @@ impl Agent {
         turn: &mut Turn,
         error: &ProviderError,
         partial: &str,
+        measured: Option<&Measured>,
         cancel: &CancellationToken,
     ) -> bool {
         let recovers = partial.is_empty()
@@ -243,6 +300,17 @@ impl Agent {
             && self.has_compactable_context(turn)
             && is_context_overflow(error);
         if recovers {
+            trace::info(
+                self.compaction_trace,
+                turn.trace,
+                CompactionTraceKind::ProviderOverflowRecovery,
+                format_args!(
+                    "model={} request_bytes={} estimated_tokens={}",
+                    self.config.model,
+                    measured.map_or(0, |measured| measured.cost.bytes),
+                    measured.map_or(0, |measured| measured.cost.estimated_tokens)
+                ),
+            );
             turn.compaction.overflow = Overflow::Pending;
         }
         recovers

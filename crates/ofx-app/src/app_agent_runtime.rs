@@ -44,6 +44,7 @@ use crate::skill_commands::{
     InstallTask, complete_install, finish_install, handle_skills, is_install_command, wait_install,
 };
 use crate::skills::{HostSkills, SkillInstall};
+use crate::trace_command::{TraceFacts, start_trace};
 use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
@@ -278,6 +279,21 @@ impl ControllerState {
 
     pub(crate) fn feedback(&self) {
         crate::feedback_command::start_feedback(&self.emit);
+    }
+
+    pub(crate) fn trace(&self, work: Work) {
+        let facts = TraceFacts {
+            model: self.model.clone(),
+            fast_mode: self.fast_mode(),
+            permission_mode: self.setup.permission_mode(),
+            workspace_root: self.setup.workspace_root().to_path_buf(),
+            step_limit: self.setup.step_limit(),
+            effort: self.effort.clone(),
+            processing: work != Work::Idle,
+            stream_active: work == Work::Turn,
+            queued: self.worker.waiting_texts().len(),
+        };
+        start_trace(&self.emit, Arc::clone(&self.clipboard), facts);
     }
 
     pub(crate) fn compaction(&self, activity: CompactionActivity) {
@@ -936,6 +952,7 @@ impl Controller {
         match persistence.resume_selected(id, &mut self.agent, &self.state.setup) {
             Ok(switched) => {
                 self.forget_tracked_changes();
+                ofx_agent::reset_compaction_trace();
                 self.state.setup.forget_children();
                 self.bind_children();
                 self.restore_preferences(switched.preferences);
@@ -1071,6 +1088,7 @@ impl Controller {
 
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
+        ofx_agent::reset_compaction_trace();
         self.forget_tracked_changes();
         self.state.setup.forget_children();
         let started = self
@@ -1645,6 +1663,7 @@ mod tests {
 
     mod sign_out;
     mod steering;
+    mod trace;
     mod workspace;
 
     struct Harness {
