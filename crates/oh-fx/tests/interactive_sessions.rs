@@ -2618,3 +2618,104 @@ fn a_session_holding_the_command_replays_fx_saved_resumes_and_keeps_them() {
         ["user", "assistant", "turn_completed"]
     );
 }
+
+fn append_fx_file_edit_turn(home: &Home, id: &str) {
+    let arguments =
+        json!({"path": "src/lib.rs", "old_string": "old();", "new_string": "new();\n    more();"})
+            .to_string();
+    home.append(
+        id,
+        &[
+            frame(4, &json!({"user": {"text": "edit the code", "images": [], "work_id": null}})),
+            frame(
+                5,
+                &json!({"tool_call": {
+                    "call_id": "call-edit",
+                    "tool_name": "edit_file",
+                    "arguments_json": arguments,
+                    "argument_integrity": "valid",
+                    "provisional_id": null,
+                    "provider_result": null,
+                    "final_identity": "valid",
+                    "provenance": "fx_local"
+                }}),
+            ),
+            frame(
+                6,
+                &json!({"tool_result": {
+                    "call_id": "call-edit",
+                    "tool_name": "edit_file",
+                    "status": "success",
+                    "artifact_ref": "result-call-edit.txt",
+                    "tool_image_handle": null,
+                    "output_bytes": 21,
+                    "stored_bytes": 21,
+                    "completeness": "complete",
+                    "preview": "Edited src/lib.rs (1)",
+                    "provider_native": false,
+                    "created_at_ms": 1,
+                    "permission_feedback": [],
+                    "committed_file_presentation": {
+                        "path": "src/lib.rs",
+                        "kind": "edited",
+                        "lines": [
+                            {"kind": "deletion", "old_line": 2, "new_line": null, "text": "    old();"},
+                            {"kind": "addition", "old_line": null, "new_line": 2, "text": "    new();"},
+                            {"kind": "addition", "old_line": null, "new_line": 3, "text": "    more();"}
+                        ],
+                        "additions": 2,
+                        "deletions": 1,
+                        "truncated": false,
+                        "previous_content": null,
+                        "after_content": null,
+                        "lifecycle_id": {"turn_id": 1, "call_id": "call-edit"},
+                        "content_handle": "diff-0011223344556677-8899aabbccddeeff.json"
+                    },
+                    "command_replay_ref": null,
+                    "command_replay_bytes": null,
+                    "command_process_presentation": null,
+                    "terminal_action_presentation": null
+                }}),
+            ),
+            frame(7, &json!({"assistant": {"text": "Edited the code."}})),
+            frame(8, &json!({"turn_completed": {"files": [], "turn_summary": null}})),
+        ]
+        .concat(),
+    );
+}
+
+#[test]
+fn a_resumed_edit_shows_the_line_counts_fx_saved() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Ready."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    append_fx_file_edit_turn(&home, &id);
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "Edited the code.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &["┃ edit the code", "src/lib.rs +2 / -1", "Edited the code."]
+        ),
+        "{screen}"
+    );
+    session.send(b"next\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    let frames = home.frames(&id);
+    let presentation = &frames[5]["event"]["tool_result"]["committed_file_presentation"];
+    assert_eq!(presentation["additions"], 2);
+    assert_eq!(
+        presentation["content_handle"],
+        "diff-0011223344556677-8899aabbccddeeff.json"
+    );
+    assert_eq!(kinds(&frames)[8..], ["user", "assistant", "turn_completed"]);
+}

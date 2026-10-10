@@ -188,6 +188,7 @@ pub struct SavedToolCall {
     pub status: ToolResultStatus,
     pub output: String,
     pub process: Option<CommandProcessPresentation>,
+    pub file_change: Option<FileChangeStats>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

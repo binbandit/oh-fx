@@ -120,6 +120,7 @@ impl TurnReplay<'_, '_> {
         let Some(call) = self.running.remove(&result.call_id) else {
             return;
         };
+        let file_change = result.file_change();
         let whole = reads_whole_result(&result.tool_name)
             .then(|| self.session.tool_result_output(&result))
             .flatten();
@@ -141,6 +142,7 @@ impl TurnReplay<'_, '_> {
                 status: result.status,
                 output,
                 process: result.command_process_presentation,
+                file_change,
             }),
         };
         self.shown[call.slot] = Some(entry);

@@ -516,3 +516,83 @@ fn history_snapshot_codec_keeps_command_replays_in_upstream_layout() {
     let unpaired = encoded(&envelope(4, 6, ConversationEvent::Interrupted(interrupted)));
     assert!(decode_history_envelope(&unpaired).is_none());
 }
+
+#[test]
+fn history_snapshot_codec_keeps_file_presentations_in_upstream_layout() {
+    use crate::session_event::file_presentation::{
+        CommittedFilePresentation, LifecycleId, LineKind, PresentationKind, PresentationLine,
+    };
+
+    let mut result = ToolResultEvent::new(
+        "c1",
+        "edit_file",
+        ToolResultStatus::Success,
+        "a",
+        2,
+        ArtifactCompleteness::Complete,
+    );
+    result.committed_file_presentation = Some(Box::new(CommittedFilePresentation {
+        path: "a".to_owned(),
+        kind: PresentationKind::Edited,
+        lines: vec![PresentationLine {
+            kind: LineKind::Addition,
+            old_line: None,
+            new_line: Some(2),
+            text: "x".to_owned(),
+        }],
+        additions: 1,
+        deletions: 0,
+        truncated: false,
+        previous_content: None,
+        after_content: Some("y".to_owned()),
+        lifecycle_id: Some(LifecycleId {
+            turn_id: 4,
+            call_id: "c".to_owned(),
+        }),
+        content_handle: None,
+    }));
+    let mut presentation = vec![1];
+    presentation.extend(text_bytes("a"));
+    presentation.push(1);
+    presentation.extend(word(1));
+    presentation.extend([1, 0, 1]);
+    presentation.extend(word(2));
+    presentation.extend(text_bytes("x"));
+    presentation.extend(word(1));
+    presentation.extend(word(0));
+    presentation.extend([0, 0, 1]);
+    presentation.extend(text_bytes("y"));
+    presentation.push(1);
+    presentation.extend(word(4));
+    presentation.extend(text_bytes("c"));
+    presentation.extend([0, 0, 0, 0, 0]);
+    let bytes = encoded(&envelope(
+        2,
+        5,
+        ConversationEvent::ToolResult(result.clone()),
+    ));
+    assert!(bytes.ends_with(&presentation), "{bytes:?}");
+    round_trip(&envelope(
+        2,
+        5,
+        ConversationEvent::ToolResult(result.clone()),
+    ));
+
+    let start = bytes.len() - presentation.len();
+    let kind = start + 1 + 9;
+    let line_kind = kind + 1 + 8;
+    for (at, value) in [(kind, 2), (line_kind, 5), (line_kind + 1, 2)] {
+        let mut corrupt = bytes.clone();
+        corrupt[at] = value;
+        assert!(decode_history_envelope(&corrupt).is_none(), "byte {at}");
+    }
+    let mut wide_line = bytes.clone();
+    wide_line[line_kind + 3 + 4] = 1;
+    assert!(decode_history_envelope(&wide_line).is_none());
+
+    if let Some(presentation) = result.committed_file_presentation.as_mut() {
+        presentation.content_handle = Some("diff-1.json".to_owned());
+    }
+    let competing = encoded(&envelope(2, 5, ConversationEvent::ToolResult(result)));
+    assert!(decode_history_envelope(&competing).is_none());
+}
