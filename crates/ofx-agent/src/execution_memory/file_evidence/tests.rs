@@ -8,6 +8,7 @@ fn result(call: &ToolCall, status: ToolResultStatus, whole: bool) -> StepResult<
         output_bytes: 6,
         status,
         process: None,
+        review_feedback: false,
         permission_feedback: Vec::new(),
         model_view_covers_full_file: whole,
     }

@@ -224,3 +224,58 @@ fn a_session_holding_upstream_file_presentations_resumes_and_keeps_them() {
         .collect();
     assert_eq!(contents, ["done", "done"]);
 }
+
+const HELD: &str = "Security review held this action.";
+
+fn review_hold_turn() -> Vec<String> {
+    vec![
+        "{\"user\":{\"text\":\"clean the build\",\"images\":[],\"work_id\":null}}".to_owned(),
+        "{\"assistant\":{\"text\":\"\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        shell_call("call-rm", "rm -rf build"),
+        format!(
+            "{{\"tool_result\":{{\"call_id\":\"call-rm\",\"tool_name\":\"shell\",\"status\":\"failure\",\"artifact_ref\":\"result-call-rm.txt\",\"tool_image_handle\":null,\"output_bytes\":33,\"stored_bytes\":33,\"completeness\":\"complete\",\"preview\":\"{HELD}\",\"provider_native\":false,\"review_feedback\":true,\"created_at_ms\":5,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}}}"
+        ),
+        "{\"assistant\":{\"text\":\"The review held it.\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}".to_owned(),
+    ]
+}
+
+#[test]
+fn a_session_holding_upstream_review_feedback_resumes_and_keeps_it() {
+    let fixture = Fixture::new();
+    let id = "fx-review-feedback";
+    let log = upstream_session(&fixture, id, &review_hold_turn());
+
+    let mut session = fixture.resume(id).unwrap();
+    let history = session.take_history();
+    drop(session);
+    assert_eq!(reencoded(&history), log);
+    assert_eq!(fs::read_to_string(fixture.events(id)).unwrap(), log);
+    assert_eq!(
+        cache_coverage(&fixture, id),
+        Some(u64::try_from(log.len()).unwrap())
+    );
+
+    let edited = log.replacen(
+        "\"text\":\"clean the build\"",
+        "\"text\":\"Clean the build\"",
+        1,
+    );
+    fs::write(fixture.events(id), &edited).unwrap();
+    let mut cached = fixture.resume(id).unwrap();
+    assert_eq!(cached.take_history(), history);
+    drop(cached);
+    fs::write(fixture.events(id), &log).unwrap();
+
+    let restored = fixture.resume(id).unwrap().restored_history().unwrap();
+    assert!(
+        restored.messages.contains(&ChatMessage::Tool {
+            call_id: ToolCallId::new("call-rm"),
+            tool_name: "shell".to_owned(),
+            content: HELD.to_owned(),
+            status: ToolResultStatus::Failure,
+        }),
+        "{:?}",
+        restored.messages
+    );
+}

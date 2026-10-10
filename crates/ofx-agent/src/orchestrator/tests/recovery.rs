@@ -122,6 +122,7 @@ async fn a_continued_turn_saves_its_restored_results_with_their_raw_size_and_pro
             bytes: 40,
             whole_file: false,
             process: Some(CommandProcessPresentation::ExitCode(3)),
+            review_feedback: false,
         }],
         ..recovered(RecoveryStrategy::ContinueAfterTool)
     };

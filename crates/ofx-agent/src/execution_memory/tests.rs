@@ -280,12 +280,14 @@ fn logged_results_carry_the_process_presentation_their_command_returned() {
             bytes: 11,
             whole_file: false,
             process: Some(CommandProcessPresentation::ExitCode(3)),
+            review_feedback: false,
         },
         RecordedOutput {
             call_id: ToolCallId::new("b"),
             bytes: 11,
             whole_file: false,
             process: None,
+            review_feedback: false,
         },
     ];
     let processes: Vec<Option<CommandProcessPresentation>> = logged_steps(&turn.steps, &recorded)
@@ -328,6 +330,7 @@ fn logged_results_carry_the_raw_length_their_tool_returned() {
         bytes,
         whole_file: false,
         process: None,
+        review_feedback: false,
     };
     let recorded = [
         raw("dropped", 1),

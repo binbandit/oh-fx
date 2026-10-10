@@ -19,6 +19,7 @@ pub struct StepResult<'a> {
     pub status: ToolResultStatus,
     pub model_view_covers_full_file: bool,
     pub process: Option<CommandProcessPresentation>,
+    pub review_feedback: bool,
     pub permission_feedback: Vec<&'a str>,
 }
 
@@ -79,6 +80,7 @@ pub struct RecordedOutput {
     pub bytes: usize,
     pub whole_file: bool,
     pub process: Option<CommandProcessPresentation>,
+    pub review_feedback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

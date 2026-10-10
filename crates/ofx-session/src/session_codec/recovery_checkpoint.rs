@@ -118,6 +118,7 @@ struct SavedToolResult {
     stored_output_bytes: u64,
     truncated: bool,
     process: Option<CommandProcessPresentation>,
+    review_feedback: bool,
     permission_feedback: Vec<String>,
 }
 
@@ -230,6 +231,7 @@ impl SavedToolStep {
                     status: result.status,
                     model_view_covers_full_file: false,
                     process: result.process,
+                    review_feedback: result.review_feedback,
                     permission_feedback: result
                         .permission_feedback
                         .iter()
@@ -454,10 +456,11 @@ fn tool_result(value: Json<'_>) -> Option<SavedToolResult> {
         process: fields.present_or_null("command_process_presentation", |value| {
             process_presentation::checkpoint::read(value).map(Some)
         })?,
+        review_feedback: fields.flag("review_feedback")?,
         permission_feedback: list(fields.required("permission_feedback")?, durable_text)?,
     };
     fixed::<False>(&mut fields, "provider_native")?;
-    fixed::<False>(&mut fields, "review_feedback")?;
+    (!result.review_feedback || result.status == ToolResultStatus::Failure).then_some(())?;
     fields.signed("created_at_ms")?;
     for presentation in [
         "committed_file_presentation",

@@ -124,7 +124,7 @@ fn tool_result(fields: &mut Fields<'_>) -> Option<ToolResultEvent> {
         completeness: tag(&fields.required("completeness")?)?,
         preview: fields.nullable("preview", |value| string(value).map(Some))?,
         provider_native: fields.or("provider_native", false, |value| value.as_bool())?,
-        review_feedback: fields.fixed("review_feedback")?,
+        review_feedback: fields.or("review_feedback", false, |value| value.as_bool())?,
         created_at_ms: fields.or("created_at_ms", 0, |value| value.as_i64())?,
         permission_feedback: fields.or("permission_feedback", Vec::new(), strings)?,
         committed_file_presentation: fields.nullable("committed_file_presentation", |value| {

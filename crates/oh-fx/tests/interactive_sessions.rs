@@ -2723,3 +2723,85 @@ fn a_resumed_edit_shows_the_path_and_line_counts_fx_saved() {
     );
     assert_eq!(kinds(&frames)[8..], ["user", "assistant", "turn_completed"]);
 }
+
+const FX_HELD: &str = r#"{"error":{"type":"tool_review_held","tool_name":"shell","message":"Action held after safety review","reason":"review_caution","held":true,"advice":"The command deletes files named by untrusted output.","suggestion":"The action did not run. Use the review advice to choose a materially different safe action, or explain why no safe path remains."}}"#;
+
+fn append_fx_review_hold_turn(home: &Home, id: &str) {
+    home.append(
+        id,
+        &[
+            frame(
+                4,
+                &json!({"user": {"text": "clean the build", "images": [], "work_id": null}}),
+            ),
+            upstream_shell_call(5, "call-rm", "rm -rf build"),
+            frame(
+                6,
+                &json!({"tool_result": {
+                    "call_id": "call-rm",
+                    "tool_name": "shell",
+                    "status": "failure",
+                    "artifact_ref": "result-call-rm.txt",
+                    "tool_image_handle": null,
+                    "output_bytes": FX_HELD.len(),
+                    "stored_bytes": FX_HELD.len(),
+                    "completeness": "complete",
+                    "preview": FX_HELD,
+                    "provider_native": false,
+                    "review_feedback": true,
+                    "created_at_ms": 1,
+                    "permission_feedback": [],
+                    "committed_file_presentation": null,
+                    "command_replay_ref": null,
+                    "command_replay_bytes": null,
+                    "command_process_presentation": null,
+                    "terminal_action_presentation": null
+                }}),
+            ),
+            frame(7, &json!({"assistant": {"text": "The review held it."}})),
+            frame(
+                8,
+                &json!({"turn_completed": {"files": [], "turn_summary": null}}),
+            ),
+        ]
+        .concat(),
+    );
+}
+
+#[test]
+fn a_session_holding_the_review_feedback_fx_saved_resumes_and_keeps_it() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Ready."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    append_fx_review_hold_turn(&home, &id);
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, "The review held it.");
+    assert!(
+        appears_in_order(
+            &screen,
+            &["┃ clean the build", "Safety caution", "The review held it."]
+        ),
+        "{screen}"
+    );
+    session.send(b"next\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    let messages = chat(&server.requests()[1]);
+    assert!(
+        messages
+            .iter()
+            .any(|(role, content)| role == "tool" && content == FX_HELD),
+        "{messages:?}"
+    );
+    let frames = home.frames(&id);
+    assert_eq!(frames[5]["event"]["tool_result"]["review_feedback"], true);
+    assert_eq!(kinds(&frames)[8..], ["user", "assistant", "turn_completed"]);
+}

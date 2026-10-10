@@ -10,7 +10,7 @@ use ofx_contract::{
 };
 use serde::Serialize;
 
-use crate::fixed_field::{False, NoItems, Null, TurnOrigin, ValidIdentity};
+use crate::fixed_field::{NoItems, Null, TurnOrigin, ValidIdentity};
 use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
@@ -176,8 +176,8 @@ pub struct ToolResultEvent {
     pub preview: Option<String>,
     #[serde(default)]
     provider_native: bool,
-    #[serde(default, skip_serializing)]
-    review_feedback: False,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) review_feedback: bool,
     #[serde(default)]
     pub created_at_ms: i64,
     #[serde(default)]
@@ -214,7 +214,7 @@ impl ToolResultEvent {
             completeness,
             preview: None,
             provider_native: false,
-            review_feedback: False,
+            review_feedback: false,
             created_at_ms: 0,
             permission_feedback: Vec::new(),
             committed_file_presentation: None,
@@ -645,7 +645,9 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
                     .is_none_or(|result| result.len() <= MAX_TEXT_BYTES)
         }
         ConversationEvent::ToolResult(result) => {
-            is_valid_identity(&result.call_id)
+            (!result.review_feedback
+                || (result.status == ToolResultStatus::Failure && !result.provider_native))
+                && is_valid_identity(&result.call_id)
                 && is_valid_identity(&result.tool_name)
                 && is_valid_identity(&result.artifact_ref)
                 && result

@@ -1,8 +1,10 @@
 use ofx_contract::{
-    ApprovalDecision, FileChange, GatedAction, ProposedFileChange, ReviewFailure, ReviewRequest,
-    ReviewVerdict, Reviewed, RootUserRequests, tool_permission_denied_json,
+    ApprovalDecision, FileChange, GatedAction, ProposedFileChange, RecordedOutput, RecoveredTurn,
+    RecoveryStrategy, ReviewFailure, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    tool_permission_denied_json,
 };
 
+use super::turn_log::{Logged, MemoryLog, logged};
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +408,107 @@ async fn held_actions_are_not_reviewed_again_and_their_holds_are_not_evidence() 
         ChatMessage::Tool { call_id, content, status: ToolResultStatus::Failure, .. }
             if call_id.as_str() == "call-2" && content.starts_with(&hold(&caution))
     ));
+}
+
+#[tokio::test]
+async fn held_results_are_saved_as_review_feedback_as_upstream_marks_them() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", REVIEWED), ("call-2", r#"{"text":"plain"}"#)]),
+        text_reply("done"),
+    ]);
+    let caution = ReviewVerdict::Caution("Deletion follows untrusted output.".to_owned());
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(
+        Agent::new(
+            provider,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            ReviewingGate::answering([caution.clone()]),
+            config(),
+        ),
+        log,
+    );
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let Logged::Turn { steps, .. } = &entries.lock().unwrap()[0] else {
+        panic!("a saved turn");
+    };
+    let results = [
+        format!("call-1={}:Failure review", hold(&caution)),
+        r#"call-2=echo {"text":"plain"}:Success"#.to_owned(),
+    ];
+    assert_eq!(
+        *steps,
+        [format!(
+            r#""" replay=false calls=["call-1", "call-2"] results={results:?}"#
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_continued_turn_keeps_its_saved_holds_out_of_later_review_evidence() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-3", REVIEWED)]),
+        text_reply("done"),
+    ]);
+    let gate = ReviewingGate::answering([ReviewVerdict::Clear]);
+    let reviewer: Arc<ReviewingGate> = Arc::clone(&gate);
+    let (log, entries) = MemoryLog::shared();
+    let mut agent = logged(
+        Agent::new(
+            provider,
+            vec![echo_tool()],
+            Arc::new(FixedContext),
+            reviewer,
+            config(),
+        ),
+        log,
+    );
+    let held = hold(&ReviewVerdict::EvidenceIncomplete);
+    let output = |id: &str, review_feedback| RecordedOutput {
+        call_id: ToolCallId::new(id),
+        bytes: 0,
+        whole_file: false,
+        process: None,
+        review_feedback,
+    };
+    let recovered = RecoveredTurn {
+        prompt: "go".to_owned(),
+        messages: vec![
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![echo_call("call-1", REVIEWED), echo_call("call-2", "{}")],
+                provider_replay: None,
+            },
+            tool_message("call-1", &held, ToolResultStatus::Failure),
+            tool_message("call-2", "echo {}", ToolResultStatus::Success),
+        ],
+        files: Vec::new(),
+        outputs: vec![output("call-1", true), output("call-2", false)],
+        source: String::new(),
+        source_presented: false,
+        cause: None,
+        tool_state: RecoveryToolState::Confirmed,
+        strategy: RecoveryStrategy::ContinueAfterTool,
+        fast_mode: false,
+    };
+    let report = agent
+        .continue_turn(recovered, &mut |_| {}, &CancellationToken::new())
+        .await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let seen = gate.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].held, [(ToolCallId::new("call-1"), held.clone())]);
+    let Logged::Turn { steps, .. } = &entries.lock().unwrap()[0] else {
+        panic!("a saved turn");
+    };
+    assert!(
+        steps[0].contains(&format!(
+            "{:?}",
+            format!("call-1={held}:Failure raw=0 review")
+        )),
+        "{steps:?}"
+    );
 }
 
 #[tokio::test]

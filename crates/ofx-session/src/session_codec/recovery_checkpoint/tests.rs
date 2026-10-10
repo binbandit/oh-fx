@@ -30,6 +30,7 @@ fn checkpoint() -> RecoveryCheckpoint {
                     stored_output_bytes: 12,
                     truncated: false,
                     process: None,
+                    review_feedback: false,
                     permission_feedback: Vec::new(),
                 }],
             }],
@@ -552,6 +553,7 @@ fn a_continuation_keeps_each_restored_results_raw_size_and_process() {
             bytes: 40,
             whole_file: false,
             process: Some(CommandProcessPresentation::ExitCode(3)),
+            review_feedback: false,
         }]
     );
 }
@@ -577,6 +579,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
                     process: None,
+                    review_feedback: false,
                     permission_feedback: Vec::new(),
                 }],
             }],
@@ -894,5 +897,65 @@ fn a_continuation_gives_approval_feedback_after_every_result_of_its_step() {
             ChatMessage::permission_feedback(ToolCallId::new("call_2"), ""),
             ChatMessage::restored_steering("also tests"),
         ]
+    );
+}
+
+#[test]
+fn review_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
+    let calls = read_step_calls();
+    let mut point = recovery_point(&calls, "held");
+    let held = &mut point.turn.steps[0].tool_results[0];
+    held.status = ToolResultStatus::Failure;
+    held.output_bytes = 4;
+    held.review_feedback = true;
+    let source = CheckpointSource {
+        point: &point,
+        provider: &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        credential: None,
+        replays: vec![None],
+        outputs: vec![vec![SavedOutput {
+            handle: None,
+            preview: None,
+        }]],
+        files: Vec::new(),
+        created_at_ms: 5,
+    };
+    let written = encode_recovery_file(3, &source).unwrap().unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(
+        text.contains(
+            "\"status\":\"failure\",\"output\":\"held\",\"output_handle\":null,\"preview\":null,\"output_bytes\":4,\"stored_output_bytes\":4,\"truncated\":false,\"provider_native\":false,\"review_feedback\":true,\"created_at_ms\":5,"
+        ),
+        "{text}"
+    );
+    let read = decode_recovery_file(&written, 3).unwrap().unwrap();
+    assert!(read.interrupted_turn().steps[0].tool_results[0].review_feedback);
+
+    let upstream = upstream_checkpoint()
+        .replace(
+            "\"status\":\"success\",\"output\"",
+            "\"status\":\"failure\",\"output\"",
+        )
+        .replace("\"review_feedback\":false", "\"review_feedback\":true");
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    let outputs = decoded(&upstream)
+        .into_continuation(&codex, "gpt-5.4", false)
+        .outputs;
+    assert!(outputs[0].review_feedback);
+    for invalid in [":null", ":1", ":\"true\""] {
+        let text = upstream.replace(
+            "\"review_feedback\":true",
+            &format!("\"review_feedback\"{invalid}"),
+        );
+        assert_eq!(
+            decode_recovery_file(&file_with(&text, 1), 1),
+            Err(SessionError::InvalidRecoveryCheckpoint),
+            "{invalid}"
+        );
+    }
+    let missing = upstream.replace(",\"review_feedback\":true", "");
+    assert_eq!(
+        decode_recovery_file(&file_with(&missing, 1), 1),
+        Err(SessionError::InvalidRecoveryCheckpoint)
     );
 }

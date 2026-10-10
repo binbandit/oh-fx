@@ -298,6 +298,7 @@ fn a_child_reopened_over_a_compacted_turn_and_its_checkpoint_closes_that_work_fi
                 output_bytes: 7,
                 status: ToolResultStatus::Success,
                 process: None,
+                review_feedback: false,
                 permission_feedback: Vec::new(),
                 model_view_covers_full_file: false,
             }],

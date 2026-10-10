@@ -50,6 +50,22 @@ impl Home {
             .expect("start oh-fx")
     }
 
+    fn saved_log(&self) -> String {
+        let sessions = self.root.join("data/oh-fx/sessions");
+        let mut logs = fs::read_dir(&sessions)
+            .expect("list the saved sessions")
+            .map(|entry| {
+                entry
+                    .expect("read a session entry")
+                    .path()
+                    .join("events.jsonl")
+            })
+            .filter(|log| log.exists());
+        let log = logs.next().expect("a saved session");
+        assert!(logs.next().is_none(), "one saved session");
+        fs::read_to_string(log).expect("read the conversation log")
+    }
+
     fn command(&self, prompt: &str) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
         command
@@ -289,6 +305,17 @@ fn a_caution_holds_the_command_and_returns_the_advice_to_the_model() {
     assert_eq!(
         result(&output)["tool_calls"][0],
         json!({"name": "shell", "status": "error", "action": "run", "error": {"category": "rejected", "code": "rejected"}})
+    );
+    let log = home.saved_log();
+    let held = log
+        .lines()
+        .find(|line| line.contains("\"tool_result\":{"))
+        .expect("a saved tool result");
+    assert!(
+        held.contains("\"status\":\"failure\"")
+            && held
+                .contains("\"provider_native\":false,\"review_feedback\":true,\"created_at_ms\":"),
+        "{held}"
     );
 }
 

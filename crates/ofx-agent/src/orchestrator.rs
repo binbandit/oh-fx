@@ -543,6 +543,20 @@ impl Agent {
                 .filter(|message| matches!(message, ChatMessage::Tool { .. }))
                 .count(),
         );
+        for output in recovered
+            .outputs
+            .iter()
+            .filter(|output| output.review_feedback)
+        {
+            if let Some(content) = recovered.messages.iter().find_map(|message| match message {
+                ChatMessage::Tool {
+                    call_id, content, ..
+                } if *call_id == output.call_id => Some(content),
+                _ => None,
+            }) {
+                turn.reviews.record_held_result(&output.call_id, content);
+            }
+        }
         self.history.extend(recovered.messages);
         turn.raw_outputs = recovered.outputs;
         turn.fast_mode = recovered.fast_mode;
@@ -1353,6 +1367,7 @@ impl Agent {
                 bytes,
                 whole_file: shown_whole && !truncated,
                 process: output.process,
+                review_feedback: review_hold,
             });
             let content = if escalates {
                 escalate_repeated_failure(turn, call, status, model_output)

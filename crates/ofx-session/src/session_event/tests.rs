@@ -407,28 +407,70 @@ fn frame_values_are_read_only_in_the_forms_upstream_writes() {
     }
 }
 
+const REVIEW_HOLD: &str = "{\"schema_version\":3,\"seq\":2,\"timestamp_ms\":3,\"event\":{\"tool_result\":{\"call_id\":\"call-review\",\"tool_name\":\"shell\",\"status\":\"failure\",\"artifact_ref\":\"result-call-review.txt\",\"tool_image_handle\":null,\"output_bytes\":33,\"stored_bytes\":33,\"completeness\":\"complete\",\"preview\":\"Security review held this action.\",\"provider_native\":false,\"review_feedback\":true,\"created_at_ms\":7,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}}\n";
+
 #[test]
-fn review_feedback_defaults_old_records_and_is_never_written() {
-    let frame = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"tool_result\":{\"call_id\":\"call-review\",\"tool_name\":\"shell\",\"status\":\"failure\",\"artifact_ref\":\"result.txt\",\"stored_bytes\":0,\"completeness\":\"complete\",\"preview\":\"Security review held this action.\"}}}\n";
-    let event = decode(frame).unwrap();
-    let ConversationEvent::ToolResult(result) = &event else {
-        panic!("expected a tool result");
+fn review_feedback_from_upstream_frames_round_trips_byte_for_byte() {
+    let unmarked = REVIEW_HOLD.replace("\"review_feedback\":true,", "");
+    for (frame, marked) in [(REVIEW_HOLD, true), (unmarked.as_str(), false)] {
+        let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
+        let encoded = encode_conversation_frame(2, 3, &envelope.event).unwrap();
+        assert_eq!(String::from_utf8(encoded).unwrap(), frame);
+        let ConversationEvent::ToolResult(result) = envelope.event else {
+            panic!("a tool result");
+        };
+        assert_eq!(result.review_feedback, marked);
+    }
+    let explicit = REVIEW_HOLD.replace("\"review_feedback\":true", "\"review_feedback\":false");
+    let event = decode(&explicit).unwrap();
+    assert_eq!(encode(2, &event), encode(2, &decode(&unmarked).unwrap()));
+    let sparse = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{\"tool_result\":{\"call_id\":\"call-review\",\"tool_name\":\"shell\",\"status\":\"failure\",\"artifact_ref\":\"result.txt\",\"stored_bytes\":0,\"completeness\":\"complete\",\"preview\":\"Security review held this action.\"}}}\n";
+    let ConversationEvent::ToolResult(result) = decode(sparse).unwrap() else {
+        panic!("a tool result");
     };
-    assert_eq!(
-        result.preview.as_deref(),
-        Some("Security review held this action.")
-    );
-    assert!(!encode(1, &event).contains("review_feedback"));
-    let explicit = frame.replace(
-        "\"stored_bytes\"",
-        "\"review_feedback\":false,\"stored_bytes\"",
-    );
-    assert!(decode(&explicit).is_ok());
-    let held = frame.replace(
-        "\"stored_bytes\"",
-        "\"review_feedback\":true,\"stored_bytes\"",
-    );
-    assert_eq!(decode(&held), Err(SessionError::InvalidConversationFrame));
+    assert!(!result.review_feedback);
+    assert!(!encode(1, &ConversationEvent::ToolResult(result)).contains("review_feedback"));
+}
+
+#[test]
+fn review_feedback_is_refused_where_upstream_refuses_it() {
+    for (status, native, marker) in [
+        ("success", false, "true"),
+        ("failure", true, "true"),
+        ("failure", false, "null"),
+        ("failure", false, "1"),
+        ("failure", false, "\"true\""),
+        ("failure", false, "true,\"unknown_feedback\":true"),
+    ] {
+        let frame = format!(
+            "{{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":{{\"tool_result\":{{\"call_id\":\"call-review\",\"tool_name\":\"shell\",\"status\":\"{status}\",\"artifact_ref\":\"result.txt\",\"stored_bytes\":0,\"completeness\":\"complete\",\"provider_native\":{native},\"review_feedback\":{marker}}}}}}}\n"
+        );
+        assert_eq!(
+            decode(&frame),
+            Err(SessionError::InvalidConversationFrame),
+            "{frame}"
+        );
+    }
+    for native in [false, true] {
+        let mut result = ToolResultEvent::new(
+            "call-review",
+            "shell",
+            if native {
+                ToolResultStatus::Failure
+            } else {
+                ToolResultStatus::Success
+            },
+            "result.txt",
+            0,
+            ArtifactCompleteness::Complete,
+        );
+        result.provider_native = native;
+        result.review_feedback = true;
+        assert_eq!(
+            encode_conversation_frame(1, 1, &ConversationEvent::ToolResult(result)),
+            Err(SessionError::InvalidConversationEvent)
+        );
+    }
 }
 
 #[test]

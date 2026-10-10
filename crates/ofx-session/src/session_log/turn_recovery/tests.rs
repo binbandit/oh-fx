@@ -493,6 +493,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
                 status: ToolResultStatus::Success,
                 model_view_covers_full_file: false,
                 process: None,
+                review_feedback: false,
                 permission_feedback: Vec::new(),
             }],
         }],
@@ -541,6 +542,7 @@ fn continued_turn<'a>(
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
                     process: None,
+                    review_feedback: false,
                     permission_feedback: Vec::new(),
                 }],
             })
@@ -853,6 +855,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
                 status: *status,
                 model_view_covers_full_file: false,
                 process: None,
+                review_feedback: false,
                 permission_feedback: Vec::new(),
             });
             messages.next();
@@ -896,6 +899,7 @@ fn a_recorded_checkpoint_waits_for_its_continuation_and_clears_with_the_next_sav
                     status: ToolResultStatus::Success,
                     model_view_covers_full_file: false,
                     process: None,
+                    review_feedback: false,
                     permission_feedback: Vec::new(),
                 }],
             }],
@@ -1074,6 +1078,7 @@ fn a_recorded_checkpoint_saves_the_file_evidence_its_turn_carries() {
                     output_bytes: 4,
                     status: ToolResultStatus::Success,
                     process: None,
+                    review_feedback: false,
                     permission_feedback: Vec::new(),
                     model_view_covers_full_file: true,
                 }],
@@ -1145,6 +1150,7 @@ fn a_live_paused_turn_a_compaction_left_open_is_committed_when_settled() {
                 output_bytes: 3,
                 status: ToolResultStatus::Success,
                 process: None,
+                review_feedback: false,
                 model_view_covers_full_file: false,
                 permission_feedback: Vec::new(),
             }],
@@ -1258,6 +1264,7 @@ fn a_paused_turn_keeps_its_approval_feedback_when_committed() {
                     output_bytes: 3,
                     status: ToolResultStatus::Success,
                     process: None,
+                    review_feedback: false,
                     model_view_covers_full_file: false,
                     permission_feedback: vec![FEEDBACK],
                 }],
@@ -1326,6 +1333,68 @@ fn a_paused_turn_keeps_its_approval_feedback_when_committed() {
             &resumed.restored_history().unwrap().messages
         ));
     }
+}
+
+#[test]
+fn a_paused_turn_keeps_its_review_feedback_when_committed() {
+    let fixture = Fixture::new();
+    fixture.start(&finished_turn());
+    let provider = metadata().preferences.provider;
+    let calls = vec![ToolCall::new(
+        "c2",
+        "shell",
+        "{\"command\":\"rm -rf build\"}",
+    )];
+    let turn = HistoryTurn {
+        user: "clean up",
+        steps: vec![HistoryStep {
+            assistant: "",
+            provider_replay: None,
+            tool_calls: &calls,
+            tool_results: vec![StepResult {
+                call_id: "c2",
+                tool_name: "shell",
+                output: "held",
+                output_bytes: 4,
+                status: ToolResultStatus::Failure,
+                process: None,
+                review_feedback: true,
+                model_view_covers_full_file: false,
+                permission_feedback: Vec::new(),
+            }],
+        }],
+        steering: Vec::new(),
+        files: &[],
+        end: replied(""),
+    };
+    let point = RecoveryPoint {
+        turn_id: TurnId::new(2),
+        turn,
+        source: "",
+        cause: ModelRecoveryCause::ConnectivityLost,
+        progress: RecoveryProgress::Paused,
+        tool_state: RecoveryToolState::None,
+        model: "openai/gpt-5",
+        requested_fast_mode: false,
+        fast_mode: false,
+        attempt_limit: 10,
+        consumed_attempts: 1,
+    };
+    let mut session = fixture.resume().unwrap();
+    session
+        .record_recovery(&point, &provider, RouteCredential::configured())
+        .unwrap();
+    drop(session);
+    let mut session = fixture.resume().unwrap();
+    session.settle_recovery().unwrap();
+    let log = fixture.log();
+    assert!(
+        log.iter().any(|line| line
+            .contains("\"call_id\":\"c2\",\"tool_name\":\"shell\",\"status\":\"failure\"")
+            && line
+                .contains("\"provider_native\":false,\"review_feedback\":true,\"created_at_ms\"")),
+        "{log:#?}"
+    );
 }
 
 #[test]

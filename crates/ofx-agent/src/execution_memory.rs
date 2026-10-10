@@ -314,6 +314,7 @@ pub(crate) fn partial_view(call_id: ToolCallId, bytes: usize) -> RecordedOutput 
         bytes,
         whole_file: false,
         process: None,
+        review_feedback: false,
     }
 }
 
@@ -346,6 +347,7 @@ pub(crate) fn logged_steps<'a>(
                         output: result.output,
                         output_bytes: raw.map_or(result.output.len(), |raw| raw.bytes),
                         process: raw.and_then(|raw| raw.process),
+                        review_feedback: raw.is_some_and(|raw| raw.review_feedback),
                         status: if result.failed {
                             ToolResultStatus::Failure
                         } else {

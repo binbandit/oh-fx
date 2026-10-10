@@ -596,3 +596,33 @@ fn history_snapshot_codec_keeps_file_presentations_in_upstream_layout() {
     let competing = encoded(&envelope(2, 5, ConversationEvent::ToolResult(result)));
     assert!(decode_history_envelope(&competing).is_none());
 }
+
+#[test]
+fn history_snapshot_codec_keeps_review_feedback_in_upstream_layout() {
+    let mut result = ToolResultEvent::new(
+        "c1",
+        "shell",
+        ToolResultStatus::Failure,
+        "a",
+        2,
+        ArtifactCompleteness::Unknown,
+    );
+    result.review_feedback = true;
+    let event = ConversationEvent::ToolResult(result);
+    let bytes = encoded(&envelope(2, 5, event.clone()));
+    let mut tail = vec![2, 0, 0, 1];
+    tail.extend(word(0));
+    tail.extend(word(0));
+    tail.extend([0, 0, 0, 0, 0]);
+    assert!(bytes.ends_with(&tail), "{bytes:?}");
+    round_trip(&envelope(2, 5, event));
+
+    let status = 48;
+    assert_eq!(bytes[status], 1);
+    let review = bytes.len() - tail.len() + 3;
+    for (at, value) in [(review, 2), (review - 1, 1), (status, 0)] {
+        let mut corrupt = bytes.clone();
+        corrupt[at] = value;
+        assert!(decode_history_envelope(&corrupt).is_none(), "byte {at}");
+    }
+}

@@ -87,6 +87,7 @@ fn messages(
                 bytes: result.output_bytes,
                 whole_file: false,
                 process: result.process,
+                review_feedback: result.review_feedback,
             });
             feedback.extend(
                 result

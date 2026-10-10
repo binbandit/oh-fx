@@ -11,7 +11,7 @@ use super::{
     SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
     TurnCompletedEvent, UserEvent, WireTag, validate_event_shape,
 };
-use crate::fixed_field::{False, NoItems, Null, TurnOrigin, ValidIdentity};
+use crate::fixed_field::{NoItems, Null, TurnOrigin, ValidIdentity};
 use crate::session_codec::SavedProvider;
 
 const PROVIDER_ID_BYTES: usize = 64;
@@ -215,7 +215,7 @@ impl Encoder<'_> {
         self.tag(result.completeness)?;
         self.optional_text(result.preview.as_deref())?;
         self.flag(result.provider_native);
-        self.flag(false);
+        self.flag(result.review_feedback);
         self.signed(result.created_at_ms);
         self.texts(&result.permission_feedback)?;
         self.file_presentation(result.committed_file_presentation.as_deref())?;
@@ -484,7 +484,7 @@ impl<'a> Decoder<'a> {
             completeness: self.tag::<ArtifactCompleteness>()?,
             preview: self.optional_text().ok()?,
             provider_native: self.flag()?,
-            review_feedback: self.fixed::<False>()?,
+            review_feedback: self.flag()?,
             created_at_ms: self.signed()?,
             permission_feedback: self.texts()?,
             committed_file_presentation: self
