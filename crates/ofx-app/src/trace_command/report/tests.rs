@@ -220,6 +220,64 @@ fn the_trace_tail_masks_secrets_and_keeps_the_newest_lines() {
     assert!(cut_line.ends_with("x ..."));
 }
 
+const SECRET_FORMS: [(&str, &str, &str); 4] = [
+    ("https://user:", "hunter2secretvalue", "@example.com/path"),
+    (
+        "Authorization: Bearer ",
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+        " end",
+    ),
+    ("API_KEY=", "supersecretvalue1234", " next"),
+    ("{\"api_key\":\"", "supersecretvalue1234", "\"}"),
+];
+
+fn tail_of(bytes: String, older_left_out: bool) -> String {
+    let mut traced = snapshot();
+    traced.tail = Some(Tail {
+        path: PathBuf::from("/logs/trace.log"),
+        bytes: bytes.into_bytes(),
+        older_left_out,
+    });
+    let report = traced.render();
+    report.split("\n## Trace Tail\n").nth(1).unwrap().to_owned()
+}
+
+#[test]
+fn a_tail_window_that_starts_inside_a_line_leaves_that_line_out() {
+    for (before, secret, after) in SECRET_FORMS {
+        let line = format!("1 [gateway] {before}{secret}{after}");
+        let secret_end = line.len() - after.len();
+        for start in 1..secret_end - 3 {
+            let tail = tail_of(format!("{}\n2 [agent] next\n", &line[start..]), true);
+            assert!(tail.contains("\n2 [agent] next\n"), "{tail}");
+            assert!(
+                !tail.contains(&secret[secret.len() - 4..]),
+                "{start}: {tail}"
+            );
+        }
+    }
+    let tail = tail_of("1 [agent] first\n2 [agent] next\n".to_owned(), false);
+    assert!(
+        tail.contains("\n1 [agent] first\n2 [agent] next\n"),
+        "{tail}"
+    );
+}
+
+#[test]
+fn a_tail_line_is_masked_before_it_is_cut_to_its_limit() {
+    for (before, secret, after) in SECRET_FORMS {
+        for kept in 0..=secret.len() {
+            let padding = "x".repeat(LINE_LIMIT - before.len() - kept);
+            let tail = tail_of(format!("{padding}{before}{secret}{after}\n"), false);
+            assert!(
+                !tail.contains(&secret[..4]),
+                "{before}{secret} cut after {kept}: {}",
+                &tail[tail.len().saturating_sub(80)..]
+            );
+        }
+    }
+}
+
 #[test]
 fn trace_text_normalizes_internal_search_aliases() {
     assert_eq!(

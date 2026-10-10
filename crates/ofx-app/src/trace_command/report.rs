@@ -337,7 +337,12 @@ fn write_tail(out: &mut String, tail: &Tail) -> fmt::Result {
         out.push_str("... (older lines truncated)\n");
     }
     let text = String::from_utf8_lossy(&tail.bytes);
-    let lines: Vec<&str> = text
+    let whole_lines = if tail.older_left_out {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        &text
+    };
+    let lines: Vec<&str> = whole_lines
         .split('\n')
         .map(|line| line.trim_end_matches([' ', '\t', '\r']))
         .filter(|line| !line.is_empty())

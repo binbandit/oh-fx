@@ -126,6 +126,44 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
 }
 
 #[tokio::test]
+async fn a_provider_error_detail_is_masked_before_its_preview_is_cut() {
+    let forms = [
+        ("https://user:", "hunter2secretvalue", "@example.com/path"),
+        (
+            "Authorization: Bearer ",
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+            " end",
+        ),
+        ("API_KEY=", "supersecretvalue1234", " next"),
+        ("{\"api_key\":\"", "supersecretvalue1234", "\"}"),
+    ];
+    let messages = [ChatMessage::user("write them")];
+    let cancel = CancellationToken::new();
+    for (before, secret, after) in forms {
+        for kept in 0..=secret.len() {
+            let padding = "x".repeat(DETAIL_PREVIEW_BYTES - before.len() - kept);
+            let rejected = ScriptedProvider::new(vec![Err(answered(
+                failure(ProviderErrorKind::Unauthorized, "Unauthorized"),
+                401,
+            )
+            .with_detail(format!("{padding}{before}{secret}{after}")))]);
+            let Ok(Outcome {
+                reply: Err(rejection),
+                ..
+            }) = complete(&rejected, &request(&messages), 1024, &cancel).await
+            else {
+                panic!("the request should fail");
+            };
+            assert!(
+                !rejection.detail.contains(&secret[..4]),
+                "{before}{secret} cut after {kept}: {}",
+                rejection.detail
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_provider_error_detail_is_masked_and_kept_to_one_safe_line() {
     let messages = [ChatMessage::user("write them")];
     let cancel = CancellationToken::new();
