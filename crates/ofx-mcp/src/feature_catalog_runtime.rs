@@ -5,7 +5,7 @@ use tokio::time::Instant;
 use crate::catalog_freshness::{RefreshAction, SnapshotMetadata, decide_refresh};
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, Snapshot};
-use crate::features::resources::{Catalog, CatalogBuilder, Limits, parse_page};
+use crate::features::common::{Catalog, CatalogBuilder, parse_page};
 use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::build_list_request;
@@ -84,7 +84,7 @@ async fn fetch<T: FeatureCatalog>(
     client: &McpClient,
     deadline: Instant,
 ) -> Result<Catalog<T>, McpError> {
-    let limits = Limits::default();
+    let limits = T::Limits::default();
     let mut builder = CatalogBuilder::default();
     let mut cursor = None;
     loop {

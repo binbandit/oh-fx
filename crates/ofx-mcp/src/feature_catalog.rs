@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::catalog_freshness::{SnapshotMetadata, failed_refresh, request_refresh};
-use crate::features::resources::{Listed, Resource, ResourceTemplate};
+use crate::features::common::Listed;
+use crate::features::prompts::Prompt;
+use crate::features::resources::{Resource, ResourceTemplate};
 use crate::protocol_messages::ServerCapabilities;
 use crate::server_connection::{McpClient, lock};
 
@@ -18,6 +20,7 @@ pub(crate) struct FeatureCatalogs {
     advertised: Mutex<ServerCapabilities>,
     resources: Mutex<Option<Snapshot<Resource>>>,
     templates: Mutex<Option<Snapshot<ResourceTemplate>>>,
+    prompts: Mutex<Option<Snapshot<Prompt>>>,
 }
 
 impl FeatureCatalogs {
@@ -25,10 +28,15 @@ impl FeatureCatalogs {
         *lock(&self.advertised) = capabilities;
         *lock(&self.resources) = None;
         *lock(&self.templates) = None;
+        *lock(&self.prompts) = None;
     }
 
     pub(crate) fn advertises_resources(&self) -> bool {
         lock(&self.advertised).resources.is_some()
+    }
+
+    pub(crate) fn advertises_prompts(&self) -> bool {
+        lock(&self.advertised).prompts.is_some()
     }
 
     pub(crate) fn snapshot<T: FeatureCatalog>(&self) -> Option<Snapshot<T>> {
@@ -51,6 +59,7 @@ impl FeatureCatalogs {
     pub(crate) fn request_refresh(&self) {
         expire(&self.resources);
         expire(&self.templates);
+        expire(&self.prompts);
     }
 }
 
@@ -109,6 +118,16 @@ impl FeatureCatalog for ResourceTemplate {
 
     fn invalidation(client: &McpClient) -> &Invalidation {
         &client.resources_invalidation
+    }
+}
+
+impl FeatureCatalog for Prompt {
+    fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
+        &catalogs.prompts
+    }
+
+    fn invalidation(client: &McpClient) -> &Invalidation {
+        &client.prompts_invalidation
     }
 }
 

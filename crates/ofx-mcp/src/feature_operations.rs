@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::error::McpError;
+use crate::features::prompts::{Prompt, PromptArgument};
 use crate::features::resources::{Resource, ResourceTemplate};
 use crate::server_lifecycle::Server;
 
@@ -11,6 +12,14 @@ pub struct ResourceSummary {
     pub identity: String,
     pub name: String,
     pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSummary {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub arguments: Vec<PromptArgument>,
 }
 
 impl Server {
@@ -40,6 +49,25 @@ impl Server {
                 identity: template.uri_template.clone(),
                 name: template.name.clone(),
                 title: template.title.clone(),
+            })
+            .collect())
+    }
+
+    pub(crate) async fn list_prompts(
+        self: &Arc<Self>,
+        deadline: Instant,
+    ) -> Result<Vec<PromptSummary>, McpError> {
+        if !self.features.advertises_prompts() {
+            return Err(McpError::McpPromptsUnsupported);
+        }
+        let prompts = self.feature_catalog::<Prompt>(deadline).await?;
+        Ok(prompts
+            .iter()
+            .map(|prompt| PromptSummary {
+                name: prompt.name.clone(),
+                title: prompt.title.clone(),
+                description: prompt.description.clone(),
+                arguments: prompt.arguments.clone(),
             })
             .collect())
     }

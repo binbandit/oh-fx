@@ -61,19 +61,19 @@ modules = []
 upstream = "src/core/mcp/feature_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_catalog.rs"]
-note = "Resource and template catalog slots, the advertised capabilities of the last connection, and the per-connection resource list invalidation exist; the prompt catalog and auth-generation availability are missing."
+note = "Resource, template and prompt catalog slots, the advertised capabilities of the last connection, and the per-connection resource and prompt list invalidations exist; auth-generation availability is missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_catalog_runtime.rs"]
-note = "Resource and template catalogs are fetched page by page and refreshed by freshness and list_changed invalidation. A stopped stdio server is restarted under the refresh lock first. A new connection starts with empty catalogs, while a failed server keeps its last catalogs and capabilities and serves them after a failed refresh. The prompt catalog and auth identity checks during paging are missing."
+note = "Resource, template and prompt catalogs are fetched page by page and refreshed by freshness and list_changed invalidation. A stopped stdio server is restarted under the refresh lock first. A new connection starts with empty catalogs, while a failed server keeps its last catalogs and capabilities and serves them after a failed refresh. Auth identity checks during paging are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_operations.rs"]
-note = "Resource and template listing exists; resource reads, prompts, completion, resource update subscriptions and input-required rounds are missing."
+note = "Resource, template and prompt listing exists; resource reads, prompt invocation, completion, resource update subscriptions and input-required rounds are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_result.zig"
@@ -94,7 +94,7 @@ modules = []
 upstream = "src/core/mcp/features/common.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/features/common.rs"]
-note = "Envelope parsing with the depth limit, complete results, cache hints, annotations, icons and bounded metadata exist; protocol errors, resource contents and prompt content validation are missing."
+note = "Envelope parsing with the depth limit, complete results, cache hints, annotations, icons and bounded metadata exist, with the list page parser and catalog builder that upstream repeats in each feature file shared by resources, templates and prompts; protocol errors, resource contents and prompt content validation are missing."
 
 [[file]]
 upstream = "src/core/mcp/features/completion.zig"
@@ -103,8 +103,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/features/prompts.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/features/prompts.rs"]
+note = "prompts/list pages, prompt and argument validation and the prompt catalog builder exist; prompts/get results, argument checks and the get request builder are missing."
 
 [[file]]
 upstream = "src/core/mcp/features/resources.zig"
@@ -122,7 +123,7 @@ note = "tools/list paging under the tool cap, tool validation and tools/call res
 upstream = "src/core/mcp/health.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/health.rs", "crates/ofx-mcp/src/local_inspection.rs"]
-note = "Health rendering, the /mcp summary, the startup notice, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; OAuth states, tool catalog expiry and prompt counts report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
+note = "Health rendering, the /mcp summary, the startup notice, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; OAuth states and tool catalog expiry report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
@@ -193,7 +194,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource and template listing, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, prompt and model catalogs, deferred ask connections and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, model catalogs, deferred ask connections and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -288,7 +289,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource and template counts, aggregated catalog freshness and retry fields; menu rows and prompt feature views are missing."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields; the model summary for the <mcp_servers> section is missing."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"

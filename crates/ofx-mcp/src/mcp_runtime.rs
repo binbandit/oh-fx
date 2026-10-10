@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::feature_operations::ResourceSummary;
+use crate::feature_operations::{PromptSummary, ResourceSummary};
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
 use crate::native_config::NativeConfigLoad;
@@ -188,6 +188,16 @@ impl McpRuntime {
         server_name: &str,
         include_templates: bool,
     ) -> Result<Vec<ResourceSummary>, McpError> {
+        let (server, deadline) = self.feature_server(server_name).await?;
+        server.list_resources(include_templates, deadline).await
+    }
+
+    pub async fn list_prompts(&self, server_name: &str) -> Result<Vec<PromptSummary>, McpError> {
+        let (server, deadline) = self.feature_server(server_name).await?;
+        server.list_prompts(deadline).await
+    }
+
+    async fn feature_server(&self, server_name: &str) -> Result<(Arc<Server>, Instant), McpError> {
         let server = self
             .current()
             .into_iter()
@@ -196,7 +206,7 @@ impl McpRuntime {
         let deadline =
             Instant::now() + Duration::from_millis(server.config.operation_timeout_ms.into());
         await_feature_server(&server, deadline).await?;
-        server.list_resources(include_templates, deadline).await
+        Ok((server, deadline))
     }
 
     pub fn current_outcome(&self) -> ReloadOutcome {
@@ -1516,6 +1526,156 @@ done
             );
         }
         assert_eq!(requests(state.path()), "");
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    const PROMPT_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"prompts\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+    *'"method":"prompts/list"'*'"cursor":"page-2"'*)
+      echo page-2 >> "$STATE/requests"
+      reply "$id" '{"prompts":[{"name":"explain","title":"Explain","arguments":[{"name":"topic"}]}]}'
+      if [ ! -f "$STATE/notified" ]; then
+        touch "$STATE/notified"
+        printf '{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}\n'
+      fi ;;
+    *'"method":"prompts/list"'*)
+      echo prompts >> "$STATE/requests"
+      if [ -f "$STATE/broken" ]; then
+        reply "$id" '{"prompts":[{"name":"review","arguments":[{"name":"focus"},{"name":"focus"}]}]}'
+      elif [ -f "$STATE/changed" ]; then
+        reply "$id" '{"prompts":[{"name":"summarize","description":"Summarize a topic"}]}'
+      else
+        reply "$id" '{"prompts":[{"name":"review","description":"Review code","arguments":[{"name":"focus","required":true}]}],"nextCursor":"page-2"}'
+      fi ;;
+  esac
+done
+"#;
+
+    fn prompt_names(listing: &[PromptSummary]) -> Vec<(&str, Vec<(&str, bool)>)> {
+        listing
+            .iter()
+            .map(|prompt| {
+                (
+                    prompt.name.as_str(),
+                    prompt
+                        .arguments
+                        .iter()
+                        .map(|argument| (argument.name.as_str(), argument.required))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn prompt_health(runtime: &McpRuntime) -> (Option<usize>, health::CacheFreshness) {
+        let server = runtime.snapshot_health().servers.remove(0);
+        (server.counts.prompts, server.cache_freshness)
+    }
+
+    async fn until_prompts_invalidated(runtime: &McpRuntime) {
+        for _ in 0..500 {
+            if let Lifecycle::Ready(client) = runtime.current()[0].lifecycle()
+                && client.prompts_invalidation.pending()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the prompt list change never arrived");
+    }
+
+    #[tokio::test]
+    async fn prompt_catalogs_page_cache_and_refresh_after_list_changes() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", PROMPT_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(
+            prompt_health(&runtime),
+            (None, health::CacheFreshness::Fresh)
+        );
+
+        let listing = runtime.list_prompts("fixture").await.unwrap();
+        assert_eq!(
+            prompt_names(&listing),
+            [
+                ("explain", vec![("topic", false)]),
+                ("review", vec![("focus", true)])
+            ]
+        );
+        assert_eq!(listing[0].title.as_deref(), Some("Explain"));
+        assert_eq!(listing[1].description.as_deref(), Some("Review code"));
+        assert_eq!(requests(state.path()), "prompts\npage-2\n");
+        assert_eq!(
+            prompt_health(&runtime),
+            (Some(2), health::CacheFreshness::Fresh)
+        );
+
+        until_prompts_invalidated(&runtime).await;
+        assert_eq!(
+            prompt_health(&runtime),
+            (Some(2), health::CacheFreshness::Fresh)
+        );
+        std::fs::write(state.path().join("broken"), "").unwrap();
+        assert_eq!(runtime.list_prompts("fixture").await.unwrap(), listing);
+        assert_eq!(runtime.list_prompts("fixture").await.unwrap(), listing);
+        assert_eq!(requests(state.path()), "prompts\npage-2\nprompts\n");
+        let health = runtime.snapshot_health().servers.remove(0);
+        assert_eq!(
+            (health.counts.prompts, health.cache_freshness),
+            (Some(2), health::CacheFreshness::FailedRefresh)
+        );
+        assert!(
+            health.retry_in_ms.is_some_and(|delay| delay <= 100),
+            "{health:?}"
+        );
+
+        std::fs::remove_file(state.path().join("broken")).unwrap();
+        std::fs::write(state.path().join("changed"), "").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let changed = runtime.list_prompts("fixture").await.unwrap();
+        assert_eq!(prompt_names(&changed), [("summarize", Vec::new())]);
+        assert_eq!(changed[0].description.as_deref(), Some("Summarize a topic"));
+        assert_eq!(runtime.list_prompts("fixture").await.unwrap(), changed);
+        assert_eq!(
+            requests(state.path()),
+            "prompts\npage-2\nprompts\nprompts\n"
+        );
+        assert_eq!(
+            prompt_health(&runtime),
+            (Some(1), health::CacheFreshness::Fresh)
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn prompt_listing_names_missing_unsupported_and_invalid_catalogs() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("broken"), "").unwrap();
+        let runtime = runtime(vec![
+            config("prompts", PROMPT_SERVER, state.path()),
+            config("tools", SERVER, state.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        for (server, expected) in [
+            ("missing", McpError::McpServerNotFound),
+            ("tools", McpError::McpPromptsUnsupported),
+            ("prompts", McpError::DuplicateArgument),
+        ] {
+            assert_eq!(
+                runtime.list_prompts(server).await,
+                Err(expected),
+                "{server}"
+            );
+        }
+        assert_eq!(requests(state.path()), "prompts\n");
+        assert_eq!(runtime.snapshot_health().servers[0].counts.prompts, None);
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 }

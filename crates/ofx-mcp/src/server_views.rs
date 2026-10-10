@@ -4,6 +4,7 @@ use ofx_text::encode_terminal_safe;
 
 use crate::catalog_freshness::{Freshness, SnapshotMetadata, effective_freshness};
 use crate::feature_catalog::FeatureCatalogs;
+use crate::features::prompts::Prompt;
 use crate::features::resources::{Resource, ResourceTemplate};
 use crate::health::{
     AuthenticationState, CacheFreshness, CapabilityCounts, ConnectionState, ServerSnapshot, Status,
@@ -95,6 +96,7 @@ fn describe_connection(
     snapshot.protocol_version = Some(safe(info.protocol_version, VERSION_BYTES));
     let resources = features.snapshot::<Resource>();
     let templates = features.snapshot::<ResourceTemplate>();
+    let prompts = features.snapshot::<Prompt>();
     let advertises_resources = capabilities.resources.is_some();
     snapshot.counts = CapabilityCounts {
         tools: Some(client.tool_catalog().tools.len()),
@@ -108,12 +110,17 @@ fn describe_connection(
             templates.is_some(),
             templates.as_ref().map_or(0, |catalog| catalog.items.len()),
         ),
-        prompts: capability_count(capabilities.prompts.is_some(), false, 0),
+        prompts: capability_count(
+            capabilities.prompts.is_some(),
+            prompts.is_some(),
+            prompts.as_ref().map_or(0, |catalog| catalog.items.len()),
+        ),
     };
     let tools_stale = client.tools_stale.load(Ordering::Acquire);
     let catalogs = [
         resources.map(|catalog| catalog.metadata),
         templates.map(|catalog| catalog.metadata),
+        prompts.map(|catalog| catalog.metadata),
     ];
     let now_ms = monotonic_millis();
     snapshot.cache_freshness = catalogs
