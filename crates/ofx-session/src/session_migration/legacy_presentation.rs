@@ -1,10 +1,16 @@
 use crate::json_fields::{Fields, Json};
-use crate::session_codec::recovery_checkpoint::{durable_text, list, tag};
+use crate::session_codec::recovery_checkpoint::{durable_bytes, durable_text, list, tag};
 use crate::session_event::{CommittedFilePresentation, LifecycleId, PresentationLine};
 
 pub(super) enum CommandReplay {
     Available { handle: String, framed_bytes: u64 },
     Unavailable,
+}
+
+pub(super) struct LegacyPresentation {
+    pub(super) shown: CommittedFilePresentation,
+    pub(super) previous_content: Option<Vec<u8>>,
+    pub(super) after_content: Option<Vec<u8>>,
 }
 
 pub(super) struct CancelledCommand {
@@ -48,22 +54,27 @@ pub(super) fn cancelled_command(value: Json<'_>) -> Option<CancelledCommand> {
     fields.finish(cancelled)
 }
 
-pub(super) fn file_presentation(value: Json<'_>) -> Option<CommittedFilePresentation> {
+pub(super) fn file_presentation(value: Json<'_>) -> Option<LegacyPresentation> {
     let mut fields = Fields::new(value)?;
-    let presentation = CommittedFilePresentation {
+    let shown = CommittedFilePresentation {
         path: durable_text(fields.required("path")?)?,
         kind: tag(&fields.required("kind")?)?,
         lines: list(fields.required("lines")?, presentation_line)?,
         additions: fields.unsigned("additions")?,
         deletions: fields.unsigned("deletions")?,
         truncated: fields.flag("truncated")?,
-        previous_content: fields
-            .present_or_null("previous_content", |value| durable_text(value).map(Some))?,
-        after_content: fields
-            .present_or_null("after_content", |value| durable_text(value).map(Some))?,
+        previous_content: None,
+        after_content: None,
         lifecycle_id: fields
             .present_or_null("lifecycle_id", |value| lifecycle_id(value).map(Some))?,
         content_handle: fields.nullable("content_handle", |value| durable_text(value).map(Some))?,
+    };
+    let presentation = LegacyPresentation {
+        shown,
+        previous_content: fields
+            .present_or_null("previous_content", |value| durable_bytes(value).map(Some))?,
+        after_content: fields
+            .present_or_null("after_content", |value| durable_bytes(value).map(Some))?,
     };
     fields.finish(presentation)
 }

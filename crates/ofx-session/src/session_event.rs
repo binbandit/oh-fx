@@ -89,6 +89,11 @@ pub struct SavedReplay {
 }
 
 impl SavedReplay {
+    pub(crate) fn is_valid(&self) -> bool {
+        is_valid_identity(&self.source.model)
+            && (1..=MAX_REPLAY_BYTES).contains(&self.parts_json.len())
+    }
+
     pub(crate) fn into_provider_replay(self) -> ProviderReplay {
         ProviderReplay {
             source: ReplaySource {
@@ -629,10 +634,10 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
         }
         ConversationEvent::Assistant(assistant) => {
             assistant.text.len() <= MAX_TEXT_BYTES
-                && assistant.provider_replay.as_ref().is_none_or(|replay| {
-                    is_valid_identity(&replay.source.model)
-                        && (1..=MAX_REPLAY_BYTES).contains(&replay.parts_json.len())
-                })
+                && assistant
+                    .provider_replay
+                    .as_ref()
+                    .is_none_or(SavedReplay::is_valid)
         }
         ConversationEvent::Steering(steering) => is_valid_text(&steering.text),
         ConversationEvent::ToolCall(call) => {

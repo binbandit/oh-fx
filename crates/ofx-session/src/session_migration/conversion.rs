@@ -6,7 +6,7 @@ use super::LegacySession;
 use super::durable_turn::{
     ConversationTurn, Execution, LegacyTurn, SavedResult, Steering, TurnClose,
 };
-use super::legacy_presentation::CommandReplay;
+use super::legacy_presentation::{CommandReplay, LegacyPresentation};
 use super::recovery_file::recovery_file;
 use crate::result_store::{
     PREVIEW_BYTES, bytes_handle, bytes_preview, diff_content_pack, store_new_results,
@@ -328,7 +328,8 @@ fn result_event(
     };
     let presentation = result
         .presentation
-        .map(|presentation| spill_contents(&result.call_id, presentation, results));
+        .map(|presentation| shown_presentation(&result.call_id, *presentation, results))
+        .transpose()?;
     let (replay_ref, replay_bytes) = CommandReplay::available(result.replay.as_ref());
     let mut event = ToolResultEvent::new(
         result.call_id,
@@ -350,30 +351,42 @@ fn result_event(
     Ok(event)
 }
 
-fn spill_contents(
+fn shown_presentation(
     call_id: &str,
-    mut presentation: Box<CommittedFilePresentation>,
+    legacy: LegacyPresentation,
     results: &mut Vec<StoredResult>,
-) -> Box<CommittedFilePresentation> {
-    let content_bytes = |content: &Option<String>| content.as_ref().map_or(0, String::len);
-    let inline = content_bytes(&presentation.previous_content)
-        .saturating_add(content_bytes(&presentation.after_content));
-    if presentation.content_handle.is_some() || inline <= PREVIEW_BYTES {
-        return presentation;
-    }
-    let Some((handle, pack)) = diff_content_pack(
-        call_id,
-        presentation.previous_content.as_deref(),
-        presentation.after_content.as_deref(),
-    ) else {
-        return presentation;
+) -> Result<Box<CommittedFilePresentation>, SessionError> {
+    let LegacyPresentation {
+        mut shown,
+        previous_content,
+        after_content,
+    } = legacy;
+    let size = |content: &Option<Vec<u8>>| content.as_ref().map_or(0, Vec::len);
+    let inline = size(&previous_content).saturating_add(size(&after_content));
+    let pack = if shown.content_handle.is_none() && inline > PREVIEW_BYTES {
+        diff_content_pack(
+            call_id,
+            previous_content.as_deref(),
+            after_content.as_deref(),
+        )
+    } else {
+        None
     };
-    presentation.previous_content = None;
-    presentation.after_content = None;
-    presentation.content_handle = Some(handle.clone());
-    results.push(StoredResult {
-        handle,
-        bytes: pack,
-    });
-    presentation
+    if let Some((handle, pack)) = pack {
+        shown.content_handle = Some(handle.clone());
+        results.push(StoredResult {
+            handle,
+            bytes: pack,
+        });
+        return Ok(Box::new(shown));
+    }
+    let text = |content: Option<Vec<u8>>| {
+        content
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| SessionError::InvalidConversationEvent)
+    };
+    shown.previous_content = text(previous_content)?;
+    shown.after_content = text(after_content)?;
+    Ok(Box::new(shown))
 }

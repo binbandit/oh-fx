@@ -2,7 +2,6 @@ use std::io::Write as _;
 
 use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::session_error::SessionError;
@@ -21,12 +20,6 @@ const DIGEST_HEX_BYTES: usize = 8;
 const DIFF_HANDLE_PREFIX: &str = "diff-";
 const DIFF_HANDLE_SUFFIX: &str = ".json";
 const DIFF_CONTENT_MAX_BYTES: usize = 2 * STORED_TEXT_MAX_BYTES;
-
-#[derive(Serialize)]
-struct DiffContentPack<'a> {
-    previous_content: Option<&'a str>,
-    after_content: Option<&'a str>,
-}
 
 pub(crate) fn make_handle(tool_call_id: &str, tool_name: &str, text: &str) -> String {
     bytes_handle(tool_call_id, tool_name, text.as_bytes())
@@ -51,15 +44,17 @@ pub(crate) fn bytes_handle(tool_call_id: &str, tool_name: &str, bytes: &[u8]) ->
 
 pub(crate) fn diff_content_pack(
     tool_call_id: &str,
-    previous_content: Option<&str>,
-    after_content: Option<&str>,
+    previous_content: Option<&[u8]>,
+    after_content: Option<&[u8]>,
 ) -> Option<(String, Vec<u8>)> {
-    let pack = serde_json::to_vec(&DiffContentPack {
-        previous_content,
-        after_content,
-    })
-    .ok()
-    .filter(|pack| pack.len() <= DIFF_CONTENT_MAX_BYTES)?;
+    let mut pack = b"{\"previous_content\":".to_vec();
+    push_pack_content(&mut pack, previous_content)?;
+    pack.extend_from_slice(b",\"after_content\":");
+    push_pack_content(&mut pack, after_content)?;
+    pack.push(b'}');
+    if pack.len() > DIFF_CONTENT_MAX_BYTES {
+        return None;
+    }
     let mut handle = String::from(DIFF_HANDLE_PREFIX);
     push_digest_hex(&mut handle, tool_call_id.as_bytes());
     handle.push('-');
@@ -79,6 +74,25 @@ pub(crate) fn store_result(
     let results = session.open_or_create_child(TOOL_RESULTS_DIR)?;
     results.replace(handle, text.as_bytes())?;
     Ok(())
+}
+
+fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) -> Option<()> {
+    let Some(bytes) = content else {
+        pack.extend_from_slice(b"null");
+        return Some(());
+    };
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return serde_json::to_writer(pack, text).ok();
+    }
+    pack.push(b'[');
+    for (index, byte) in bytes.iter().enumerate() {
+        if index > 0 {
+            pack.push(b',');
+        }
+        pack.extend_from_slice(byte.to_string().as_bytes());
+    }
+    pack.push(b']');
+    Some(())
 }
 
 pub(crate) fn store_new_results<'a>(

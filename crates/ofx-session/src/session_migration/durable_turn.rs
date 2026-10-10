@@ -6,7 +6,8 @@ use ofx_contract::{
 };
 
 use super::legacy_presentation::{
-    CancelledCommand, CommandReplay, cancelled_command, command_replay, file_presentation,
+    CancelledCommand, CommandReplay, LegacyPresentation, cancelled_command, command_replay,
+    file_presentation,
 };
 use crate::json_fields::{Fields, Json};
 use crate::session_authority::parse_identifier;
@@ -14,8 +15,7 @@ use crate::session_codec::recovery_checkpoint::{
     durable_bytes, durable_text, file_evidence, list, tag,
 };
 use crate::session_event::{
-    CommittedFilePresentation, FileEvidence, InterruptReason, SavedReplay, ToolCallEvent,
-    saved_replay,
+    FileEvidence, InterruptReason, SavedReplay, ToolCallEvent, saved_replay,
 };
 use crate::{process_presentation, turn_summary};
 
@@ -81,7 +81,7 @@ pub(super) struct SavedResult {
     pub(super) created_at_ms: i64,
     pub(super) permission_feedback: Vec<String>,
     pub(super) process: Option<CommandProcessPresentation>,
-    pub(super) presentation: Option<Box<CommittedFilePresentation>>,
+    pub(super) presentation: Option<Box<LegacyPresentation>>,
     pub(super) replay: Option<CommandReplay>,
 }
 
@@ -152,8 +152,7 @@ fn assistant(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     let (user, work_id) = user(fields.required("user")?)?;
     let reply = durable_text(fields.required("assistant")?)?;
     let execution = execution(fields.required("execution")?)?;
-    let provider_replay =
-        fields.nullable("provider_replay", |value| saved_replay(value).map(Some))?;
+    let provider_replay = fields.nullable("provider_replay", |value| replay(value).map(Some))?;
     Some(LegacyTurn::Conversation(Box::new(ConversationTurn {
         user,
         work_id,
@@ -337,7 +336,7 @@ fn tool_step(value: Json<'_>, version: u64) -> Option<Step> {
         tool_result(result, version)
     })?;
     let replay = if version >= PROVIDER_REPLAY_SCHEMA {
-        fields.present_or_null("provider_replay", |value| saved_replay(value).map(Some))?
+        fields.present_or_null("provider_replay", |value| replay(value).map(Some))?
     } else {
         None
     };
@@ -485,6 +484,10 @@ fn tool_result(value: Json<'_>, version: u64) -> Option<SavedResult> {
         return None;
     }
     fields.finish(result)
+}
+
+fn replay(value: Json<'_>) -> Option<SavedReplay> {
+    saved_replay(value).filter(SavedReplay::is_valid)
 }
 
 fn absent(value: &Json<'_>) -> Option<()> {

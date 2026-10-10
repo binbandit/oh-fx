@@ -420,4 +420,14 @@ fn a_checkpoint_keeps_the_provider_replay_of_its_steps() {
         saved.contains(&format!("\"provider_replay\":{replay}")),
         "{saved}"
     );
+    for refused in [
+        replay.replace("\"model\":\"openai/gpt-5\"", "\"model\":\"\""),
+        replay.replace("\"parts_json\":\"[]\"", "\"parts_json\":\"\""),
+    ] {
+        let bad = checkpoint.replace(replay, &refused);
+        assert_ne!(bad, checkpoint);
+        let log = LegacyLog::started_007("legacy-bad-step-replay")
+            .frame("recovery_checkpoint_set", &set(&bad));
+        assert!(fixture.summary(&log).is_err(), "{refused}");
+    }
 }

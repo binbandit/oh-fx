@@ -375,3 +375,54 @@ fn provider_replays_are_kept_on_the_steps_and_reply_that_saved_them() {
         ]
     );
 }
+
+#[test]
+fn a_large_edit_whose_contents_are_not_utf8_moves_them_as_bytes() {
+    let fixture = Fixture::new();
+    let mut after = vec![b'a'; 5_000];
+    after.push(0xff);
+    let presentation = presentation_007("x", "y").replace(
+        "\"after_content\":\"y\"",
+        &format!("\"after_content\":{}", base64_007(&after)),
+    );
+    let log = LegacyLog::started_007("legacy-binary-edit").turn(&edit_turn_007(&presentation));
+    let (events, _) = written(&fixture, &log);
+    let bytes = after
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let pack = format!("{{\"previous_content\":\"x\",\"after_content\":[{bytes}]}}");
+    let handle = format!(
+        "diff-{}-{}.json",
+        digest_hex(EDIT_CALL.as_bytes()),
+        digest_hex(pack.as_bytes())
+    );
+    assert_eq!(
+        results(&events)[0].committed_file_presentation.as_deref(),
+        Some(&expected_presentation(None, None, Some(handle.clone())))
+    );
+    assert_eq!(
+        tool_results_file(&fixture, "legacy-binary-edit", &handle),
+        pack.into_bytes()
+    );
+}
+
+#[test]
+fn a_provider_replay_upstream_would_refuse_hides_the_session() {
+    let fixture = Fixture::new();
+    let turn = |model: &str, parts: &str| {
+        format!(
+            "{{\"kind\":\"assistant\",\"user\":{{\"text\":\"think\",\"images\":[]}},\"assistant\":\"done\",\"execution\":{{\"schema_version\":9,\"tool_steps\":[{{\"assistant\":\"step\",\"tool_calls\":[],\"tool_results\":[],\"provider_replay\":{{\"source\":{{\"provider\":\"gateway\",\"model\":\"{model}\"}},\"parts_json\":\"{parts}\"}}}}],\"files\":[],\"steering\":[],\"turn_summary\":null}}}}"
+        )
+    };
+    let long_model = "m".repeat(257);
+    for case in [
+        turn("", "[]"),
+        turn("openai/gpt-5", ""),
+        turn(&long_model, "[]"),
+    ] {
+        let log = LegacyLog::started_007("legacy-bad-replay").turn(&case);
+        assert!(fixture.summary(&log).is_err(), "{case}");
+    }
+}
