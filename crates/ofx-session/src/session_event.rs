@@ -15,7 +15,7 @@ use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
-use file_presentation::CommittedFilePresentation;
+pub(crate) use file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
 pub(crate) use history_codec::{decode_history_envelope, encode_history_envelope};
@@ -89,6 +89,11 @@ pub struct SavedReplay {
 }
 
 impl SavedReplay {
+    pub(crate) fn is_valid(&self) -> bool {
+        is_valid_identity(&self.source.model)
+            && (1..=MAX_REPLAY_BYTES).contains(&self.parts_json.len())
+    }
+
     pub(crate) fn into_provider_replay(self) -> ProviderReplay {
         ProviderReplay {
             source: ReplaySource {
@@ -183,11 +188,11 @@ pub struct ToolResultEvent {
     #[serde(default)]
     pub permission_feedback: Vec<String>,
     #[serde(default)]
-    committed_file_presentation: Option<Box<CommittedFilePresentation>>,
+    pub(crate) committed_file_presentation: Option<Box<CommittedFilePresentation>>,
     #[serde(default)]
-    command_replay_ref: Option<String>,
+    pub(crate) command_replay_ref: Option<String>,
     #[serde(default)]
-    command_replay_bytes: Option<u64>,
+    pub(crate) command_replay_bytes: Option<u64>,
     #[serde(default, with = "crate::process_presentation::frame")]
     pub command_process_presentation: Option<CommandProcessPresentation>,
     #[serde(default)]
@@ -320,11 +325,11 @@ pub struct InterruptedEvent {
     #[serde(default)]
     pub partial_text: Option<String>,
     #[serde(default)]
-    command_replay_ref: Option<String>,
+    pub(crate) command_replay_ref: Option<String>,
     #[serde(default)]
-    command_replay_bytes: Option<u64>,
+    pub(crate) command_replay_bytes: Option<u64>,
     #[serde(default)]
-    command_artifact_ref: Option<String>,
+    pub(crate) command_artifact_ref: Option<String>,
     #[serde(default)]
     pub(crate) files: Vec<FileEvidence>,
     #[serde(default, with = "crate::turn_summary")]
@@ -629,10 +634,10 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
         }
         ConversationEvent::Assistant(assistant) => {
             assistant.text.len() <= MAX_TEXT_BYTES
-                && assistant.provider_replay.as_ref().is_none_or(|replay| {
-                    is_valid_identity(&replay.source.model)
-                        && (1..=MAX_REPLAY_BYTES).contains(&replay.parts_json.len())
-                })
+                && assistant
+                    .provider_replay
+                    .as_ref()
+                    .is_none_or(SavedReplay::is_valid)
         }
         ConversationEvent::Steering(steering) => is_valid_text(&steering.text),
         ConversationEvent::ToolCall(call) => {

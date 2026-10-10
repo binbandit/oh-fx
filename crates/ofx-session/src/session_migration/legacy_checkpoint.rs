@@ -107,6 +107,7 @@ pub(super) fn legacy_checkpoint(value: Json<'_>) -> Option<LegacyCheckpoint> {
                 reason: InterruptReason::Failed,
                 partial,
                 pending: None,
+                cancelled: None,
             },
         };
         return fields.finish(LegacyCheckpoint::Archived(Box::new(archived)));
