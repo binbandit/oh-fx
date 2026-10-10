@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events};
@@ -11,6 +11,10 @@ use serde_json::json;
 const WAIT: Duration = Duration::from_secs(15);
 const EARLIER_LINE: &str = "1700000000000 [agent] written before the trace";
 const REVIEW: &str = "Review and redact it before sharing.";
+const PORTKEY_KEY: &str = "pk-test-0123456789";
+const BEARER: &str = "sk-bearer-secret-0123456789abcdef";
+const VIRTUAL_KEY: &str = "vk-virtual-secret-9876543210";
+const SECRETS: [&str; 3] = [PORTKEY_KEY, BEARER, VIRTUAL_KEY];
 
 struct Launched {
     workspace: PathBuf,
@@ -219,6 +223,251 @@ fn a_cancelled_turn_writes_its_interrupt_trace_lines() {
             !screen.contains("press ctrl+c again to exit")
         })
         .expect("escape disarms the exit hint");
+    launched.session.send(b"/quit\r");
+    assert!(
+        launched
+            .session
+            .wait_exit(WAIT)
+            .expect("the shell exits")
+            .success()
+    );
+}
+
+struct Traced {
+    output: Output,
+    log: String,
+}
+
+fn ask_traced(replies: Vec<Reply>, extra: &[&str]) -> Traced {
+    let home = tempfile::tempdir().expect("prepare the trace test");
+    let root = home.path().canonicalize().expect("prepare the trace test");
+    let workspace = root.join("workspace");
+    let config = root.join("config/oh-fx");
+    for path in [&workspace, &config] {
+        fs::create_dir_all(path).expect("prepare the trace test");
+    }
+    let server = FakeServer::start(replies);
+    fs::write(
+        config.join("settings.json"),
+        json!({
+            "provider": "portkey",
+            "model": "@openai/gpt-4o",
+            "providers": {"portkey": {
+                "protocol": "openai-chat-completions",
+                "base_url": server.base_url(),
+                "auth": {"type": "bearer", "env": "PORTKEY_BEARER"},
+                "headers": {
+                    "x-portkey-api-key": "${PORTKEY_API_KEY}",
+                    "x-portkey-virtual-key": "${PORTKEY_VIRTUAL_KEY}"
+                },
+                "models": ["@openai/gpt-4o"]
+            }}
+        })
+        .to_string(),
+    )
+    .expect("prepare the trace test");
+    let log = root.join("trace.log");
+    let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        .args(["ask"])
+        .args(extra)
+        .current_dir(&workspace)
+        .env_clear()
+        .env("HOME", &root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("SHELL", "/bin/sh")
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .env("OH_FX_TRACE_LOG", &log)
+        .env("PORTKEY_API_KEY", PORTKEY_KEY)
+        .env("PORTKEY_BEARER", BEARER)
+        .env("PORTKEY_VIRTUAL_KEY", VIRTUAL_KEY)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run oh-fx ask");
+    let log = fs::read_to_string(&log).expect("read the trace log");
+    let seen = server.requests();
+    assert!(
+        seen.iter().all(|request| request.header("authorization")
+            == Some(&format!("Bearer {BEARER}"))
+            && request.header("x-portkey-virtual-key") == Some(VIRTUAL_KEY)),
+        "the requests carry every credential"
+    );
+    Traced { output, log }
+}
+
+fn secret_body() -> String {
+    json!({"error": {"message": format!(
+        "denied for {PORTKEY_KEY} with Bearer {BEARER} and {VIRTUAL_KEY}"
+    )}})
+    .to_string()
+}
+
+fn cut_off_after(text: &str) -> Reply {
+    let body: String = chat_text_events(&[text])[..2]
+        .iter()
+        .flat_map(|event| ["data: ", event, "\n\n"])
+        .collect();
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len() + 1
+    );
+    Reply::Raw(format!("{head}{body}").into_bytes())
+}
+
+fn bodies(log: &str) -> Vec<&str> {
+    log.lines()
+        .map(|line| line.split_once(' ').expect("a timestamped line").1)
+        .collect()
+}
+
+fn assert_no_secret(log: &str) {
+    for secret in SECRETS {
+        assert!(
+            !log.contains(secret),
+            "{secret} reached the trace log:\n{log}"
+        );
+    }
+}
+
+#[test]
+fn a_recovered_ask_writes_its_stream_error_and_recovery_lines_without_credentials() {
+    let traced = ask_traced(
+        vec![
+            cut_off_after("Hel"),
+            Reply::status(503, secret_body()),
+            Reply::sse(&chat_text_events(&["Hello."])),
+        ],
+        &["--json", "hi"],
+    );
+    let result: serde_json::Value = serde_json::from_slice(&traced.output.stdout).unwrap();
+    assert_eq!(result["final_output"], "Hello.", "{result}");
+    let lines = bodies(&traced.log);
+    let wanted = [
+        "[gateway] event=stream_error turn_id=1 step_id=1 err=ReadFailed cancel_requested=false provider_attempts=1/10 saw_content=true saw_tool_start=false saw_provider_tool_start=false recovery=continue_response replay_safe=false retry=true",
+        "[agent] event=recovery_checkpoint_set turn_id=1 step_id=1 provider_attempts=1/10 outstanding=false cause=transport_interrupted action=continue_response",
+        "[agent] restarting response preview_bytes=3 superseded_preview_bytes=0",
+        "[agent] event=recovery_checkpoint_set turn_id=1 step_id=1 provider_attempts=2/10 outstanding=false cause=provider_unavailable action=continue_response",
+        "[agent] event=prompt_finish turn_id=1 outcome_kind=assistant",
+    ];
+    let mut at = 0;
+    for line in wanted {
+        let found = lines[at..]
+            .iter()
+            .position(|seen| *seen == line)
+            .unwrap_or_else(|| panic!("{line}\n{}", traced.log));
+        at += found + 1;
+    }
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("event=stream_error"))
+            .count(),
+        1,
+        "{}",
+        traced.log
+    );
+    assert_no_secret(&traced.log);
+}
+
+#[test]
+fn a_provider_error_in_the_stream_writes_its_route_failure_without_credentials() {
+    let traced = ask_traced(
+        vec![Reply::sse(&[secret_body()])],
+        &["--json", "--no-save", "hi"],
+    );
+    assert_eq!(traced.output.status.code(), Some(1));
+    let lines = bodies(&traced.log);
+    let route = lines
+        .iter()
+        .find(|line| line.starts_with("[agent] event=route_failure "))
+        .unwrap_or_else(|| panic!("{}", traced.log));
+    assert!(
+        route.starts_with("[agent] event=route_failure turn_id=1 step_id=1 selected_model=@openai/gpt-4o route=@openai/gpt-4o fast_mode=false semantic_attempt=1/10 http_status=200 finish_reason=error saw_content=false saw_tool_start=false retry=false detail="),
+        "{route}"
+    );
+    assert!(route.contains("denied for"), "{route}");
+    assert!(lines.contains(
+        &"[agent] event=provider_completion_failed turn_id=1 step_id=1 finish_reason=error content_bytes=0 tool_call_count=0"
+    ), "{}", traced.log);
+    assert!(
+        lines.contains(&"[agent] event=prompt_finish turn_id=1 outcome_kind=provider_error"),
+        "{}",
+        traced.log
+    );
+    assert!(!traced.log.contains("event=stream_error"), "{}", traced.log);
+    assert_no_secret(&traced.log);
+}
+
+#[test]
+fn trace_reports_the_turns_network_calls() {
+    let (_home, mut launched) = launch_with(
+        0,
+        vec![
+            Reply::status(503, r#"{"error":{"message":"busy"}}"#),
+            Reply::sse(&chat_text_events(&["All done."])),
+        ],
+    );
+    launched.session.send(b"hello\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("All done."))
+        .expect("the retried turn answers");
+    launched.session.send(b"/trace\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| {
+            screen.contains(&format!("Trace copied to clipboard. {REVIEW}"))
+        })
+        .expect("the report is copied");
+    let report = fs::read_to_string(saved_report(&launched.reports)).unwrap();
+    let network = report
+        .split("\n## Network Calls\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(
+        network.starts_with("last=2 ok=1 errors=1 avg="),
+        "{network}"
+    );
+    assert!(
+        network.contains("\nsession: calls=2 ok=1 errors=1 total_time="),
+        "{network}"
+    );
+    assert!(
+        network.contains("\ncoverage: complete (window holds every recorded call)\nturns:\n  turn 1: calls=2 errors=1 "),
+        "{network}"
+    );
+    let calls: Vec<&str> = network
+        .lines()
+        .filter(|line| line.starts_with('['))
+        .map(|line| line.split_once("] ").expect("a timestamped call").1)
+        .collect();
+    assert_eq!(calls.len(), 2, "{network}");
+    assert!(
+        calls[0].starts_with("model=model-a source=parent status=503 duration="),
+        "{network}"
+    );
+    assert!(calls[0].ends_with(" turn=1 step=1"), "{network}");
+    assert!(
+        calls[1].starts_with("model=model-a source=parent status=200 duration="),
+        "{network}"
+    );
+    assert!(
+        calls[1].ends_with(" stop_reason=stop turn=1 step=1"),
+        "{network}"
+    );
+    let problems = report
+        .split("\n## Problems\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap();
+    assert!(
+        problems.contains("] model=model-a source=parent status=503 "),
+        "{problems}"
+    );
+    assert!(problems.starts_with("- network ["), "{problems}");
     launched.session.send(b"/quit\r");
     assert!(
         launched
