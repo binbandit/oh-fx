@@ -72,16 +72,21 @@ impl Results {
         handle
     }
 
-    fn pack(&mut self, call_id: &str, previous: Option<&[u8]>, after: Option<&[u8]>) -> String {
+    fn pack(
+        &mut self,
+        call_id: &str,
+        previous: Option<&[u8]>,
+        after: Option<&[u8]>,
+    ) -> Option<String> {
         if self.purpose == Purpose::Listing {
-            return LISTED_PACK.to_owned();
+            return Some(LISTED_PACK.to_owned());
         }
-        let (handle, bytes) = diff_content_pack(call_id, previous, after);
+        let (handle, bytes) = diff_content_pack(call_id, previous, after)?;
         self.stored.push(StoredResult {
             handle: handle.clone(),
             bytes,
         });
-        handle
+        Some(handle)
     }
 }
 
@@ -408,12 +413,17 @@ fn shown_presentation(
     let spills = shown.content_handle.is_none()
         && inline > PREVIEW_BYTES
         && fits_diff_pack(previous_content.as_deref(), after_content.as_deref());
-    if spills {
-        shown.content_handle = Some(results.pack(
-            call_id,
-            previous_content.as_deref(),
-            after_content.as_deref(),
-        ));
+    let packed = spills
+        .then(|| {
+            results.pack(
+                call_id,
+                previous_content.as_deref(),
+                after_content.as_deref(),
+            )
+        })
+        .flatten();
+    if let Some(handle) = packed {
+        shown.content_handle = Some(handle);
         return Ok(Box::new(shown));
     }
     let text = |content: Option<Vec<u8>>| {

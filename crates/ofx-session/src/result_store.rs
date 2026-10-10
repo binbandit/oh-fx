@@ -102,18 +102,18 @@ pub(crate) fn diff_content_pack(
     tool_call_id: &str,
     previous_content: Option<&[u8]>,
     after_content: Option<&[u8]>,
-) -> (String, Vec<u8>) {
+) -> Option<(String, Vec<u8>)> {
     let mut pack = PACK_PREVIOUS.to_vec();
-    push_pack_content(&mut pack, previous_content);
+    push_pack_content(&mut pack, previous_content)?;
     pack.extend_from_slice(PACK_AFTER);
-    push_pack_content(&mut pack, after_content);
+    push_pack_content(&mut pack, after_content)?;
     pack.push(b'}');
     let mut handle = String::from(DIFF_HANDLE_PREFIX);
     push_digest_hex(&mut handle, tool_call_id.as_bytes());
     handle.push('-');
     push_digest_hex(&mut handle, &pack);
     handle.push_str(DIFF_HANDLE_SUFFIX);
-    (handle, pack)
+    Some((handle, pack))
 }
 
 pub(crate) fn store_result(
@@ -129,25 +129,13 @@ pub(crate) fn store_result(
     Ok(())
 }
 
-fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) {
+fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) -> Option<()> {
     let Some(bytes) = content else {
         pack.extend_from_slice(PACK_NULL);
-        return;
+        return Some(());
     };
-    if std::str::from_utf8(bytes).is_ok() {
-        pack.reserve(bytes.len() + 2);
-        pack.push(b'"');
-        let mut plain = 0;
-        for (index, byte) in bytes.iter().enumerate() {
-            if escaped_len(*byte) > 1 {
-                pack.extend_from_slice(&bytes[plain..index]);
-                push_escaped(pack, *byte);
-                plain = index + 1;
-            }
-        }
-        pack.extend_from_slice(&bytes[plain..]);
-        pack.push(b'"');
-        return;
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return serde_json::to_writer(pack, text).ok();
     }
     pack.push(b'[');
     for (index, byte) in bytes.iter().enumerate() {
@@ -157,23 +145,7 @@ fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) {
         pack.extend_from_slice(byte.to_string().as_bytes());
     }
     pack.push(b']');
-}
-
-fn push_escaped(pack: &mut Vec<u8>, byte: u8) {
-    let short = match byte {
-        b'"' => b'"',
-        b'\\' => b'\\',
-        0x08 => b'b',
-        0x0c => b'f',
-        b'\n' => b'n',
-        b'\r' => b'r',
-        b'\t' => b't',
-        _ => {
-            pack.extend_from_slice(format!("\\u{byte:04x}").as_bytes());
-            return;
-        }
-    };
-    pack.extend_from_slice(&[b'\\', short]);
+    Some(())
 }
 
 pub(crate) fn store_new_results<'a>(
@@ -529,14 +501,16 @@ mod tests {
         let text = "plain \"quoted\" back\\slash \u{1}\u{8}\u{c}\n\r\t\u{1f} caf\u{e9} \u{7f}";
         let bytes: Vec<u8> = (0..=255).collect();
         for (previous, unit) in [(text.as_bytes(), 1), (&bytes[..], 3)] {
-            let (_, base) = diff_content_pack("call", Some(previous), Some(text.as_bytes()));
+            let (_, base) =
+                diff_content_pack("call", Some(previous), Some(text.as_bytes())).unwrap();
             let room = (DIFF_CONTENT_MAX_BYTES - base.len()) / unit;
             let fits: Vec<bool> = [room, room + 1]
                 .into_iter()
                 .map(|extra| {
                     let mut longer = previous.to_vec();
                     longer.extend(std::iter::repeat_n(b'a', extra));
-                    let (_, pack) = diff_content_pack("call", Some(&longer), Some(text.as_bytes()));
+                    let (_, pack) =
+                        diff_content_pack("call", Some(&longer), Some(text.as_bytes())).unwrap();
                     let fits = fits_diff_pack(Some(&longer), Some(text.as_bytes()));
                     assert_eq!(fits, pack.len() <= DIFF_CONTENT_MAX_BYTES);
                     fits
@@ -544,7 +518,7 @@ mod tests {
                 .collect();
             assert_eq!(fits, [true, false]);
         }
-        let (_, pack) = diff_content_pack("call", None, Some(text.as_bytes()));
+        let (_, pack) = diff_content_pack("call", None, Some(text.as_bytes())).unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&pack).unwrap()["after_content"],
             text
@@ -562,7 +536,7 @@ mod tests {
             "\"q\" \\ \u{7f} caf\u{e9} \u{2028} \u{1f600}".to_owned(),
             "\n".repeat(3),
         ] {
-            let (_, pack) = diff_content_pack("call", Some(text.as_bytes()), None);
+            let (_, pack) = diff_content_pack("call", Some(text.as_bytes()), None).unwrap();
             let expected = format!(
                 "{{\"previous_content\":{},\"after_content\":null}}",
                 serde_json::to_string(&text).unwrap()
