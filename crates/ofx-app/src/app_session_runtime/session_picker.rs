@@ -8,13 +8,14 @@ use super::{
     Answer, Listed, LiveSession, PageRequest, RestoredPreferences, ResumedSession, SessionListing,
 };
 use crate::app_bootstrap_runtime::AgentSetup;
+use crate::output_contracts::sessions::session_lookup_message;
 
 pub(crate) struct Switched {
     pub(crate) continues: bool,
     pub(crate) history: Vec<HistoryEntry>,
     pub(crate) title: Option<String>,
     pub(crate) preferences: RestoredPreferences,
-    pub(crate) notice: Option<Notice>,
+    pub(crate) notices: Vec<Notice>,
 }
 
 pub(crate) struct Refused {
@@ -50,7 +51,18 @@ impl Persistence {
         setup: &AgentSetup,
     ) -> Result<Switched, Refused> {
         let mut session = self.store.open_without_waiting(id).map_err(refused)?;
-        if session.metadata().preferences.provider != self.route.provider {
+        let saved = session.metadata().preferences.provider.clone();
+        let mut notices = Vec::new();
+        if saved != self.route.provider && !setup.routes(saved.id()) {
+            session
+                .rebind_provider(self.route.provider.clone(), &self.preferences.model)
+                .map_err(refused)?;
+            notices.push(Notice::new(
+                NoticeTone::Warning,
+                SESSION_TOPIC,
+                self.route.rebind_notice(saved.id().label()),
+            ));
+        } else if saved != self.route.provider {
             return Err(Refused {
                 refusal: ResumeRefusal::Unavailable,
                 notice: Some(Notice::new(
@@ -73,24 +85,30 @@ impl Persistence {
         agent.clear_history();
         let live = LiveSession::resume(resumed, self.route.clone(), agent);
         live.attach(agent);
-        let notice = self.remember(live.id());
+        notices.extend(self.remember(live.id()));
         self.live = Some(live);
         Ok(Switched {
             continues,
             history,
             title,
             preferences,
-            notice,
+            notices,
         })
     }
 }
 
 fn refused(error: SessionError) -> Refused {
+    let explained = match error {
+        SessionError::FxSessionOpen
+        | SessionError::FxCompactionUnfinished
+        | SessionError::FxSessionUnreadable => session_lookup_message(&error.to_string()),
+        _ => None,
+    };
     Refused {
         refusal: match error {
             SessionError::SessionBusy => ResumeRefusal::OpenElsewhere,
             _ => ResumeRefusal::Unavailable,
         },
-        notice: None,
+        notice: explained.map(|message| Notice::new(NoticeTone::Warning, SESSION_TOPIC, message)),
     }
 }

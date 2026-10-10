@@ -937,7 +937,9 @@ impl Controller {
                     history: switched.history,
                 });
                 self.show_startup_notices();
-                self.session_notice(switched.notice);
+                for notice in switched.notices {
+                    self.session_notice(Some(notice));
+                }
                 self.continue_recovery(switched.continues);
                 self.ask_for_a_login();
             }
@@ -1831,7 +1833,15 @@ mod tests {
         }
 
         async fn codex_saved(codex: &FakeServer, catalog: &FakeServer, settings: &Value) -> Self {
-            let home = codex_home();
+            Self::codex_saved_in(codex_home(), codex, catalog, settings).await
+        }
+
+        async fn codex_saved_in(
+            home: tempfile::TempDir,
+            codex: &FakeServer,
+            catalog: &FakeServer,
+            settings: &Value,
+        ) -> Self {
             let setup = agent_setup_with(&home, settings, codex_endpoints(codex, catalog)).await;
             Self::saved(home, setup)
         }
@@ -1863,8 +1873,9 @@ mod tests {
             launch_ultrafast: Option<bool>,
         ) -> Self {
             let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
-            let store =
-                SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap()).unwrap();
+            let store = SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap())
+                .unwrap()
+                .with_fx_home(home.path().to_path_buf());
             let route = session_route(&setup).unwrap();
             let preferences = SessionPreferences {
                 provider: route.provider.clone(),
@@ -6293,6 +6304,128 @@ mod tests {
             fs::set_permissions(session.join(name), fs::Permissions::from_mode(0o600)).unwrap();
         }
         session
+    }
+
+    async fn listed_rows(harness: &mut Harness, scope: SessionScope) -> Vec<(String, bool)> {
+        harness.send(UiCommand::ListSessions {
+            scope,
+            after: None,
+            limit: 10,
+        });
+        let events = harness
+            .until(|event| matches!(event, UiEvent::SessionsListed { .. }))
+            .await;
+        let Some(UiEvent::SessionsListed { page }) = events.last() else {
+            panic!("the picker lists a page");
+        };
+        page.rows
+            .iter()
+            .map(|row| (row.id.clone(), row.from_fx))
+            .collect()
+    }
+
+    async fn picked(harness: &mut Harness, id: &str) -> Vec<UiEvent> {
+        harness.send(UiCommand::ResumeSession { id: id.to_owned() });
+        harness
+            .until(|event| {
+                matches!(
+                    event,
+                    UiEvent::SessionResumeFailed { .. } | UiEvent::SessionResumed { .. }
+                )
+            })
+            .await
+            .to_vec()
+    }
+
+    #[tokio::test]
+    async fn the_picker_lists_an_fx_session_and_enter_imports_and_resumes_it() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 4);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let home = codex_home();
+        let fx = save_in_fx(home.path(), &["asked in fx"]);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(fx.join("session.json")).unwrap()).unwrap();
+        manifest["ultrafast_mode"] = json!(true);
+        fs::write(fx.join("session.json"), manifest.to_string()).unwrap();
+        let untouched = fs::read(fx.join("events.jsonl")).unwrap();
+        let mut harness = Harness::codex_saved_in(home, &codex, &catalog, &settings).await;
+
+        assert_eq!(
+            listed_rows(&mut harness, SessionScope::AllWorkspaces).await,
+            [(FX_ID.to_owned(), true)]
+        );
+        let switched = picked(&mut harness, FX_ID).await;
+        let Some(UiEvent::SessionResumed { history }) = switched.last() else {
+            panic!("the fx session resumes: {switched:?}");
+        };
+        assert!(
+            format!("{history:?}").contains("asked in fx"),
+            "{history:?}"
+        );
+        let shown = notices_of(&mut harness, "/status").await;
+        assert!(shown.contains(&rebind_notice("gateway")), "{shown:?}");
+        assert_eq!(
+            ultrafast_notice(&mut harness, "/ultrafast").await,
+            (NoticeTone::Neutral, "requested: on".to_owned())
+        );
+        let copy = harness.home.path().join("data/sessions").join(FX_ID);
+        let saved: Value =
+            serde_json::from_slice(&fs::read(copy.join("session.json")).unwrap()).unwrap();
+        assert_eq!(saved["provider"], "codex");
+        assert_eq!(saved["model"], CODEX_MODEL);
+        assert_eq!(saved["ultrafast_mode"], true);
+        let marker: Value =
+            serde_json::from_slice(&fs::read(copy.join("fx-import.json")).unwrap()).unwrap();
+        assert_eq!(marker["copy"]["preferences"]["provider"], "codex");
+        assert_eq!(marker["copy"]["preferences"]["ultrafast_mode"], true);
+        assert_eq!(
+            fs::read(copy.join("events.jsonl")).unwrap(),
+            fs::read(fx.join("events.jsonl")).unwrap()
+        );
+        assert_eq!(fs::read(fx.join("events.jsonl")).unwrap(), untouched);
+    }
+
+    #[tokio::test]
+    async fn the_picker_refuses_an_fx_session_that_fx_has_open() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 4);
+        let mut settings = codex_settings();
+        settings["session_titles"] = json!(false);
+        let home = codex_home();
+        let fx = save_in_fx(home.path(), &["asked in fx"]);
+        let lock = fs::File::open(fx.join("session.lock")).unwrap();
+        lock.lock().unwrap();
+        let mut harness = Harness::codex_saved_in(home, &codex, &catalog, &settings).await;
+
+        let switched = picked(&mut harness, FX_ID).await;
+        assert!(
+            matches!(
+                switched.last(),
+                Some(UiEvent::SessionResumeFailed {
+                    refusal: ResumeRefusal::Unavailable,
+                    ..
+                })
+            ),
+            "{switched:?}"
+        );
+        assert!(
+            notices(&switched).contains(&(
+                NoticeTone::Warning,
+                "session".to_owned(),
+                "fx has this session open; close it in fx, then resume it here".to_owned()
+            )),
+            "{switched:?}"
+        );
+        assert!(
+            !harness
+                .home
+                .path()
+                .join("data/sessions")
+                .join(FX_ID)
+                .exists()
+        );
     }
 
     #[tokio::test]

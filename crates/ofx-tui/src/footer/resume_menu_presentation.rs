@@ -14,6 +14,7 @@ pub(crate) const MAX_INLINE_ROWS: usize = HEADER_ROWS + ROOMY_TOP_GAP_ROWS + MAX
 const MINIMUM_TITLE_COLUMN_WIDTH: usize = 12;
 const COLUMN_GAP_WIDTH: usize = 4;
 const SEPARATOR: &str = " · ";
+const FX_MARKER: &str = "fx";
 pub(crate) const FALLBACK_TITLE: &str = "Untitled session";
 const MS_PER_MINUTE: i64 = 60_000;
 const MS_PER_HOUR: i64 = 60 * MS_PER_MINUTE;
@@ -300,6 +301,7 @@ struct Columns {
     workspace: usize,
     age: usize,
     turns: usize,
+    marks_fx: bool,
 }
 
 impl Columns {
@@ -314,8 +316,17 @@ impl Columns {
                 .age
                 .max(compact_age(summary.updated_at_ms, view.now_ms).len());
             columns.turns = columns.turns.max(turns_text(summary.turns).len());
+            columns.marks_fx |= summary.from_fx;
         }
         columns
+    }
+
+    fn marker_width(&self) -> usize {
+        if self.marks_fx {
+            SEPARATOR.chars().count() + FX_MARKER.len()
+        } else {
+            0
+        }
     }
 }
 
@@ -377,7 +388,11 @@ fn title_row(
     let workspace_col = columns.workspace.max(visible_width(&workspace));
     let age_col = columns.age.max(age.len());
     let turns_col = columns.turns.max(turns.len());
-    let metadata_width = workspace_col + SEPARATOR.chars().count() * 2 + age_col + turns_col;
+    let metadata_width = workspace_col
+        + SEPARATOR.chars().count() * 2
+        + age_col
+        + turns_col
+        + columns.marker_width();
     let content_width = width.saturating_sub(1);
     let available_title = content_width.saturating_sub(indent + COLUMN_GAP_WIDTH + metadata_width);
     let show_metadata = available_title >= MINIMUM_TITLE_COLUMN_WIDTH;
@@ -402,6 +417,11 @@ fn title_row(
         row.push(&age, paint);
         row.push(SEPARATOR, paint);
         row.push(&turns, paint);
+        if summary.from_fx {
+            row.push(&" ".repeat(turns_col - turns.len()), paint);
+            row.push(SEPARATOR, paint);
+            row.push(FX_MARKER, paint);
+        }
     }
     row
 }

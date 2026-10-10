@@ -21,6 +21,7 @@ pub struct SessionRow {
     pub workspace_root: String,
     pub updated_at_ms: i64,
     pub turns: usize,
+    pub from_fx: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

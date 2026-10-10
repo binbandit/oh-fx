@@ -361,6 +361,7 @@ mod tests {
             workspace_root: "/work/proj".to_owned(),
             updated_at_ms,
             turns: 2,
+            from_fx: false,
         }
     }
 
