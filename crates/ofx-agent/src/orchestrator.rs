@@ -561,7 +561,11 @@ impl Agent {
         trace
     }
 
-    fn new_turn(&self, id: TurnId, prompt: &str, trace: TraceContext) -> Turn {
+    fn new_turn(&mut self, id: TurnId, prompt: &str) -> Turn {
+        let trace = self.next_trace.take().unwrap_or_else(|| TraceContext {
+            turn_id: ofx_trace::next_turn_id(),
+            ..TraceContext::default()
+        });
         Turn {
             id,
             start: self.history.len(),
@@ -640,11 +644,7 @@ impl Agent {
             };
         }
         self.close_interrupted_turns(self.continues_steering());
-        let trace = self.next_trace.take().unwrap_or_else(|| TraceContext {
-            turn_id: ofx_trace::next_turn_id(),
-            ..TraceContext::default()
-        });
-        let mut turn = self.new_turn(id, prompt, trace);
+        let mut turn = self.new_turn(id, prompt);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
@@ -653,21 +653,46 @@ impl Agent {
         turn_trace::prompt_start(turn.trace, prompt, &self.config.model);
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
         let outcome_kind = turn_trace::outcome_kind(&result, &turn.trail, cancel.is_cancelled());
-        let (outcome, final_text, mut failure, ending) = match result {
+        let (outcome, final_text, mut failure, ending) = self.settle_result(&turn, prompt, result);
+        if let Err(error) = self.save_turn(prompt, &turn, ending)
+            && failure.is_none()
+        {
+            failure = Some(TurnFailure::Persistence(error));
+        }
+        self.forget_summary_prompt(&turn);
+        self.forget_stop_continuation(&turn);
+        self.hold_interruption(ending, turn.start);
+        events(UiEvent::TurnFinished {
+            turn_id: id,
+            outcome,
+        });
+        turn_trace::prompt_finish(turn.trace, outcome_kind);
+        if outcome == TurnOutcome::Completed {
+            self.last_reply = Some(LastReply {
+                turn: self.turn_starts.len().saturating_sub(1),
+                text: Arc::from(final_text.as_str()),
+            });
+        }
+        self.post_turn_end(id, presentation_outcome(outcome, ending));
+        TurnReport {
+            outcome,
+            final_text,
+            usage: turn.usage,
+            failure,
+        }
+    }
+
+    fn settle_result(
+        &mut self,
+        turn: &Turn,
+        prompt: &str,
+        result: Result<String, Stop>,
+    ) -> (TurnOutcome, String, Option<TurnFailure>, Ending) {
+        match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
                 self.keep_partial_turn(turn.start, &partial);
-                if turn.trail.finish.is_none() {
-                    turn_trace::cancel_observed(turn.trace, turn.trail.cancelled_in_tools);
-                    turn_trace::interrupted_persisted(
-                        turn.trace,
-                        &turn_trace::Interrupted {
-                            prompt,
-                            partial: &partial,
-                            trail: &turn.trail,
-                        },
-                    );
-                }
+                turn_trace::interrupted(turn.trace, prompt, &partial, &turn.trail);
                 (
                     TurnOutcome::Interrupted,
                     String::new(),
@@ -708,32 +733,6 @@ impl Agent {
                 };
                 (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
-        };
-        if let Err(error) = self.save_turn(prompt, &turn, ending)
-            && failure.is_none()
-        {
-            failure = Some(TurnFailure::Persistence(error));
-        }
-        self.forget_summary_prompt(&turn);
-        self.forget_stop_continuation(&turn);
-        self.hold_interruption(ending, turn.start);
-        events(UiEvent::TurnFinished {
-            turn_id: id,
-            outcome,
-        });
-        turn_trace::prompt_finish(turn.trace, outcome_kind);
-        if outcome == TurnOutcome::Completed {
-            self.last_reply = Some(LastReply {
-                turn: self.turn_starts.len().saturating_sub(1),
-                text: Arc::from(final_text.as_str()),
-            });
-        }
-        self.post_turn_end(id, presentation_outcome(outcome, ending));
-        TurnReport {
-            outcome,
-            final_text,
-            usage: turn.usage,
-            failure,
         }
     }
 
@@ -852,20 +851,9 @@ impl Agent {
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             let messages = self.request_messages(turn);
-            turn.trail.gateway_messages = instructions.len() + messages.len();
-            turn_trace::step_begin(
-                turn.trace,
-                step + 1,
-                self.config.step_limit,
-                turn.trail.gateway_messages,
-            );
+            self.trace_step(turn, step + 1, instructions.len() + messages.len());
             let request = self.turn_request(turn, &instructions, &messages, events);
             let (measured, body) = self.measure(turn, &request).unzip();
-            turn_trace::before_provider_preflight(
-                turn.trace,
-                &self.config.model,
-                turn.trail.gateway_messages,
-            );
             match self
                 .preflight(turn, request, measured.as_ref(), events, cancel)
                 .await
@@ -1699,7 +1687,7 @@ impl Agent {
             (Some(_), None) => return,
             (None, None) => ToolCallOutcome::Rejected,
         };
-        self.tool_call_trace.record(ToolCallRecord {
+        self.tool_call_trace.record(&ToolCallRecord {
             name: &call.name,
             arguments: &call.arguments,
             output: output.map_or("", |output| &output.content),
@@ -1802,6 +1790,12 @@ impl Agent {
             .chain(dynamic)
             .zip(&self.tool_specs)
             .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
+    }
+
+    fn trace_step(&self, turn: &mut Turn, step_index: u64, messages: usize) {
+        turn.trail.gateway_messages = messages;
+        turn_trace::step_begin(turn.trace, step_index, self.config.step_limit, messages);
+        turn_trace::before_provider_preflight(turn.trace, &self.config.model, messages);
     }
 
     fn stop_at_step_limit(
