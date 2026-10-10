@@ -13,6 +13,8 @@ use rustix::process::{Pid, Signal, WaitOptions};
 use rustix::pty::OpenptFlags;
 use rustix::termios::{self, LocalModes, Winsize};
 
+use crate::host_stand_ins::HostStandIns;
+
 const CURSOR_POSITION_REPORT: u16 = 6;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const READ_CHUNK_BYTES: usize = 4096;
@@ -124,6 +126,7 @@ pub struct PtySession {
     held_slave: Option<OwnedFd>,
     reader_stop: PipeWriter,
     reader: Option<JoinHandle<()>>,
+    host: HostStandIns,
 }
 
 #[derive(Default)]
@@ -200,6 +203,7 @@ impl Stall {
 
 impl PtySession {
     pub fn spawn(mut command: Command, rows: u16, cols: u16) -> io::Result<Self> {
+        let host = HostStandIns::install(&mut command)?;
         let PtyPair { master, slave } = PtyPair::open(rows, cols)?;
         rustix::fs::fcntl_setfl(
             &master,
@@ -232,6 +236,7 @@ impl PtySession {
             held_slave: None,
             reader_stop,
             reader: Some(thread::spawn(move || reader.run())),
+            host,
         })
     }
 
@@ -450,6 +455,11 @@ impl Drop for PtySession {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+        let calls = self.host.calls();
+        assert!(
+            calls.is_empty() || thread::panicking(),
+            "the PTY child ran host commands that only a stand-in answered:\n{calls}"
+        );
     }
 }
 
@@ -597,7 +607,7 @@ mod tests {
 
     fn shell(script: &str) -> PtySession {
         let mut command = Command::new("/bin/sh");
-        command.args(["-c", script]);
+        command.args(["-c", script]).env("PATH", "/usr/bin:/bin");
         PtySession::spawn(command, 5, 40).unwrap()
     }
 
@@ -629,6 +639,25 @@ mod tests {
         let dropped = finished.recv_timeout(Duration::from_secs(1)).is_ok();
         let _ = rustix::process::kill_process(descendant, Signal::KILL);
         dropped
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_child_that_runs_a_host_command_reaches_only_its_stand_in_and_fails_at_drop() {
+        let mut session = shell("pbcopy </dev/null; open https://example.invalid; echo \"ran $?\"");
+        session
+            .wait_for(WAIT, |screen| screen.contains("ran 1"))
+            .unwrap();
+        assert!(session.wait_exit(WAIT).is_some());
+        let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(session)))
+        else {
+            panic!("a session whose child reached host commands was dropped quietly");
+        };
+        let message = payload.downcast_ref::<String>().unwrap();
+        assert!(
+            message.ends_with("answered:\npbcopy \nopen https://example.invalid\n"),
+            "{message}"
+        );
     }
 
     #[test]

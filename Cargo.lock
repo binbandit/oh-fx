@@ -950,6 +950,7 @@ dependencies = [
  "rustix",
  "rustls",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "vt100",
