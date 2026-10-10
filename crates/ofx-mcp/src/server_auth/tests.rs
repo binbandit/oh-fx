@@ -515,12 +515,18 @@ mod authenticating {
     }
 
     #[tokio::test]
-    async fn only_approved_remote_servers_with_their_secrets_authenticate() {
+    async fn only_remote_servers_that_read_stored_grants_and_have_their_secrets_authenticate() {
         let data = tempfile::tempdir().unwrap();
         let options = options(data.path());
         let pending = McpServerConfig {
             source: ConfigSource::Workspace,
             workspace_admission: Some(WorkspaceAdmission::Pending),
+            ..remote("https://mcp.example/mcp")
+        };
+        let approved = McpServerConfig {
+            source: ConfigSource::Workspace,
+            workspace_admission: Some(WorkspaceAdmission::Approved),
+            allow_stored_credentials: false,
             ..remote("https://mcp.example/mcp")
         };
         let stdio = McpServerConfig::stdio("local", "/bin/true", Vec::new());
@@ -532,6 +538,11 @@ mod authenticating {
         for (config, options, expected) in [
             (&pending, &options, McpError::McpWorkspaceApprovalRequired),
             (&stdio, &options, McpError::McpAuthenticationNotRemote),
+            (
+                &approved,
+                &options,
+                McpError::McpStoredCredentialsNotAllowed,
+            ),
             (
                 &secretive,
                 &options,

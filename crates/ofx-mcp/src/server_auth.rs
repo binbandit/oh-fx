@@ -278,16 +278,15 @@ pub(crate) async fn authenticate(
     {
         return Err(McpError::McpWorkspaceApprovalRequired);
     }
+    if !config.allow_stored_credentials {
+        return Err(McpError::McpStoredCredentialsNotAllowed);
+    }
     let store = options
         .profile_data
         .as_deref()
         .map(CredentialStore::new)
         .ok_or(McpError::HomeNotSet)?;
-    let previous = if config.allow_stored_credentials {
-        load_stored(config, &store).await?
-    } else {
-        None
-    };
+    let previous = load_stored(config, &store).await?;
     let auth = config.auth.clone().unwrap_or_default();
     let client_secret = auth
         .client_secret_env
