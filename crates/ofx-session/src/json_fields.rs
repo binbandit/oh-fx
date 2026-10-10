@@ -9,6 +9,10 @@ pub(crate) fn parse_json(bytes: &[u8]) -> Result<Json<'_>, StrictJsonError> {
     parse_strict_json(bytes, DuplicateKeys::BeforeValue)
 }
 
+pub(crate) fn push_string(out: &mut String, text: &str) {
+    out.push_str(&serde_json::Value::from(text).to_string());
+}
+
 pub(crate) fn string(value: Json<'_>) -> Option<String> {
     match value {
         Json::String(text) => Some(text.into_owned()),

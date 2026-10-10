@@ -11,9 +11,8 @@ note = "oh-fx keeps the replay handles fx saved in its frames, as docs/differenc
 
 [[file]]
 upstream = "src/core/session/generation_fact_codec.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-session/src/generation_fact_codec.rs"]
-note = "Facts parse as fx writes them, with nine or ten fields and the web search count optional; the writer arrives with appends to the profile ledger."
 
 [[file]]
 upstream = "src/core/session/generation_usage_provider.zig"
@@ -159,7 +158,7 @@ note = "Session-ID validation/generation exists; terminal-specific IDs and v2 di
 upstream = "src/core/session/session_log.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_migration/conversion.rs", "crates/ofx-session/src/session_migration/recovery_file.rs"]
-note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy is missing, and an in-place import fx left unfinished is read as recoverInterruptedLegacyImport resolves it, from events.v3.backup until the new metadata exists, without repairing fx's files; the permission and usage sidecars are not written, as for oh-fx's own sessions."
+note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy is missing, and an in-place import fx left unfinished is read as recoverInterruptedLegacyImport resolves it, from events.v3.backup until the new metadata exists, without repairing fx's files; the permission sidecar is not written, as for oh-fx's own sessions, and the usage sidecar is written when a session starts and read when it resumes, though the conversion does not carry a schema-v3 session's usage into it yet."
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
@@ -215,13 +214,15 @@ note = "The background task is a tokio task; the failure reasons and timings ups
 
 [[file]]
 upstream = "src/core/session/session_usage.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_usage.rs"]
+note = "A session's usage snapshot exists with upstream's validation, its schema-3 writer and its schema-2 and schema-3 reader, including fx's pending Gateway generations; live accounting (invocations, exact settlement, generations, lines, durations, checkpoints and publication), the legacy 18-field reader, the rollback-readable writer and the projection comparisons arrive with session accounting and the schema-v3 usage carry, and deferred Gateway reconciliation waits for the Vercel AI Gateway transport."
 
 [[file]]
 upstream = "src/core/session/session_usage_sidecar.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_usage_sidecar.rs"]
+note = "usage-v2.json is written when a session starts and read when it resumes, with upstream's shape checks: a missing, empty, oversized, damaged or foreign sidecar resumes with incomplete usage and one gap, and an unsafe one refuses the resume. The recovery copy's classification and the restore of rollback-readable snapshots arrive with session recovery and the schema-v3 usage carry; read-only loads do not read it yet."
 
 [[file]]
 upstream = "src/core/session/usage_menu.zig"
