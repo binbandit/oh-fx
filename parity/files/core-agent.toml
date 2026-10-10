@@ -271,5 +271,5 @@ note = "Built-in call preparation, the argument validation of advertised MCP cal
 [[file]]
 upstream = "src/core/agent/worker_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/worker_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/app_steering_runtime.rs"]
+modules = ["crates/ofx-agent/src/worker_runtime.rs", "crates/ofx-agent/src/recovery_pause.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/app_steering_runtime.rs"]
 note = "Worker commands drive turn execution, cancellation and recovery pauses, and prompts typed during a turn queue as steering for its model, cancel and final-answer boundaries; the cancel, pause, finish and cleared-queue trace lines are written, while the enqueue, begin and steering trace lines wait for turn ids taken when a prompt is queued; subagent worker origin handling is absent."

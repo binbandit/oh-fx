@@ -21,6 +21,7 @@ fn recorded<'a>(name: &'a str, arguments: &'a str, output: &'a str) -> ToolCallR
         output,
         outcome: ToolCallOutcome::Succeeded,
         started_at_ms: ofx_trace::timestamp_ms(),
+        finished_at_ms: ofx_trace::timestamp_ms(),
         subagent_id: 0,
     }
 }
@@ -135,7 +136,7 @@ fn a_result_keeps_the_body_of_its_envelope_and_names_are_cut() {
 }
 
 #[test]
-fn a_duration_is_measured_from_the_start_and_never_negative() {
+fn a_duration_runs_from_the_start_to_the_finish_and_is_never_negative() {
     let ring = ToolCallRing::new();
     ring.record(&ToolCallRecord {
         started_at_ms: ofx_trace::timestamp_ms() + 60_000,
@@ -145,7 +146,13 @@ fn a_duration_is_measured_from_the_start_and_never_negative() {
         started_at_ms: ofx_trace::timestamp_ms() - 1_500,
         ..recorded("shell", "{}", "")
     });
+    ring.record(&ToolCallRecord {
+        started_at_ms: 1_000,
+        finished_at_ms: 3_250,
+        ..recorded("shell", "{}", "")
+    });
     let calls = ring.snapshot().calls;
     assert_eq!(calls[0].duration_ms, 0);
     assert!(calls[1].duration_ms >= 1_500);
+    assert_eq!(calls[2].duration_ms, 2_250);
 }

@@ -51,6 +51,27 @@ fn each_turn_ending_has_upstreams_outcome_kind() {
     )));
     assert_eq!(kind(&persistence), "http_error");
     assert_eq!(outcome_kind(&persistence, &quiet, true), "cancelled");
+    let after_tools = ToolTrail {
+        ran_tools: true,
+        ..ToolTrail::default()
+    };
+    assert_eq!(outcome_kind(&persistence, &after_tools, true), "error");
+    assert_eq!(
+        outcome_kind(&provider("BadRequest", Some(400)), &after_tools, false),
+        "error"
+    );
+    assert_eq!(
+        outcome_kind(&provider("OutputTruncated", None), &after_tools, false),
+        "provider_length"
+    );
+    let stalled = ToolTrail {
+        finish: Some("recovery_stalled"),
+        ..ToolTrail::default()
+    };
+    assert_eq!(
+        outcome_kind(&provider("Timeout", None), &stalled, false),
+        "recovery_stalled"
+    );
     let handed_off = ToolTrail {
         finish: Some("steering_handoff"),
         ..ToolTrail::default()
@@ -66,7 +87,7 @@ fn an_interruption_names_what_it_interrupted() {
     let reason = |trail: &ToolTrail, partial: &str| {
         interrupt_reason(&Interrupted {
             prompt: "p",
-            partial,
+            partial_bytes: partial.len(),
             trail,
         })
     };
@@ -80,6 +101,14 @@ fn an_interruption_names_what_it_interrupted() {
     );
     assert_eq!(reason(&trail(&[], None), "text"), "partial_assistant_only");
     assert_eq!(reason(&trail(&[], None), ""), "no_assistant_output");
+}
+
+#[test]
+fn a_step_is_entered_once_however_often_it_is_attempted() {
+    let mut trail = ToolTrail::default();
+    assert!(trail.enter_step(0));
+    assert!(!trail.enter_step(0));
+    assert!(trail.enter_step(1));
 }
 
 #[test]

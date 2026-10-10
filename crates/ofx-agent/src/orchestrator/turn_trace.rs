@@ -15,24 +15,53 @@ const CONTENT_FILTERED: &str = "ContentFiltered";
 const INCOMPLETE_STREAM: &str = "IncompleteStream";
 const PROVIDER_FINISH_ERROR: &str = "ProviderError";
 const PANICKED: &str = "Panicked";
+const HTTP_ERROR: &str = "http_error";
+pub(super) const CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Default)]
 pub(super) struct ToolTrail {
-    pub(super) completed: Vec<String>,
-    pub(super) last_call: Option<(ToolCallId, String)>,
-    pub(super) active: Option<(ToolCallId, String)>,
+    completed: Vec<String>,
+    last_call: Option<(ToolCallId, String)>,
+    active: Option<(ToolCallId, String)>,
+    step: Option<u64>,
     pub(super) gateway_messages: usize,
     pub(super) cancelled_in_tools: bool,
+    pub(super) step_text_bytes: usize,
+    pub(super) ran_tools: bool,
     pub(super) finish: Option<&'static str>,
 }
 
 struct Interrupted<'a> {
     prompt: &'a str,
-    partial: &'a str,
+    partial_bytes: usize,
     trail: &'a ToolTrail,
 }
 
 impl ToolTrail {
+    pub(super) fn enter_step(&mut self, step: u64) -> bool {
+        let entered = self.step != Some(step);
+        self.step = Some(step);
+        entered
+    }
+
+    pub(super) fn called(&mut self, call: &ToolCall) {
+        if tracks_tools() {
+            self.last_call = Some((call.id.clone(), call.name.clone()));
+        }
+    }
+
+    pub(super) fn completed(&mut self, call: &ToolCall) {
+        if tracks_tools() {
+            self.completed.push(call.name.clone());
+        }
+    }
+
+    pub(super) fn interrupted_at(&mut self, call: &ToolCall) {
+        if tracks_tools() && self.active.is_none() {
+            self.active = Some((call.id.clone(), call.name.clone()));
+        }
+    }
+
     fn completed_names(&self) -> String {
         if self.completed.is_empty() {
             NONE.to_owned()
@@ -42,7 +71,11 @@ impl ToolTrail {
     }
 }
 
-pub(super) fn turn_context(context: TraceContext) -> TraceContext {
+fn tracks_tools() -> bool {
+    ofx_trace::enabled(AGENT) || ofx_trace::enabled(INTERRUPT)
+}
+
+fn turn_context(context: TraceContext) -> TraceContext {
     TraceContext {
         step_id: 0,
         ..context
@@ -268,7 +301,7 @@ fn interrupted_persisted(context: TraceContext, interrupted: &Interrupted<'_>) {
     let trail = interrupted.trail;
     let names = trail.completed_names();
     let prompt_bytes = interrupted.prompt.len();
-    let partial_bytes = interrupted.partial.len();
+    let partial_bytes = interrupted.partial_bytes;
     let active = trail.active.is_some();
     let completed = trail.completed.len();
     trace_log!(
@@ -311,18 +344,31 @@ fn interrupted_persisted(context: TraceContext, interrupted: &Interrupted<'_>) {
 }
 
 pub(super) fn interrupted(context: TraceContext, prompt: &str, partial: &str, trail: &ToolTrail) {
-    if trail.finish.is_some() {
-        return;
+    if trail.finish.is_none() {
+        cancel_observed(context, trail.cancelled_in_tools);
     }
-    cancel_observed(context, trail.cancelled_in_tools);
+    let partial_bytes = if trail.cancelled_in_tools {
+        trail.step_text_bytes
+    } else {
+        partial.len()
+    };
     interrupted_persisted(
         context,
         &Interrupted {
             prompt,
-            partial,
+            partial_bytes,
             trail,
         },
     );
+}
+
+pub(super) fn prompt_failed_before_start(context: TraceContext, prompt: &str, model: &str) {
+    prompt_start(context, prompt, model);
+    prompt_finish(context, HTTP_ERROR);
+}
+
+pub(super) fn cancelled_turn(context: TraceContext) {
+    cancel_observed(turn_context(context), false);
 }
 
 pub(super) fn stream_failure_persisted(context: TraceContext, prompt: &str, partial: &str) {
@@ -354,32 +400,38 @@ pub(super) fn outcome_kind(
         Ok(_) => "assistant",
         Err(Stop::Interrupted { .. }) => "interrupted",
         Err(Stop::Paused { .. }) => "recovery_paused",
-        Err(Stop::Failed { failure, .. }) => failure_kind(failure, cancelled),
+        Err(Stop::Failed { failure, .. }) => failure_kind(failure, trail.ran_tools, cancelled),
     }
 }
 
-fn failure_kind(failure: &TurnFailure, cancelled: bool) -> &'static str {
-    match failure {
-        TurnFailure::StepLimitReached => "step_limit",
-        TurnFailure::RepeatedMalformedArguments => "repeated_malformed_tool_arguments",
-        TurnFailure::RepeatedShellExecutionFailure => "repeated_shell_execution_failure",
-        TurnFailure::ResponseLanguageMismatch => "response_language_mismatch",
-        TurnFailure::InvalidCompletion => "invalid_tool_finish",
-        TurnFailure::MalformedProviderResult => "malformed_provider_result",
-        TurnFailure::MalformedProviderArguments => "malformed_provider_tool_arguments",
+fn failure_kind(failure: &TurnFailure, ran_tools: bool, cancelled: bool) -> &'static str {
+    let named = match failure {
+        TurnFailure::StepLimitReached => Some("step_limit"),
+        TurnFailure::RepeatedMalformedArguments => Some("repeated_malformed_tool_arguments"),
+        TurnFailure::RepeatedShellExecutionFailure => Some("repeated_shell_execution_failure"),
+        TurnFailure::ResponseLanguageMismatch => Some("response_language_mismatch"),
+        TurnFailure::InvalidCompletion => Some("invalid_tool_finish"),
+        TurnFailure::MalformedProviderResult => Some("malformed_provider_result"),
+        TurnFailure::MalformedProviderArguments => Some("malformed_provider_tool_arguments"),
         TurnFailure::Provider(error) => provider_kind(error),
-        _ if cancelled => "cancelled",
-        _ => "http_error",
-    }
+        _ => None,
+    };
+    named.unwrap_or(if ran_tools {
+        "error"
+    } else if cancelled {
+        CANCELLED
+    } else {
+        HTTP_ERROR
+    })
 }
 
-fn provider_kind(error: &ProviderError) -> &'static str {
+fn provider_kind(error: &ProviderError) -> Option<&'static str> {
     match error.code.as_str() {
-        OUTPUT_TRUNCATED => "provider_length",
-        CONTENT_FILTERED => "content_filter",
-        PROVIDER_FINISH_ERROR if error.status.is_none() => "provider_error",
-        INCOMPLETE_STREAM => "stream_interrupted",
-        _ => "http_error",
+        OUTPUT_TRUNCATED => Some("provider_length"),
+        CONTENT_FILTERED => Some("content_filter"),
+        PROVIDER_FINISH_ERROR if error.status.is_none() => Some("provider_error"),
+        INCOMPLETE_STREAM => Some("stream_interrupted"),
+        _ => None,
     }
 }
 
@@ -388,7 +440,7 @@ fn interrupt_reason(interrupted: &Interrupted<'_>) -> &'static str {
         "active_tool_call_present"
     } else if !interrupted.trail.completed.is_empty() {
         "completed_tools_present"
-    } else if !interrupted.partial.is_empty() {
+    } else if interrupted.partial_bytes > 0 {
         "partial_assistant_only"
     } else {
         "no_assistant_output"
@@ -423,7 +475,7 @@ pub(super) fn result_kind(output: &ToolOutput) -> &'static str {
     if output.status == ToolResultStatus::Failure {
         "error"
     } else if output.file_change.is_some() {
-        "diff"
+        "committed_file"
     } else {
         "model_output"
     }
