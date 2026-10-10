@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
-use serde_json::Value;
-
 use super::definitions::{
     ARGUMENTS_JSON_BYTES, AttentionRequiredInput, HANDLER_NAME_BYTES, HookDispatchError,
     HookHandlerError, HookRegistrationError, PostTurnEndInput, PreToolUseAction, PreToolUseInput,
     PreToolUseOutcome, REASON_BYTES,
 };
-use crate::strict_json::parse_strict_json_value;
+use crate::types::ToolArgumentIntegrity;
 
 type SideEffect<Input> = Box<dyn Fn(&Input) + Send + Sync>;
 type PreToolUseHandler =
@@ -134,9 +132,11 @@ fn validated_rewrite(arguments_json: String) -> Result<String, HookDispatchError
     if arguments_json.len() > ARGUMENTS_JSON_BYTES {
         return Err(HookDispatchError::HandlerOutputTooLarge);
     }
-    match parse_strict_json_value(arguments_json.as_bytes()) {
-        Ok(Value::Object(_)) => Ok(arguments_json),
-        _ => Err(HookDispatchError::InvalidHandlerOutput),
+    match ToolArgumentIntegrity::classify_function_input(&arguments_json) {
+        ToolArgumentIntegrity::Valid => Ok(arguments_json),
+        ToolArgumentIntegrity::MalformedJson | ToolArgumentIntegrity::NonObjectJson => {
+            Err(HookDispatchError::InvalidHandlerOutput)
+        }
     }
 }
 

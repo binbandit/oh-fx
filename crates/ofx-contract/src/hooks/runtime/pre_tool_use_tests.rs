@@ -7,6 +7,7 @@ use crate::hooks::{
     PreToolUseInput, PreToolUseOutcome,
 };
 use crate::ids::TurnId;
+use crate::types::ToolArgumentIntegrity;
 
 fn input(arguments_json: &str) -> PreToolUseInput<'_> {
     PreToolUseInput {
@@ -155,6 +156,38 @@ fn rewrites_must_be_one_json_object_within_the_size_limit() {
         single(move || Ok(PreToolUseAction::RewriteArguments(largest.clone()))),
         Ok(PreToolUseOutcome::Rewritten(expected))
     );
+}
+
+#[test]
+fn rewrites_accept_out_of_range_numbers_and_any_depth_as_tool_arguments_do() {
+    let nested_arrays = format!("{{\"a\":{}0{}}}", "[".repeat(129), "]".repeat(129));
+    let nested_objects = format!("{}1e400{}", "{\"a\":".repeat(1000), "}".repeat(1000));
+    for output in [r#"{"n":1e400}"#.to_owned(), nested_arrays, nested_objects] {
+        assert_eq!(
+            ToolArgumentIntegrity::classify_function_input(&output),
+            ToolArgumentIntegrity::Valid
+        );
+        let seen = Arc::new(Mutex::new(None));
+        let mut runtime = HookRuntime::default();
+        let rewrite = output.clone();
+        runtime
+            .register_pre_tool_use("rewrite", move |_| {
+                Ok(PreToolUseAction::RewriteArguments(rewrite.clone()))
+            })
+            .unwrap();
+        let recorded = Arc::clone(&seen);
+        runtime
+            .register_pre_tool_use("later", move |input| {
+                *recorded.lock().unwrap() = Some(input.arguments_json.to_owned());
+                Ok(PreToolUseAction::Continue)
+            })
+            .unwrap();
+        assert_eq!(
+            runtime.freeze().run_pre_tool_use(&input("{}")),
+            Ok(PreToolUseOutcome::Rewritten(output.clone()))
+        );
+        assert_eq!(*seen.lock().unwrap(), Some(output));
+    }
 }
 
 #[test]
