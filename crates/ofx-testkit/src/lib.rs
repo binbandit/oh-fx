@@ -1,6 +1,7 @@
 mod chat_stream;
 mod connect_proxy;
 mod fake_server;
+mod host_stand_ins;
 mod pty;
 mod refused_port;
 

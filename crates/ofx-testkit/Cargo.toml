@@ -10,6 +10,7 @@ publish.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "process", "pty", "termios"] }
 rustls.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time"] }
 tokio-rustls.workspace = true
 vt100.workspace = true
