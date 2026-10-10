@@ -594,6 +594,36 @@ fn ask_finds_profile_mcp_tools_and_names_unknown_or_failed_servers_with_capabili
 }
 
 #[test]
+fn ask_applies_mcp_context_limits_from_the_command_line() {
+    let server = FakeServer::start([
+        search_call("search", &json!({"query": "fixture echo"})),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&fixture(&home));
+    let output = home.ask(&[
+        "--context-limit",
+        "mcp_description_bytes=4",
+        "ask",
+        "--full-access",
+        "find a tool",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let result: Value = serde_json::from_str(&last_tool_result(&server.requests()[1])).unwrap();
+    let tool = &result["mcp_tools"][0];
+    assert_eq!(tool["description"], "Echo");
+    assert_eq!(tool["context_limit"]["effective_bytes"], 4);
+    assert_eq!(tool["context_limit"]["source"], "command line");
+    assert!(
+        stderr(&output).contains(
+            "[context] MCP description for \"mcp_fixture_echo\" truncated: observed=10 bytes effective=4 bytes source=command line"
+        ),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn ask_without_mcp_servers_reports_mcp_search_unavailable() {
     let server = FakeServer::start([
         search_call("search", &json!({"query": "echo"})),
