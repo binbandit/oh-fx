@@ -354,7 +354,7 @@ async fn matched_schemas_are_loaded_within_the_selected_schema_budget() {
             SchemaLimits::from(&ContextLimits::default()),
         ) {
             Projection::Selected { spec, .. } => selected_schema(&spec).len(),
-            Projection::Rejected(_) => unreachable!(),
+            Projection::Rejected { .. } => unreachable!(),
         }
     };
     let first = length("mcp_datadog_list_monitors", DATADOG[0].0, DATADOG[0].1);
@@ -362,10 +362,9 @@ async fn matched_schemas_are_loaded_within_the_selected_schema_budget() {
     assert!(second < first);
     let budget = format!("mcp_selected_schema_bytes={}", first + 5);
     let runtime = connected(vec![config.clone()], &[&budget]).await;
-    assert_eq!(
-        search(&runtime, "datadog", None).notice.as_deref(),
-        Some(BUDGET_NOTICE)
-    );
+    let budgeted = search(&runtime, "datadog", None);
+    assert_eq!(budgeted.notice.as_deref(), Some(BUDGET_NOTICE));
+    assert_eq!(budgeted.selected, ["mcp_datadog_list_monitors"]);
     let runtime = connected(
         vec![config.clone()],
         &[&format!("mcp_selected_schema_bytes={second}")],
@@ -382,7 +381,12 @@ async fn matched_schemas_are_loaded_within_the_selected_schema_budget() {
         &[&format!("mcp_selected_schema_bytes={}", first + second)],
     )
     .await;
-    assert_eq!(search(&runtime, "datadog", None).notice, None);
+    let loaded = search(&runtime, "datadog", None);
+    assert_eq!(loaded.notice, None);
+    assert_eq!(
+        loaded.selected,
+        ["mcp_datadog_list_monitors", "mcp_datadog_get_dashboard"]
+    );
 }
 
 #[tokio::test]

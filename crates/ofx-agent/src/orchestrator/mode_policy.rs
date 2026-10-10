@@ -7,13 +7,14 @@ pub(super) struct Offer {
 
 pub(super) fn offer(
     specs: &[ToolSpec],
+    registered: usize,
     provider_executed: &[bool],
     mode: Option<&ActiveMode>,
 ) -> Offer {
     let (remote, offered): (Vec<_>, Vec<_>) = specs
         .iter()
         .zip(provider_executed)
-        .filter(|(spec, _)| mode.is_none_or(|mode| allows(mode, specs, &spec.name)))
+        .filter(|(spec, _)| mode.is_none_or(|mode| allows(mode, &specs[..registered], &spec.name)))
         .partition(|(_, remote)| **remote);
     Offer {
         specs: offered.into_iter().map(|(spec, _)| spec.clone()).collect(),

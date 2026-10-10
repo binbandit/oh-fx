@@ -40,29 +40,26 @@ pub(crate) fn publish_tools(
     names: &mut ToolNames,
     reserved: &[String],
     limits: SchemaLimits,
-) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
+) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-    let mut notices = Vec::new();
     for server in servers {
         let Some((catalog, instructions)) = server.catalog() else {
             continue;
         };
-        let (published, rejected) = publish_server(
-            server,
-            &catalog,
-            instructions.as_ref(),
-            names,
-            reserved,
-            limits,
-        );
         tools.extend(
-            published
-                .into_iter()
-                .map(|tool| Arc::new(tool) as Arc<dyn Tool>),
+            publish_server(
+                server,
+                &catalog,
+                instructions.as_ref(),
+                names,
+                reserved,
+                limits,
+            )
+            .into_iter()
+            .map(|tool| Arc::new(tool) as Arc<dyn Tool>),
         );
-        notices.extend(rejected);
     }
-    (tools, notices)
+    tools
 }
 
 fn publish_server(
@@ -72,29 +69,43 @@ fn publish_server(
     names: &mut ToolNames,
     reserved: &[String],
     limits: SchemaLimits,
-) -> (Vec<McpTool>, Vec<String>) {
+) -> Vec<McpTool> {
     let mut tools = Vec::new();
-    let mut notices = Vec::new();
     for tool in &catalog.tools {
         let Ok(name) = names.name(reserved, &server.config.name, &tool.name) else {
             continue;
         };
-        match project(&name, tool, instructions.map(AsRef::as_ref), limits) {
-            Projection::Selected { spec, notice } => {
-                notices.extend(notice);
-                tools.push(McpTool {
-                    spec: Arc::new(spec),
-                    server: Arc::clone(server),
-                    advertised: Arc::new(Advertised {
-                        tool: tool.clone(),
-                        instructions: instructions.cloned(),
-                    }),
-                });
-            }
-            Projection::Rejected(notice) => notices.push(notice),
+        if let Projection::Selected { spec, .. } =
+            project(&name, tool, instructions.map(AsRef::as_ref), limits)
+        {
+            tools.push(McpTool {
+                spec: Arc::new(spec),
+                server: Arc::clone(server),
+                advertised: Arc::new(Advertised {
+                    tool: tool.clone(),
+                    instructions: instructions.cloned(),
+                }),
+                limits,
+            });
         }
     }
-    (tools, notices)
+    tools
+}
+
+pub(crate) fn schema_for(
+    servers: &[Arc<Server>],
+    names: &mut ToolNames,
+    reserved: &[String],
+    name: &str,
+    limits: SchemaLimits,
+) -> Option<Projection> {
+    servers.iter().find_map(|server| {
+        let (catalog, instructions) = server.catalog()?;
+        catalog.tools.iter().find_map(|tool| {
+            let prefixed = names.name(reserved, &server.config.name, &tool.name).ok()?;
+            (prefixed == name).then(|| project(name, tool, instructions.as_deref(), limits))
+        })
+    })
 }
 
 pub(crate) enum Projection {
@@ -102,7 +113,10 @@ pub(crate) enum Projection {
         spec: ToolSpec,
         notice: Option<String>,
     },
-    Rejected(String),
+    Rejected {
+        output: String,
+        notice: String,
+    },
 }
 
 pub(crate) fn project(
@@ -136,13 +150,23 @@ pub(crate) fn project(
     let schema_bytes = function_schema(name, &description, &input_schema).len();
     let schema_limit = limits.selected_schema;
     if schema_bytes > schema_limit.effective_bytes() {
-        return Projection::Rejected(schema_notice(
-            name,
-            "rejected",
-            schema_bytes,
-            schema_limit,
-            SELECTED_SCHEMA_LIMIT,
-        ));
+        let mut encoded = String::new();
+        write_scalar(&mut encoded, name);
+        return Projection::Rejected {
+            output: format!(
+                r#"{{"context_limit_rejection":{{"name":"{SELECTED_SCHEMA_LIMIT}","tool":{},"action":"rejected","observed_bytes":{schema_bytes},"effective_bytes":{},"source":"{}","override":"--context-limit {SELECTED_SCHEMA_LIMIT}=BYTES|off"}}}}"#,
+                Value::from(encoded),
+                schema_limit.effective_bytes(),
+                schema_limit.source.label(),
+            ),
+            notice: schema_notice(
+                name,
+                "rejected",
+                schema_bytes,
+                schema_limit,
+                SELECTED_SCHEMA_LIMIT,
+            ),
+        };
     }
     Projection::Selected {
         spec: ToolSpec {
@@ -194,6 +218,7 @@ struct McpTool {
     spec: Arc<ToolSpec>,
     server: Arc<Server>,
     advertised: Arc<Advertised>,
+    limits: SchemaLimits,
 }
 
 impl Tool for McpTool {
@@ -212,6 +237,7 @@ impl Tool for McpTool {
             spec: Arc::clone(&self.spec),
             server: Arc::clone(&self.server),
             advertised: Arc::clone(&self.advertised),
+            limits: self.limits,
             arguments: arguments.to_owned(),
         }))
     }
@@ -221,7 +247,28 @@ struct McpCall {
     spec: Arc<ToolSpec>,
     server: Arc<Server>,
     advertised: Arc<Advertised>,
+    limits: SchemaLimits,
     arguments: String,
+}
+
+impl McpCall {
+    fn changed_definition(&self) -> ToolOutput {
+        let name = &self.spec.name;
+        let current = self.server.catalog().and_then(|(catalog, instructions)| {
+            catalog
+                .get(&self.advertised.tool.name)
+                .map(|tool| project(name, tool, instructions.as_deref(), self.limits))
+        });
+        match current {
+            Some(Projection::Selected { notice, .. }) => ToolOutput::failure(DEFINITION_CHANGED)
+                .with_context_notices(notice)
+                .selecting_tools([name.clone()]),
+            Some(Projection::Rejected { output, notice }) => ToolOutput::failure(output)
+                .with_context_notices([notice])
+                .retiring_tool(name.clone()),
+            None => ToolOutput::failure(DEFINITION_WITHDRAWN).retiring_tool(name.clone()),
+        }
+    }
 }
 
 impl PreparedCall for McpCall {
@@ -271,13 +318,7 @@ impl PreparedCall for McpCall {
                 Err(CallFailure::RestartFailed(failure)) => ToolOutput::failure(
                     restart_failed_output(server_name, &self.spec.name, &failure),
                 ),
-                Err(CallFailure::DefinitionChanged { still_advertised }) => {
-                    ToolOutput::failure(if still_advertised {
-                        DEFINITION_CHANGED
-                    } else {
-                        DEFINITION_WITHDRAWN
-                    })
-                }
+                Err(CallFailure::DefinitionChanged) => self.changed_definition(),
                 Err(CallFailure::Mcp(error)) => ToolOutput::failure(
                     format_tool_execution_error_json(&self.spec.name, &error.to_string()),
                 ),
@@ -322,7 +363,7 @@ mod tests {
             tools: (0..64).map(|index| tool(&format!("t{index}"))).collect(),
         };
         let instructions: Arc<str> = Arc::from("x".repeat(512 * 1024));
-        let (tools, _) = publish_server(
+        let tools = publish_server(
             &server,
             &catalog,
             Some(&instructions),

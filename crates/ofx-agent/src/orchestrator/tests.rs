@@ -2891,7 +2891,20 @@ fn unconfigured_hold(tool_name: &str) -> String {
 struct SwitchedTools {
     generation: AtomicUsize,
     tools: Mutex<Vec<Arc<dyn Tool>>>,
-    notices: Mutex<Vec<String>>,
+}
+
+impl SwitchedTools {
+    fn publishing(tools: Vec<Arc<dyn Tool>>) -> Arc<Self> {
+        Arc::new(Self {
+            generation: AtomicUsize::new(1),
+            tools: Mutex::new(tools),
+        })
+    }
+
+    fn publish(&self, tools: Vec<Arc<dyn Tool>>) {
+        *self.tools.lock().unwrap() = tools;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl DynamicTools for SwitchedTools {
@@ -2903,70 +2916,217 @@ impl DynamicTools for SwitchedTools {
         self.tools.lock().unwrap().clone()
     }
 
-    fn take_notices(&self) -> Vec<String> {
-        mem::take(&mut self.notices.lock().unwrap())
+    fn lists(&self, name: &str) -> bool {
+        self.tools
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|tool| tool.spec().name == name)
+    }
+}
+
+struct SelectorTool {
+    spec: ToolSpec,
+}
+
+struct SelectorCall {
+    arguments: String,
+}
+
+fn selector_tool() -> Arc<dyn Tool> {
+    Arc::new(SelectorTool {
+        spec: ToolSpec {
+            name: "select".to_owned(),
+            description: "Select dynamic tools.".to_owned(),
+            input_schema: r#"{"type":"object"}"#.into(),
+        },
+    })
+}
+
+impl Tool for SelectorTool {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
+        Ok(Box::new(SelectorCall {
+            arguments: arguments.to_owned(),
+        }))
+    }
+}
+
+impl PreparedCall for SelectorCall {
+    fn describe(&self) -> CallDescription {
+        CallDescription {
+            title: "select".to_owned(),
+            label: None,
+            activity: ToolActivity::Read,
+            effect: ToolEffect::ReadOnly,
+            concurrency: Concurrency::Serial,
+        }
+    }
+
+    fn execute(self: Box<Self>, _context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+        Box::pin(async move {
+            let request: serde_json::Value = serde_json::from_str(&self.arguments).unwrap();
+            let names = |key: &str| -> Vec<String> {
+                request[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|name| name.as_str().unwrap().to_owned())
+                    .collect()
+            };
+            let mut output = ToolOutput::success("selected").selecting_tools(names("select"));
+            for name in names("retire") {
+                output = output.retiring_tool(name);
+            }
+            output
+        })
+    }
+}
+
+fn select_reply(id: &str, arguments: &str) -> Script {
+    Script::Reply(
+        Vec::new(),
+        completion(
+            None,
+            vec![ToolCall::new(id, "select", arguments)],
+            FinishReason::ToolCalls,
+        ),
+    )
+}
+
+fn tool_names(request: &SeenRequest) -> Vec<&str> {
+    request
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect()
+}
+
+fn last_tool_message(request: &SeenRequest) -> (&str, ToolResultStatus) {
+    match request.messages.last() {
+        Some(ChatMessage::Tool {
+            content, status, ..
+        }) => (content, *status),
+        other => panic!("expected a tool result, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn dynamic_tools_are_advertised_from_the_step_after_they_change() {
+async fn a_selected_dynamic_tool_is_advertised_from_the_next_step_until_the_turn_ends() {
     let provider = FakeProvider::new(vec![
-        text_reply("none yet"),
+        tool_reply(&[("call-1", r#"{"text":"early"}"#)]),
+        select_reply("select-1", r#"{"select":["echo","absent"]}"#),
+        tool_reply(&[("call-2", r#"{"text":"a"}"#)]),
+        text_reply("done"),
+        text_reply("next turn"),
+    ]);
+    let source = SwitchedTools::publishing(vec![echo_tool()]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![selector_tool()])
+        .with_dynamic_tools(Arc::clone(&source) as _);
+    let (report, events) = run(&mut agent, "first").await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        UiEvent::ToolRejected {
+            reason: ToolRejection::Invalid,
+            description: Some(description),
+            ..
+        } if description.title == "MCP: echo"
+    )));
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(tool_names(&requests[0]), ["select"]);
+    assert_eq!(tool_names(&requests[1]), ["select"]);
+    assert_eq!(
+        last_tool_message(&requests[1]),
+        (
+            "Dynamic MCP tool not selected for this model step: echo. Use capability_search or mcp_select_tool to load its definition; the selected tool can be called on the next model step after its schema is advertised.",
+            ToolResultStatus::Failure
+        )
+    );
+    assert_eq!(tool_names(&requests[2]), ["select", "echo"]);
+    assert_eq!(tool_names(&requests[3]), ["select", "echo"]);
+    assert_eq!(last_tool_message(&requests[3]).1, ToolResultStatus::Success);
+    run(&mut agent, "second").await;
+    assert_eq!(tool_names(&provider.requests()[4]), ["select"]);
+}
+
+#[tokio::test]
+async fn a_name_no_dynamic_source_lists_stays_an_unsupported_tool() {
+    let provider = FakeProvider::new(vec![
         tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
         text_reply("done"),
     ]);
-    let source = Arc::new(SwitchedTools {
-        generation: AtomicUsize::new(0),
-        tools: Mutex::new(Vec::new()),
-        notices: Mutex::new(Vec::new()),
-    });
-    let mut agent =
-        new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
-    run(&mut agent, "first").await;
-    source.tools.lock().unwrap().push(echo_tool());
-    source.generation.store(1, Ordering::SeqCst);
-    let (report, events) = run(&mut agent, "second").await;
-    assert_eq!(report.outcome, TurnOutcome::Completed);
-    let requests = provider.requests();
-    assert!(requests[0].tools.is_empty());
-    let names: Vec<_> = requests[1]
-        .tools
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    assert_eq!(names, ["echo"]);
+    let source = SwitchedTools::publishing(Vec::new());
+    let mut agent = new_agent(Arc::clone(&provider), vec![selector_tool()])
+        .with_dynamic_tools(Arc::clone(&source) as _);
+    let (_, events) = run(&mut agent, "go").await;
+    assert_eq!(
+        last_tool_message(&provider.requests()[1]),
+        ("Unsupported tool: echo", ToolResultStatus::Failure)
+    );
     assert!(events.iter().any(|event| matches!(
         event,
-        UiEvent::ToolFinished {
-            status: ToolResultStatus::Success,
+        UiEvent::ToolRejected {
+            reason: ToolRejection::Unsupported,
             ..
         }
     )));
 }
 
 #[tokio::test]
-async fn notices_from_a_dynamic_tool_refresh_are_reported_once_in_the_turn() {
-    let provider = FakeProvider::new(vec![text_reply("first"), text_reply("second")]);
-    let source = Arc::new(SwitchedTools {
-        generation: AtomicUsize::new(1),
-        tools: Mutex::new(vec![echo_tool()]),
-        notices: Mutex::new(vec!["[context] MCP schema \"big\" rejected".to_owned()]),
-    });
-    let mut agent =
-        new_agent(Arc::clone(&provider), Vec::new()).with_dynamic_tools(Arc::clone(&source) as _);
-    let notices = |events: &[UiEvent]| -> Vec<String> {
-        events
-            .iter()
-            .filter_map(|event| match event {
-                UiEvent::ContextNotice { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    };
-    let (_, events) = run(&mut agent, "first").await;
-    assert_eq!(notices(&events), ["[context] MCP schema \"big\" rejected"]);
-    let (_, events) = run(&mut agent, "second").await;
-    assert!(notices(&events).is_empty());
+async fn an_unknown_tool_without_a_dynamic_source_stays_unsupported() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
+        text_reply("done"),
+    ]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![selector_tool()]);
+    run(&mut agent, "go").await;
+    assert_eq!(
+        last_tool_message(&provider.requests()[1]),
+        ("Unsupported tool: echo", ToolResultStatus::Failure)
+    );
+}
+
+#[tokio::test]
+async fn a_selected_tool_the_source_withdraws_returns_when_it_is_published_again() {
+    let provider = FakeProvider::new(vec![
+        select_reply("select-1", r#"{"select":["echo"]}"#),
+        select_reply("select-2", "{}"),
+        select_reply("select-3", "{}"),
+        select_reply("select-4", r#"{"retire":["echo"]}"#),
+        text_reply("done"),
+    ]);
+    let source = SwitchedTools::publishing(vec![echo_tool()]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![selector_tool()])
+        .with_dynamic_tools(Arc::clone(&source) as _);
+    let gate = Arc::clone(&source);
+    let mut events = Vec::new();
+    let mut steps = 0;
+    agent
+        .run_turn(
+            "go",
+            &mut |event| {
+                if matches!(event, UiEvent::ToolFinished { .. }) {
+                    steps += 1;
+                    match steps {
+                        1 => gate.publish(Vec::new()),
+                        2 => gate.publish(vec![echo_tool()]),
+                        _ => {}
+                    }
+                }
+                events.push(event);
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+    let requests = provider.requests();
+    assert_eq!(tool_names(&requests[1]), ["select"]);
+    assert_eq!(tool_names(&requests[2]), ["select", "echo"]);
+    assert_eq!(tool_names(&requests[3]), ["select", "echo"]);
+    assert_eq!(tool_names(&requests[4]), ["select"]);
 }
 
 struct StreamStartTool {

@@ -12,8 +12,8 @@ use std::time::Duration;
 use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{
-    BoxFuture, DynamicTools, HookRegistrationError, HookView, Notice, NoticeTone, PermissionMode,
-    UiCommand, UiEvent,
+    BoxFuture, HookRegistrationError, HookView, Notice, NoticeTone, PermissionMode, UiCommand,
+    UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
@@ -426,10 +426,6 @@ async fn discover_mcp(mcp: Arc<McpRuntime>, events: UiEventSender) {
         events.send(UiEvent::Notice {
             notice: Notice::new(NoticeTone::Warning, app_mcp_runtime::TOPIC, body),
         });
-    }
-    let _ = mcp.tools();
-    for notice in mcp.take_notices() {
-        warn(notice);
     }
 }
 

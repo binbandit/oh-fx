@@ -182,16 +182,21 @@ async fn work_tools_given_to_a_child_keep_its_modes_projection_and_denials() {
 }
 
 #[tokio::test]
-async fn the_mode_governs_dynamic_tools_as_they_arrive() {
-    let provider = FakeProvider::new(vec![text_reply("Done.")]);
-    let source = Arc::new(SwitchedTools {
-        generation: AtomicUsize::new(1),
-        tools: Mutex::new(vec![echo_tool(), mutate_tool()]),
-        notices: Mutex::new(Vec::new()),
-    });
-    let mut agent = new_agent(Arc::clone(&provider), Vec::new())
+async fn a_read_only_mode_leaves_selected_dynamic_tools_offered() {
+    let provider = FakeProvider::new(vec![
+        select_reply("select-1", r#"{"select":["echo","mutate"]}"#),
+        text_reply("Done."),
+    ]);
+    let source = SwitchedTools::publishing(vec![echo_tool(), mutate_tool()]);
+    let mut agent = new_agent(Arc::clone(&provider), vec![selector_tool()])
         .with_dynamic_tools(Arc::clone(&source) as _)
-        .with_mode(mode("inspect"));
+        .with_mode(ActiveMode {
+            read_only_tool_names: &["select"],
+            ..mode("inspect")
+        });
     run(&mut agent, "go").await;
-    assert_eq!(advertised(&provider.requests()[0]), ["echo"]);
+    assert_eq!(
+        advertised(&provider.requests()[1]),
+        ["select", "echo", "mutate"]
+    );
 }

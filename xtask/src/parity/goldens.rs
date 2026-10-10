@@ -85,6 +85,11 @@ const EXTRACTORS: &[Extractor] = &[
         sources: &[TOOLS_SOURCE, LEXICAL_SOURCE, WRITER_SOURCE],
         extract: capability_search,
     },
+    Extractor {
+        golden: "mcp_select_tool.json",
+        sources: &[TOOLS_SOURCE, WRITER_SOURCE],
+        extract: mcp_select_tool,
+    },
 ];
 
 pub(super) fn run(options: &[&str]) -> Result<(), String> {
@@ -159,6 +164,16 @@ fn capability_search(sources: &Sources) -> Result<String, String> {
         source(sources, TOOLS_SOURCE)?,
         "capability_search",
         &[("lexical_relevance.max_query_bytes", max_query_bytes)],
+        limit,
+    )
+}
+
+fn mcp_select_tool(sources: &Sources) -> Result<String, String> {
+    let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
+    internal_tool::extract(
+        source(sources, TOOLS_SOURCE)?,
+        "mcp_select_tool",
+        &[],
         limit,
     )
 }

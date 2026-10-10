@@ -42,7 +42,6 @@ pub struct ServerSummary {
     pub name: String,
     pub availability: Availability,
     pub tool_count: Option<usize>,
-    pub always_loaded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,9 +128,6 @@ fn entry(server: &ServerSummary) -> String {
     let _ = write!(line, "\" state=\"{}\"", server.availability.as_str());
     if let Some(count) = server.tool_count {
         let _ = write!(line, " tools=\"{count}\"");
-        if server.always_loaded && server.availability == Availability::Ready && count > 0 {
-            line.push_str(" loaded=\"true\"");
-        }
     }
     line.push_str(" />\n");
     line

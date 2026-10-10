@@ -38,6 +38,7 @@ mod streamable_http;
 #[cfg(test)]
 mod test_support;
 mod timing;
+mod tool_mcp_dispatch;
 mod tool_mcp_feature_dispatch;
 mod tool_mcp_registry;
 mod tool_names;
@@ -86,6 +87,7 @@ pub use server_transport::ConnectOptions;
 pub use settings_choices::{ProjectMcpSettingsChange, apply_project_mcp_action_to_entry};
 pub use startup_admission::{StartupDecision, StartupPhase, decide_startup};
 pub use streamable_http::{EndpointError, HeaderError, validate_endpoint, validate_static_headers};
+pub use tool_mcp_dispatch::McpSelectTool;
 pub use tool_mcp_feature_dispatch::McpFeatures;
 pub use transport::ShutdownMode;
 pub use workspace_config::{
