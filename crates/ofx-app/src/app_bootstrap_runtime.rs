@@ -1043,7 +1043,8 @@ pub fn user_agent() -> String {
 mod tests {
     use ofx_auth::ChatGptEndpoints;
     use ofx_contract::{
-        ActiveMode, CapabilityLookup, ModeRegistry, ModeSpec, ModelCapabilities, ToolPolicy,
+        ActiveMode, CapabilityLookup, ImageInputSupport, ModeRegistry, ModeSpec, ModelCapabilities,
+        ToolPolicy,
     };
     use ofx_exec::SessionSupervisor;
     use ofx_gateway::CodexEndpoints;
@@ -1178,6 +1179,7 @@ mod tests {
             resolver.resolve("sized", &cancel).await,
             CapabilityLookup::Resolved(ModelCapabilities {
                 context_window: Some(128_000),
+                image_input_support: ImageInputSupport::NonNative,
                 ..ModelCapabilities::default()
             })
         );
