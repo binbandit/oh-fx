@@ -1,6 +1,7 @@
 use std::fmt;
 use std::net::Ipv6Addr;
 
+use ofx_contract::ImageInputSupport;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -118,6 +119,7 @@ pub(crate) struct ModelMetadata {
     pub(crate) id: String,
     pub(crate) context_window: Option<u32>,
     pub(crate) max_output_tokens: Option<u32>,
+    pub(crate) supports_vision: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -198,6 +200,7 @@ impl ProviderDefinition {
             .map_or_else(Capabilities::default, |metadata| Capabilities {
                 context_window: metadata.context_window,
                 max_output_tokens: metadata.max_output_tokens,
+                image_input_support: ImageInputSupport::from_vision(metadata.supports_vision),
             })
     }
 }
@@ -390,11 +393,12 @@ fn parse_metadata(value: &Value) -> ParseResult<Vec<ModelMetadata>> {
                 return Err(ConfiguredProviderError::InvalidModelMetadata);
             }
             optional_bool(fields.get("supports_tool_use"))?;
-            optional_bool(fields.get("supports_vision"))?;
+            let supports_vision = optional_bool(fields.get("supports_vision"))?;
             Ok(ModelMetadata {
                 id: id.clone(),
                 context_window,
                 max_output_tokens,
+                supports_vision: supports_vision.unwrap_or(false),
             })
         })
         .collect()
@@ -775,9 +779,16 @@ mod tests {
             Capabilities {
                 context_window: Some(8192),
                 max_output_tokens: Some(1024),
+                image_input_support: ImageInputSupport::NonNative,
             }
         );
-        assert_eq!(router.capabilities("unknown"), Capabilities::default());
+        assert_eq!(
+            router.capabilities("unknown"),
+            Capabilities {
+                image_input_support: ImageInputSupport::NonNative,
+                ..Capabilities::default()
+            }
+        );
         assert_eq!(router.capabilities("missing"), Capabilities::default());
         assert!(registry.get("Router").is_none());
     }

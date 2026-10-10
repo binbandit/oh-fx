@@ -313,6 +313,7 @@ mod tests {
                 reasoning_efforts: vec!["high".to_owned()],
                 supports_fast_mode: fast,
                 context_window: Some(window),
+                ..ModelCapabilities::default()
             },
             max_output_tokens: output,
         }

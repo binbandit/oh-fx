@@ -44,7 +44,18 @@ fn windowed_model(id: &str, efforts: &[&str], fast: bool, window: Option<u32>) -
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
             context_window: window,
+            image_input_support: ImageInputSupport::Native,
         },
+    }
+}
+
+fn text_only(model: CodexModel) -> CodexModel {
+    CodexModel {
+        capabilities: ModelCapabilities {
+            image_input_support: ImageInputSupport::NonNative,
+            ..model.capabilities
+        },
+        ..model
     }
 }
 
@@ -75,7 +86,7 @@ fn codex_catalog_parser_keeps_visible_api_models_in_server_order() {
         Some(vec![
             codex_model("gpt-6.1-sol", &["low", "high"], false),
             codex_model("gpt-5.6-luna", &["low", "high"], true),
-            windowed_model("gpt-5.6-terra", &[], false, None),
+            text_only(windowed_model("gpt-5.6-terra", &[], false, None)),
         ])
     );
 }

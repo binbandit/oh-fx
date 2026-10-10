@@ -2900,6 +2900,7 @@ mod capabilities;
 mod compaction;
 mod compaction_trace;
 mod file_evidence;
+mod images;
 mod interrupted_closure;
 mod lifecycle;
 mod malformed_arguments;

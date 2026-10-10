@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+use ofx_testkit::{FakeServer, Reply};
 use serde_json::{Value, json};
 
 const ACCESS_TOKEN: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
@@ -206,4 +207,81 @@ fn non_utf8_codex_models_fail_as_invalid_models_before_an_expired_login_is_refre
         fs::read_to_string(home.credential_file()).expect("read credentials"),
         session
     );
+}
+
+fn codex_servers(modalities: &[&str]) -> (FakeServer, FakeServer) {
+    let model = json!({
+        "slug": "gpt-5.4",
+        "visibility": "list",
+        "supported_in_api": true,
+        "supported_reasoning_levels": [{"effort": "low"}],
+        "input_modalities": modalities,
+    });
+    let events = [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+        json!({"type":"response.output_text.delta","output_index":0,"delta":"a pixel"}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}),
+    ]
+    .map(|event| event.to_string());
+    let catalog = FakeServer::start([
+        Reply::status(200, json!({"version": "0.153.1"}).to_string()),
+        Reply::status(200, json!({"models": [model]}).to_string()),
+    ]);
+    (catalog, FakeServer::start([Reply::sse(&events)]))
+}
+
+fn ask_codex_with_image(home: &Home, catalog: &FakeServer, codex: &FakeServer) -> Output {
+    fs::write(
+        home.root.join("workspace/shot.png"),
+        b"\x89PNG\r\n\x1a\nrest",
+    )
+    .unwrap();
+    let models = format!("{}/backend-api/codex/models", catalog.base_url());
+    let version = format!("{}/@openai/codex/latest", catalog.base_url());
+    let responses = format!("{}/backend-api/codex/responses", codex.base_url());
+    home.ask(
+        &["ask", "--no-save", "--image", "shot.png", "look"],
+        &[
+            ("OH_FX_E2E_OPENAI_CODEX_MODELS_URL", &models),
+            ("OH_FX_E2E_CODEX_VERSION_URL", &version),
+            ("OH_FX_E2E_OPENAI_CODEX_RESPONSES_URL", &responses),
+        ],
+    )
+}
+
+#[test]
+fn codex_asks_send_unsaved_images_as_input_images() {
+    let home = Home::with_settings(Some(&codex_settings()));
+    home.write_credentials(0o600, i64::MAX);
+    let (catalog, codex) = codex_servers(&["text", "image"]);
+
+    let output = ask_codex_with_image(&home, &catalog, &codex);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "a pixel");
+    let requests = codex.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].json()["input"],
+        json!([{"role": "user", "content": [
+            {"type": "input_text", "text": "look"},
+            {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgpyZXN0"},
+        ]}])
+    );
+}
+
+#[test]
+fn codex_asks_refuse_images_for_a_model_without_image_input() {
+    let home = Home::with_settings(Some(&codex_settings()));
+    home.write_credentials(0o600, i64::MAX);
+    let (catalog, codex) = codex_servers(&["text"]);
+
+    let output = ask_codex_with_image(&home, &catalog, &codex);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "oh-fx: SubscriptionNativeImageUnavailable\n"
+    );
+    assert!(codex.requests().is_empty());
 }
