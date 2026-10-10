@@ -20,8 +20,8 @@ pub use command_args::{OutputFormat, SessionListArgs, WorkspaceAction, Workspace
 pub(crate) use failure::Report;
 pub use failure::{CliError, command_failure_json};
 pub use launch_modifiers::LaunchModifiers;
-pub use model_overrides::ULTRAFAST_ARG;
 pub(crate) use model_overrides::{ModelOverride, ModelOverrides};
+pub use model_overrides::{NO_ULTRAFAST_ARG, ULTRAFAST_ARG};
 
 use launch_modifiers::parse_launch_modifiers;
 use resume::{

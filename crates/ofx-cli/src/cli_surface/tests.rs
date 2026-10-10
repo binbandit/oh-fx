@@ -288,12 +288,14 @@ fn an_upgrade_relaunch_restores_the_launch_flags_it_carries() {
         launch.context_limit_overrides()
     );
     assert_eq!(resumed.model(), None);
-    let Ok(Invocation::Resume(ultra, _)) =
-        parse(&[ULTRAFAST_ARG, "resume", "session-123", UPGRADE_RELAUNCH_ARG])
-    else {
-        panic!("an Ultra relaunch resumes the session");
-    };
-    assert_eq!(ultra.ultrafast_mode(), Some(true));
+    for (flag, choice) in [(ULTRAFAST_ARG, true), (NO_ULTRAFAST_ARG, false)] {
+        let Ok(Invocation::Resume(ultra, _)) =
+            parse(&[flag, "resume", "session-123", UPGRADE_RELAUNCH_ARG])
+        else {
+            panic!("an Ultra relaunch resumes the session");
+        };
+        assert_eq!(ultra.ultrafast_mode(), Some(choice));
+    }
 }
 
 #[test]

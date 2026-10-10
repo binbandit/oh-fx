@@ -1639,10 +1639,7 @@ fn a_fresh_session_after_a_pick_saves_the_preferences_it_runs_with() {
     }
 }
 
-#[test]
-fn an_ultra_request_saved_with_the_session_comes_back_until_turned_off() {
-    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
-    let home = Home::new(&server.base_url());
+fn session_saved_with_an_ultra_request(home: &Home) -> String {
     let session = home.shell(&[], WELCOME);
     session.send(b"first\r");
     wait(&session, "Ready.");
@@ -1658,6 +1655,14 @@ fn an_ultra_request_saved_with_the_session_comes_back_until_turned_off() {
         ),
     )
     .expect("save an Ultra request as fx does");
+    id
+}
+
+#[test]
+fn an_ultra_request_saved_with_the_session_comes_back_until_turned_off() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let id = session_saved_with_an_ultra_request(&home);
 
     let session = home.shell(&["-c"], "session resumed: first");
     session.send(b"/ultrafast\r");
@@ -1671,6 +1676,25 @@ fn an_ultra_request_saved_with_the_session_comes_back_until_turned_off() {
     session.send(b"/ultrafast\r");
     wait(&session, "requested: off");
     exit(session);
+}
+
+#[test]
+fn an_upgrade_relaunch_of_a_no_ultrafast_launch_keeps_the_saved_request_off() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Ready."]))]);
+    let home = Home::new(&server.base_url());
+    let id = session_saved_with_an_ultra_request(&home);
+
+    let relaunch = [
+        "--no-ultrafast",
+        "resume",
+        id.as_str(),
+        "--upgrade-relaunch",
+    ];
+    let session = home.shell(&relaunch, "session resumed: first");
+    session.send(b"/ultrafast\r");
+    wait(&session, "requested: off");
+    exit(session);
+    assert_eq!(home.metadata(&id)["ultrafast_mode"], true);
 }
 
 #[test]

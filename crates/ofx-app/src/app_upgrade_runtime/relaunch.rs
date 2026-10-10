@@ -6,13 +6,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_cli::{ULTRAFAST_ARG, UPGRADE_RELAUNCH_ARG};
+use ofx_cli::{NO_ULTRAFAST_ARG, ULTRAFAST_ARG, UPGRADE_RELAUNCH_ARG};
 
 #[derive(Debug)]
 struct Plan {
     executable: PathBuf,
-    ultrafast: bool,
     session_id: Option<String>,
+    ultrafast: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -29,17 +29,18 @@ impl Relaunch {
         }
     }
 
-    pub(crate) fn request(&self, executable: PathBuf, ultrafast: bool) {
+    pub(crate) fn request(&self, executable: PathBuf) {
         *self.plan() = Some(Plan {
             executable,
-            ultrafast,
             session_id: None,
+            ultrafast: None,
         });
     }
 
-    pub(crate) fn hand_off(&self, session_id: &str) {
+    pub(crate) fn hand_off(&self, session_id: &str, ultrafast: Option<bool>) {
         if let Some(plan) = self.plan().as_mut() {
             plan.session_id = Some(session_id.to_owned());
+            plan.ultrafast = ultrafast;
         }
     }
 
@@ -59,8 +60,12 @@ impl Relaunch {
         };
         let mut command = Command::new(plan.executable);
         command.args(self.launch.iter());
-        if plan.ultrafast {
-            command.arg(ULTRAFAST_ARG);
+        if let Some(enabled) = plan.ultrafast {
+            command.arg(if enabled {
+                ULTRAFAST_ARG
+            } else {
+                NO_ULTRAFAST_ARG
+            });
         }
         command.args(["resume", &session_id, UPGRADE_RELAUNCH_ARG]);
         let error = exec(&mut command);
@@ -117,8 +122,8 @@ mod tests {
     #[test]
     fn a_relaunch_resumes_the_handed_off_session_and_explains_a_failed_exec() {
         let relaunch = Relaunch::default();
-        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"), false);
-        relaunch.hand_off("session-123");
+        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"));
+        relaunch.hand_off("session-123", None);
         let mut argv = Vec::new();
         let failure = relaunch.run_with(exec_into(&mut argv)).unwrap_err();
         assert_eq!(
@@ -152,8 +157,8 @@ mod tests {
             .map(OsString::from)
             .to_vec(),
         );
-        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"), false);
-        relaunch.hand_off("session-123");
+        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"));
+        relaunch.hand_off("session-123", None);
         let mut argv = Vec::new();
         let _ = relaunch.run_with(exec_into(&mut argv));
         assert_eq!(
@@ -173,31 +178,33 @@ mod tests {
     }
 
     #[test]
-    fn a_relaunch_keeps_a_requested_ultra_mode() {
-        let relaunch =
-            Relaunch::carrying(["--add-dir", "/tmp/cli-only"].map(OsString::from).to_vec());
-        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"), true);
-        relaunch.hand_off("session-123");
-        let mut argv = Vec::new();
-        let _ = relaunch.run_with(exec_into(&mut argv));
-        assert_eq!(
-            argv,
-            [
-                "/tmp/oh-fx-upgraded",
-                "--add-dir",
-                "/tmp/cli-only",
-                "--ultrafast",
-                "resume",
-                "session-123",
-                "--upgrade-relaunch"
-            ]
-        );
+    fn a_relaunch_keeps_the_ultra_choice_the_shell_made() {
+        for (choice, flag) in [(Some(true), "--ultrafast"), (Some(false), "--no-ultrafast")] {
+            let relaunch =
+                Relaunch::carrying(["--add-dir", "/tmp/cli-only"].map(OsString::from).to_vec());
+            relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"));
+            relaunch.hand_off("session-123", choice);
+            let mut argv = Vec::new();
+            let _ = relaunch.run_with(exec_into(&mut argv));
+            assert_eq!(
+                argv,
+                [
+                    "/tmp/oh-fx-upgraded",
+                    "--add-dir",
+                    "/tmp/cli-only",
+                    flag,
+                    "resume",
+                    "session-123",
+                    "--upgrade-relaunch"
+                ]
+            );
+        }
     }
 
     #[test]
     fn a_relaunch_never_runs_without_a_validated_handoff() {
         let relaunch = Relaunch::default();
-        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"), false);
+        relaunch.request(PathBuf::from("/tmp/oh-fx-upgraded"));
         let mut argv = Vec::new();
         let failure = relaunch.run_with(exec_into(&mut argv)).unwrap_err();
         assert!(argv.is_empty());
@@ -210,7 +217,7 @@ mod tests {
     #[test]
     fn a_handoff_alone_relaunches_nothing() {
         let relaunch = Relaunch::default();
-        relaunch.hand_off("session-123");
+        relaunch.hand_off("session-123", None);
         let mut argv = Vec::new();
         assert!(relaunch.run_with(exec_into(&mut argv)).is_ok());
         assert!(argv.is_empty());

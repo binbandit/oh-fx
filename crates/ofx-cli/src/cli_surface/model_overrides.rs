@@ -7,6 +7,7 @@ use super::arg_stream::{ArgStream, MissingValue, ValueForm, merge_toggle, non_bl
 use super::launch_modifiers::GlobalLaunchError;
 
 pub const ULTRAFAST_ARG: &str = "--ultrafast";
+pub const NO_ULTRAFAST_ARG: &str = "--no-ultrafast";
 
 pub(crate) enum ModelOverride {
     Model(OsString),
@@ -43,7 +44,7 @@ impl ModelOverrides {
             if enabled {
                 self.ultrafast = Some(false);
             }
-        } else if let Some(enabled) = args.take_toggle(ULTRAFAST_ARG, "--no-ultrafast") {
+        } else if let Some(enabled) = args.take_toggle(ULTRAFAST_ARG, NO_ULTRAFAST_ARG) {
             let ultrafast = merge_toggle(
                 self.ultrafast,
                 enabled,

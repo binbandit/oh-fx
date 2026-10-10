@@ -276,7 +276,7 @@ impl Persistence {
             match self.relaunch.take() {
                 Some(relaunch) => {
                     if live.session().require_writable().is_ok() {
-                        relaunch.hand_off(live.id());
+                        relaunch.hand_off(live.id(), self.overrides.ultrafast_mode);
                     }
                 }
                 None if !live.titled() => {

@@ -49,21 +49,14 @@ impl UpgradeShortcut {
         &self,
         handoff: Option<&mut dyn ResumeHandoff>,
         emit: &dyn Fn(UiEvent),
-        ultrafast_requested: bool,
     ) -> bool {
-        self.apply_with(
-            handoff,
-            emit,
-            ultrafast_requested,
-            ofx_upgrade::installed_executable,
-        )
+        self.apply_with(handoff, emit, ofx_upgrade::installed_executable)
     }
 
     fn apply_with(
         &self,
         handoff: Option<&mut dyn ResumeHandoff>,
         emit: &dyn Fn(UiEvent),
-        ultrafast_requested: bool,
         executable: impl FnOnce() -> Result<PathBuf, UpgradeError>,
     ) -> bool {
         let notice = |tone, body: String| {
@@ -106,7 +99,7 @@ impl UpgradeShortcut {
                 return false;
             }
         };
-        self.relaunch.request(executable, ultrafast_requested);
+        self.relaunch.request(executable);
         handoff.request_resume_handoff(self.relaunch.clone());
         emit(UiEvent::ExitRequested);
         true
