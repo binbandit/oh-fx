@@ -18,9 +18,9 @@ note = "Symbolic branch and gitdir/worktree metadata reads, absent detached/malf
 
 [[file]]
 upstream = "src/core/workspace/diagnostics.zig"
-status = "todo"
-modules = []
-note = "Trace-report network/tool/render/compactor diagnostic aggregation are unimplemented."
+status = "partial"
+modules = ["crates/ofx-trace/src/ring.rs", "crates/ofx-agent/src/compactor/trace.rs"]
+note = "The bounded ring the diagnostic rings share and the compaction snapshot and session reset exist; the network, tool-call, render and model-catalog rings and their lifetime statistics are unimplemented."
 
 [[file]]
 upstream = "src/core/workspace/directory_completion_job.zig"
