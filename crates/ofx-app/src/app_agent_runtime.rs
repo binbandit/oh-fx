@@ -1617,9 +1617,10 @@ mod tests {
 
     use ofx_config::{PrivateDir, ProfilePaths, Settings};
     use ofx_contract::{
-        ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, PermissionMode,
-        ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus, StatuslineItem,
-        StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
+        ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
+        PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus,
+        StatuslineItem, StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
+        TurnPresentationOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -1649,6 +1650,32 @@ mod tests {
         seen: Vec<UiEvent>,
         clipboard: Arc<TestClipboard>,
         worker: Arc<WorkerRuntime>,
+    }
+
+    fn saved_persistence(
+        home: &tempfile::TempDir,
+        setup: &AgentSetup,
+        launch_ultrafast: Option<bool>,
+    ) -> Persistence {
+        let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
+        let store = SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap())
+            .unwrap()
+            .with_fx_home(home.path().to_path_buf());
+        let route = session_route(setup).unwrap();
+        let preferences = SessionPreferences {
+            provider: route.provider.clone(),
+            model: setup.configured_model().to_owned(),
+            effort: ReasoningEffort::Auto,
+            fast_mode: false,
+            ultrafast_mode: false,
+        };
+        let overrides = LaunchOverrides {
+            model: None,
+            effort: None,
+            fast_mode: None,
+            ultrafast_mode: launch_ultrafast,
+        };
+        Persistence::new(store, route, preferences, overrides, None)
     }
 
     #[derive(Default)]
@@ -1882,27 +1909,35 @@ mod tests {
             upgrade: UpgradeShortcut,
             launch_ultrafast: Option<bool>,
         ) -> Self {
-            let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
-            let store = SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap())
-                .unwrap()
-                .with_fx_home(home.path().to_path_buf());
-            let route = session_route(&setup).unwrap();
-            let preferences = SessionPreferences {
-                provider: route.provider.clone(),
-                model: setup.configured_model().to_owned(),
-                effort: ReasoningEffort::Auto,
-                fast_mode: false,
-                ultrafast_mode: false,
-            };
-            let overrides = LaunchOverrides {
-                model: None,
-                effort: None,
-                fast_mode: None,
-                ultrafast_mode: launch_ultrafast,
-            };
-            let persistence = Persistence::new(store, route, preferences, overrides, None);
+            let persistence = saved_persistence(&home, &setup, launch_ultrafast);
             let requested = launch_ultrafast == Some(true);
             Self::spawn(home, setup, Some(persistence), upgrade, requested)
+        }
+
+        async fn start_saved_with_hooks(server: &FakeServer, hooks: HookView) -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let setup = agent_setup(&home, server).await;
+            let persistence = saved_persistence(&home, &setup, None);
+            setup.attach_hooks(hooks.clone());
+            let (events_sender, events) = unbounded_channel();
+            let emit: Emit = Arc::new(move |event| {
+                let _ = events_sender.send(event);
+            });
+            let (commands, receiver) = unbounded_channel();
+            let worker = Arc::new(WorkerRuntime::default());
+            tokio::spawn(
+                Controller::new(setup, emit, Some(persistence), false, Arc::clone(&worker))
+                    .with_lifecycle(None, hooks)
+                    .run(receiver),
+            );
+            Self {
+                home,
+                commands,
+                events,
+                seen: Vec::new(),
+                clipboard: Arc::new(TestClipboard::default()),
+                worker,
+            }
         }
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
@@ -7771,6 +7806,47 @@ mod tests {
                 .iter()
                 .any(|tool| tool["function"]["name"] == "subagent");
             assert_eq!(offered, saved);
+        }
+    }
+
+    #[tokio::test]
+    async fn children_dispatch_post_turn_end_with_the_subagent_scope() {
+        let server = FakeServer::start([
+            delegate("read the notes"),
+            Reply::sse(&chat_text_events(&["child done"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let scopes = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&scopes);
+        let mut hooks = HookRuntime::default();
+        hooks
+            .register_post_turn_end("test.turn_end", move |input| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((input.invocation.scope, input.outcome));
+            })
+            .unwrap();
+        let mut harness = Harness::start_saved_with_hooks(&server, hooks.freeze()).await;
+        harness.submit("delegate the reading");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let ended = timeout(Duration::from_secs(10), async {
+            loop {
+                let seen = scopes.lock().unwrap().clone();
+                if seen.len() >= 2 {
+                    return seen;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(ended.len(), 2, "{ended:?}");
+        for scope in [HookScope::Subagent, HookScope::Interactive] {
+            assert!(
+                ended.contains(&(scope, TurnPresentationOutcome::Completed)),
+                "{ended:?}"
+            );
         }
     }
 

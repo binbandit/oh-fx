@@ -286,6 +286,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     }
     let lifecycle = Herdr::from_env().map(Arc::new);
     let hooks = hooks::configure(lifecycle.as_ref()).map_err(SessionError::Hooks)?;
+    session.setup.attach_hooks(hooks.clone());
     let upgrade = InteractiveUpgrade::start(
         sender.clone(),
         session.relaunch_args,
