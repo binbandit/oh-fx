@@ -73,6 +73,7 @@ impl Home {
             .env("SHELL", "/bin/sh")
             .env("TERM", "xterm-256color")
             .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("OH_FX_TRACE_LOG", self.root.join("trace.log"))
             .env(KEY.0, KEY.1);
         PtySession::spawn(command, 40, 200).expect("spawn oh-fx in a pty")
     }
@@ -175,6 +176,28 @@ fn a_denied_prompt_reaches_the_model_and_the_turn_goes_on() {
             "{answer:?}"
         );
     }
+}
+
+#[test]
+fn a_denied_prompt_writes_the_users_denial_to_the_trace() {
+    let home = Home::new();
+    let server = FakeServer::start([
+        Reply::sse(&home.read_call()),
+        Reply::sse(&chat_text_events(&["Understood."])),
+    ]);
+    home.configure(&server, "ask");
+    let mut session = home.spawn(&["ask", "read it"]);
+    wait(&session, "Approve? [y/N]");
+    session.send(b"n\r");
+    wait(&session, "Understood.");
+    assert_eq!(finishes(&mut session), 0);
+    let log = fs::read_to_string(home.root.join("trace.log")).expect("read the trace log");
+    let denied = format!(
+        " [tool] event=execution_result turn_id=1 step_id=1 call_id=call_1 name=read_file result_kind=permission_denied reason=user_denied model_output_bytes={}\n",
+        DENIED.len()
+    );
+    assert!(log.contains(&denied), "{denied}\n{log}");
+    assert!(!log.contains("event=execution_start"), "{log}");
 }
 
 #[test]

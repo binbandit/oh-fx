@@ -55,6 +55,15 @@ impl Home {
         path
     }
 
+    fn traced_results(&self) -> Vec<String> {
+        fs::read_to_string(self.path("trace.log"))
+            .expect("read the trace log")
+            .lines()
+            .filter_map(|line| line.split_once(" [tool] event=execution_result "))
+            .map(|(_, result)| result.to_owned())
+            .collect()
+    }
+
     fn ask(&self, workspace: &str, args: &[&str]) -> Output {
         let workspace = self.path(workspace);
         fs::create_dir_all(&workspace).expect("create the workspace");
@@ -69,6 +78,7 @@ impl Home {
             .env("XDG_CACHE_HOME", self.path("cache"))
             .env("SHELL", "/bin/sh")
             .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("OH_FX_TRACE_LOG", self.path("trace.log"))
             .envs(KEY)
             .stdin(Stdio::null())
             .output()
@@ -479,6 +489,14 @@ fn tool_targets_add_scoped_rules_and_a_lone_write_waits_for_them() {
         fs::read_to_string(home.path("work/deep/new.txt")).unwrap(),
         "hello\n"
     );
+    assert!(
+        home.traced_results().contains(&format!(
+            "turn_id=1 step_id=2 call_id=call_2 name=write_file result_kind=context_deferred model_output_bytes={}",
+            DEFERRED.len()
+        )),
+        "{:?}",
+        home.traced_results()
+    );
 }
 
 #[test]
@@ -661,6 +679,11 @@ fn calls_whose_targets_appear_earlier_in_the_batch_are_not_executed() {
     assert_eq!(
         fs::read_to_string(home.path("work/n/new.txt")).unwrap(),
         "hi\n"
+    );
+    assert!(
+        home.traced_results().contains(&"turn_id=1 step_id=1 call_id=call_2 name=read_file result_kind=applicable_targets_changed model_output_bytes=12".to_owned()),
+        "{:?}",
+        home.traced_results()
     );
 }
 

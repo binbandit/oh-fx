@@ -63,6 +63,7 @@ mod paused;
 mod project_gate;
 mod provider_tools;
 mod recovery;
+mod rejection_trace;
 mod response_language;
 mod steering;
 mod turn_ledger;
@@ -81,6 +82,7 @@ use provider_tools::{
     may_run_at_provider, provider_executed,
 };
 use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted};
+use rejection_trace::{Denial, Refused};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -1620,6 +1622,7 @@ impl Agent {
                         turn.raw_outputs
                             .push(partial_view(call.id.clone(), output.len()));
                         self.settle_unexecuted(turn.id, call, description, output, events);
+                        rejection_trace::not_executed(turn.trace, call, output);
                         next += 1;
                         continue;
                     }
@@ -2027,6 +2030,7 @@ impl Agent {
         {
             return Err(Rejection {
                 reason: ToolRejection::Invalid,
+                refused: Refused::Validation,
                 description: None,
                 output: Box::new(output),
             });
@@ -2041,6 +2045,7 @@ impl Agent {
             }
             return Err(Rejection {
                 reason: ToolRejection::Unsupported,
+                refused: Refused::Availability,
                 description: None,
                 output: Box::new(ToolOutput::failure(format!(
                     "Unsupported tool: {}",
@@ -2052,6 +2057,7 @@ impl Agent {
             Some(Ok(prepared)) => Ok(prepared),
             Some(Err(output)) => Err(Rejection {
                 reason: ToolRejection::Invalid,
+                refused: Refused::Validation,
                 description: None,
                 output: Box::new(output),
             }),
@@ -2226,23 +2232,27 @@ fn prepared_for_history(
     hooked: ToolPreparation,
 ) -> (ToolCall, Option<Rejection>) {
     if let Some(output) = malformed {
+        let rejection = Rejection {
+            reason: ToolRejection::MalformedArguments,
+            refused: Refused::Malformed(ToolArgumentIntegrity::classify_function_input(
+                &call.arguments,
+            )),
+            description: None,
+            output: Box::new(output),
+        };
         let call = ToolCall {
             arguments: REPLAYED_MALFORMED_ARGUMENTS.to_owned(),
             ..call
-        };
-        let rejection = Rejection {
-            reason: ToolRejection::MalformedArguments,
-            description: None,
-            output: Box::new(output),
         };
         return (call, Some(rejection));
     }
     match hooked {
         ToolPreparation::Unchanged => (call, None),
         ToolPreparation::Rewritten(arguments) => (ToolCall { arguments, ..call }, None),
-        ToolPreparation::Blocked(content) => {
+        ToolPreparation::Blocked(content, block) => {
             let rejection = Rejection {
                 reason: ToolRejection::Invalid,
+                refused: Refused::Hook(block),
                 description: None,
                 output: Box::new(ToolOutput::failure(content)),
             };
@@ -2355,6 +2365,7 @@ fn recovered_status(attempt: usize) -> RouteRecoveryStatus {
 
 struct Rejection {
     reason: ToolRejection,
+    refused: Refused,
     description: Option<Box<CallDescription>>,
     output: Box<ToolOutput>,
 }
@@ -2363,6 +2374,7 @@ impl Rejection {
     fn not_selected(tool_name: &str) -> Self {
         Self {
             reason: ToolRejection::Invalid,
+            refused: Refused::Availability,
             description: Some(Box::new(CallDescription {
                 title: format_unknown_action(tool_name),
                 label: None,
@@ -2377,6 +2389,7 @@ impl Rejection {
     fn panicked(tool_name: &str) -> Self {
         Self {
             reason: ToolRejection::Panicked,
+            refused: Refused::Panicked,
             description: None,
             output: Box::new(panicked(tool_name)),
         }
@@ -2404,6 +2417,7 @@ fn inspected(prepared: Box<dyn PreparedCall>, tool_name: &str) -> Prepared {
         discard(prepared);
         return Prepared::Rejected(Rejection {
             reason: ToolRejection::Invalid,
+            refused: Refused::Validation,
             description: Some(Box::new(description)),
             output: Box::new(output),
         });
@@ -2456,21 +2470,21 @@ impl Prepared {
     fn parallel_group(&self) -> Option<ParallelGroup> {
         match self {
             Self::Ready(_, description, ..) => parallel_group(description),
-            Self::Rejected(_) => None,
+            Self::Rejected(..) => None,
         }
     }
 
     fn complete(self, tool_name: &str) -> Self {
         match self {
             Self::Ready(prepared, ..) => completed(prepared, tool_name),
-            rejected @ Self::Rejected(_) => rejected,
+            rejected @ Self::Rejected(..) => rejected,
         }
     }
 }
 
 enum Dispatched {
-    Rejected(ToolOutput, ToolRejection),
-    Held(ToolOutput, bool),
+    Rejected(ToolOutput, ToolRejection, Refused),
+    Held(ToolOutput, Denial),
     Admitted(Box<dyn PreparedCall>, ToolContext),
     Running(JoinHandle<Finished>, i64),
     Unstarted,
@@ -2560,7 +2574,7 @@ struct Reviewing<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Verdict {
     Run(PathAccess),
-    Held(String),
+    Held(String, Denial),
     Denied,
     Blocked,
     Interrupted,
@@ -2662,21 +2676,21 @@ async fn judge(
                 ReviewVerdict::Clear => {
                     Verdict::Run(gate.permissions.approval_scope(judged.action).access)
                 }
-                ReviewVerdict::Caution(advice) => Verdict::Held(tool_review_held_json(
-                    &call.name,
-                    ReviewHold::Caution(&advice),
-                )),
+                ReviewVerdict::Caution(advice) => Verdict::Held(
+                    tool_review_held_json(&call.name, ReviewHold::Caution(&advice)),
+                    Denial::ReviewCaution,
+                ),
                 _ if gate.approvals.is_some() && gate.reviews_fall_back_to_approval => {
                     return ask_approval(gate, turn_id, &judged, events, cancel).await;
                 }
-                ReviewVerdict::EvidenceIncomplete => Verdict::Held(tool_review_held_json(
-                    &call.name,
-                    ReviewHold::EvidenceIncomplete,
-                )),
-                ReviewVerdict::Unavailable(failure) => Verdict::Held(tool_review_held_json(
-                    &call.name,
-                    ReviewHold::Unavailable(failure),
-                )),
+                ReviewVerdict::EvidenceIncomplete => Verdict::Held(
+                    tool_review_held_json(&call.name, ReviewHold::EvidenceIncomplete),
+                    Denial::ReviewEvidenceIncomplete,
+                ),
+                ReviewVerdict::Unavailable(failure) => Verdict::Held(
+                    tool_review_held_json(&call.name, ReviewHold::Unavailable(failure)),
+                    Denial::ReviewUnavailable,
+                ),
             }
         }
     };
@@ -2868,11 +2882,13 @@ async fn run_group<'c>(
         match prepared {
             Prepared::Rejected(Rejection {
                 reason,
+                refused,
                 description,
                 output,
             }) => {
                 events(tool_rejected(turn_id, call, reason, description, &output));
-                dispatched.push((call, Dispatched::Rejected(*output, reason), None));
+                let rejected = Dispatched::Rejected(*output, reason, refused);
+                dispatched.push((call, rejected, None));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
@@ -2914,7 +2930,7 @@ async fn run_group<'c>(
                 if !silent {
                     events(tool_started(turn_id, call, description));
                 }
-                let (held, review_hold) = match verdict {
+                let (held, denial) = match verdict {
                     Verdict::Run(path_access) => {
                         let delegation = delegates.then_some(&statuses);
                         let context =
@@ -2922,8 +2938,8 @@ async fn run_group<'c>(
                         dispatched.push((call, Dispatched::Admitted(prepared, context), feedback));
                         continue;
                     }
-                    Verdict::Held(output) => (output, true),
-                    Verdict::Denied => (tool_permission_denied_json(&call.name), false),
+                    Verdict::Held(output, denial) => (output, denial),
+                    Verdict::Denied => (tool_permission_denied_json(&call.name), Denial::User),
                     Verdict::Blocked | Verdict::Interrupted => {
                         if shown_while_reviewed {
                             events(tool_finished(turn_id, call, None));
@@ -2936,7 +2952,7 @@ async fn run_group<'c>(
                 discard(prepared);
                 dispatched.push((
                     call,
-                    Dispatched::Held(ToolOutput::failure(held), review_hold),
+                    Dispatched::Held(ToolOutput::failure(held), denial),
                     feedback,
                 ));
             }
@@ -2983,7 +2999,8 @@ async fn settle_group<'c>(
     for (call, dispatched, feedback) in dispatched {
         let mut ran = None;
         let (output, escalates, executed, review_hold) = match dispatched {
-            Dispatched::Rejected(output, reason) => {
+            Dispatched::Rejected(output, reason, refused) => {
+                rejection_trace::rejected(trace, call, refused, output.content.len());
                 report_context_notices(turn_id, &output, events);
                 (
                     Some(output),
@@ -2992,9 +3009,10 @@ async fn settle_group<'c>(
                     false,
                 )
             }
-            Dispatched::Held(output, review_hold) => {
+            Dispatched::Held(output, denial) => {
+                rejection_trace::denied(trace, call, denial, output.content.len());
                 events(tool_finished(turn_id, call, Some(&output)));
-                (Some(output), true, false, review_hold)
+                (Some(output), true, false, denial != Denial::User)
             }
             Dispatched::Running(mut task, started_at_ms) => {
                 let settling = settle(call, &mut task, (cancel, &finishes), &mut grace);
