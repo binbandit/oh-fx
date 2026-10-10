@@ -1,4 +1,4 @@
-use ofx_contract::FileChangeStats;
+use ofx_contract::{FileChangeStats, SavedFileChange};
 use serde::Serialize;
 
 use super::{MAX_TEXT_BYTES, WireTag, is_valid_identity, is_valid_path, wire_tag};
@@ -61,9 +61,12 @@ pub(crate) struct CommittedFilePresentation {
 }
 
 impl CommittedFilePresentation {
-    pub(crate) fn stats(&self) -> FileChangeStats {
+    pub(crate) fn saved_change(&self) -> SavedFileChange {
         let count = |lines: u64| usize::try_from(lines).unwrap_or(usize::MAX);
-        FileChangeStats::from_lines(count(self.additions), count(self.deletions))
+        SavedFileChange {
+            path: self.path.clone(),
+            stats: FileChangeStats::from_lines(count(self.additions), count(self.deletions)),
+        }
     }
 
     pub(crate) fn is_valid(&self) -> bool {

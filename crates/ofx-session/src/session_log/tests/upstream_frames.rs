@@ -1,4 +1,4 @@
-use ofx_contract::{ChatMessage, FileChangeStats, ToolCallId};
+use ofx_contract::{ChatMessage, FileChangeStats, SavedFileChange, ToolCallId};
 
 use super::*;
 use crate::history_snapshot::{HISTORY_CACHE_FILE, HistoryCache};
@@ -185,11 +185,15 @@ fn a_session_holding_upstream_file_presentations_resumes_and_keeps_them() {
             _ => None,
         })
         .collect();
+    let saved = |path: &str, additions, deletions| SavedFileChange {
+        path: path.to_owned(),
+        stats: FileChangeStats::from_lines(additions, deletions),
+    };
     assert_eq!(
         changes,
         [
-            Some(FileChangeStats::from_lines(2, 1)),
-            Some(FileChangeStats::from_lines(1, 0)),
+            Some(saved("src/lib.rs", 2, 1)),
+            Some(saved("notes.md", 1, 0))
         ]
     );
 

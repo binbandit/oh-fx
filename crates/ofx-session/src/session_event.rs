@@ -5,7 +5,7 @@ mod history_codec;
 use ofx_config::EMERGENCY_CEILING_BYTES;
 pub(crate) use ofx_contract::FileEvidenceAction;
 use ofx_contract::{
-    CommandProcessPresentation, FileChangeStats, ProviderReplay, ReplaySource,
+    CommandProcessPresentation, ProviderReplay, ReplaySource, SavedFileChange,
     ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultStatus, TurnSummary,
 };
 use serde::Serialize;
@@ -225,10 +225,10 @@ impl ToolResultEvent {
         }
     }
 
-    pub fn file_change(&self) -> Option<FileChangeStats> {
+    pub fn file_change(&self) -> Option<SavedFileChange> {
         self.committed_file_presentation
             .as_deref()
-            .map(CommittedFilePresentation::stats)
+            .map(CommittedFilePresentation::saved_change)
     }
 }
 
