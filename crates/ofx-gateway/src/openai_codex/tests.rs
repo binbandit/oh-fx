@@ -7,7 +7,7 @@ use ofx_testkit::{FakeServer, Gate, Reply};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::test_sources::Paced;
+use crate::test_sources::{CapturedImages, Paced, user_with_images};
 
 struct Chunks(VecDeque<Vec<u8>>);
 
@@ -366,6 +366,54 @@ async fn a_live_stream_that_reencrypts_reasoning_replays_the_streamed_copy() {
         .cloned()
         .collect();
     assert_eq!(replayed, [streamed]);
+}
+
+#[tokio::test]
+async fn openai_codex_sends_verified_user_images_as_input_images() {
+    let images = CapturedImages::new();
+    let image = images.capture(1, "shot.png", b"\x89PNG\r\n\x1a\nA");
+    let messages = [user_with_images("look", vec![image.clone()])];
+    let body = build(&messages, &[None]).unwrap();
+    assert!(
+        body.contains(concat!(
+            r#","input":[{"role":"user","content":[{"type":"input_text","text":"look"},"#,
+            r#"{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,iVBORw0KGgpB"}]}],"#,
+        )),
+        "{body}"
+    );
+    let events = [
+        r#"{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"a pixel"}"#,
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+    ];
+    let server = FakeServer::start([Reply::sse(&events)]);
+    let codex = CodexProvider::new(
+        CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+        Arc::new(NoRefresh),
+        "oh-fx/test",
+        CodexEndpoints {
+            responses: format!("{}/backend-api/codex/responses", server.base_url()),
+        },
+    )
+    .unwrap();
+    let cancel = CancellationToken::new();
+    let mut sink = |_: StreamEvent| {};
+    codex
+        .stream(&request(&messages, &[], &[]), &mut sink, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(server.requests()[0].body_text(), body);
+    std::fs::write(
+        image.snapshot_path.as_deref().unwrap(),
+        b"\x89PNG\r\n\x1a\nB",
+    )
+    .unwrap();
+    let error = codex
+        .stream(&request(&messages, &[], &[]), &mut sink, &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Protocol);
+    assert_eq!(error.code, "ImageSnapshotCorrupt");
+    assert_eq!(server.requests().len(), 1);
 }
 
 #[tokio::test]

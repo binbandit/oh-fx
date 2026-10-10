@@ -1744,3 +1744,5 @@ fn reasoning_byte_accounting_matches_serialized_json_lengths() {
     let parsed = parse_strict_json(text.as_bytes(), DuplicateKeys::BeforeValue).unwrap();
     assert_eq!(encoded_json_len(&parsed), text.len());
 }
+
+mod images;

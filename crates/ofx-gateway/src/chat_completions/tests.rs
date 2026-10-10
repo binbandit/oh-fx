@@ -6,7 +6,7 @@ use ofx_testkit::{FakeServer, Gate, RefusedPort, Reply, chat_text_events};
 
 use super::*;
 use crate::chat_completions_protocol::Selection;
-use crate::test_sources::Paced;
+use crate::test_sources::{CapturedImages, Paced, user_with_images};
 
 const TEST_STOP: &str = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
 const TEST_TEXT: &str = r#"{"id":"chat-1","model":"resolved-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#;
@@ -568,6 +568,45 @@ async fn portkey_connections_send_configured_headers_and_the_exact_body() {
         r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},{"role":"user","content":"hi"}]}"#
     );
     assert_eq!(measured.as_deref(), Some(&*request.body_text()));
+}
+
+#[tokio::test]
+async fn portkey_connections_send_user_images_as_upstream_content_parts() {
+    let images = CapturedImages::new();
+    let image = images.capture(1, "shot.png", b"\x89PNG\r\n\x1a\nA");
+    let request = OwnedRequest {
+        messages: vec![user_with_images("what is this", vec![image.clone()])],
+        ..test_request()
+    };
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["a pixel"]))]);
+    let provider = portkey(&server);
+    let measured = provider.request_body(&request.borrowed());
+    let (outcome, text) = stream_text(&provider, &request).await;
+    assert_eq!(outcome.unwrap().content.as_deref(), Some("a pixel"));
+    assert_eq!(text, "a pixel");
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].body_text(),
+        concat!(
+            r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"#,
+            r#""messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},"#,
+            r#"{"role":"user","content":[{"type":"text","text":"what is this"},"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgpB"}}]}]}"#,
+        )
+    );
+    assert_eq!(measured.as_deref(), Some(&*requests[0].body_text()));
+    std::fs::remove_file(image.snapshot_path.as_deref().unwrap()).unwrap();
+    let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| events.push(event);
+    let error = provider
+        .stream(&request.borrowed(), &mut sink, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Protocol);
+    assert_eq!(error.code, "ImageUnavailable");
+    assert!(events.is_empty());
+    assert_eq!(provider.request_body(&request.borrowed()), None);
+    assert_eq!(server.requests().len(), 1);
 }
 
 #[tokio::test]

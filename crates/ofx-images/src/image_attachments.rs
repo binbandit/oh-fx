@@ -7,6 +7,13 @@ use rustix::io::Errno;
 
 use crate::image_data::detect_media_type;
 
+mod snapshots;
+
+pub use snapshots::{
+    CaptureBudget, TempSnapshotDir, VerifiedSnapshot, capture_image_snapshots,
+    load_verified_snapshot,
+};
+
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const HEADER_BYTES: u64 = 64;
 const PATH_WHITESPACE: &[char] = &[' ', '\t', '\r', '\n'];
@@ -43,6 +50,28 @@ pub enum AttachmentError {
     ImageTooLarge,
     #[error("UnsupportedImageType")]
     UnsupportedImageType,
+    #[error("InvalidImageId")]
+    InvalidImageId,
+    #[error("ImageSnapshotPathUnsafe")]
+    ImageSnapshotPathUnsafe,
+    #[error("MissingImageSnapshot")]
+    MissingImageSnapshot,
+    #[error("InvalidImageSnapshotDigest")]
+    InvalidImageSnapshotDigest,
+    #[error("ImageSnapshotCorrupt")]
+    ImageSnapshotCorrupt,
+    #[error("ImageSnapshotMediaTypeMismatch")]
+    ImageSnapshotMediaTypeMismatch,
+    #[error("PathAlreadyExists")]
+    PathAlreadyExists,
+    #[error("NoSpaceLeft")]
+    NoSpaceLeft,
+    #[error("ReadOnlyFileSystem")]
+    ReadOnlyFileSystem,
+    #[error("DiskQuota")]
+    DiskQuota,
+    #[error("Cancelled")]
+    Cancelled,
     #[error("Unexpected")]
     Unexpected,
 }
@@ -61,6 +90,10 @@ impl From<Errno> for AttachmentError {
             Errno::MFILE => Self::ProcessFdQuotaExceeded,
             Errno::NFILE => Self::SystemFdQuotaExceeded,
             Errno::IO => Self::InputOutput,
+            Errno::EXIST => Self::PathAlreadyExists,
+            Errno::NOSPC => Self::NoSpaceLeft,
+            Errno::ROFS => Self::ReadOnlyFileSystem,
+            Errno::DQUOT => Self::DiskQuota,
             _ => Self::Unexpected,
         }
     }
@@ -99,8 +132,19 @@ fn strip_balanced_outer_quotes(text: &str) -> &str {
 }
 
 pub fn load_resolved_image_attachment(path: String) -> Result<ImageAttachment, AttachmentError> {
+    let (mut file, size) = open_image_source(&path)?;
+    let header = read_image_header(&mut file, size)?;
+    let media_type = detect_media_type(&header).ok_or(AttachmentError::UnsupportedImageType)?;
+    Ok(ImageAttachment {
+        path,
+        media_type: media_type.to_owned(),
+        ..ImageAttachment::default()
+    })
+}
+
+fn open_image_source(path: &str) -> Result<(File, u64), AttachmentError> {
     let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
-    let mut file = File::from(rustix::fs::open(path.as_str(), flags, Mode::empty())?);
+    let file = File::from(rustix::fs::open(path, flags, Mode::empty())?);
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(AttachmentError::NotRegularFile);
@@ -108,13 +152,7 @@ pub fn load_resolved_image_attachment(path: String) -> Result<ImageAttachment, A
     if metadata.len() > MAX_IMAGE_BYTES {
         return Err(AttachmentError::ImageTooLarge);
     }
-    let header = read_image_header(&mut file, metadata.len())?;
-    let media_type = detect_media_type(&header).ok_or(AttachmentError::UnsupportedImageType)?;
-    Ok(ImageAttachment {
-        path,
-        media_type: media_type.to_owned(),
-        ..ImageAttachment::default()
-    })
+    Ok((file, metadata.len()))
 }
 
 fn read_image_header(file: &mut impl Read, expected_size: u64) -> io::Result<Vec<u8>> {

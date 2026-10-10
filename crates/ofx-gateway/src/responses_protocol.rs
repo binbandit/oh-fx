@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ofx_contract::{
     ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
     ToolExecutionProvenance, ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
+use ofx_images::{AttachmentError, VerifiedSnapshot, load_verified_snapshot};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -55,6 +58,8 @@ pub(crate) enum ResponsesError {
     OutputItemConflict,
     #[error("Cancelled")]
     Cancelled,
+    #[error("{0}")]
+    Image(AttachmentError),
 }
 
 impl From<ProjectionError> for ResponsesError {
@@ -207,13 +212,23 @@ pub(crate) fn write_input(
     for (message, replay) in messages.iter().zip(replays) {
         match message {
             ChatMessage::System { .. } => {}
-            ChatMessage::User { content, .. } => {
+            ChatMessage::User {
+                content, images, ..
+            } => {
                 push_comma(out, &mut first);
                 out.push_str("{\"role\":\"user\",\"content\":[");
+                let mut first_part = true;
                 if !content.is_empty() {
                     out.push_str("{\"type\":\"input_text\",\"text\":");
                     push_json_string(out, content);
                     out.push('}');
+                    first_part = false;
+                }
+                for attachment in images {
+                    let image = load_verified_snapshot(attachment, &|| Ok(()))
+                        .map_err(ResponsesError::Image)?;
+                    push_comma(out, &mut first_part);
+                    write_input_image(out, &image);
                 }
                 out.push_str("]}");
             }
@@ -252,6 +267,14 @@ pub(crate) fn write_input(
         }
     }
     Ok(())
+}
+
+fn write_input_image(out: &mut String, image: &VerifiedSnapshot) {
+    out.push_str("{\"type\":\"input_image\",\"detail\":\"auto\",\"image_url\":\"data:");
+    out.push_str(image.media_type);
+    out.push_str(";base64,");
+    STANDARD.encode_string(&image.bytes, out);
+    out.push_str("\"}");
 }
 
 fn write_assistant(
