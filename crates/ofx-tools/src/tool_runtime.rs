@@ -31,9 +31,9 @@ impl PreparedCall for BlockingCall {
     }
 }
 
-pub(crate) fn run_blocking(
-    run: impl FnOnce() -> ToolOutput + Send + 'static,
-) -> BoxFuture<'static, ToolOutput> {
+pub(crate) fn run_blocking<T: Send + 'static>(
+    run: impl FnOnce() -> T + Send + 'static,
+) -> BoxFuture<'static, T> {
     Box::pin(async move {
         match tokio::task::spawn_blocking(run).await {
             Ok(output) => output,

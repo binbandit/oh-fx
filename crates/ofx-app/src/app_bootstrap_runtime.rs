@@ -13,9 +13,8 @@ use ofx_agent::{
 };
 use ofx_auth::{CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL};
 use ofx_config::{
-    ConfigDiagnostic, ConnectionError, ContextLimitName, ContextLimitOverride, ContextLimits,
-    ProfilePaths, ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError,
-    request_output_tokens,
+    ConfigDiagnostic, ConnectionError, ContextLimitOverride, ContextLimits, ProfilePaths,
+    ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
     ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, HookView, LiveAdditionalRoots,
@@ -29,10 +28,10 @@ use ofx_gateway::{
     CodexReviewTransport,
 };
 use ofx_http::ClientError;
-use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError, SchemaLimits};
+use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_session::RouteCredential;
-use ofx_tools::WebFetchProgress;
+use ofx_tools::{CapabilitySearch, WebFetchProgress};
 use ofx_workspace::{ChangeTracker, WorkspaceAccess, WorkspaceAccessError};
 use tokio_util::sync::CancellationToken;
 
@@ -370,7 +369,7 @@ impl Profile {
         let permissions =
             self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
-        let (mcp, tools) = self.mcp_runtime(tools, &limits, interactive)?;
+        let (mcp, tools) = self.mcp_runtime(tools, &skills.search(), &limits, interactive)?;
         let children = ChildFactory {
             route: Mutex::new(route.children()),
             executions: launch.executions.clone(),
@@ -632,11 +631,12 @@ impl Profile {
     fn mcp_runtime(
         &self,
         tools: Vec<Arc<dyn Tool>>,
+        search: &CapabilitySearch,
         limits: &ContextLimits,
         interactive: bool,
     ) -> Result<McpTools, ProfileStoreError> {
         let runtime = self.load_mcp_runtime(&tools, limits, interactive)?;
-        let tools = tool_set::with_features(tools, runtime.clone());
+        let tools = tool_set::with_mcp(tools, search, runtime.clone());
         Ok((runtime, tools))
     }
 
@@ -656,12 +656,8 @@ impl Profile {
             user_agent: user_agent(),
         };
         let reserved = tools.iter().map(|tool| tool.spec().name.clone()).collect();
-        let limits = SchemaLimits {
-            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
-            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
-        };
         Ok(Some(Arc::new(McpRuntime::new(
-            load, options, reserved, limits,
+            load, options, reserved, *limits,
         ))))
     }
 

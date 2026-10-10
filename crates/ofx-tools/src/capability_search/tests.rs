@@ -354,3 +354,194 @@ fn saved_searches_describe_themselves_as_their_calls_did() {
         assert_eq!(saved.activity, ToolActivity::Read);
     }
 }
+
+struct FakeMcp {
+    result: McpSearchResult,
+    requests: std::sync::Mutex<Vec<(String, Option<String>, Option<usize>)>>,
+}
+
+impl FakeMcp {
+    fn new(model_output: &str, notice: Option<&str>) -> Arc<Self> {
+        Arc::new(Self {
+            result: McpSearchResult {
+                model_output: model_output.to_owned(),
+                notice: notice.map(str::to_owned),
+            },
+            requests: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    fn requests(&self) -> Vec<(String, Option<String>, Option<usize>)> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl McpToolSearch for FakeMcp {
+    fn search_tools<'a>(&'a self, request: McpSearchRequest<'a>) -> BoxFuture<'a, McpSearchResult> {
+        self.requests.lock().unwrap().push((
+            request.query.raw().to_owned(),
+            request.server.map(str::to_owned),
+            request.result_bytes,
+        ));
+        Box::pin(async move { self.result.clone() })
+    }
+}
+
+fn searching(search: &CapabilitySearch, mcp: &Arc<FakeMcp>) -> CapabilitySearch {
+    search.searching_mcp(Arc::clone(mcp) as Arc<dyn McpToolSearch>)
+}
+
+#[test]
+fn combines_bounded_skill_and_mcp_results() {
+    let skills = SkillSearchResult {
+        items_json:
+            r#"{"name":"mail-helper","description":"Send email","location":"/skills/mail-helper"}"#
+                .to_owned(),
+        count: 1,
+        total_matches: 2,
+    };
+    let mcp = r#"{"tools":[{"name":"mcp_mail_send","server":"mail","description":"Send email"}],"count":1,"total_matches":3,"more_available":true,"next_cursor":"c1:m:1:1:1","authentication_required":{"server":"TOKEN=runtime-auth-secret","message":"authenticate"}}"#;
+    let combined = combine(Some(&skills), mcp, 4096).unwrap();
+    assert_eq!(
+        combined,
+        r#"{"skills":[{"name":"mail-helper","description":"Send email","location":"/skills/mail-helper"}],"mcp_tools":[{"name":"mcp_mail_send","server":"mail","description":"Send email"}],"counts":{"skills":1,"mcp_tools":1},"total_matches":{"skills":2,"mcp_tools":3},"authentication_required":{"server":"TOKEN=runtime-auth-secret","message":"authenticate"}}"#
+    );
+    assert_eq!(
+        combine(Some(&skills), mcp, combined.len() - 1),
+        Err("CapabilitySearchResultLimitTooSmall")
+    );
+}
+
+#[test]
+fn an_empty_search_is_terminal_and_mcp_states_keep_their_names() {
+    let empty = SkillSearchResult {
+        items_json: String::new(),
+        count: 0,
+        total_matches: 0,
+    };
+    let combined = combine(
+        Some(&empty),
+        r#"{"tools":[],"count":0,"total_matches":0,"more_available":false,"next_cursor":null}"#,
+        4096,
+    )
+    .unwrap();
+    assert_eq!(
+        combined,
+        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"state":"no_match"}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&combined)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(
+        combine(
+            None,
+            r#"{"tools":[],"count":0,"total_matches":0,"more_available":false,"next_cursor":null,"state":"server_failed","error":"MCP server 'a' is unavailable: x"}"#,
+            4096,
+        )
+        .unwrap(),
+        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"server_failed","mcp_error":"MCP server 'a' is unavailable: x"}"#
+    );
+    assert_eq!(
+        combine(
+            None,
+            r#"{"tools":[{"name":"t"}],"count":1,"total_matches":-4,"context_limit":{"name":"mcp_search_result_bytes"}}"#,
+            4096,
+        )
+        .unwrap(),
+        r#"{"skills":[],"mcp_tools":[{"name":"t"}],"counts":{"skills":0,"mcp_tools":1},"total_matches":{"skills":0,"mcp_tools":0},"state":"no_match","mcp_context_limit":{"name":"mcp_search_result_bytes"}}"#
+    );
+    assert_eq!(
+        combine(None, r#"{"count":0}"#, 4096),
+        Err("InvalidCapabilitySearchResult")
+    );
+}
+
+#[tokio::test]
+async fn ask_bounds_the_mcp_search_by_half_the_combined_budget_and_reports_its_notice() {
+    let fixture = Fixture::new();
+    fixture.write("mail-helper", "Send email");
+    let mcp = FakeMcp::new(
+        r#"{"tools":[{"name":"mcp_mail_send","server":"mail"}],"count":1,"total_matches":1,"more_available":false,"next_cursor":null}"#,
+        Some("[context] MCP description truncated"),
+    );
+    let output = run(
+        &searching(&fixture.search(16384), &mcp),
+        r#"{"query":"mail-helper"}"#,
+    )
+    .await;
+    assert_eq!(output.status, ToolResultStatus::Success);
+    assert_eq!(
+        output.content,
+        format!(
+            r#"{{"skills":[{{"name":"mail-helper","description":"Send email","location":{}}}],"mcp_tools":[{{"name":"mcp_mail_send","server":"mail"}}],"counts":{{"skills":1,"mcp_tools":1}},"total_matches":{{"skills":1,"mcp_tools":1}}}}"#,
+            json!(
+                std::fs::canonicalize(fixture.directory.path())
+                    .unwrap()
+                    .join("mail-helper")
+            )
+        )
+    );
+    assert_eq!(
+        output.context_notices,
+        ["[context] MCP description truncated"]
+    );
+    assert_eq!(
+        mcp.requests(),
+        [("mail-helper".to_owned(), None, Some((16384 - 512) / 2))]
+    );
+    let scoped = run(
+        &searching(&fixture.search(16384), &mcp),
+        r#"{"query":"send","server":"mail"}"#,
+    )
+    .await;
+    assert!(
+        scoped
+            .content
+            .starts_with(r#"{"skills":[],"mcp_tools":[{"name":"mcp_mail_send""#)
+    );
+    assert_eq!(
+        mcp.requests()[1],
+        ("send".to_owned(), Some("mail".to_owned()), Some(16384))
+    );
+}
+
+#[tokio::test]
+async fn the_interactive_host_searches_mcp_within_its_own_limits() {
+    let mcp = FakeMcp::new(
+        r#"{"tools":[],"count":0,"state":"discovering","retryable":true}"#,
+        None,
+    );
+    let search = searching(&tool(16384).with_interactive_host(true), &mcp);
+    let output = run(&search, r#"{"query":"anything"}"#).await;
+    assert_eq!(
+        output.content,
+        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"discovering"}"#
+    );
+    assert_eq!(mcp.requests(), [("anything".to_owned(), None, None)]);
+}
+
+#[tokio::test]
+async fn skill_diagnostics_precede_the_mcp_notice() {
+    let fixture = Fixture::new();
+    let broken = fixture.directory.path().join("broken");
+    std::fs::create_dir(&broken).expect("candidate");
+    std::fs::write(
+        broken.join("SKILL.md"),
+        "---\ndescription: missing name\n---\nBody",
+    )
+    .expect("metadata");
+    let mcp = FakeMcp::new(r#"{"tools":[],"count":0}"#, Some("mcp notice"));
+    let output = run(
+        &searching(&fixture.search(16384), &mcp),
+        r#"{"query":"anything"}"#,
+    )
+    .await;
+    assert_eq!(output.context_notices.len(), 2);
+    assert!(output.context_notices[0].starts_with("skill discovery warning: "));
+    assert_eq!(output.context_notices[1], "mcp notice");
+}

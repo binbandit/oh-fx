@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use ofx_config::{ContextLimit, line_safe_prefix_length};
+use ofx_config::{ContextLimit, ContextLimitName, ContextLimits, line_safe_prefix_length};
 use ofx_contract::{
     BoxFuture, CallDescription, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES, PreparedCall, Tool,
     ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec, format_tool_execution_error_json,
@@ -21,9 +21,18 @@ const DEFINITION_CHANGED: &str = "MCP tool definition changed before execution. 
 const DEFINITION_WITHDRAWN: &str = "MCP tool definition changed before execution and is no longer available. Search for current tools.";
 
 #[derive(Debug, Clone, Copy)]
-pub struct SchemaLimits {
-    pub server_instructions: ContextLimit,
-    pub selected_schema: ContextLimit,
+pub(crate) struct SchemaLimits {
+    pub(crate) server_instructions: ContextLimit,
+    pub(crate) selected_schema: ContextLimit,
+}
+
+impl From<&ContextLimits> for SchemaLimits {
+    fn from(limits: &ContextLimits) -> Self {
+        Self {
+            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
+            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
+        }
+    }
 }
 
 pub(crate) fn publish_tools(
@@ -88,7 +97,7 @@ fn publish_server(
     (tools, notices)
 }
 
-enum Projection {
+pub(crate) enum Projection {
     Selected {
         spec: ToolSpec,
         notice: Option<String>,
@@ -96,7 +105,7 @@ enum Projection {
     Rejected(String),
 }
 
-fn project(
+pub(crate) fn project(
     name: &str,
     tool: &CatalogTool,
     instructions: Option<&str>,
@@ -110,7 +119,7 @@ fn project(
     });
     let truncated = kept.is_some_and(|text| text.len() < observed);
     let mut description = String::new();
-    write_scalar(&mut description, &tool.description);
+    write_scalar(&mut description, tool.catalog_description());
     if let Some(kept) = kept {
         description.push_str("\n\nServer instructions: ");
         write_scalar(&mut description, kept);
@@ -151,6 +160,10 @@ fn project(
             )
         }),
     }
+}
+
+pub(crate) fn selected_schema(spec: &ToolSpec) -> String {
+    function_schema(&spec.name, &spec.description, &spec.input_schema)
 }
 
 fn function_schema(name: &str, description: &str, input_schema: &str) -> String {
@@ -227,11 +240,7 @@ impl PreparedCall for McpCall {
     }
 
     fn review_schema(&self) -> Option<String> {
-        Some(function_schema(
-            &self.spec.name,
-            &self.spec.description,
-            &self.spec.input_schema,
-        ))
+        Some(selected_schema(&self.spec))
     }
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
@@ -281,7 +290,6 @@ impl PreparedCall for McpCall {
 mod tests {
     use std::sync::atomic::AtomicU64;
 
-    use ofx_config::{ContextLimitName, ContextLimits};
     use serde_json::json;
 
     use super::*;
@@ -304,11 +312,7 @@ mod tests {
 
     #[test]
     fn every_tool_of_a_server_shares_one_copy_of_its_instructions() {
-        let limits = ContextLimits::default();
-        let limits = SchemaLimits {
-            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
-            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
-        };
+        let limits = SchemaLimits::from(&ContextLimits::default());
         let server = Arc::new(Server::new(
             McpServerConfig::stdio("fixture", "/bin/true", Vec::new()),
             ConnectOptions::default(),

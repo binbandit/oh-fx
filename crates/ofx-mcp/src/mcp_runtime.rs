@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use ofx_contract::{DynamicTools, Tool};
+use ofx_config::{ContextLimitName, ContextLimitValue, ContextLimits};
+use ofx_contract::{
+    BoxFuture, DynamicTools, McpSearchRequest, McpSearchResult, McpToolSearch, Tool,
+};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -29,18 +32,21 @@ use crate::timing::{sleep, spawn, spawn_on};
 use crate::tool_mcp_feature_dispatch::NAME as FEATURES_TOOL;
 use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
 use crate::tool_names::ToolNames;
+use crate::tool_search::{self, Search, SearchLimits};
 use crate::transport::ShutdownMode;
 
 const REQUIRED_FALLBACK: &str = "Check the trusted profile configuration and retry.";
 const STARTUP_POLL: Duration = Duration::from_millis(5);
+const DISCOVERING: &str = r#"{"tools":[],"count":0,"state":"discovering","retryable":true}"#;
 
 pub struct McpRuntime {
     servers: Mutex<Vec<Arc<Server>>>,
     options: ConnectOptions,
     names: Mutex<ToolNames>,
     reserved: Vec<String>,
-    limits: SchemaLimits,
+    limits: ContextLimits,
     catalog_generation: Arc<AtomicU64>,
+    discovering: Arc<AtomicBool>,
     published: Mutex<Published>,
     workspace_diagnostics: Mutex<Vec<WorkspaceDiagnostic>>,
     installed: AtomicBool,
@@ -72,7 +78,7 @@ impl McpRuntime {
         load: NativeConfigLoad,
         options: ConnectOptions,
         mut reserved: Vec<String>,
-        limits: SchemaLimits,
+        limits: ContextLimits,
     ) -> Self {
         reserved.push(FEATURES_TOOL.to_owned());
         let installed = hosts_anything(&load);
@@ -95,6 +101,7 @@ impl McpRuntime {
             reserved,
             limits,
             catalog_generation,
+            discovering: Arc::new(AtomicBool::new(false)),
             published: Mutex::new(Published::default()),
             workspace_diagnostics: Mutex::new(load.workspace_diagnostics),
             installed: AtomicBool::new(installed),
@@ -107,11 +114,43 @@ impl McpRuntime {
     }
 
     pub fn connect(&self, phase: StartupPhase) -> Settling {
-        Settling::all(
+        self.discovering.store(true, Ordering::Release);
+        let mut settling = Settling::all(
             self.current()
                 .into_iter()
                 .filter(|server| decide_startup(&server.config, phase) == StartupDecision::Connect)
                 .map(|server| (server, Step::Start)),
+        );
+        settling.discovery = Some(Discovery(Arc::clone(&self.discovering)));
+        settling
+    }
+
+    pub(crate) fn search(&self, request: McpSearchRequest<'_>) -> McpSearchResult {
+        let servers = self.current();
+        if self.discovering.load(Ordering::Acquire)
+            && !servers.iter().any(|server| server.catalog().is_some())
+        {
+            return McpSearchResult::plain(DISCOVERING);
+        }
+        let mut search_result = self.limits.get(ContextLimitName::McpSearchResultBytes);
+        if let Some(bytes) = request.result_bytes
+            && bytes < search_result.effective_bytes()
+        {
+            search_result.value = ContextLimitValue::Bytes(bytes);
+        }
+        tool_search::search(
+            &servers,
+            &mut lock(&self.names),
+            &self.reserved,
+            Search {
+                query: request.query,
+                server: request.server,
+            },
+            SearchLimits {
+                description: self.limits.get(ContextLimitName::McpDescriptionBytes),
+                search_result,
+                schema: SchemaLimits::from(&self.limits),
+            },
         )
     }
 
@@ -414,7 +453,7 @@ impl McpRuntime {
         }
     }
 
-    fn current(&self) -> Vec<Arc<Server>> {
+    pub(crate) fn current(&self) -> Vec<Arc<Server>> {
         lock(&self.servers).clone()
     }
 }
@@ -516,19 +555,31 @@ enum Step {
     Stop(ShutdownMode),
 }
 
-pub struct Settling(Vec<JoinHandle<()>>);
+pub struct Settling {
+    tasks: Vec<JoinHandle<()>>,
+    discovery: Option<Discovery>,
+}
+
+struct Discovery(Arc<AtomicBool>);
+
+impl Drop for Discovery {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl Settling {
     fn all(steps: impl Iterator<Item = (Arc<Server>, Step)>) -> Self {
-        Self(
-            steps
+        Self {
+            tasks: steps
                 .map(|(server, step)| spawn(settle(server, step)))
                 .collect(),
-        )
+            discovery: None,
+        }
     }
 
     pub async fn abandon(mut self) {
-        let tasks = std::mem::take(&mut self.0);
+        let tasks = std::mem::take(&mut self.tasks);
         for task in &tasks {
             task.abort();
         }
@@ -542,19 +593,20 @@ impl Future for Settling {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
-        while let Some(task) = self.0.last_mut() {
+        while let Some(task) = self.tasks.last_mut() {
             if Pin::new(task).poll(context).is_pending() {
                 return Poll::Pending;
             }
-            self.0.pop();
+            self.tasks.pop();
         }
+        self.discovery = None;
         Poll::Ready(())
     }
 }
 
 impl Drop for Settling {
     fn drop(&mut self) {
-        for task in &self.0 {
+        for task in &self.tasks {
             task.abort();
         }
     }
@@ -578,7 +630,12 @@ impl DynamicTools for McpRuntime {
         if published.generation != Some(generation) {
             let servers = self.current();
             let mut names = lock(&self.names);
-            let (tools, notices) = publish_tools(&servers, &mut names, &self.reserved, self.limits);
+            let (tools, notices) = publish_tools(
+                &servers,
+                &mut names,
+                &self.reserved,
+                SchemaLimits::from(&self.limits),
+            );
             published.generation = Some(generation);
             published.tools = tools;
             published.notices.extend(notices);
@@ -588,6 +645,12 @@ impl DynamicTools for McpRuntime {
 
     fn take_notices(&self) -> Vec<String> {
         std::mem::take(&mut lock(&self.published).notices)
+    }
+}
+
+impl McpToolSearch for McpRuntime {
+    fn search_tools<'a>(&'a self, request: McpSearchRequest<'a>) -> BoxFuture<'a, McpSearchResult> {
+        Box::pin(async move { self.search(request) })
     }
 }
 
@@ -651,12 +714,8 @@ done
         config
     }
 
-    fn limits() -> SchemaLimits {
-        let limits = ContextLimits::default();
-        SchemaLimits {
-            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
-            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
-        }
+    fn limits() -> ContextLimits {
+        ContextLimits::default()
     }
 
     fn runtime(configs: Vec<McpServerConfig>) -> Arc<McpRuntime> {
@@ -997,12 +1056,13 @@ done
             },
             ConnectOptions::default(),
             Vec::new(),
-            SchemaLimits {
-                selected_schema: ofx_config::ContextLimit {
-                    value: ofx_config::ContextLimitValue::Bytes(16),
-                    source: ofx_config::ContextLimitSource::CommandLine,
-                },
-                ..limits()
+            {
+                let mut limits = limits();
+                limits.apply_command_line(&[ofx_config::ContextLimitOverride {
+                    name: ContextLimitName::McpSelectedSchemaBytes,
+                    value: ContextLimitValue::Bytes(16),
+                }]);
+                limits
             },
         ));
         runtime.connect(StartupPhase::All).await;
