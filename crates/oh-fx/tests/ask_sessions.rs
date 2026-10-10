@@ -248,7 +248,7 @@ fn ask_saves_its_turn_and_resuming_sends_it_ahead_of_the_next_prompt() {
 }
 
 #[test]
-fn every_request_a_session_sends_is_accounted_with_its_exact_usage() {
+fn every_request_a_session_sends_is_published_with_its_exact_usage() {
     let second: Vec<String> = chat_text_events(&["two"])
         .iter()
         .map(|event| event.replace("chatcmpl-testkit", "chatcmpl-second"))
@@ -264,31 +264,50 @@ fn every_request_a_session_sends_is_accounted_with_its_exact_usage() {
     assert_eq!(snapshot["next_sequence"], 2);
     assert_eq!(snapshot["settled_through_sequence"], 1);
     assert_eq!(snapshot["api_duration_complete"], true);
-    assert_eq!(snapshot["billing"], "pending");
+    assert_eq!(snapshot["billing"], "complete");
     assert_eq!(snapshot["incidents"], json!([]));
-    assert_eq!(snapshot["input_tokens"], 0);
-    let pending = &snapshot["pending"][0];
-    assert_eq!(pending["sequence"], 1);
-    assert_eq!(pending["provider"], "configured");
-    assert_eq!(pending["origin"], "exact/configured");
-    let fact = &snapshot["publication_backlog"][0];
-    assert_eq!(fact["id"], pending["id"]);
-    assert_eq!(fact["model"], "portkey/@openai/gpt-4o");
-    assert_eq!(fact["total_cost"], 0);
+    assert_eq!(snapshot["pending"], json!([]));
+    assert_eq!(snapshot["publication_backlog"], json!([]));
     assert_eq!(
-        (&fact["input_tokens"], &fact["output_tokens"]),
-        (&json!(12), &json!(3))
+        (
+            &snapshot["input_tokens"],
+            &snapshot["output_tokens"],
+            &snapshot["request_count"]
+        ),
+        (&json!(12), &json!(3), &json!(1))
     );
+    assert_eq!(snapshot["models"][0]["model"], "portkey/@openai/gpt-4o");
+    let ledger =
+        fs::read_to_string(home.root.join("data/oh-fx/usage.jsonl")).expect("the profile ledger");
+    let kinds: Vec<String> = ledger
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).expect("a ledger record")["kind"].to_string()
+        })
+        .collect();
+    assert_eq!(kinds, ["\"coverage\"", "\"pending\"", "\"generation\""]);
 
     home.ask_json(&["--resume", &id, "second"], &[]);
     let resumed = &home.usage(&id)["snapshot"];
     assert_eq!(resumed["next_sequence"], 3);
     assert_eq!(resumed["settled_through_sequence"], 2);
     assert_eq!(resumed["wall_duration_complete"], true);
-    assert_eq!(resumed["billing"], "pending");
-    assert_eq!(resumed["pending"].as_array().map(Vec::len), Some(2));
-    assert_eq!(resumed["publication_backlog"][0], *fact);
-    assert_ne!(resumed["publication_backlog"][1]["id"], fact["id"]);
+    assert_eq!(resumed["billing"], "complete");
+    assert_eq!(resumed["request_count"], 2);
+    assert_eq!(resumed["models"][0]["input_tokens"], 24);
+
+    let report: Value = serde_json::from_slice(
+        &home
+            .command(&["usage", "--json", "--period", "24h"])
+            .output()
+            .expect("run oh-fx usage")
+            .stdout,
+    )
+    .expect("a usage report");
+    assert_eq!(report["completeness"], "complete");
+    assert_eq!(report["totals"]["input_tokens"], 24);
+    assert_eq!(report["totals"]["request_count"], 2);
+    assert_eq!(report["models"][0]["model"], "portkey/@openai/gpt-4o");
 }
 
 #[test]

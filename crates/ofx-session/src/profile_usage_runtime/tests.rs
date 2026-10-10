@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use ofx_contract::UsageCoverage;
+use ofx_contract::{GenerationFact, UsageCoverage};
 
 use super::*;
 
@@ -120,4 +120,44 @@ fn errors_keep_upstream_names() {
         ProfileUsageError::from(UsageReportError::InvalidSnapshotTime).to_string(),
         "InvalidSnapshotTime"
     );
+}
+
+#[test]
+fn publishing_appends_once_reports_conflicts_and_stops_when_abandoned() {
+    let profile = Profile::with_ledger(&[FACT]);
+    let publisher = ProfilePublisher::open(&profile.data()).unwrap();
+    let recorded = GenerationFact {
+        id: "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        created_at_ms: NOW - 1,
+        model: "provider/model".to_owned(),
+        input_tokens: 5,
+        output_tokens: 2,
+        cache_read_tokens: 1,
+        cache_write_tokens: 0,
+        reasoning_tokens: None,
+        billable_web_search_calls: 1,
+        total_cost: 0.25,
+    };
+    assert_eq!(
+        publisher.publish(ProfileEvent::Generation(&recorded)),
+        Ok(())
+    );
+    let conflicting = GenerationFact {
+        input_tokens: 6,
+        ..recorded.clone()
+    };
+    let conflict = publisher.publish(ProfileEvent::Generation(&conflicting));
+    assert_eq!(conflict, Err(ProfileUsageError::Conflict));
+    assert!(!conflict.unwrap_err().ledger_unavailable());
+
+    publisher.abandon_for_process_exit();
+    let abandoned = publisher
+        .clone()
+        .publish(ProfileEvent::Generation(&recorded))
+        .unwrap_err();
+    assert_eq!(
+        abandoned,
+        ProfileUsageError::Store(UsageStoreError::LockAbandoned)
+    );
+    assert!(abandoned.ledger_unavailable());
 }

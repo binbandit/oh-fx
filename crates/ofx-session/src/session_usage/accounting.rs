@@ -1,9 +1,10 @@
 use ofx_contract::{
-    DeliveryOutcome, FileChangeStats, ProviderBilling, UsageCompleteness, UsageIncident,
+    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, UsageCompleteness,
+    UsageIncident,
 };
 
 use super::exact::exact_fact;
-use super::{Availability, UsageSnapshot};
+use super::{Availability, PublicationBatch, UsageSnapshot};
 use crate::session_codec::SavedProvider;
 
 const MAX_ACTIVE_INVOCATIONS: usize = 64;
@@ -146,6 +147,18 @@ impl Usage {
             }
             (None, _) => self.state.code_complete = false,
         }
+    }
+
+    pub(crate) fn publication_batch(&mut self, now_ms: i64) -> PublicationBatch {
+        self.state.publication_batch(now_ms)
+    }
+
+    pub(crate) fn incident_published(&mut self, incident: &UsageIncident) {
+        self.state.remove_incident(incident);
+    }
+
+    pub(crate) fn fact_published(&mut self, fact: &GenerationFact) {
+        self.state.settle_published(fact);
     }
 
     pub(crate) fn mark_code_incomplete(&mut self) {

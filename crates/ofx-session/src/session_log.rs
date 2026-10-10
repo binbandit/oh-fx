@@ -57,6 +57,7 @@ use turn_recovery::{
     recovery_was_asked, save_checkpoint,
 };
 use turn_restore::{complete_result_output, restored_history};
+use usage_checkpoint::UsageCheckpoints;
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 pub(crate) const MANIFEST_FILE: &str = "session.json";
@@ -125,6 +126,7 @@ pub struct WritableSession {
     recovery: Recovery,
     work_id: Option<String>,
     usage: Usage,
+    usage_checkpoints: UsageCheckpoints,
 }
 
 impl WritableSession {
@@ -592,6 +594,7 @@ pub(crate) fn start_session(
                 recovery: Recovery::Absent,
                 work_id: None,
                 usage: Usage::fresh(),
+                usage_checkpoints: UsageCheckpoints::default(),
             }
         });
     let session = match prepared {
@@ -694,6 +697,7 @@ fn resume_owned(
         recovery,
         work_id: None,
         usage,
+        usage_checkpoints: UsageCheckpoints::default(),
     })
 }
 

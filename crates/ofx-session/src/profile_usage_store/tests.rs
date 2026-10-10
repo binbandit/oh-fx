@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::*;
 use crate::spawn_gate::hold_off_spawns;
 
+mod append;
+
 const FACT_ID: &str = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const OTHER_ID: &str = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAW";
 

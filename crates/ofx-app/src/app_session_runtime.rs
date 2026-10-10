@@ -14,8 +14,9 @@ use ofx_agent::{Agent, ChildStore, MeteredProvider};
 use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
-    PendingRecovery, ResumeTarget, RouteCredential, SavedProvider, SessionDisposal, SessionError,
-    SessionLog, SessionPreferences, SessionStore, TitleGate, WritableSession, prompt_excerpt,
+    PendingRecovery, ProfilePublisher, ResumeTarget, RouteCredential, SavedProvider,
+    SessionDisposal, SessionError, SessionLog, SessionPreferences, SessionStore, TitleGate,
+    UsagePublisher, WritableSession, prompt_excerpt,
 };
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
@@ -177,6 +178,7 @@ pub fn recovered_turn(
 pub struct LiveSession {
     session: Arc<Mutex<WritableSession>>,
     route: SessionRoute,
+    publisher: Option<UsagePublisher>,
     id: String,
 }
 
@@ -195,10 +197,32 @@ impl LiveSession {
     }
 
     fn new(session: WritableSession, route: SessionRoute) -> Self {
+        let id = session.id().to_owned();
+        let session = Arc::new(Mutex::new(session));
+        let publisher = route
+            .profile
+            .clone()
+            .map(|profile| UsagePublisher::new(&session, profile));
+        if let Some(publisher) = &publisher {
+            publisher.schedule();
+        }
         Self {
-            id: session.id().to_owned(),
-            session: Arc::new(Mutex::new(session)),
+            session,
             route,
+            publisher,
+            id,
+        }
+    }
+
+    pub fn finish_publications(&self) {
+        if let Some(publisher) = &self.publisher {
+            publisher.finish_before_shutdown();
+        }
+    }
+
+    pub(crate) fn abandon_profile_ledger(&self) {
+        if let Some(profile) = &self.route.profile {
+            profile.abandon_for_process_exit();
         }
     }
 
@@ -212,6 +236,7 @@ impl LiveSession {
         Some(Arc::new(SessionChildren::new(
             sessions,
             Arc::downgrade(&self.session),
+            self.publisher.as_ref().map(UsagePublisher::scheduler),
             self.route.clone(),
             language,
         )))
@@ -220,11 +245,14 @@ impl LiveSession {
     pub fn attach(&self, agent: &mut Agent) {
         agent.attach_session(
             self.id.clone(),
-            Box::new(SessionLog::new(
-                Arc::clone(&self.session),
-                self.route.provider.clone(),
-                self.route.credential,
-            )),
+            Box::new(
+                SessionLog::new(
+                    Arc::clone(&self.session),
+                    self.route.provider.clone(),
+                    self.route.credential,
+                )
+                .publishing_with(self.publisher.as_ref().map(UsagePublisher::scheduler)),
+            ),
         );
     }
 
@@ -304,7 +332,11 @@ impl LiveSession {
     }
 
     pub fn discard_if_pristine(self, store: &SessionStore) -> SessionDisposal {
-        match Arc::try_unwrap(self.session) {
+        let Self {
+            session, publisher, ..
+        } = self;
+        drop(publisher);
+        match Arc::try_unwrap(session) {
             Ok(session) => {
                 store.discard_pristine(session.into_inner().unwrap_or_else(PoisonError::into_inner))
             }
@@ -328,10 +360,11 @@ pub fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct SessionRoute {
     pub(crate) provider: SavedProvider,
     pub(crate) credential: RouteCredential,
+    pub(crate) profile: Option<ProfilePublisher>,
 }
 
 impl SessionRoute {
@@ -351,6 +384,7 @@ pub fn session_route(setup: &AgentSetup) -> Result<SessionRoute, SessionError> {
     Ok(SessionRoute {
         provider: running_provider(setup)?,
         credential: setup.route_credential(),
+        profile: setup.profile_usage(),
     })
 }
 

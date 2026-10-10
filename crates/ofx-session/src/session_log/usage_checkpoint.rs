@@ -1,13 +1,68 @@
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use ofx_config::DurableError;
-use ofx_contract::{DeliveryOutcome, FileChangeStats, ProviderBilling, RequestTicket};
+use ofx_config::{DurableError, PrivateDir};
+use ofx_contract::{
+    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, RequestTicket, UsageIncident,
+};
 
 use super::{WritableSession, now_ms};
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
-use crate::session_usage::ReserveFailure;
+use crate::session_usage::{PublicationBatch, ReserveFailure, UsageSnapshot};
 use crate::session_usage_sidecar;
+
+#[derive(Default)]
+pub(crate) struct UsageCheckpoints {
+    writer: Arc<Mutex<CheckpointWriter>>,
+    issued: u64,
+}
+
+#[derive(Default)]
+struct CheckpointWriter {
+    written: u64,
+}
+
+pub(crate) struct PublishedUsage {
+    writer: Arc<Mutex<CheckpointWriter>>,
+    sequence: u64,
+    dir: PrivateDir,
+    id: String,
+    snapshot: UsageSnapshot,
+}
+
+impl UsageCheckpoints {
+    fn issue(&mut self) -> u64 {
+        self.issued += 1;
+        self.issued
+    }
+}
+
+impl CheckpointWriter {
+    fn write(
+        &mut self,
+        sequence: u64,
+        dir: &PrivateDir,
+        id: &str,
+        snapshot: &UsageSnapshot,
+    ) -> Result<(), SessionError> {
+        if self.written > sequence {
+            return Ok(());
+        }
+        session_usage_sidecar::write(dir, id, snapshot)?;
+        self.written = sequence;
+        Ok(())
+    }
+}
+
+impl PublishedUsage {
+    pub(crate) fn save(&self) -> Result<(), SessionError> {
+        self.writer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write(self.sequence, &self.dir, &self.id, &self.snapshot)
+    }
+}
 
 impl WritableSession {
     pub(crate) fn begin_request(&mut self) -> Result<RequestTicket, SessionError> {
@@ -57,6 +112,40 @@ impl WritableSession {
         }
     }
 
+    pub(crate) fn usage_publication_batch(&mut self) -> PublicationBatch {
+        self.usage.publication_batch(now_ms())
+    }
+
+    pub(crate) fn usage_incident_published(&mut self, incident: &UsageIncident) {
+        self.usage.incident_published(incident);
+    }
+
+    pub(crate) fn usage_fact_published(&mut self, fact: &GenerationFact) {
+        self.usage.fact_published(fact);
+    }
+
+    pub(crate) fn published_usage(&mut self) -> Option<PublishedUsage> {
+        let now = now_ms();
+        let dir = self
+            .require_writable()
+            .and_then(|()| Ok(self.owned.dir.try_clone()?));
+        let Ok(dir) = dir else {
+            self.usage.mark_billing_incomplete(now);
+            return None;
+        };
+        Some(PublishedUsage {
+            writer: Arc::clone(&self.usage_checkpoints.writer),
+            sequence: self.usage_checkpoints.issue(),
+            dir,
+            id: self.metadata.id.clone(),
+            snapshot: self.usage.snapshot(now),
+        })
+    }
+
+    pub(crate) fn published_usage_unsaved(&mut self) {
+        self.usage.mark_billing_incomplete(now_ms());
+    }
+
     fn checkpoint_usage(&mut self, now: i64) -> Result<(), SessionError> {
         self.require_writable()?;
         self.write_usage(now)
@@ -78,7 +167,12 @@ impl WritableSession {
 
     fn write_usage(&mut self, now: i64) -> Result<(), SessionError> {
         let snapshot = self.usage.snapshot(now);
-        session_usage_sidecar::write(&self.owned.dir, &self.metadata.id, &snapshot)
+        let sequence = self.usage_checkpoints.issue();
+        self.usage_checkpoints
+            .writer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write(sequence, &self.owned.dir, &self.metadata.id, &snapshot)
     }
 }
 
