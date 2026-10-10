@@ -14,7 +14,7 @@ use crate::image_data::{
 
 #[derive(Debug, Default)]
 pub struct AttachmentDimensionCache {
-    dimensions: Mutex<HashMap<String, Option<Dimensions>>>,
+    dimensions: Mutex<HashMap<String, Dimensions>>,
 }
 
 impl AttachmentDimensionCache {
@@ -76,9 +76,12 @@ impl AttachmentDimensionCache {
             .dimensions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        *cache
-            .entry(digest.clone())
-            .or_insert_with(|| probe_snapshot_dimensions(path))
+        if let Some(dimensions) = cache.get(digest) {
+            return Some(*dimensions);
+        }
+        let dimensions = probe_snapshot_dimensions(path)?;
+        cache.insert(digest.clone(), dimensions);
+        Some(dimensions)
     }
 }
 
