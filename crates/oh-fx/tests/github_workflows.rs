@@ -12,6 +12,7 @@ use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events};
 use serde_json::{Value, json};
 
 const HANG_GUARD: Duration = Duration::from_mins(1);
+const GH_ENDS_WITHIN: Duration = Duration::from_secs(5);
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\0' "$@" > "$GH_ARGS_FILE"
 polls=0
@@ -564,7 +565,7 @@ fn a_signal_while_gh_publishes_ends_oh_fx_by_that_signal() {
 }
 
 #[test]
-fn a_held_fake_gh_ends_with_its_test() {
+fn a_held_fake_gh_ends_when_its_run_is_dropped() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
     let home = Home::new(&server);
     let path = home.fake_gh();
@@ -582,7 +583,7 @@ fn a_held_fake_gh_ends_with_its_test() {
     let gh = home.root.join("bin/gh");
     assert!(running(&gh), "the fake gh is held");
     drop(run);
-    let deadline = Instant::now() + HANG_GUARD;
+    let deadline = Instant::now() + GH_ENDS_WITHIN;
     while running(&gh) {
         assert!(Instant::now() < deadline, "the fake gh outlived its run");
         thread::sleep(Duration::from_millis(20));
