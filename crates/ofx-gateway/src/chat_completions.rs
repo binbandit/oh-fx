@@ -13,6 +13,7 @@ use ofx_http::{
     ClientError, ConnectionOptions, SseDecoder, SseError, build_connection_client,
     certificate_bundle_load_failure,
 };
+use ofx_images::AttachmentDimensionCache;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, LOCATION, RETRY_AFTER};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use tokio_util::sync::CancellationToken;
@@ -52,6 +53,7 @@ pub struct ChatCompletionsProvider {
     bearer_token: Option<String>,
     secrets: Vec<String>,
     options: RequestOptions,
+    attachments: AttachmentDimensionCache,
 }
 
 impl ChatCompletionsProvider {
@@ -82,7 +84,24 @@ impl ChatCompletionsProvider {
                 tool_choice_mode,
                 max_tokens_parameter,
             },
+            attachments: AttachmentDimensionCache::default(),
         })
+    }
+
+    fn build(&self, request: &ModelRequest<'_>) -> Result<PreparedRequest, ProtocolError> {
+        match self
+            .attachments
+            .withhold_oversized_attachments(request.messages)
+        {
+            Some(messages) => build_request(
+                &ModelRequest {
+                    messages: &messages,
+                    ..*request
+                },
+                self.options,
+            ),
+            None => build_request(request, self.options),
+        }
     }
 
     async fn complete(
@@ -94,7 +113,7 @@ impl ChatCompletionsProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
-        let prepared = build_request(request, self.options).map_err(protocol_failure)?;
+        let prepared = self.build(request).map_err(protocol_failure)?;
         self.post(prepared, sink, cancel).await
     }
 
@@ -252,7 +271,7 @@ impl ModelProvider for ChatCompletionsProvider {
     }
 
     fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
-        let prepared = build_request(request, self.options).ok()?;
+        let prepared = self.build(request).ok()?;
         String::from_utf8(prepared.body).ok()
     }
 

@@ -6,7 +6,7 @@ use ofx_testkit::{FakeServer, Gate, RefusedPort, Reply, chat_text_events};
 
 use super::*;
 use crate::chat_completions_protocol::Selection;
-use crate::test_sources::{CapturedImages, Paced, user_with_images};
+use crate::test_sources::{CapturedImages, ONE_PIXEL_PNG, Paced, user_with_images};
 
 const TEST_STOP: &str = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
 const TEST_TEXT: &str = r#"{"id":"chat-1","model":"resolved-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#;
@@ -571,7 +571,7 @@ async fn portkey_connections_send_configured_headers_and_the_exact_body() {
 #[tokio::test]
 async fn portkey_connections_send_user_images_as_upstream_content_parts() {
     let images = CapturedImages::new();
-    let image = images.capture(1, "shot.png", b"\x89PNG\r\n\x1a\nA");
+    let image = images.capture(1, "shot.png", ONE_PIXEL_PNG);
     let request = OwnedRequest {
         messages: vec![user_with_images("what is this", vec![image.clone()])],
         ..test_request()
@@ -589,11 +589,15 @@ async fn portkey_connections_send_user_images_as_upstream_content_parts() {
             r#"{"model":"opaque/local-model:8b","stream":true,"stream_options":{"include_usage":true},"#,
             r#""messages":[{"role":"system","content":"first"},{"role":"system","content":"second"},"#,
             r#"{"role":"user","content":[{"type":"text","text":"what is this"},"#,
-            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgpB"}}]}]}"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}}]}]}"#,
         )
     );
     assert_eq!(measured.as_deref(), Some(&*requests[0].body_text()));
-    std::fs::remove_file(image.snapshot_path.as_deref().unwrap()).unwrap();
+    std::fs::write(
+        image.snapshot_path.as_deref().unwrap(),
+        [ONE_PIXEL_PNG, b"changed"].concat(),
+    )
+    .unwrap();
     let mut events = Vec::new();
     let mut sink = |event: StreamEvent| events.push(event);
     let error = provider
@@ -605,6 +609,38 @@ async fn portkey_connections_send_user_images_as_upstream_content_parts() {
     assert!(events.is_empty());
     assert_eq!(provider.request_body(&request.borrowed()), None);
     assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn portkey_connections_leave_out_images_over_the_pixel_limit_with_upstreams_notice() {
+    let images = CapturedImages::new();
+    let wide = images.capture(
+        1,
+        "wide.jpg",
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x0a\x23\x28\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01\xff\xd9",
+    );
+    let snapshot = wide.snapshot_path.clone().unwrap();
+    let request = OwnedRequest {
+        messages: vec![user_with_images("what is this", vec![wide])],
+        ..test_request()
+    };
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["noted"]))]);
+    let provider = portkey(&server);
+    let measured = provider.request_body(&request.borrowed());
+    let (outcome, _) = stream_text(&provider, &request).await;
+    outcome.unwrap();
+    let notice = format!(
+        "[Image #1 not sent: image/jpeg is 9000x10 pixels. This request permits at most 8000 per side and 5 MiB encoded per image. The original is saved at {snapshot}. Use an available image tool to save a smaller copy to a new file ending in .jpg, then read_file the copy. If no image tool is available, ask the user before installing one.]\nwhat is this"
+    );
+    let body = server.requests()[0].body_text();
+    assert_eq!(
+        body,
+        format!(
+            r#"{{"model":"opaque/local-model:8b","stream":true,"stream_options":{{"include_usage":true}},"messages":[{{"role":"system","content":"first"}},{{"role":"system","content":"second"}},{{"role":"user","content":{}}}]}}"#,
+            serde_json::to_string(&notice).unwrap()
+        )
+    );
+    assert_eq!(measured.as_deref(), Some(&*body));
 }
 
 #[tokio::test]
