@@ -204,12 +204,16 @@ pub(crate) mod fake_tmux {
     use std::fs;
     use std::io::{ErrorKind, Read};
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::thread;
     use std::time::{Duration, Instant};
 
     use rustix::fs::{Mode, OFlags};
+
+    use crate::terminal::test_pty;
+
+    const PROBE: &str = "probe";
 
     pub(crate) struct FakeTmux {
         directory: tempfile::TempDir,
@@ -255,6 +259,7 @@ pub(crate) mod fake_tmux {
             let script = format!(
                 "#!/bin/sh\n\
                  ROOT='{root}'\n\
+                 [ \"$1\" = {PROBE} ] && exit 0\n\
                  if [ -p \"$ROOT/alive\" ]; then exec 3>\"$ROOT/alive\"; fi\n\
                  printf '%s|' \"$@\" >> \"$ROOT/calls\"\n\
                  printf '\\n' >> \"$ROOT/calls\"\n\
@@ -263,6 +268,7 @@ pub(crate) mod fake_tmux {
             let program = directory.path().join("tmux");
             fs::write(&program, script).unwrap();
             fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            wait_until_runnable(&program);
             Self {
                 directory,
                 alive: None,
@@ -312,6 +318,25 @@ pub(crate) mod fake_tmux {
                 .lines()
                 .map(str::to_owned)
                 .collect()
+        }
+    }
+
+    fn wait_until_runnable(program: &Path) {
+        let deadline = Instant::now() + test_pty::WAIT;
+        loop {
+            match Command::new(program).arg(PROBE).status() {
+                Ok(status) => {
+                    assert!(status.success(), "{status:?}");
+                    return;
+                }
+                Err(error)
+                    if error.kind() == ErrorKind::ExecutableFileBusy
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("the fake tmux could not run: {error}"),
+            }
         }
     }
 }

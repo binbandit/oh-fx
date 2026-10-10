@@ -47,7 +47,6 @@ fn proceed() -> Vec<QuestionBatchEntry> {
 
 fn asking(entries: Vec<QuestionBatchEntry>) -> TestShell {
     let mut test = TestShell::start();
-    test.hold_clock();
     test.submit("pick for me");
     test.deliver(UiEvent::TurnStarted {
         turn_id: TurnId::new(1),
@@ -78,7 +77,6 @@ fn answers(test: &TestShell) -> Vec<UiCommand> {
 #[test]
 fn time_spent_answering_a_question_stops_the_turn_clock_but_not_the_turn_summary() {
     let mut test = TestShell::start();
-    test.hold_clock();
     test.submit("pick for me");
     test.deliver(UiEvent::TurnStarted {
         turn_id: TurnId::new(1),
