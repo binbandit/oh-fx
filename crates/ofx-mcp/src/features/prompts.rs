@@ -39,6 +39,7 @@ impl Default for Limits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptArgument {
     pub name: String,
+    pub description: Option<String>,
     pub required: bool,
 }
 
@@ -186,7 +187,8 @@ fn parse_argument(value: &Value, limits: common::Limits) -> Result<PromptArgumen
     let invalid = |_| McpError::InvalidArgument;
     let object = value.as_object().ok_or(McpError::InvalidArgument)?;
     let name = required_string(object, "name", limits.name_bytes).map_err(invalid)?;
-    optional_string(object, "description", limits.description_bytes).map_err(invalid)?;
+    let description =
+        optional_string(object, "description", limits.description_bytes).map_err(invalid)?;
     let required = match object.get("required") {
         None => false,
         Some(Value::Bool(required)) => *required,
@@ -194,6 +196,7 @@ fn parse_argument(value: &Value, limits: common::Limits) -> Result<PromptArgumen
     };
     Ok(PromptArgument {
         name: name.to_owned(),
+        description: description.map(str::to_owned),
         required,
     })
 }
@@ -325,6 +328,7 @@ mod tests {
     fn argument(name: &str, required: bool) -> PromptArgument {
         PromptArgument {
             name: name.to_owned(),
+            description: None,
             required,
         }
     }

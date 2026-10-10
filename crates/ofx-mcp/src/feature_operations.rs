@@ -15,7 +15,8 @@ use crate::features::prompts::{
     validate_arguments_json,
 };
 use crate::features::resources::{
-    Limits, ReadOutcome, Resource, ResourceTemplate, parse_read_outcome, stale_fallback_eligible,
+    Details, Limits, ReadOutcome, Resource, ResourceTemplate, parse_read_outcome,
+    stale_fallback_eligible,
 };
 use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
@@ -44,6 +45,8 @@ pub struct ResourceSummary {
     pub identity: String,
     pub name: String,
     pub title: Option<String>,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,21 +70,13 @@ impl Server {
         if !include_templates {
             return Ok(resources
                 .iter()
-                .map(|resource| ResourceSummary {
-                    identity: resource.uri.clone(),
-                    name: resource.name.clone(),
-                    title: resource.title.clone(),
-                })
+                .map(|resource| summary(&resource.uri, &resource.name, &resource.details))
                 .collect());
         }
         let templates = self.feature_catalog::<ResourceTemplate>(deadline).await?;
         Ok(templates
             .iter()
-            .map(|template| ResourceSummary {
-                identity: template.uri_template.clone(),
-                name: template.name.clone(),
-                title: template.title.clone(),
-            })
+            .map(|template| summary(&template.uri_template, &template.name, &template.details))
             .collect())
     }
 
@@ -268,6 +263,16 @@ impl Server {
             return Ok(None);
         }
         Ok(Some(client))
+    }
+}
+
+fn summary(identity: &str, name: &str, details: &Details) -> ResourceSummary {
+    ResourceSummary {
+        identity: identity.to_owned(),
+        name: name.to_owned(),
+        title: details.title.clone(),
+        description: details.description.clone(),
+        mime_type: details.mime_type.clone(),
     }
 }
 

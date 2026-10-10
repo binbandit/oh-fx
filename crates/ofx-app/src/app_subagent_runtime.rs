@@ -43,6 +43,7 @@ pub(crate) struct ChildFactory {
     pub(crate) project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     pub(crate) skills: Arc<HostSkills>,
     pub(crate) mcp: Option<Arc<McpRuntime>>,
+    pub(crate) features: Arc<dyn Tool>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) additional_roots: LiveAdditionalRoots,
     pub(crate) permission_mode: LivePermissionMode,
@@ -190,17 +191,20 @@ impl ChildAgents for ChildFactory {
 
     fn work_tools(&self) -> WorkTools {
         let executions = self.executions.separate();
-        let tools = tool_set::ask_tools(
-            &self.workspace_root,
-            &executions,
-            self.command_timeout,
-            &self.permission_mode,
-            self.skills.tool(),
-            self.skills.search(),
-            ToolHooks {
-                additional_roots: self.additional_roots.clone(),
-                ..ToolHooks::default()
-            },
+        let tools = tool_set::with_features(
+            tool_set::ask_tools(
+                &self.workspace_root,
+                &executions,
+                self.command_timeout,
+                &self.permission_mode,
+                self.skills.tool(),
+                self.skills.search(),
+                ToolHooks {
+                    additional_roots: self.additional_roots.clone(),
+                    ..ToolHooks::default()
+                },
+            ),
+            &self.features,
         );
         WorkTools {
             tools,

@@ -62,6 +62,18 @@ pub(crate) fn ask_tools(
     ]
 }
 
+pub(crate) fn with_features(
+    mut tools: Vec<Arc<dyn Tool>>,
+    features: &Arc<dyn Tool>,
+) -> Vec<Arc<dyn Tool>> {
+    let skill = tools
+        .iter()
+        .position(|tool| tool.spec().name == "skill")
+        .map_or(tools.len(), |index| index + 1);
+    tools.insert(skill, Arc::clone(features));
+    tools
+}
+
 pub(crate) fn with_subagent(
     tools: &[Arc<dyn Tool>],
     subagent: &Arc<dyn Tool>,

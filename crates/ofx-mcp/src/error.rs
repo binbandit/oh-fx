@@ -78,6 +78,10 @@ pub enum McpError {
     McpResourceTemplateMatchLimitExceeded,
     #[error("McpFeatureCatalogChanged")]
     McpFeatureCatalogChanged,
+    #[error("McpFeatureOutputLimitExceeded")]
+    McpFeatureOutputLimitExceeded,
+    #[error("McpRuntimeUnavailable")]
+    McpRuntimeUnavailable,
     #[error("McpHeaderEnvironmentMissing")]
     McpHeaderEnvironmentMissing,
     #[error("McpBearerEnvironmentMissing")]

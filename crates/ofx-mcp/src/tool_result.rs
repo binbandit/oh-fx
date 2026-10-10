@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use crate::features::tools::ToolCallOutcome;
 
 const UNSUPPORTED_MEDIA: &str = "unsupported media; content was not sent to the model";
-const UNSENT_BINARY_RESOURCE: &str = "binary resource content was not sent to the model";
+pub(crate) const UNSENT_BINARY_RESOURCE: &str = "binary resource content was not sent to the model";
 const TEXT_FIELDS: [&str; 4] = ["text", "data", "blob", "content"];
 
 pub(crate) fn model_output(
@@ -66,7 +66,7 @@ pub(crate) fn protocol_diagnostic(error: &RpcError) -> String {
     text
 }
 
-fn project_media_for_text(content: &mut Value) {
+pub(crate) fn project_media_for_text(content: &mut Value) {
     match content {
         Value::Array(items) => items.iter_mut().for_each(project_media_block),
         other => project_media_block(other),

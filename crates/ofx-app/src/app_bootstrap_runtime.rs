@@ -29,7 +29,7 @@ use ofx_gateway::{
     CodexReviewTransport,
 };
 use ofx_http::ClientError;
-use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError, SchemaLimits};
+use ofx_mcp::{ConnectOptions, McpFeatures, McpRuntime, ProfileStoreError, SchemaLimits};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_session::RouteCredential;
 use ofx_tools::WebFetchProgress;
@@ -365,6 +365,8 @@ impl Profile {
             self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
         let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
+        let features: Arc<dyn Tool> = Arc::new(McpFeatures::new(mcp.clone()));
+        let tools = tool_set::with_features(tools, &features);
         let children = ChildFactory {
             route: Mutex::new(route.children()),
             executions: launch.executions.clone(),
@@ -374,6 +376,7 @@ impl Profile {
             project: project.clone(),
             skills: Arc::clone(&skills),
             mcp: mcp.clone(),
+            features,
             workspace_root: self.workspace_root.clone(),
             additional_roots: additional_roots.clone(),
             permission_mode: permission_mode.clone(),
