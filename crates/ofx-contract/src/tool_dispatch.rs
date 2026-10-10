@@ -12,7 +12,7 @@ use crate::stream_provider::BoxFuture;
 use crate::subagent::SubagentStatusSink;
 use crate::tool_mcp_runtime::DynamicToolChange;
 use crate::types::{
-    CommandProcessPresentation, FileChangeStats, QuestionBatchEntry, ToolResultStatus,
+    CommandProcessPresentation, FileChangeStats, QuestionBatchEntry, ToolImage, ToolResultStatus,
     ToolStatusDetail,
 };
 
@@ -108,6 +108,7 @@ pub struct ToolOutput {
     pub file_change: Option<FileChangeStats>,
     pub model_view_covers_full_file: Option<bool>,
     pub dynamic_tools: Option<Box<DynamicToolChange>>,
+    pub images: Vec<ToolImage>,
 }
 
 impl ToolOutput {
@@ -122,6 +123,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
+            images: Vec::new(),
         }
     }
 
@@ -136,6 +138,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
+            images: Vec::new(),
         }
     }
 
@@ -206,6 +209,12 @@ impl ToolOutput {
         self.dynamic_tools
             .as_deref()
             .map_or(&[], |change| &change.retired)
+    }
+
+    #[must_use]
+    pub fn with_images(mut self, images: Vec<ToolImage>) -> Self {
+        self.images = images;
+        self
     }
 }
 

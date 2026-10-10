@@ -104,6 +104,7 @@ fn messages(
                 tool_name: result.tool_name,
                 content: result.output,
                 status: result.status,
+                images: Vec::new(),
             });
         }
         messages.extend(feedback);

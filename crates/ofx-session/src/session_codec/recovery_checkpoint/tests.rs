@@ -961,6 +961,7 @@ fn a_continuation_gives_approval_feedback_after_every_result_of_its_step() {
         tool_name: "read_file".to_owned(),
         content: content.to_owned(),
         status: ToolResultStatus::Success,
+        images: Vec::new(),
     };
     assert_eq!(
         saved

@@ -101,6 +101,7 @@ impl Agent {
             tool_name: call.name.clone(),
             content,
             status,
+            images: Vec::new(),
         });
     }
 

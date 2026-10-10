@@ -19,6 +19,7 @@ fn result(id: &str, status: ToolResultStatus) -> ChatMessage {
         tool_name: "shell".to_owned(),
         content: format!("output of {id}"),
         status,
+        images: Vec::new(),
     }
 }
 

@@ -196,6 +196,7 @@ pub(crate) fn ended_turn(
                 tool_name,
                 content,
                 status,
+                ..
             } => {
                 steps.extend(pending.take());
                 let result = ToolResult {

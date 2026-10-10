@@ -163,6 +163,13 @@ pub struct ImageAttachment {
     pub source_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolImage {
+    pub data: String,
+    pub mime_type: String,
+    pub source_ref: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatMessage {
     System {
@@ -184,6 +191,7 @@ pub enum ChatMessage {
         tool_name: String,
         content: String,
         status: ToolResultStatus,
+        images: Vec<ToolImage>,
     },
 }
 

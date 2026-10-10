@@ -241,6 +241,7 @@ fn pending_review_messages(context_message: String, call: &ToolCall) -> [ChatMes
             tool_name: call.name.clone(),
             content: PENDING_TOOL_REVIEW_RESULT.to_owned(),
             status: ToolResultStatus::Failure,
+            images: Vec::new(),
         },
     ]
 }

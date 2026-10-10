@@ -39,6 +39,7 @@ fn result(id: &str, output: &str) -> ChatMessage {
         tool_name: "read_file".to_owned(),
         content: output.to_owned(),
         status: ToolResultStatus::Success,
+        images: Vec::new(),
     }
 }
 

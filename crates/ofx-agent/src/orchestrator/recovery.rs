@@ -350,6 +350,7 @@ mod tests {
                 tool_name: "subagent".to_owned(),
                 content: "failed".to_owned(),
                 status: ToolResultStatus::Failure,
+                images: Vec::new(),
             },
         ];
         assert!(rejects_prefill(&rejected(400, detail)));

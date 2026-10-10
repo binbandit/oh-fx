@@ -315,6 +315,7 @@ async fn request_bodies_match_upstream_byte_for_byte_across_a_tool_step() {
         tool_name: "read_file".to_owned(),
         content: output.to_owned(),
         status: ToolResultStatus::Success,
+        images: Vec::new(),
     });
     assert_eq!(
         codex
@@ -573,6 +574,7 @@ async fn malformed_call_arguments_arrive_as_sent_and_replay_only_as_an_empty_obj
         tool_name: "read_file".to_owned(),
         content: "rejected".to_owned(),
         status: ToolResultStatus::Failure,
+        images: Vec::new(),
     };
     let as_sent = [prompt[0].clone(), answered(&first), result.clone()];
     let (refused, _) = run(&codex, &[], &as_sent, &tools).await;

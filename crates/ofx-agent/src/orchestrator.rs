@@ -1721,6 +1721,7 @@ impl Agent {
                 turn.shell_corrections.observe(call, &output.content);
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
+            let images = output.images;
             let bytes = output.content.len();
             let result_kind = turn_trace::result_kind(&output);
             let (model_output, truncated) =
@@ -1753,6 +1754,7 @@ impl Agent {
                 tool_name: call.name.clone(),
                 content,
                 status,
+                images,
             });
         }
     }

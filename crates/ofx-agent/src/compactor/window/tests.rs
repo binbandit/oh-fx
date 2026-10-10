@@ -55,6 +55,7 @@ fn result(id: &str, name: &str, output: &str) -> ChatMessage {
         tool_name: name.to_owned(),
         content: output.to_owned(),
         status: ToolResultStatus::Success,
+        images: Vec::new(),
     }
 }
 

@@ -255,6 +255,7 @@ fn push_execution(
                 tool_name: result.tool_name,
                 content,
                 status: result.status,
+                images: Vec::new(),
             });
         }
         messages.extend(feedback);
@@ -308,6 +309,7 @@ fn push_ending(messages: &mut Vec<ChatMessage>, ending: Ending) {
                         tool_name: call.name,
                         content: ABORTED_TOOL_OUTPUT.to_owned(),
                         status: ToolResultStatus::Failure,
+                        images: Vec::new(),
                     });
                 }
                 None => messages.push(ChatMessage::Assistant {

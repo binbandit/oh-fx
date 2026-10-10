@@ -267,6 +267,7 @@ impl Agent {
             tool_name: call.name.clone(),
             content: output.to_owned(),
             status: ToolResultStatus::Failure,
+            images: Vec::new(),
         });
     }
 }

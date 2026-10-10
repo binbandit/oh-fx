@@ -795,6 +795,7 @@ async fn provider_executed_tools_become_guidance_instead_of_functions() {
             tool_name: "search".to_owned(),
             content: "search is unavailable here".to_owned(),
             status: ToolResultStatus::Failure,
+            images: Vec::new(),
         })
     );
 }
@@ -839,6 +840,7 @@ async fn tool_calls_run_and_feed_results_back() {
             tool_name: "echo".to_owned(),
             content: r#"echo {"text":"a"}"#.to_owned(),
             status: ToolResultStatus::Success,
+            images: Vec::new(),
         }
     );
     assert_eq!(agent.history.len(), 4);
@@ -982,6 +984,7 @@ async fn modern_mixed_batch_materializes_unsupported_terminal_before_admission()
                 tool_name: "missing_tool".to_owned(),
                 content: "Unsupported tool: missing_tool".to_owned(),
                 status: ToolResultStatus::Failure,
+                images: Vec::new(),
             },
         ]
     );
@@ -1355,6 +1358,7 @@ fn tool_message(id: &str, content: &str, status: ToolResultStatus) -> ChatMessag
         tool_name: "echo".to_owned(),
         content: content.to_owned(),
         status,
+        images: Vec::new(),
     }
 }
 

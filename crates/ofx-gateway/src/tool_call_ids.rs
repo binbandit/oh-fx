@@ -164,6 +164,7 @@ mod tests {
             tool_name: "read".to_owned(),
             content: content.to_owned(),
             status: ToolResultStatus::Success,
+            images: Vec::new(),
         }
     }
 

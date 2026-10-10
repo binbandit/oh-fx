@@ -213,6 +213,7 @@ async fn a_continued_turn_keeps_its_checkpoints_evidence_and_adds_its_own() {
                     tool_name: "read_file".to_owned(),
                     content: "text".to_owned(),
                     status: ToolResultStatus::Success,
+                    images: Vec::new(),
                 },
             ],
             outputs: Vec::new(),
