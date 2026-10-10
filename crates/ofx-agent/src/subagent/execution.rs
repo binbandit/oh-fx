@@ -5,6 +5,7 @@ use ofx_contract::{
     TurnOutcome, UiEvent,
 };
 use ofx_text::is_terminal_safe;
+use ofx_trace::trace_event;
 use tokio_util::sync::CancellationToken;
 
 use super::child_state::{ActiveWork, Outcome};
@@ -16,6 +17,8 @@ const MAX_DIAGNOSTIC_BYTES: usize = 256;
 pub(crate) struct ChildRelay<'a> {
     pub(crate) approvals: &'a (dyn Fn(ApprovalRequest) -> Result<(), LogFailure> + Sync),
     pub(crate) feedback: &'a (dyn Fn(String) + Sync),
+    pub(crate) child_id: &'a str,
+    pub(crate) parent_id: &'a str,
 }
 
 pub(crate) struct ChildRuntime {
@@ -82,6 +85,16 @@ impl ChildRuntime {
         self.agent
             .inherit_root_user_requests(Arc::clone(&work.root_user_requests));
         self.permission_mode.set(work.permission_mode);
+        let trace = self.agent.trace_next_turn_as_subagent();
+        trace_event!(
+            "subagent",
+            "trace_identity",
+            trace,
+            "child_id={} parent_id={} work_id={}",
+            relay.child_id,
+            relay.parent_id,
+            work.id
+        );
         let mut partial = String::new();
         let mut unsaved = None;
         let stop = cancel.child_token();
