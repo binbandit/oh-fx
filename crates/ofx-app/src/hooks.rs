@@ -41,8 +41,10 @@ mod tests {
 
     use super::configure;
 
+    type Report = (&'static str, Option<Vec<u8>>);
+
     #[derive(Default)]
-    struct Recording(Mutex<Vec<(&'static str, Option<Vec<u8>>)>>);
+    struct Recording(Mutex<Vec<Report>>);
 
     impl ForegroundLifecycle for Recording {
         fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
