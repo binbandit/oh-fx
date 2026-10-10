@@ -78,7 +78,12 @@ mod stored {
 
     fn reply(request: &RecordedRequest, token: &'static str) -> Reply {
         if request.path == "/token" {
-            return Reply::json(token);
+            let status = if token.contains("\"error\"") {
+                400
+            } else {
+                200
+            };
+            return Reply::json(token).with_status(status);
         }
         match request.method_name().as_deref() {
             Some("initialize") => Reply::json(&format!(
@@ -245,6 +250,44 @@ mod stored {
             Some("renewed-refresh")
         );
         assert!(saved.expires_at_ms > 1);
+    }
+
+    async fn authentication_after(fixture: &Fixture) -> crate::health::AuthenticationState {
+        let state = Arc::new(AuthState::default());
+        let config = fixture.config();
+        let _ = McpClient::connect_until(
+            &config,
+            &fixture.options(),
+            crate::server_transport::startup_deadline(&config),
+            &state,
+        )
+        .await;
+        state.authentication(&config)
+    }
+
+    #[tokio::test]
+    async fn only_a_dead_grant_requires_authentication_again() {
+        use crate::health::AuthenticationState;
+        for (token, refresh, expected) in [
+            (RENEWED, None, AuthenticationState::Required),
+            (
+                r#"{"error":"invalid_grant"}"#,
+                Some("stored-refresh"),
+                AuthenticationState::Required,
+            ),
+            (
+                RENEWED,
+                Some("stored-refresh"),
+                AuthenticationState::Authenticated,
+            ),
+        ] {
+            let fixture = Fixture::start(token).await;
+            fixture
+                .store()
+                .save("remote", &fixture.credentials(1, refresh))
+                .unwrap();
+            assert_eq!(authentication_after(&fixture).await, expected, "{token}");
+        }
     }
 
     #[tokio::test]

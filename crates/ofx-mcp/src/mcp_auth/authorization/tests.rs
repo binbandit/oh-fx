@@ -505,6 +505,38 @@ fn token_endpoint_methods_follow_upstreams_preference() {
 
 #[test]
 fn scopes_union_the_previous_grant_without_duplicates() {
+    assert_eq!(
+        requested_scope(
+            &[],
+            Some("tools.call tools.admin"),
+            &[],
+            Some("tools.read tools.call"),
+            true
+        ),
+        Ok(Some(
+            "tools.read tools.call tools.admin offline_access".to_owned()
+        ))
+    );
+    assert_eq!(
+        requested_scope(
+            &["configured".to_owned()],
+            Some(""),
+            &["meta".to_owned()],
+            None,
+            false
+        ),
+        Ok(None)
+    );
+    assert_eq!(
+        requested_scope(
+            &["configured".to_owned()],
+            Some("challenged"),
+            &[],
+            None,
+            false
+        ),
+        Ok(Some("challenged".to_owned()))
+    );
     let configured = ["tools.call tools.admin".to_owned()];
     let metadata = ["meta".to_owned()];
     assert_eq!(
@@ -678,4 +710,73 @@ async fn a_configured_callback_port_redirects_to_localhost_and_must_be_free() {
         Err(McpError::McpCallbackPortUnavailable)
     );
     drop(held);
+}
+
+#[tokio::test]
+async fn a_challenged_resource_metadata_url_is_fetched_once_without_fallback() {
+    let server = authority("", TOKEN).await;
+    let origin = origin(&server);
+    let challenge = Challenge {
+        resource_metadata: Some(format!("{origin}/.well-known/oauth-protected-resource/mcp")),
+        scope: Some("tools.call".to_owned()),
+        insufficient_scope: false,
+    };
+    let (opened, open) = browser(approving);
+    assert!(matches!(
+        authorize_interactive(
+            &http(),
+            &server.url,
+            &ClientConfig::default(),
+            &challenge,
+            None,
+            &open,
+            &CancellationToken::new()
+        )
+        .await,
+        Ok(AuthorizationResult::Credentials(_))
+    ));
+    assert_eq!(
+        query(&opened.lock().unwrap()[0], "scope"),
+        "tools.call offline_access"
+    );
+    let missing = Challenge {
+        resource_metadata: Some(format!("{origin}/elsewhere")),
+        ..Challenge::default()
+    };
+    let before = server.requests().len();
+    assert_eq!(
+        authorize_interactive(
+            &http(),
+            &server.url,
+            &ClientConfig::default(),
+            &missing,
+            None,
+            &open,
+            &CancellationToken::new()
+        )
+        .await,
+        Err(McpError::ProtectedResourceMetadataUnavailable)
+    );
+    let after: Vec<_> = server.requests()[before..]
+        .iter()
+        .map(|request| request.path.clone())
+        .collect();
+    assert_eq!(after, ["/elsewhere"]);
+    let insecure = Challenge {
+        resource_metadata: Some("http://auth.example/prm".to_owned()),
+        ..Challenge::default()
+    };
+    assert_eq!(
+        authorize_interactive(
+            &http(),
+            &server.url,
+            &ClientConfig::default(),
+            &insecure,
+            None,
+            &open,
+            &CancellationToken::new()
+        )
+        .await,
+        Err(McpError::InsecureMcpAuthEndpoint)
+    );
 }

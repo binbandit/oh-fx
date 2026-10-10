@@ -863,7 +863,8 @@ mod tests {
     use crate::features::common::ResourceData;
     use crate::features::prompts::{PromptContentKind, PromptRole};
     use crate::features::resources::{Details, Resource};
-    use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
+    use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig, TransportType};
+    use crate::model_catalog::Availability;
     use crate::project_config::WorkspaceDiagnosticCause;
 
     const SERVER: &str = r#"
@@ -953,6 +954,98 @@ done
 
     async fn call(runtime: &McpRuntime, name: &str, arguments: &str) -> ofx_contract::ToolOutput {
         execute(prepare(runtime, name, arguments)).await
+    }
+
+    fn remote_runtime(url: &str) -> McpRuntime {
+        McpRuntime::new(
+            NativeConfigLoad {
+                configs: vec![McpServerConfig {
+                    startup_timeout_ms: 5_000,
+                    ..McpServerConfig::remote("remote", TransportType::Http, url)
+                }],
+                ..NativeConfigLoad::default()
+            },
+            ConnectOptions::default(),
+            Vec::new(),
+            ContextLimits::default(),
+        )
+    }
+
+    const CHALLENGE: &str =
+        r#"Bearer realm="mcp", scope="tools.call", resource_metadata="https://auth.example/prm""#;
+    const NEEDS_AUTH: [&str; 2] = [
+        "state=failed auth=required status=needs_auth\n",
+        "    failure=Authentication is required or the saved credentials lack access; run /mcp auth remote --open and check server permissions.\n",
+    ];
+
+    fn needs_authentication(runtime: &McpRuntime) {
+        let health = runtime.render_health();
+        for line in NEEDS_AUTH {
+            assert!(health.contains(line), "{health}");
+        }
+        assert_eq!(
+            runtime.model_catalog()[0].availability,
+            Availability::AuthenticationRequired
+        );
+        let summary = runtime.render_summary();
+        assert!(
+            summary.contains("1 needs auth, 0 failed. Run /mcp auth remote --open."),
+            "{summary}"
+        );
+        let server = &runtime.current()[0];
+        assert!(matches!(
+            server.lifecycle(),
+            Lifecycle::Failed(message)
+                if message == "Authentication required. Run /mcp auth remote --open, or configure bearer_token_env."
+        ));
+        assert_eq!(
+            server.auth.pending(),
+            crate::mcp_auth::Challenge {
+                resource_metadata: Some("https://auth.example/prm".to_owned()),
+                scope: Some("tools.call".to_owned()),
+                insufficient_scope: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_initialize_answered_with_401_needs_authentication_with_its_challenge() {
+        use crate::test_support::{FakeServer, Reply};
+        let server =
+            FakeServer::start(|_| Reply::status(401).header("WWW-Authenticate", CHALLENGE)).await;
+        let runtime = remote_runtime(&server.url);
+        runtime.connect(StartupPhase::All).await;
+        needs_authentication(&runtime);
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_answered_with_401_retires_the_server_until_it_authenticates() {
+        use crate::test_support::{FakeServer, Reply};
+        let server = FakeServer::start(|request| match request.method_name().as_deref() {
+            Some("initialize") => Reply::json(&format!(
+                r#"{{"jsonrpc":"2.0","id":{},"result":{{"protocolVersion":"2025-11-25","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"remote","version":"1"}}}}}}"#,
+                request.request_id().unwrap()
+            )),
+            Some("tools/list") => Reply::json(&format!(
+                r#"{{"jsonrpc":"2.0","id":{},"result":{{"tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}"#,
+                request.request_id().unwrap()
+            )),
+            Some("tools/call") => Reply::status(401).header("WWW-Authenticate", CHALLENGE),
+            _ => Reply::status(202),
+        })
+        .await;
+        let runtime = remote_runtime(&server.url);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(runtime.model_catalog()[0].availability, Availability::Ready);
+        let output = call(&runtime, "mcp_remote_echo", "{}").await;
+        assert_eq!(output.status, ToolResultStatus::Failure);
+        assert!(
+            output.content.contains("McpAuthenticationRequired"),
+            "{}",
+            output.content
+        );
+        needs_authentication(&runtime);
+        assert!(runtime.tools().is_empty());
     }
 
     #[cfg(target_os = "linux")]
