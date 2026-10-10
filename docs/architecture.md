@@ -29,7 +29,7 @@ The shipping target is the native terminal binary. Upstream WASM, Node-API addon
 | 1 | `ofx-markdown` | Streaming markdown, syntax highlighting, diffs | `agent/presentation`, `core/output` |
 | 1 | `ofx-vt` | Terminal screen model used by the renderer and tests | `core/terminal/engine` |
 | 1 | `ofx-jsonrpc` | JSON-RPC framing shared by MCP and ACP | `acp/jsonrpc`, MCP framing |
-| 1 | `ofx-images` | Image type sniffing and loading image files the user attaches | `core/images` |
+| 1 | `ofx-images` | Image type sniffing, loading image files the user attaches, and their verified snapshots | `core/images` |
 | 2 | `ofx-workspace` | Path resolution, git file listing, the `@` file index and path completion, glob, literal grep, read tracking, the status line workspace identity, additional directories and their saved changes | `core/workspace` |
 | 2 | `ofx-exec` | Processes, process groups, managed shell sessions, PTYs | `core/execution`, `core/terminal` |
 | 2 | `ofx-upgrade` | Self-upgrade from GitHub Releases | `core/upgrade` |

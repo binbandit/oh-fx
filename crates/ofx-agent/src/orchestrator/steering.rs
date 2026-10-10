@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::Arc;
 
 use ofx_contract::{ChatMessage, TurnId, UiEvent};
@@ -192,15 +193,21 @@ impl Agent {
                 content,
                 restored_steering: false,
                 feedback_for: None,
+                images,
             } = message
             else {
                 continue;
             };
-            let Some(text) = steering_text(content) else {
+            let Some(text) = steering_text(content).map(str::to_owned) else {
                 continue;
             };
             *message = if index == start {
-                ChatMessage::user(text)
+                ChatMessage::User {
+                    content: text,
+                    restored_steering: false,
+                    feedback_for: None,
+                    images: mem::take(images),
+                }
             } else {
                 ChatMessage::restored_steering(text)
             };

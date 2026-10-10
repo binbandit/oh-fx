@@ -1678,3 +1678,5 @@ fn arguments_sent_with_the_added_item_are_not_reported_as_streamed_input() {
         [Delta::ToolInput("\"a\"}".to_owned())]
     );
 }
+
+mod images;
