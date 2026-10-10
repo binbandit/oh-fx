@@ -66,7 +66,7 @@ pub(crate) fn request_max_dimension(image_count: usize) -> u32 {
     }
 }
 
-pub(crate) fn supported_media_type(mime_type: &str) -> bool {
+pub fn supported_media_type(mime_type: &str) -> bool {
     SUPPORTED_MEDIA_TYPES.contains(&mime_type)
 }
 

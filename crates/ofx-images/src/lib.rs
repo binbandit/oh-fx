@@ -1,5 +1,6 @@
 mod image_attachments;
 mod image_data;
+mod tool_images;
 
 pub use image_attachments::{
     AttachmentDimensionCache, AttachmentError, CaptureBudget, IMAGE_TOO_LARGE_NOTICE,
@@ -9,5 +10,6 @@ pub use image_attachments::{
 };
 pub use image_data::{
     Dimensions, MAX_ENCODED_IMAGE_BYTES, MAX_SINGLE_IMAGE_DIMENSION, detect_media_type,
-    image_dimensions,
+    image_dimensions, supported_media_type,
 };
+pub use tool_images::{ImageError, ImageList, MAX_RESULT_FRAME_BYTES, parse_tool_images};
