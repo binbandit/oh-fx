@@ -27,7 +27,7 @@ The full checkout commit is read from `parity/UPSTREAM`. With that checkout avai
 
 The file map measures structural coverage. Re-audit entries and missing-behavior notes when main gains an implementation. The question tool and answer codec remain partial because ignored out-of-range JSON numbers and duplicate result keys differ from upstream. Byte-exact goldens in `parity/goldens/` cover fixed upstream bytes that oh-fx ships; [their README](../parity/goldens/README.md) lists what they cover and what remains, with their source blobs and the product-name substitutions recorded in [differences/agent.md](differences/agent.md). `cargo xtask parity goldens --check --upstream <path>` compares them with the pin without writing, and the parity CI job runs it after the file-map check. This partial test coverage does not change implementation statuses or the parity pin.
 
-The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `6bdd497`). Native foreground startup and turn starts use it, finished interactive turns reach it through the `PostTurnEnd` lifecycle hook, and visible permission and question prompts through the `AttentionRequired` hook. Lifecycle registration remains partial: the `Stop` hook, later session selection, manual compaction and route-recovery decision reporting, and sounds are pending. Upstream reads no hooks from settings; its handlers are compiled in. Working admission timing and the application environment prefix differ as recorded in [differences/hooks.md](differences/hooks.md).
+The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `6bdd497`). Native foreground startup and turn starts use it, finished interactive turns reach it through the `PostTurnEnd` lifecycle hook, and visible permission and question prompts through the `AttentionRequired` hook. Lifecycle registration remains partial: later session selection, manual compaction and route-recovery decision reporting, and sounds are pending. Upstream reads no hooks from settings; its handlers are compiled in. Working admission timing and the application environment prefix differ as recorded in [differences/hooks.md](differences/hooks.md).
 
 ## 34f1ed1..6bdd497
 
@@ -98,7 +98,7 @@ The `slack` command (`slack install`, `slack status`, and `slack refresh`) preda
 | Area | Status | oh-fx | Note |
 |---|---|---|---|
 | Streamed tool lifecycle in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Validated Responses tool identities publish provisional progress before arguments finish; read, rejected read, parallel calls and partial failures are covered. Rejected provisional calls count no executed step. Plain transcript and retry differences are recorded in [ask](differences/ask.md) and [recovery](differences/recovery.md). |
-| Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle and assistant-boundary events; provisional rows and their replacement remain deferred, as recorded in [the interactive transcript](differences/shell-transcript.md). |
+| Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle events; provisional rows and their replacement remain deferred, as recorded in [the interactive transcript](differences/shell-transcript.md). |
 
 ## Capability search at the sync point
 
