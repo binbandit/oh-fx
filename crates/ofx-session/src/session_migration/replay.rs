@@ -103,8 +103,8 @@ impl Replay {
             }
             Event::RecoverySet(checkpoint) => self.recovery = Some(checkpoint),
             Event::RecoveryCleared => self.recovery = None,
-            Event::UsageCheckpointed
-            | Event::Started(_)
+            Event::UsageCheckpointed(usage) => session.usage = Some(*usage),
+            Event::Started(_)
             | Event::ReplacementStarted(_)
             | Event::ReplacementChunk(_)
             | Event::ReplacementCommitted(_) => {}
@@ -194,6 +194,7 @@ impl LegacySession {
             turns: Vec::new(),
             context_history_start: 0,
             recovery: None,
+            usage: started.usage.map(|usage| *usage),
         }
     }
 
@@ -210,6 +211,7 @@ impl LegacySession {
             turns: state.turns,
             context_history_start: state.context_history_start,
             recovery: None,
+            usage: state.usage,
         }
     }
 
