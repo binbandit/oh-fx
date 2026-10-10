@@ -34,10 +34,12 @@ impl Agent {
         self.pending_interruptions.clear();
         let RestoredHistory {
             checkpoint,
+            compaction_count,
             mut messages,
             mut turn_starts,
         } = restored;
         self.compacted = None;
+        self.compactions = compaction_count;
         if let Some(summary) = checkpoint {
             let (text, payload) = restore_checkpoint(&summary);
             messages.insert(0, ChatMessage::user(text));

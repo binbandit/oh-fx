@@ -116,6 +116,7 @@ impl ChildStore for Store {
             settings,
             history: RestoredHistory {
                 checkpoint: None,
+                compaction_count: 0,
                 messages,
                 turn_starts,
             },

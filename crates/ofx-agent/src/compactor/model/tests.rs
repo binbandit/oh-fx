@@ -1,7 +1,20 @@
-use ofx_contract::{ProviderErrorKind, ToolSpec};
+use ofx_contract::{Completion, ProviderErrorKind, ToolCall, ToolSpec, Usage};
+use ofx_trace::{Ring, TraceContext};
 
 use super::*;
-use crate::scripted_provider::{ScriptedProvider, failure, text};
+use crate::compactor::trace::{CompactionEvent, CompactionTraceKind};
+use crate::scripted_provider::{ScriptedProvider, calling, failure, text};
+
+fn ring() -> &'static Ring<CompactionEvent> {
+    Box::leak(Box::new(Ring::new(64)))
+}
+
+fn traced(ring: &'static Ring<CompactionEvent>) -> Vec<(CompactionTraceKind, bool, String)> {
+    ring.snapshot()
+        .into_iter()
+        .map(|event| (event.event.kind, event.event.failed, event.event.detail))
+        .collect()
+}
 
 fn efforts(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
@@ -12,6 +25,16 @@ fn summarizer<'a>(
     reasoning_efforts: &'a [String],
     conversation: Option<ModelRequest<'a>>,
     cancel: &'a CancellationToken,
+) -> Summarizer<'a> {
+    traced_summarizer(provider, reasoning_efforts, conversation, cancel, ring())
+}
+
+fn traced_summarizer<'a>(
+    provider: &'a ScriptedProvider,
+    reasoning_efforts: &'a [String],
+    conversation: Option<ModelRequest<'a>>,
+    cancel: &'a CancellationToken,
+    ring: &'static Ring<CompactionEvent>,
 ) -> Summarizer<'a> {
     Summarizer {
         provider,
@@ -25,6 +48,14 @@ fn summarizer<'a>(
         conversation,
         session_id: None,
         cancel,
+        trace: Tracer::new(
+            ring,
+            TraceContext {
+                turn_id: 4,
+                step_id: 9,
+                subagent_id: 0,
+            },
+        ),
     }
 }
 
@@ -154,4 +185,81 @@ async fn failures_name_why_the_summary_is_missing() {
         model.summarize(prompt).await,
         Err(CompactionError::Cancelled)
     );
+}
+
+#[tokio::test]
+async fn each_summary_request_and_its_failure_reach_the_compaction_trace() {
+    let usage = Usage {
+        input_tokens: Some(1_200),
+        output_tokens: Some(80),
+    };
+    let provider = ScriptedProvider::new(vec![
+        Err(failure(ProviderErrorKind::InvalidRequest, "BadRequest")),
+        Err(failure(ProviderErrorKind::Protocol, "OutputTruncated")),
+        Ok(calling(ToolCall::new("c", "shell", "{}"))),
+        Err(failure(ProviderErrorKind::Protocol, "InvalidFinishReason")),
+        Ok(Completion {
+            usage,
+            ..text("notes")
+        }),
+    ]);
+    let cancel = CancellationToken::new();
+    let ring = ring();
+    let mut model = traced_summarizer(&provider, &[], None, &cancel, ring);
+    let prompt = Prompt {
+        system: "s",
+        user: "u",
+        after_conversation: false,
+    };
+    for _ in 0..5 {
+        let _ = model.summarize(prompt).await;
+    }
+    let call = |usage: &str| {
+        (
+            CompactionTraceKind::Log,
+            false,
+            format!("compaction model call model=m after_conversation=false {usage}"),
+        )
+    };
+    let unknown =
+        "input_tokens=null cache_read_tokens=null cache_write_tokens=null output_tokens=null";
+    assert_eq!(
+        traced(ring),
+        [
+            call(unknown),
+            (
+                CompactionTraceKind::SummaryTransportFailed,
+                true,
+                "model=m kind=invalid_request detail=".to_owned()
+            ),
+            call(unknown),
+            (
+                CompactionTraceKind::SummaryIncomplete,
+                true,
+                "model=m finish_reason=length bytes=0".to_owned()
+            ),
+            call(unknown),
+            (
+                CompactionTraceKind::SummaryToolCallRejected,
+                true,
+                "model=m".to_owned()
+            ),
+            call(unknown),
+            (
+                CompactionTraceKind::SummaryTransportFailed,
+                true,
+                "model=m err=InvalidFinishReason".to_owned()
+            ),
+            call(
+                "input_tokens=1200 cache_read_tokens=null cache_write_tokens=null output_tokens=80"
+            ),
+        ]
+    );
+    let events = ring.snapshot();
+    assert_eq!(events[1].event.context.turn_id, 4);
+    assert_eq!(events[1].event.context.step_id, 9);
+    assert_eq!(events[0].event.context, TraceContext::default());
+    cancel.cancel();
+    let _ = model.summarize(prompt).await;
+    assert_eq!(ring.snapshot().len(), 9);
 }

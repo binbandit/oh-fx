@@ -10,8 +10,20 @@ pub(crate) static COMPACTION_TRACE: Ring<CompactionEvent> = Ring::new(RING_CAPAC
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionTraceKind {
+    Log,
+    ProviderStart,
+    ProviderCompleted,
+    SummaryTransportFailed,
+    SummaryIncomplete,
+    SummaryToolCallRejected,
+    SummaryTruncated,
+    TransactionFailed,
+    Committed,
     Decision,
     NoCompactableContext,
+    RetentionExhausted,
+    RetentionForcedZero,
+    Installed,
     OverflowRecoveryIncomplete,
     ProviderOverflowRecovery,
 }
@@ -26,11 +38,35 @@ pub struct CompactionEvent {
     pub truncated: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Tracer {
+    ring: &'static Ring<CompactionEvent>,
+    pub(crate) context: TraceContext,
+}
+
+#[derive(Clone, Copy)]
+enum Line {
+    Event(CompactionTraceKind),
+    Log,
+}
+
 impl CompactionTraceKind {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Log => "log",
+            Self::ProviderStart => "provider_start",
+            Self::ProviderCompleted => "provider_completed",
+            Self::SummaryTransportFailed => "summary_transport_failed",
+            Self::SummaryIncomplete => "summary_incomplete",
+            Self::SummaryToolCallRejected => "summary_tool_call_rejected",
+            Self::SummaryTruncated => "summary_truncated",
+            Self::TransactionFailed => "transaction_failed",
+            Self::Committed => "committed",
             Self::Decision => "decision",
             Self::NoCompactableContext => "no_compactable_context",
+            Self::RetentionExhausted => "retention_exhausted",
+            Self::RetentionForcedZero => "retention_forced_zero",
+            Self::Installed => "installed",
             Self::OverflowRecoveryIncomplete => "overflow_recovery_incomplete",
             Self::ProviderOverflowRecovery => "provider_overflow_recovery",
         }
@@ -45,57 +81,69 @@ pub fn reset_compaction_trace() {
     COMPACTION_TRACE.reset();
 }
 
-pub(crate) fn info(
-    ring: &Ring<CompactionEvent>,
-    context: TraceContext,
-    kind: CompactionTraceKind,
-    detail: fmt::Arguments<'_>,
-) {
-    note(ring, context, kind, false, true, detail);
-}
-
-pub(crate) fn failure(
-    ring: &Ring<CompactionEvent>,
-    context: TraceContext,
-    kind: CompactionTraceKind,
-    detail: fmt::Arguments<'_>,
-) {
-    note(ring, context, kind, true, true, detail);
-}
-
-pub(crate) fn info_if(
-    recorded: bool,
-    ring: &Ring<CompactionEvent>,
-    context: TraceContext,
-    kind: CompactionTraceKind,
-    detail: fmt::Arguments<'_>,
-) {
-    note(ring, context, kind, false, recorded, detail);
-}
-
-fn note(
-    ring: &Ring<CompactionEvent>,
-    context: TraceContext,
-    kind: CompactionTraceKind,
-    failed: bool,
-    recorded: bool,
-    detail: fmt::Arguments<'_>,
-) {
-    let traced = ofx_trace::enabled(TRACE_SCOPE);
-    if !recorded && !traced {
-        return;
+impl Tracer {
+    pub(crate) const fn new(ring: &'static Ring<CompactionEvent>, context: TraceContext) -> Self {
+        Self { ring, context }
     }
-    let text = detail.to_string();
-    if traced {
-        ofx_trace::event(
-            TRACE_SCOPE,
-            kind.name(),
-            context,
-            Some(format_args!("{text}")),
-        );
+
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self::new(
+            Box::leak(Box::new(Ring::new(RING_CAPACITY))),
+            TraceContext::default(),
+        )
     }
-    if recorded {
-        ring.record(CompactionEvent::new(context, kind, failed, text));
+
+    pub(crate) fn info(self, kind: CompactionTraceKind, detail: fmt::Arguments<'_>) {
+        self.note(Line::Event(kind), false, true, detail);
+    }
+
+    pub(crate) fn failure(self, kind: CompactionTraceKind, detail: fmt::Arguments<'_>) {
+        self.note(Line::Event(kind), true, true, detail);
+    }
+
+    pub(crate) fn info_if(
+        self,
+        recorded: bool,
+        kind: CompactionTraceKind,
+        detail: fmt::Arguments<'_>,
+    ) {
+        self.note(Line::Event(kind), false, recorded, detail);
+    }
+
+    pub(crate) fn log(self, failed: bool, detail: fmt::Arguments<'_>) {
+        self.note(Line::Log, failed, true, detail);
+    }
+
+    fn note(self, line: Line, failed: bool, recorded: bool, detail: fmt::Arguments<'_>) {
+        let traced = ofx_trace::enabled(TRACE_SCOPE);
+        if !recorded && !traced {
+            return;
+        }
+        let text = detail.to_string();
+        let (kind, context) = match line {
+            Line::Event(kind) => {
+                if traced {
+                    ofx_trace::event(
+                        TRACE_SCOPE,
+                        kind.name(),
+                        self.context,
+                        Some(format_args!("{text}")),
+                    );
+                }
+                (kind, self.context)
+            }
+            Line::Log => {
+                if traced {
+                    ofx_trace::log(TRACE_SCOPE, format_args!("{text}"));
+                }
+                (CompactionTraceKind::Log, TraceContext::default())
+            }
+        };
+        if recorded {
+            self.ring
+                .record(CompactionEvent::new(context, kind, failed, text));
+        }
     }
 }
 

@@ -8,8 +8,10 @@ use ofx_trace::TraceContext;
 use tokio_util::sync::CancellationToken;
 
 use super::{Agent, EventSink, LastReply, Stop, Turn, TurnFailure};
-use crate::compactor::trace::{self, CompactionTraceKind, Optional};
-use crate::compactor::{self, Compacted, CompactionError, Correction, Size, Step, Summarizer};
+use crate::compactor::trace::{CompactionTraceKind, Optional};
+use crate::compactor::{
+    self, Compacted, CompactionError, Correction, Size, Step, Summarizer, Tracer,
+};
 use crate::execution_memory::{history_turns, retain};
 use crate::prompt_context::{Calibration, RequestCost};
 
@@ -31,6 +33,20 @@ pub enum Compaction {
     Unchanged,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Manual,
+    Automatic,
+    ProviderOverflow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Preparation,
+    Summary,
+    Publication,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Overflow {
     #[default]
@@ -43,6 +59,7 @@ enum Overflow {
 pub(super) struct TurnCompaction {
     overflow: Overflow,
     rebuilt: bool,
+    counted_after: bool,
     compacted_len: Option<usize>,
     pub(super) compacted_steps: bool,
 }
@@ -51,6 +68,14 @@ impl TurnCompaction {
     pub(super) fn checkpointed(&self) -> bool {
         self.compacted_len.is_some()
     }
+}
+
+struct Compacting<'r> {
+    trace: Tracer,
+    size: Size,
+    active: bool,
+    options: ProviderOptions<'r>,
+    conversation: Option<ModelRequest<'r>>,
 }
 
 pub(super) struct Measured {
@@ -82,21 +107,58 @@ impl Agent {
                 )
             });
         let size = self.compaction_size(self.request_fixed_tokens);
+        let trace = self.tracer(TraceContext {
+            turn_id: ofx_trace::next_turn_id(),
+            ..TraceContext::default()
+        });
+        let mut stage = Stage::Preparation;
         let mut progress = |step| {
             if step == Step::Summarizing {
+                stage = Stage::Summary;
                 summarizing();
             }
         };
+        let compacting = Compacting {
+            trace,
+            size,
+            active: false,
+            options,
+            conversation: None,
+        };
         let compacted = self
-            .compacted_history(size, false, options, None, &mut progress, cancel)
-            .await?;
+            .compacted_history(compacting, &mut progress, cancel)
+            .await
+            .inspect_err(|error| trace_failed(trace, stage, Origin::Manual, error.code()))?;
         let Some(compacted) = compacted else {
+            trace_nothing_to_compact(trace, Origin::Manual);
             return Ok(Compaction::Unchanged);
         };
         self.record_compaction(None, &compacted)
-            .map_err(|_| CompactionError::NotSaved)?;
+            .map_err(|failure| {
+                trace_failed(trace, Stage::Publication, Origin::Manual, &failure.code);
+                CompactionError::NotSaved
+            })?;
+        self.trace_committed(trace, Origin::Manual, &compacted);
         self.install_compaction(compacted);
         Ok(Compaction::Compacted)
+    }
+
+    fn tracer(&self, context: TraceContext) -> Tracer {
+        Tracer::new(self.compaction_trace, context)
+    }
+
+    fn trace_committed(&self, trace: Tracer, origin: Origin, compacted: &Compacted) {
+        trace.info(
+            CompactionTraceKind::Committed,
+            format_args!(
+                "origin={} removed_turns={} compaction_count={} summary_bytes={} tools={}",
+                origin.name(),
+                compacted.cut.turns,
+                self.compactions + 1,
+                compacted.text.len(),
+                compacted.payload.tool_count,
+            ),
+        );
     }
 
     pub(super) fn has_compactable_context(&self, turn: &Turn) -> bool {
@@ -149,42 +211,60 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<Option<Compacted>, CompactionError> {
         let mut shown = CompactionShown::new(turn.id, events);
-        let context = turn.trace;
+        let trace = self.tracer(turn.trace);
         let turn = &mut turn.compaction;
         let pending = turn.overflow == Overflow::Pending;
         let rebuilt = mem::take(&mut turn.rebuilt) && !pending;
+        let origin = if pending {
+            Origin::ProviderOverflow
+        } else {
+            Origin::Automatic
+        };
         if let Some(measured) = measured {
             let mut size = self.compaction_size(measured.fixed_tokens);
             size.request_tokens = Some(measured.cost.estimated_tokens);
             size.overflow = pending;
+            if rebuilt {
+                trace.log(
+                    false,
+                    format_args!(
+                        "request after compaction estimated_tokens={} fixed_tokens={} usable_tokens={} after_tokens={}",
+                        measured.cost.estimated_tokens,
+                        Optional(size.fixed_tokens),
+                        Optional(size.usable_tokens),
+                        size.after_tokens(),
+                    ),
+                );
+            }
             let wants = !rebuilt && (pending || size.due());
-            self.trace_decision(context, wants, pending, measured, size);
+            self.trace_decision(trace, wants, pending, measured, size);
             if wants {
-                let conversation = (!pending).then_some(request);
                 self.set_compacting(true);
+                let compacting = Compacting {
+                    trace,
+                    size,
+                    active: true,
+                    options: request.provider_options,
+                    conversation: (!pending).then_some(request),
+                };
                 let compacted = self
-                    .compacted_history(
-                        size,
-                        true,
-                        request.provider_options,
-                        conversation,
-                        &mut |step| shown.step(step),
-                        cancel,
-                    )
+                    .compacted_history(compacting, &mut |step| shown.step(step), cancel)
                     .await;
                 self.set_compacting(false);
-                let compacted = compacted.inspect_err(|error| shown.failed(*error))?;
+                let compacted = compacted.inspect_err(|error| {
+                    trace_failed(trace, shown.stage, origin, error.code());
+                    shown.failed(*error);
+                })?;
                 if compacted.is_some() {
                     return Ok(compacted);
                 }
+                trace_nothing_to_compact(trace, origin);
             } else if rebuilt
                 && let Some(usable) = size
                     .usable_tokens
                     .filter(|usable| measured.cost.estimated_tokens > *usable)
             {
-                trace::failure(
-                    self.compaction_trace,
-                    context,
+                trace.failure(
                     CompactionTraceKind::NoCompactableContext,
                     format_args!(
                         "estimated_tokens={} usable_tokens={usable}",
@@ -195,9 +275,7 @@ impl Agent {
             }
         }
         if pending {
-            trace::failure(
-                self.compaction_trace,
-                context,
+            trace.failure(
                 CompactionTraceKind::OverflowRecoveryIncomplete,
                 format_args!(
                     "estimated_tokens={}",
@@ -211,7 +289,7 @@ impl Agent {
 
     fn trace_decision(
         &self,
-        context: TraceContext,
+        trace: Tracer,
         wants: bool,
         pending: bool,
         measured: &Measured,
@@ -222,10 +300,8 @@ impl Agent {
             .as_ref()
             .filter(|calibration| calibration.model == self.config.model)
             .map(|calibration| calibration.exact_input_tokens);
-        trace::info_if(
+        trace.info_if(
             wants,
-            self.compaction_trace,
-            context,
             CompactionTraceKind::Decision,
             format_args!(
                 "decision={} overflow={pending} request_bytes={} estimated_tokens={} text_tokens={} has_images=false image_baseline=false prior_input_tokens={} usable_tokens={} compact_at_tokens={} compact_at_percent={} max_output_tokens={}",
@@ -249,8 +325,9 @@ impl Agent {
         measured: Option<Measured>,
         events: EventSink<'_>,
     ) -> Result<(), Stop> {
+        let before = measured.as_ref().map(|measured| measured.cost);
         self.settle_measurement(measured, None);
-        let installed = self.install_turn_compaction(turn, compacted);
+        let installed = self.install_turn_compaction(turn, compacted, before);
         let activity = if installed.is_ok() {
             CompactionActivity::Compacted
         } else {
@@ -267,9 +344,22 @@ impl Agent {
         &mut self,
         turn: &mut Turn,
         compacted: Compacted,
+        before: Option<RequestCost>,
     ) -> Result<(), Stop> {
+        let trace = self.tracer(turn.trace);
+        let origin = if turn.compaction.overflow == Overflow::Pending {
+            Origin::ProviderOverflow
+        } else {
+            Origin::Automatic
+        };
         self.record_compaction(Some(turn), &compacted)
-            .map_err(|failure| Stop::failed(TurnFailure::Persistence(failure)))?;
+            .map_err(|failure| {
+                trace_failed(trace, Stage::Publication, origin, &failure.code);
+                Stop::failed(TurnFailure::Persistence(failure))
+            })?;
+        self.trace_committed(trace, origin, &compacted);
+        let summary_bytes = compacted.text.len();
+        let tools = compacted.payload.tool_count;
         let active = self.turn_starts.len().saturating_sub(1);
         let splits_active = compacted.cut.turns == active && compacted.cut.splits_turn();
         if splits_active {
@@ -280,9 +370,18 @@ impl Agent {
         turn.start = self.turn_starts.last().copied().unwrap_or(turn.start);
         turn.compaction.compacted_len = Some(self.history.len());
         turn.compaction.rebuilt = true;
+        turn.compaction.counted_after = true;
         if turn.compaction.overflow == Overflow::Pending {
             turn.compaction.overflow = Overflow::Used;
         }
+        trace.info(
+            CompactionTraceKind::Installed,
+            format_args!(
+                "request_bytes_before={} estimated_tokens_before={} summary_bytes={summary_bytes} tools={tools}",
+                before.map_or(0, |cost| cost.bytes),
+                before.map_or(0, |cost| cost.estimated_tokens),
+            ),
+        );
         Ok(())
     }
 
@@ -300,9 +399,7 @@ impl Agent {
             && self.has_compactable_context(turn)
             && is_context_overflow(error);
         if recovers {
-            trace::info(
-                self.compaction_trace,
-                turn.trace,
+            self.tracer(turn.trace).info(
                 CompactionTraceKind::ProviderOverflowRecovery,
                 format_args!(
                     "model={} request_bytes={} estimated_tokens={}",
@@ -314,6 +411,25 @@ impl Agent {
             turn.compaction.overflow = Overflow::Pending;
         }
         recovers
+    }
+
+    pub(super) fn trace_request_after_compaction(
+        &self,
+        turn: &mut Turn,
+        measured: Option<&Measured>,
+        input_tokens: Option<u64>,
+    ) {
+        if let (Some(measured), Some(exact)) = (measured, input_tokens)
+            && mem::take(&mut turn.compaction.counted_after)
+        {
+            self.tracer(turn.trace).log(
+                false,
+                format_args!(
+                    "request after compaction exact_input_tokens={exact} estimated_tokens={}",
+                    measured.cost.estimated_tokens
+                ),
+            );
+        }
     }
 
     pub(super) fn settle_measurement(
@@ -358,13 +474,17 @@ impl Agent {
 
     async fn compacted_history(
         &self,
-        size: Size,
-        active: bool,
-        options: ProviderOptions<'_>,
-        conversation: Option<ModelRequest<'_>>,
+        compacting: Compacting<'_>,
         progress: &mut (dyn FnMut(Step) + Send),
         cancel: &CancellationToken,
     ) -> Result<Option<Compacted>, CompactionError> {
+        let Compacting {
+            trace,
+            size,
+            active,
+            options,
+            conversation,
+        } = compacting;
         let turns = history_turns(&self.history, &self.turn_starts);
         let reasoning_efforts = self
             .capabilities
@@ -379,6 +499,7 @@ impl Agent {
             conversation,
             session_id: self.session_id.as_deref(),
             cancel,
+            trace,
         };
         let request = compactor::Request {
             turns: &turns,
@@ -387,6 +508,7 @@ impl Agent {
             size,
             model: &self.config.model,
             sends_after_conversation: conversation.is_some(),
+            trace,
         };
         compactor::compact(request, &mut summarizer, progress, cancel).await
     }
@@ -428,7 +550,51 @@ impl Agent {
             })
             .collect();
         self.compacted = Some(compacted.payload);
+        self.compactions += 1;
         self.calibration = None;
+    }
+}
+
+fn trace_failed(trace: Tracer, stage: Stage, origin: Origin, error: &str) {
+    let detail = format_args!(
+        "stage={} origin={} err={error}",
+        stage.name(),
+        origin.name()
+    );
+    if error == CompactionError::Cancelled.code() {
+        trace.info(CompactionTraceKind::TransactionFailed, detail);
+    } else {
+        trace.failure(CompactionTraceKind::TransactionFailed, detail);
+    }
+}
+
+fn trace_nothing_to_compact(trace: Tracer, origin: Origin) {
+    trace.info(
+        CompactionTraceKind::Decision,
+        format_args!(
+            "decision=no_op origin={} reason=nothing_to_compact",
+            origin.name()
+        ),
+    );
+}
+
+impl Origin {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Automatic => "automatic",
+            Self::ProviderOverflow => "provider_overflow",
+        }
+    }
+}
+
+impl Stage {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Preparation => "preparation",
+            Self::Summary => "summary",
+            Self::Publication => "publication",
+        }
     }
 }
 
@@ -436,6 +602,7 @@ struct CompactionShown<'e> {
     turn_id: TurnId,
     events: EventSink<'e>,
     started: bool,
+    stage: Stage,
 }
 
 impl<'e> CompactionShown<'e> {
@@ -444,11 +611,15 @@ impl<'e> CompactionShown<'e> {
             turn_id,
             events,
             started: false,
+            stage: Stage::Preparation,
         }
     }
 
     fn step(&mut self, step: Step) {
         self.started |= step == Step::Chosen;
+        if step == Step::Summarizing {
+            self.stage = Stage::Summary;
+        }
         self.show(match step {
             Step::Chosen => CompactionActivity::Preparing,
             Step::Summarizing => CompactionActivity::Summarizing,

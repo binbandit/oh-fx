@@ -1,4 +1,23 @@
+use ofx_trace::{Ring, TraceContext};
+
 use super::*;
+use crate::compactor::trace::{CompactionEvent, CompactionTraceKind};
+
+fn traced() -> (Tracer, &'static Ring<CompactionEvent>) {
+    let ring: &'static Ring<CompactionEvent> = Box::leak(Box::new(Ring::new(64)));
+    (Tracer::new(ring, TraceContext::default()), ring)
+}
+
+fn logged(ring: &Ring<CompactionEvent>) -> Vec<String> {
+    ring.snapshot()
+        .into_iter()
+        .map(|event| {
+            assert_eq!(event.event.kind, CompactionTraceKind::Log);
+            assert!(!event.event.failed);
+            event.event.detail
+        })
+        .collect()
+}
 
 fn entry(id: &str, text: &str) -> Entry {
     Entry {
@@ -13,6 +32,14 @@ fn known(turns: &[usize], tools: &[usize], open: bool) -> Known {
         tools: tools.to_vec(),
         open,
     }
+}
+
+fn read(reply: &str, known: &Known, earlier: &[Entry]) -> Written {
+    super::read(reply, known, earlier, Tracer::detached())
+}
+
+fn candidates(messages: &[Message<'_>], filed: &[Entry]) -> Vec<Candidate> {
+    super::candidates(messages, filed, Tracer::detached())
 }
 
 fn texts(entries: &[Entry]) -> Vec<&str> {
@@ -106,6 +133,9 @@ none";
     assert_eq!(written.tool(9), "ran the tests; 1 of 6 failed");
     assert_eq!(written.tool(99), "");
     assert_eq!(written.noted, [3, 4]);
+    assert_eq!(written.unknown, 1);
+    assert_eq!(written.repeated, 0);
+    assert_eq!(written.renumbered, 1);
 
     assert_eq!(
         texts(&written.entries),
@@ -136,6 +166,7 @@ none";
             "D4 (M5): keep the pickle cache",
         ]
     );
+    assert_eq!(again.repeated, 3);
 
     let summary_only = read(
         "The user fixed the build; the tests pass.",
@@ -144,6 +175,10 @@ none";
     );
     assert!(summary_only.works.is_empty());
     assert!(summary_only.entries.is_empty());
+    assert_eq!(
+        summary_only.earlier,
+        "The user fixed the build; the tests pass."
+    );
 
     let far = read(
         "Facts:\n- F18446744073709551615 (T8): the parser is slow\n- F1000 (T8): the loader is fast",
@@ -157,6 +192,7 @@ none";
             "F1000 (T8): the loader is fast"
         ]
     );
+    assert_eq!(far.renumbered, 1);
 
     let closed = read(reply, &known(&[3], &[8], false), &[]);
     assert_eq!(closed.work(0), "");
@@ -190,6 +226,7 @@ T: none.";
     assert_eq!(written.tool(7), "");
     assert_eq!(written.tool(9), "read the config");
     assert_eq!(written.tool(10), "");
+    assert_eq!(written.unknown, 1);
     assert_eq!(written.work(3), "Answered from memory.");
 }
 
@@ -208,6 +245,7 @@ fn a_reply_in_none_of_the_asked_form_becomes_the_newest_turns_notes() {
         &[],
     );
     assert!(misplaced.works.is_empty());
+    assert_eq!(misplaced.unknown, 1);
     let long = "word ".repeat(4000);
     let clipped = read(&long, &known(&[3], &[], false), &[]);
     assert_eq!(clipped.work(3).len(), MAX_UNREAD_BYTES);
@@ -437,4 +475,54 @@ fn a_heading_counts_with_its_tool_calls_or_a_title_after_it_but_not_inside_a_sen
     ] {
         assert_eq!(turn_number(line), None, "{line}");
     }
+}
+
+#[test]
+fn notes_cut_to_their_room_and_renumbered_entries_are_logged() {
+    let (trace, ring) = traced();
+    let long = "word ".repeat(4000);
+    let clipped = super::read(&long, &known(&[3], &[], false), &[], trace);
+    assert_eq!(clipped.work(3).len(), MAX_UNREAD_BYTES);
+    let reply = format!(
+        "Turn 3\nIn between: {}\nT8: {}\n\nEarlier summary: {}\n\nFacts:\n- F2 (T8): taken\n- F2 (T8): taken again",
+        "w".repeat(MAX_WORK_BYTES + 5),
+        "t".repeat(MAX_TOOL_NOTE_BYTES + 1),
+        "e".repeat(MAX_EARLIER_BYTES + 3),
+    );
+    let written = super::read(&reply, &known(&[3], &[8], false), &[], trace);
+    assert_eq!(written.earlier.len(), MAX_EARLIER_BYTES);
+    assert_eq!(written.renumbered, 1);
+    assert_eq!(
+        logged(ring),
+        [
+            "a compaction note was cut to 8192 bytes number=3 bytes=19999",
+            "a compaction note was cut to 1200 bytes number=3 bytes=1205",
+            "a compaction note was cut to 300 bytes number=8 bytes=301",
+            "the summary of earlier compactions was cut to 2400 bytes bytes=2403",
+            "compaction entries renumbered because their IDs were taken or far above the highest count=1",
+        ]
+    );
+}
+
+#[test]
+fn rule_candidates_past_their_room_are_logged() {
+    let (trace, ring) = traced();
+    let rule =
+        |index: usize| format!("Always keep the build green for module number {index:04} please.");
+    let text: String = (0..400).map(|index| rule(index) + "\n").collect();
+    let messages = [Message {
+        turn: 1,
+        text: &text,
+        in_progress: false,
+    }];
+    let found = super::candidates(&messages, &[], trace);
+    let bytes: usize = found.iter().map(|candidate| candidate.text.len()).sum();
+    assert!(bytes <= MAX_CANDIDATE_BYTES);
+    assert_eq!(
+        logged(ring),
+        [format!(
+            "rule candidates over their room; the newest are left out candidates={} bytes={bytes}",
+            found.len()
+        )]
+    );
 }

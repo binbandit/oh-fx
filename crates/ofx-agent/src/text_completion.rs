@@ -1,4 +1,9 @@
-use ofx_contract::{FinishReason, ModelProvider, ModelRequest, ProviderErrorKind, StreamEvent};
+use ofx_contract::{
+    Completion, FinishReason, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
+    StreamEvent, Usage,
+};
+use ofx_text::mask_secrets;
+use ofx_trace::{preview, terminal_preview};
 use tokio_util::sync::CancellationToken;
 
 use crate::model_response_recovery::{
@@ -7,12 +12,31 @@ use crate::model_response_recovery::{
 };
 
 const OUTPUT_TRUNCATED: &str = "OutputTruncated";
+const SAFE_DETAIL_BYTES: usize = 512;
+const DETAIL_PREVIEW_BYTES: usize = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Failure {
-    Cancelled,
+pub(crate) struct Cancelled;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reason {
+    Transport,
+    Provider,
+    ToolCall,
     Incomplete,
-    Unusable,
+    Truncated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failure {
+    pub(crate) reason: Reason,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Outcome {
+    pub(crate) reply: Result<String, Failure>,
+    pub(crate) usage: Usage,
 }
 
 pub(crate) async fn complete(
@@ -20,12 +44,12 @@ pub(crate) async fn complete(
     request: &ModelRequest<'_>,
     max_bytes: usize,
     cancel: &CancellationToken,
-) -> Result<String, Failure> {
+) -> Result<Outcome, Cancelled> {
     let mut attempt = 1;
     let mut pacing = RetryPacing::Idle;
     loop {
         if cancel.is_cancelled() {
-            return Err(Failure::Cancelled);
+            return Err(Cancelled);
         }
         let mut capture = Capture::default();
         let mut sink = |event: StreamEvent| {
@@ -35,7 +59,7 @@ pub(crate) async fn complete(
         };
         let streamed = provider.stream(request, &mut sink, cancel).await;
         if cancel.is_cancelled() {
-            return Err(Failure::Cancelled);
+            return Err(Cancelled);
         }
         let error = match streamed {
             Ok(completion) => {
@@ -44,25 +68,25 @@ pub(crate) async fn complete(
                 {
                     capture.append(content, max_bytes);
                 }
-                if !completion.tool_calls.is_empty()
-                    || completion.finish_reason != FinishReason::Stop
-                    || capture.observed_bytes > capture.text.len()
-                {
-                    return Err(Failure::Unusable);
-                }
-                return Ok(capture.text);
+                return Ok(Outcome {
+                    reply: settled(&completion, capture),
+                    usage: completion.usage,
+                });
             }
             Err(error) => error,
         };
         if error.kind == ProviderErrorKind::Cancelled {
-            return Err(Failure::Cancelled);
+            return Err(Cancelled);
         }
         if error.code == OUTPUT_TRUNCATED {
-            return Err(Failure::Incomplete);
+            return Ok(failed(
+                Reason::Incomplete,
+                format!("finish_reason=length bytes={}", capture.text.len()),
+            ));
         }
         let cause = recovery_cause(error.kind).filter(|_| !capture.saw_content);
         let Some(cause) = cause.filter(|_| attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS) else {
-            return Err(Failure::Unusable);
+            return Ok(rejected(&error));
         };
         let decision = decide(Evidence {
             cause,
@@ -75,11 +99,84 @@ pub(crate) async fn complete(
         });
         tokio::select! {
             biased;
-            () = cancel.cancelled() => return Err(Failure::Cancelled),
+            () = cancel.cancelled() => return Err(Cancelled),
             () = tokio::time::sleep(decision.delay) => {}
         }
         attempt += 1;
         pacing = decision.next_pacing;
+    }
+}
+
+fn settled(completion: &Completion, capture: Capture) -> Result<String, Failure> {
+    if !completion.tool_calls.is_empty() {
+        return Err(Failure {
+            reason: Reason::ToolCall,
+            detail: String::new(),
+        });
+    }
+    if completion.finish_reason != FinishReason::Stop {
+        return Err(Failure {
+            reason: Reason::Incomplete,
+            detail: format!(
+                "finish_reason={} bytes={}",
+                finish_reason_name(completion.finish_reason),
+                capture.text.len()
+            ),
+        });
+    }
+    if capture.observed_bytes > capture.text.len() {
+        return Err(Failure {
+            reason: Reason::Truncated,
+            detail: format!("bytes={}", capture.observed_bytes),
+        });
+    }
+    Ok(capture.text)
+}
+
+fn rejected(error: &ProviderError) -> Outcome {
+    match answered_kind(error) {
+        Some(kind) => {
+            let masked = mask_secrets(error.detail.as_deref().unwrap_or_default());
+            let safe = terminal_preview(&masked, SAFE_DETAIL_BYTES);
+            failed(
+                Reason::Provider,
+                format!(
+                    "kind={kind} detail={}",
+                    preview(&safe, DETAIL_PREVIEW_BYTES)
+                ),
+            )
+        }
+        None => failed(Reason::Transport, format!("err={}", error.code)),
+    }
+}
+
+fn failed(reason: Reason, detail: String) -> Outcome {
+    Outcome {
+        reply: Err(Failure { reason, detail }),
+        usage: Usage::default(),
+    }
+}
+
+fn answered_kind(error: &ProviderError) -> Option<&'static str> {
+    Some(match error.kind {
+        ProviderErrorKind::InvalidRequest => "invalid_request",
+        ProviderErrorKind::Unauthorized => "unauthorized",
+        ProviderErrorKind::Forbidden => "forbidden",
+        ProviderErrorKind::RequestTooLarge => "request_too_large",
+        ProviderErrorKind::RateLimited => "rate_limited",
+        ProviderErrorKind::ServerError => "server_error",
+        ProviderErrorKind::BadGateway => "bad_gateway",
+        ProviderErrorKind::Unavailable => "unavailable",
+        ProviderErrorKind::GatewayTimeout => "gateway_timeout",
+        ProviderErrorKind::ProviderError if error.status.is_some() => "provider_error",
+        _ => return None,
+    })
+}
+
+const fn finish_reason_name(reason: FinishReason) -> &'static str {
+    match reason {
+        FinishReason::Stop => "stop",
+        FinishReason::ToolCalls => "tool_calls",
     }
 }
 

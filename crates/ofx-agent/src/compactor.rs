@@ -8,6 +8,7 @@ mod window;
 
 use std::fmt;
 
+use ofx_contract::BoxFuture;
 use ofx_text::StreamingEstimator;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +17,8 @@ use crate::execution_memory::{Cut, HistoryTurn, Note, ToolStep};
 pub(crate) use checkpoint::{Payload, encode_checkpoint, restore_checkpoint};
 pub(crate) use model::Summarizer;
 pub(crate) use summarize::SummaryModel;
+use trace::Optional;
+pub(crate) use trace::Tracer;
 pub use trace::{CompactionEvent, CompactionTraceKind, compaction_trace, reset_compaction_trace};
 pub(crate) use window::{Correction, Size};
 
@@ -61,6 +64,7 @@ pub(crate) struct Request<'a> {
     pub(crate) size: Size,
     pub(crate) model: &'a str,
     pub(crate) sends_after_conversation: bool,
+    pub(crate) trace: Tracer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +86,14 @@ pub(crate) async fn compact(
     progress: &mut (dyn FnMut(Step) + Send),
     cancel: &CancellationToken,
 ) -> Result<Option<Compacted>, CompactionError> {
-    let Some(chosen) = window::choose(request.turns, request.active, request.size, request.model)?
+    let trace = request.trace;
+    let Some(chosen) = window::choose(
+        request.turns,
+        request.active,
+        request.size,
+        request.model,
+        trace,
+    )?
     else {
         return Ok(None);
     };
@@ -91,9 +102,33 @@ pub(crate) async fn compact(
         return Err(CompactionError::Cancelled);
     }
     progress(Step::Summarizing);
-    let turns = turns_from(request.turns, chosen.cut);
-    let kept = kept_from(request.turns, chosen.cut);
     let size = request.size;
+    trace.log(
+        false,
+        format_args!(
+            "room after compaction after_tokens={} fixed_tokens={} kept_tokens={} kept_used={} compacted_tokens={}",
+            size.after_tokens(),
+            Optional(size.fixed_tokens),
+            chosen.kept_tokens,
+            chosen.kept_used,
+            size.compacted_tokens(chosen.kept_used),
+        ),
+    );
+    let turns = turns_from(request.turns, chosen.cut);
+    trace.info(
+        CompactionTraceKind::ProviderStart,
+        format_args!(
+            "model={} turns={} earlier={} store=false",
+            request.model,
+            turns.len(),
+            request.earlier.is_some(),
+        ),
+    );
+    let kept = kept_from(request.turns, chosen.cut);
+    let mut counted = Counted {
+        model: summary_model,
+        summaries: 0,
+    };
     let summary = summarize::compact(
         summarize::Request {
             earlier: request.earlier,
@@ -105,15 +140,46 @@ pub(crate) async fn compact(
                 .room_after_conversation()
                 .filter(|_| request.sends_after_conversation),
             max_text_tokens: size.compacted_tokens(chosen.kept_used),
+            trace,
         },
-        summary_model,
+        &mut counted,
     )
     .await?;
+    let compacted = &summary.compacted;
+    trace.info(
+        CompactionTraceKind::ProviderCompleted,
+        format_args!(
+            "model={} summaries={} shown_turns={} turns={} tools={} entries={} used={} text_bytes={} fallback=none",
+            request.model,
+            counted.summaries,
+            compacted.turns.len(),
+            compacted.turn_count,
+            compacted.tool_count,
+            compacted.entries.len(),
+            compacted.used.len(),
+            summary.text.len(),
+        ),
+    );
     Ok(Some(Compacted {
         payload: summary.compacted,
         text: summary.text,
         cut: chosen.cut,
     }))
+}
+
+struct Counted<'m> {
+    model: &'m mut dyn SummaryModel,
+    summaries: usize,
+}
+
+impl SummaryModel for Counted<'_> {
+    fn summarize<'a>(
+        &'a mut self,
+        prompt: summarize::Prompt<'a>,
+    ) -> BoxFuture<'a, Result<String, CompactionError>> {
+        self.summaries += 1;
+        self.model.summarize(prompt)
+    }
 }
 
 fn turns_from<'a>(history: &[HistoryTurn<'a>], cut: Cut) -> Vec<summarize::Turn<'a>> {

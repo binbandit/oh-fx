@@ -71,7 +71,18 @@ impl Fixture {
     }
 
     fn checked(&self, written: Written, earlier: &[Entry]) -> Written {
-        check(written, earlier, &self.sources([0; ENTRY_KINDS.len()]))
+        self.counted(written, earlier).0
+    }
+
+    fn counted(&self, written: Written, earlier: &[Entry]) -> (Written, Counts) {
+        let mut counts = Counts::default();
+        let result = check(
+            written,
+            earlier,
+            &self.sources([0; ENTRY_KINDS.len()]),
+            &mut counts,
+        );
+        (result, counts)
     }
 }
 
@@ -101,8 +112,9 @@ fn entries_that_name_their_source_and_state_what_it_holds_pass_unmarked() {
         entry("S1", "S1 (T7): 141 tests run, 2 fail; replaces S0"),
     ];
     let earlier = [entry("S0", "S0 (M1): not started")];
-    let result = Fixture::new().checked(with_entries(&entries), &earlier);
+    let (result, counts) = Fixture::new().counted(with_entries(&entries), &earlier);
     assert_eq!(texts(&result.entries), texts(&entries));
+    assert_eq!(counts.marked, 0);
 }
 
 #[test]
@@ -120,7 +132,7 @@ fn what_an_entry_gets_wrong_is_marked_and_the_entry_stays() {
         ),
         entry("F5", "F5 (turn 9): 141 tests"),
     ];
-    let result = Fixture::new().checked(with_entries(&entries), &[]);
+    let (result, counts) = Fixture::new().counted(with_entries(&entries), &[]);
     assert_eq!(
         texts(&result.entries),
         [
@@ -133,6 +145,18 @@ fn what_an_entry_gets_wrong_is_marked_and_the_entry_stays() {
             "F4 (T9): LIBFX went to 0.0.10-dev after ~707AFAC508E1",
             "F5 (turn 9): 141 tests [check: M9 does not exist]",
         ]
+    );
+    assert_eq!(
+        counts,
+        Counts {
+            marked: 7,
+            no_source: 1,
+            missing_ids: 2,
+            unfound_values: 2,
+            bad_replaces: 1,
+            unquoted: 2,
+            failed_as_success: 0,
+        }
     );
 }
 
@@ -182,6 +206,7 @@ fn an_entry_may_replace_one_written_before_it_in_the_same_reply() {
         with_entries(&entries[2..]),
         &[],
         &fixture.sources([0, 0, 0, 4, 0]),
+        &mut Counts::default(),
     );
     assert_eq!(numbered.entries[0].text, entries[2].text);
 }
@@ -303,7 +328,7 @@ fn curly_quotes_are_checked_like_straight_ones() {
         ("R1 (M2): \"use only the standard library.\"", false),
     ] {
         let mut problems = Problems::default();
-        check_quote(&mut problems, rule, &users);
+        check_quote(&mut problems, rule, &users, &mut Counts::default());
         assert_eq!(!problems.text.is_empty(), marked, "{rule}");
     }
 }

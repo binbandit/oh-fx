@@ -451,6 +451,7 @@ async fn restored_history_is_sent_ahead_of_the_next_prompt() {
     ];
     agent.restore(RestoredHistory {
         checkpoint: Some("older work".to_owned()),
+        compaction_count: 0,
         messages: restored.clone(),
         turn_starts: vec![0],
     });
@@ -475,6 +476,7 @@ async fn restored_history_is_sent_ahead_of_the_next_prompt() {
     };
     agent.restore(RestoredHistory {
         checkpoint: Some(crate::compactor::encode_checkpoint(&payload)),
+        compaction_count: 0,
         messages: Vec::new(),
         turn_starts: Vec::new(),
     });
