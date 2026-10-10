@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,8 +19,8 @@ use super::metadata::{
     validate_oauth_url_for_resource,
 };
 use super::{
-    Credentials, Payload, now_ms, optional_secret, parse_json, request, required_secret,
-    token_endpoint_authentication, token_expires_at, validate_json_content_type,
+    Credentials, Payload, now_ms, optional_secret, optional_string, parse_json, request,
+    required_secret, token_endpoint_authentication, token_expires_at, validate_json_content_type,
 };
 use crate::error::McpError;
 use crate::oauth_uri::canonical_resource;
@@ -32,7 +32,7 @@ const VERIFIER_ENTROPY_BYTES: usize = 48;
 const STATE_ENTROPY_BYTES: usize = 32;
 const CLIENT_NAME: &str = "oh-fx";
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ClientConfig<'a> {
     pub(crate) resource: Option<&'a str>,
     pub(crate) issuer: Option<&'a str>,
@@ -49,18 +49,26 @@ pub(crate) enum AuthorizationResult {
     IssuerMismatch,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct ClientRegistration {
     client_id: String,
     client_secret: Option<Zeroizing<String>>,
     token_endpoint_auth_method: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct AuthorizationResponse {
     code: Zeroizing<String>,
     state: Zeroizing<String>,
     issuer: Option<String>,
+}
+
+impl fmt::Debug for AuthorizationResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthorizationResponse")
+            .field("issuer", &self.issuer)
+            .finish_non_exhaustive()
+    }
 }
 
 pub(crate) async fn authorize_interactive(
@@ -135,26 +143,21 @@ pub(crate) async fn authorize_interactive(
     {
         return Ok(AuthorizationResult::IssuerMismatch);
     }
-    let grant = exchange_authorization_code(
+    exchange_authorization_code(
         http,
-        &metadata,
+        metadata,
         registration,
-        &callback.code,
-        &verifier,
-        &redirect_uri,
-        &resource,
-        scope.as_deref(),
+        CodeExchange {
+            endpoint,
+            resource,
+            code: &callback.code,
+            verifier: &verifier,
+            redirect_uri: &redirect_uri,
+            scope: scope.as_deref(),
+        },
     )
-    .await?;
-    Ok(AuthorizationResult::Credentials(Box::new(Credentials {
-        endpoint,
-        resource,
-        issuer: metadata.issuer,
-        authorization_endpoint: metadata.authorization_endpoint,
-        token_endpoint: metadata.token_endpoint,
-        revocation_endpoint: metadata.revocation_endpoint,
-        ..grant
-    })))
+    .await
+    .map(|credentials| AuthorizationResult::Credentials(Box::new(credentials)))
 }
 
 fn random_url_safe<const BYTES: usize>() -> Result<Zeroizing<String>, McpError> {
@@ -411,23 +414,27 @@ fn validate_authorization_response(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct CodeExchange<'a> {
+    endpoint: String,
+    resource: String,
+    code: &'a str,
+    verifier: &'a str,
+    redirect_uri: &'a str,
+    scope: Option<&'a str>,
+}
+
 async fn exchange_authorization_code(
     http: &reqwest::Client,
-    metadata: &AuthorizationMetadata,
+    metadata: AuthorizationMetadata,
     registration: ClientRegistration,
-    code: &str,
-    verifier: &str,
-    redirect_uri: &str,
-    resource: &str,
-    requested_scope: Option<&str>,
+    exchange: CodeExchange<'_>,
 ) -> Result<Credentials, McpError> {
     let mut form = FormBody::default();
     form.append("grant_type", "authorization_code");
-    form.append("code", code);
-    form.append("redirect_uri", redirect_uri);
-    form.append("code_verifier", verifier);
-    form.append("resource", resource);
+    form.append("code", exchange.code);
+    form.append("redirect_uri", exchange.redirect_uri);
+    form.append("code_verifier", exchange.verifier);
+    form.append("resource", &exchange.resource);
     let authorization = token_endpoint_authentication(
         &mut form,
         &registration.token_endpoint_auth_method,
@@ -451,15 +458,16 @@ async fn exchange_authorization_code(
     };
     let access_token = required_secret(&object, "access_token")?;
     let refresh_token = optional_secret(&object, "refresh_token")?;
-    let token_type = defaulted_string(&object, "token_type", "Bearer")?;
+    let token_type = optional_string(&object, "token_type")?.unwrap_or_else(|| "Bearer".to_owned());
     if !token_type.eq_ignore_ascii_case("Bearer") {
         return Err(McpError::InvalidTokenResponse);
     }
-    let scope = defaulted_string(&object, "scope", requested_scope.unwrap_or_default())?;
+    let scope = optional_string(&object, "scope")?
+        .unwrap_or_else(|| exchange.scope.unwrap_or_default().to_owned());
     Ok(Credentials {
-        endpoint: String::new(),
-        resource: String::new(),
-        issuer: String::new(),
+        endpoint: exchange.endpoint,
+        resource: exchange.resource,
+        issuer: metadata.issuer,
         client_id: registration.client_id,
         client_secret: registration.client_secret,
         access_token,
@@ -468,22 +476,10 @@ async fn exchange_authorization_code(
         token_type,
         token_endpoint_auth_method: registration.token_endpoint_auth_method,
         expires_at_ms: token_expires_at(&object, now_ms())?,
-        authorization_endpoint: String::new(),
-        token_endpoint: String::new(),
-        revocation_endpoint: None,
+        authorization_endpoint: metadata.authorization_endpoint,
+        token_endpoint: metadata.token_endpoint,
+        revocation_endpoint: metadata.revocation_endpoint,
     })
-}
-
-fn defaulted_string(
-    object: &serde_json::Map<String, Value>,
-    key: &str,
-    default: &str,
-) -> Result<String, McpError> {
-    match object.get(key) {
-        None | Some(Value::Null) => Ok(default.to_owned()),
-        Some(Value::String(value)) => Ok(value.clone()),
-        Some(_) => Err(McpError::InvalidOAuthResponse),
-    }
 }
 
 #[cfg(test)]

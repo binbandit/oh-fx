@@ -22,20 +22,37 @@ fn origin(server: &FakeServer) -> String {
 struct Authority {
     origin: String,
     metadata: String,
-    token: &'static str,
+    token: String,
+    register_status: u16,
+    token_status: u16,
+    resource_at_root: bool,
+    metadata_at_openid: bool,
+    resource_content_type: &'static str,
 }
 
 impl Authority {
     fn reply(&self, request: &RecordedRequest) -> Reply {
-        let json = |body: &str| Reply::json(body);
+        let resource_path = if self.resource_at_root {
+            "/.well-known/oauth-protected-resource"
+        } else {
+            "/.well-known/oauth-protected-resource/mcp"
+        };
+        let metadata_path = if self.metadata_at_openid {
+            "/.well-known/openid-configuration"
+        } else {
+            "/.well-known/oauth-authorization-server"
+        };
         match (request.method.as_str(), request.path.as_str()) {
-            ("GET", "/.well-known/oauth-protected-resource/mcp") => json(&format!(
-                r#"{{"resource":"{}/mcp","authorization_servers":["{}"],"scopes_supported":["tools"]}}"#,
-                self.origin, self.origin
-            )),
-            ("GET", "/.well-known/oauth-authorization-server") => json(&self.metadata),
-            ("POST", "/register") => json(r#"{"client_id":"registered-client"}"#).with_status(201),
-            ("POST", "/token") => json(self.token),
+            ("GET", path) if path == resource_path => Reply::status(200)
+                .body(&format!(
+                    r#"{{"resource":"{}/mcp","authorization_servers":["{}"],"scopes_supported":["tools"]}}"#,
+                    self.origin, self.origin
+                ))
+                .header("Content-Type", self.resource_content_type),
+            ("GET", path) if path == metadata_path => Reply::json(&self.metadata),
+            ("POST", "/register") => Reply::json(r#"{"client_id":"registered-client"}"#)
+                .with_status(self.register_status),
+            ("POST", "/token") => Reply::json(&self.token).with_status(self.token_status),
             _ => Reply::status(404),
         }
     }
@@ -47,7 +64,15 @@ fn metadata_for(origin: &str, extra: &str) -> String {
     )
 }
 
-async fn authority(extra: &str, token: &'static str) -> FakeServer {
+async fn authority(extra: &str, token: &str) -> FakeServer {
+    authority_with(|authority| {
+        authority.metadata = metadata_for(&authority.origin, extra);
+        authority.token = token.to_owned();
+    })
+    .await
+}
+
+async fn authority_with(adjust: impl FnOnce(&mut Authority)) -> FakeServer {
     let placeholder = Arc::new(StdMutex::new(None::<Authority>));
     let shared = Arc::clone(&placeholder);
     let server = FakeServer::start(move |request| {
@@ -56,12 +81,35 @@ async fn authority(extra: &str, token: &'static str) -> FakeServer {
     })
     .await;
     let origin = origin(&server);
-    *placeholder.lock().unwrap() = Some(Authority {
-        metadata: metadata_for(&origin, extra),
+    let mut authority = Authority {
+        metadata: metadata_for(&origin, ""),
         origin,
-        token,
-    });
+        token: TOKEN.to_owned(),
+        register_status: 201,
+        token_status: 200,
+        resource_at_root: false,
+        metadata_at_openid: false,
+        resource_content_type: "application/json",
+    };
+    adjust(&mut authority);
+    *placeholder.lock().unwrap() = Some(authority);
     server
+}
+
+async fn authorize(
+    server: &FakeServer,
+    config: &ClientConfig<'_>,
+) -> Result<AuthorizationResult, McpError> {
+    let (_, open) = browser(approving);
+    authorize_interactive(
+        &http(),
+        &server.url,
+        config,
+        None,
+        &open,
+        &CancellationToken::new(),
+    )
+    .await
 }
 
 fn query(url: &str, key: &str) -> String {
@@ -491,4 +539,120 @@ fn redirects_keep_the_exact_state_and_issuer() {
         parse_authorization_redirect("/callback?code=%zz&state=s"),
         Err(McpError::InvalidPercentEncoding)
     );
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_the_root_and_openid_documents() {
+    let server = authority_with(|authority| {
+        authority.resource_at_root = true;
+        authority.metadata_at_openid = true;
+    })
+    .await;
+    assert!(matches!(
+        authorize(&server, &ClientConfig::default()).await,
+        Ok(AuthorizationResult::Credentials(_))
+    ));
+    let paths: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|request| request.path.clone())
+        .collect();
+    assert_eq!(
+        paths[..4],
+        [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/openid-configuration",
+        ]
+    );
+    let wrong_type =
+        authority_with(|authority| authority.resource_content_type = "text/html").await;
+    assert_eq!(
+        authorize(&wrong_type, &ClientConfig::default()).await,
+        Err(McpError::InvalidOAuthResponseContentType)
+    );
+}
+
+#[tokio::test]
+async fn each_authorization_step_fails_with_upstreams_error() {
+    let without_pkce = authority_with(|authority| {
+        authority.metadata = authority
+            .metadata
+            .replace(r#""code_challenge_methods_supported":["S256"],"#, "");
+    })
+    .await;
+    assert_eq!(
+        authorize(&without_pkce, &ClientConfig::default()).await,
+        Err(McpError::PkceS256NotSupported)
+    );
+    let without_registration = authority_with(|authority| {
+        authority.metadata = authority.metadata.replace(
+            &format!(
+                r#""registration_endpoint":"{}/register","#,
+                authority.origin
+            ),
+            "",
+        );
+    })
+    .await;
+    assert_eq!(
+        authorize(&without_registration, &ClientConfig::default()).await,
+        Err(McpError::ClientRegistrationUnavailable)
+    );
+    let refused_registration = authority_with(|authority| authority.register_status = 400).await;
+    assert_eq!(
+        authorize(&refused_registration, &ClientConfig::default()).await,
+        Err(McpError::ClientRegistrationFailed)
+    );
+    let refused_exchange = authority_with(|authority| authority.token_status = 400).await;
+    assert_eq!(
+        authorize(&refused_exchange, &ClientConfig::default()).await,
+        Err(McpError::TokenExchangeFailed)
+    );
+    let mac_token = authority_with(|authority| {
+        authority.token = r#"{"access_token":"a","token_type":"mac"}"#.to_owned();
+    })
+    .await;
+    assert_eq!(
+        authorize(&mac_token, &ClientConfig::default()).await,
+        Err(McpError::InvalidTokenResponse)
+    );
+}
+
+#[tokio::test]
+async fn a_configured_callback_port_redirects_to_localhost_and_must_be_free() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let server = authority("", TOKEN).await;
+    let (opened, open) = browser(|url: &str| approving(url).replace("localhost", "127.0.0.1"));
+    let config = ClientConfig {
+        callback_port: Some(port),
+        ..ClientConfig::default()
+    };
+    assert!(matches!(
+        authorize_interactive(
+            &http(),
+            &server.url,
+            &config,
+            None,
+            &open,
+            &CancellationToken::new()
+        )
+        .await,
+        Ok(AuthorizationResult::Credentials(_))
+    ));
+    assert_eq!(
+        query(&opened.lock().unwrap()[0], "redirect_uri"),
+        format!("http://localhost:{port}/callback")
+    );
+    let held = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    assert_eq!(
+        authorize(&server, &config).await,
+        Err(McpError::McpCallbackPortUnavailable)
+    );
+    drop(held);
 }

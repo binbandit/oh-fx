@@ -64,15 +64,15 @@ pub(crate) fn auth(name: &str) -> ExitCode {
 
 fn load_runtime() -> Result<Arc<McpRuntime>, String> {
     let profile = Profile::load().map_err(|error| error.to_string())?;
+    let runtime = profile
+        .mcp_command_runtime()
+        .map_err(|error| error.to_string())?;
     let mut stderr = io::stderr().lock();
     for diagnostic in profile.settings().diagnostics() {
         let _ = writeln!(stderr, "oh-fx: {diagnostic}");
     }
     drop(stderr);
-    profile
-        .mcp_command_runtime()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| McpError::McpServerNotFound.to_string())
+    runtime.ok_or_else(|| McpError::McpServerNotFound.to_string())
 }
 
 fn message(error: &McpError) -> String {

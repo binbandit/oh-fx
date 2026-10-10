@@ -462,3 +462,138 @@ mod stored {
         call.abort();
     }
 }
+
+mod authenticating {
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    use zeroize::Zeroizing;
+
+    use super::*;
+    use crate::mcp_auth_store::CredentialStore;
+    use crate::mcp_contract::McpAuthConfig;
+    use crate::test_support::{FakeServer, Reply};
+
+    fn remote(url: &str) -> McpServerConfig {
+        McpServerConfig {
+            allow_stored_credentials: true,
+            auth: Some(McpAuthConfig {
+                client_id: Some("configured".to_owned()),
+                ..McpAuthConfig::default()
+            }),
+            ..McpServerConfig::remote("remote", TransportType::Http, url)
+        }
+    }
+
+    fn options(data: &std::path::Path) -> ConnectOptions {
+        ConnectOptions {
+            profile_data: Some(data.to_path_buf()),
+            ..ConnectOptions::default()
+        }
+    }
+
+    async fn attempt(
+        config: &McpServerConfig,
+        options: &ConnectOptions,
+        environment: &(dyn Fn(&str) -> Option<String> + Sync),
+    ) -> (Result<AuthenticationOutcome, McpError>, Vec<String>) {
+        let opened = Arc::new(StdMutex::new(Vec::new()));
+        let seen = Arc::clone(&opened);
+        let open = move |url: &str| {
+            seen.lock().unwrap().push(url.to_owned());
+            false
+        };
+        let result = authenticate(
+            config,
+            options,
+            &open,
+            &CancellationToken::new(),
+            environment,
+        )
+        .await;
+        let urls = opened.lock().unwrap().clone();
+        (result, urls)
+    }
+
+    #[tokio::test]
+    async fn only_approved_remote_servers_with_their_secrets_authenticate() {
+        let data = tempfile::tempdir().unwrap();
+        let options = options(data.path());
+        let pending = McpServerConfig {
+            source: ConfigSource::Workspace,
+            workspace_admission: Some(WorkspaceAdmission::Pending),
+            ..remote("https://mcp.example/mcp")
+        };
+        let stdio = McpServerConfig::stdio("local", "/bin/true", Vec::new());
+        let mut secretive = remote("https://mcp.example/mcp");
+        secretive.auth = Some(McpAuthConfig {
+            client_secret_env: Some("OH_FX_TEST_CLIENT_SECRET".to_owned()),
+            ..McpAuthConfig::default()
+        });
+        for (config, options, expected) in [
+            (&pending, &options, McpError::McpWorkspaceApprovalRequired),
+            (&stdio, &options, McpError::McpAuthenticationNotRemote),
+            (
+                &secretive,
+                &options,
+                McpError::McpClientSecretEnvironmentMissing,
+            ),
+            (
+                &remote("https://mcp.example/mcp"),
+                &ConnectOptions::default(),
+                McpError::HomeNotSet,
+            ),
+        ] {
+            let (result, urls) = attempt(config, options, &|_| None).await;
+            assert_eq!(result, Err(expected));
+            assert!(urls.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_stored_grant_scope_is_requested_again() {
+        let server = FakeServer::start(|request| {
+            let origin = format!(
+                "http://{}",
+                request.header("host").unwrap_or_default()
+            );
+            match request.path.as_str() {
+                "/.well-known/oauth-protected-resource/mcp" => Reply::json(&format!(
+                    r#"{{"resource":"{origin}/mcp","authorization_servers":["{origin}"]}}"#
+                )),
+                "/.well-known/oauth-authorization-server" => Reply::json(&format!(
+                    r#"{{"issuer":"{origin}","authorization_endpoint":"{origin}/authorize","token_endpoint":"{origin}/token","code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"]}}"#
+                )),
+                _ => Reply::status(404),
+            }
+        })
+        .await;
+        let data = tempfile::tempdir().unwrap();
+        let data_path = std::fs::canonicalize(data.path()).unwrap().join("oh-fx");
+        let previous = Credentials {
+            endpoint: server.url.clone(),
+            resource: server.url.clone(),
+            issuer: "https://issuer.example".to_owned(),
+            client_id: "configured".to_owned(),
+            client_secret: None,
+            access_token: Zeroizing::new("old".to_owned()),
+            refresh_token: None,
+            scope: "earlier.scope".to_owned(),
+            token_type: "Bearer".to_owned(),
+            token_endpoint_auth_method: "none".to_owned(),
+            expires_at_ms: i64::MAX,
+            authorization_endpoint: "https://issuer.example/authorize".to_owned(),
+            token_endpoint: "https://issuer.example/token".to_owned(),
+            revocation_endpoint: None,
+        };
+        CredentialStore::new(&data_path)
+            .save("remote", &previous)
+            .unwrap();
+        let (result, urls) = attempt(&remote(&server.url), &options(&data_path), &|_| None).await;
+        assert_eq!(result, Err(McpError::McpAuthorizationBrowserOpenFailed));
+        let (_, query) = urls[0].split_once('?').unwrap();
+        assert_eq!(
+            ofx_auth::query_value(query, "scope").unwrap().as_str(),
+            "earlier.scope"
+        );
+    }
+}
