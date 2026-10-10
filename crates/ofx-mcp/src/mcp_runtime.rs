@@ -18,11 +18,12 @@ use crate::features::completion::{CompletionArgument, CompletionReference, Compl
 use crate::features::prompts::PromptGetResult;
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
+use crate::model_catalog::ServerSummary;
 use crate::native_config::NativeConfigLoad;
 use crate::project_config::{WorkspaceDiagnostic, render_workspace_diagnostic};
 use crate::server_lifecycle::{Lifecycle, Server};
 use crate::server_transport::ConnectOptions;
-use crate::server_views::{health_failure, snapshot_server};
+use crate::server_views::{health_failure, model_summary, snapshot_server};
 use crate::startup_admission::{StartupDecision, StartupPhase, decide_startup};
 use crate::timing::{sleep, spawn, spawn_on};
 use crate::tool_mcp_registry::{SchemaLimits, publish_tools};
@@ -145,6 +146,13 @@ impl McpRuntime {
 
     pub fn render_health(&self) -> String {
         health::render(&self.snapshot_health())
+    }
+
+    pub fn model_catalog(&self) -> Vec<ServerSummary> {
+        self.current()
+            .iter()
+            .map(|server| model_summary(server))
+            .collect()
     }
 
     pub fn render_summary(&self) -> String {

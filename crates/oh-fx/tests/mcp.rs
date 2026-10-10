@@ -315,6 +315,41 @@ fn ask_advertises_and_calls_a_profile_mcp_tool_and_reaps_the_server() {
     assert!(wait_until_gone(read_pid(&home.state)));
 }
 
+fn system_texts(request: &RecordedRequest) -> Vec<String> {
+    request.json()["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .filter_map(|message| message["content"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn ask_lists_the_configured_servers_to_the_model() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("fixture.sh", FIXTURE_SERVER);
+    home.profile_servers(&json!({
+        "zeta": {"command": "/bin/sh", "args": [script.clone()], "enabled": false},
+        "fixture": {"command": "/bin/sh", "args": [script]},
+    }));
+    let output = home.ask(&["ask", "hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let section = system_texts(&server.requests()[0])
+        .into_iter()
+        .find(|text| text.contains("<mcp_servers>"))
+        .expect("the servers section");
+    let none = include_str!("../../../parity/goldens/mcp_servers_section.txt");
+    let (header, footer) = none.split_once("  <none />\n").unwrap();
+    assert_eq!(
+        section,
+        format!(
+            "{header}  <server name=\"fixture\" state=\"ready\" tools=\"1\" loaded=\"true\" />\n  <server name=\"zeta\" state=\"disabled\" />\n{footer}"
+        )
+    );
+}
+
 #[test]
 fn ask_mode_blocks_an_mcp_tool_call_without_running_it() {
     let server = FakeServer::start([
