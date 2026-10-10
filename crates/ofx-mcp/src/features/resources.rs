@@ -1,12 +1,9 @@
-use std::collections::HashSet;
-
 use serde_json::{Map, Value};
 
-use crate::catalog_freshness::{CacheScope, earliest_expiry, page_expiry};
 use crate::error::McpError;
 use crate::features::common::{
-    self, CacheHints, complete_result, optional_string, parse_cache_hints, parse_envelope,
-    required_string, validate_annotations, validate_bounded_json, validate_icons,
+    self, Listed, Paging, optional_string, required_string, validate_annotations,
+    validate_bounded_json, validate_icons,
 };
 use crate::json_number::non_negative_u64;
 
@@ -33,6 +30,17 @@ impl Default for Limits {
     }
 }
 
+impl Limits {
+    fn paging(self, items: usize) -> Paging {
+        Paging {
+            pages: self.pages,
+            items,
+            cursor_bytes: self.cursor_bytes,
+            common: self.common,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Resource {
     pub(crate) uri: String,
@@ -47,28 +55,18 @@ pub(crate) struct ResourceTemplate {
     pub(crate) title: Option<String>,
 }
 
-pub(crate) trait Listed: Sized {
-    const LIST_METHOD: &'static str;
-    const ITEMS_FIELD: &'static str;
-
-    fn parse_item(value: &Value, limits: common::Limits) -> Result<Self, McpError>;
-
-    fn identity(&self) -> &str;
-
-    fn name(&self) -> &str;
-
-    fn max_items(limits: Limits) -> usize;
-
-    fn limit_exceeded() -> McpError;
-
-    fn duplicate() -> McpError;
-}
-
 impl Listed for Resource {
     const LIST_METHOD: &'static str = "resources/list";
     const ITEMS_FIELD: &'static str = "resources";
 
-    fn parse_item(value: &Value, limits: common::Limits) -> Result<Self, McpError> {
+    type Limits = Limits;
+
+    fn paging(limits: Limits) -> Paging {
+        limits.paging(limits.resources)
+    }
+
+    fn parse_item(value: &Value, limits: Limits) -> Result<Self, McpError> {
+        let limits = limits.common;
         let object = value.as_object().ok_or(McpError::InvalidResource)?;
         let uri = required_string(object, "uri", limits.uri_bytes)
             .map_err(|_| McpError::InvalidResource)?;
@@ -90,10 +88,6 @@ impl Listed for Resource {
         &self.name
     }
 
-    fn max_items(limits: Limits) -> usize {
-        limits.resources
-    }
-
     fn limit_exceeded() -> McpError {
         McpError::ResourceLimitExceeded
     }
@@ -107,7 +101,14 @@ impl Listed for ResourceTemplate {
     const LIST_METHOD: &'static str = "resources/templates/list";
     const ITEMS_FIELD: &'static str = "resourceTemplates";
 
-    fn parse_item(value: &Value, limits: common::Limits) -> Result<Self, McpError> {
+    type Limits = Limits;
+
+    fn paging(limits: Limits) -> Paging {
+        limits.paging(limits.templates)
+    }
+
+    fn parse_item(value: &Value, limits: Limits) -> Result<Self, McpError> {
+        let limits = limits.common;
         let object = value.as_object().ok_or(McpError::InvalidTemplate)?;
         let uri_template = required_string(object, "uriTemplate", limits.uri_bytes)
             .ok()
@@ -132,145 +133,12 @@ impl Listed for ResourceTemplate {
         &self.name
     }
 
-    fn max_items(limits: Limits) -> usize {
-        limits.templates
-    }
-
     fn limit_exceeded() -> McpError {
         McpError::TemplateLimitExceeded
     }
 
     fn duplicate() -> McpError {
         McpError::DuplicateTemplate
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Page<T> {
-    items: Vec<T>,
-    next_cursor: Option<String>,
-    cache: CacheHints,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Catalog<T> {
-    pub(crate) items: Vec<T>,
-    pub(crate) expires_at_ms: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct CatalogBuilder<T> {
-    items: Vec<T>,
-    cursors: HashSet<String>,
-    pages: usize,
-    expires_at_ms: Option<u64>,
-    cache_scope: Option<CacheScope>,
-}
-
-impl<T> Default for CatalogBuilder<T> {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            cursors: HashSet::new(),
-            pages: 0,
-            expires_at_ms: None,
-            cache_scope: None,
-        }
-    }
-}
-
-impl<T: Listed> CatalogBuilder<T> {
-    pub(crate) fn append_page(
-        &mut self,
-        page: Page<T>,
-        received_at_ms: u64,
-        limits: Limits,
-    ) -> Result<Option<String>, McpError> {
-        if self.pages + 1 > limits.pages {
-            return Err(McpError::PaginationLimitExceeded);
-        }
-        if let Some(cursor) = &page.next_cursor
-            && self.cursors.contains(cursor)
-        {
-            return Err(McpError::DuplicateCursor);
-        }
-        if self
-            .cache_scope
-            .is_some_and(|scope| scope != page.cache.scope)
-        {
-            return Err(McpError::InconsistentCacheScope);
-        }
-        if let Some(cursor) = &page.next_cursor {
-            self.cursors.insert(cursor.clone());
-        }
-        self.pages += 1;
-        self.cache_scope.get_or_insert(page.cache.scope);
-        self.expires_at_ms = Some(earliest_expiry(
-            self.expires_at_ms,
-            page_expiry(received_at_ms, page.cache.ttl_ms),
-        ));
-        if self.items.len() + page.items.len() > T::max_items(limits) {
-            return Err(T::limit_exceeded());
-        }
-        for (index, item) in page.items.iter().enumerate() {
-            let identity = item.identity();
-            if self
-                .items
-                .iter()
-                .chain(&page.items[..index])
-                .any(|seen| seen.identity() == identity)
-            {
-                return Err(T::duplicate());
-            }
-        }
-        self.items.extend(page.items);
-        Ok(page.next_cursor)
-    }
-
-    pub(crate) fn finish(mut self) -> Result<Catalog<T>, McpError> {
-        let Some(expires_at_ms) = self.expires_at_ms else {
-            return Err(McpError::InvalidListResult);
-        };
-        self.items.sort_by(|left, right| {
-            left.identity()
-                .as_bytes()
-                .cmp(right.identity().as_bytes())
-                .then_with(|| left.name().as_bytes().cmp(right.name().as_bytes()))
-        });
-        Ok(Catalog {
-            items: self.items,
-            expires_at_ms,
-        })
-    }
-}
-
-pub(crate) fn parse_page<T: Listed>(response: &str, limits: Limits) -> Result<Page<T>, McpError> {
-    let envelope = parse_envelope(response, limits.common)?;
-    let result = complete_result(&envelope).map_err(list_result_error)?;
-    let items = result
-        .get(T::ITEMS_FIELD)
-        .and_then(Value::as_array)
-        .filter(|items| items.len() <= T::max_items(limits))
-        .ok_or(McpError::InvalidListResult)?
-        .iter()
-        .map(|item| T::parse_item(item, limits.common))
-        .collect::<Result<Vec<_>, _>>()?;
-    let next_cursor = match result.get("nextCursor") {
-        None => None,
-        Some(Value::String(cursor)) if cursor.len() <= limits.cursor_bytes => Some(cursor.clone()),
-        Some(_) => return Err(McpError::InvalidListResult),
-    };
-    Ok(Page {
-        items,
-        next_cursor,
-        cache: parse_cache_hints(result)?,
-    })
-}
-
-fn list_result_error(error: McpError) -> McpError {
-    match error {
-        McpError::ProtocolFailure | McpError::UnsupportedResultType => error,
-        _ => McpError::InvalidListResult,
     }
 }
 
@@ -414,15 +282,16 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::features::common::{Catalog, CatalogBuilder, Page, parse_page};
 
-    fn page<T: Listed>(result: &Value) -> Result<Page<T>, McpError> {
+    fn page<T: Listed<Limits = Limits>>(result: &Value) -> Result<Page<T>, McpError> {
         parse_page(
             &json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string(),
             Limits::default(),
         )
     }
 
-    fn catalog<T: Listed>(pages: &[(Value, u64)]) -> Result<Catalog<T>, McpError> {
+    fn catalog<T: Listed<Limits = Limits>>(pages: &[(Value, u64)]) -> Result<Catalog<T>, McpError> {
         let mut builder = CatalogBuilder::default();
         for (result, received_at_ms) in pages {
             builder.append_page(page::<T>(result)?, *received_at_ms, Limits::default())?;
@@ -516,6 +385,28 @@ mod tests {
         assert_eq!(
             builder.append_page(page(&json!({"resources": []})).unwrap(), 0, limits),
             Err(McpError::PaginationLimitExceeded)
+        );
+        let one = Limits {
+            resources: 1,
+            ..Limits::default()
+        };
+        let mut builder = CatalogBuilder::<Resource>::default();
+        let first = json!({"resources": [{"uri": "a://", "name": "a"}], "nextCursor": "next"});
+        builder.append_page(page(&first).unwrap(), 0, one).unwrap();
+        assert_eq!(
+            builder.append_page(page(&first).unwrap(), 0, one),
+            Err(McpError::DuplicateCursor)
+        );
+        let mut builder = CatalogBuilder::<Resource>::default();
+        builder.append_page(page(&first).unwrap(), 0, one).unwrap();
+        assert_eq!(
+            builder.append_page(
+                page(&json!({"resources": [{"uri": "b://", "name": "b"}], "cacheScope": "public"}))
+                    .unwrap(),
+                0,
+                one
+            ),
+            Err(McpError::InconsistentCacheScope)
         );
         let mut builder = CatalogBuilder::<Resource>::default();
         let limits = Limits {

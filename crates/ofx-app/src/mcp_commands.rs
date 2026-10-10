@@ -4,9 +4,9 @@ use std::path::Path;
 use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
 use ofx_contract::NoticeTone;
 use ofx_mcp::{
-    AddIntentError, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction, ResourceSummary,
-    add_profile_server, apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
-    remove_profile_server,
+    AddIntentError, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction, PromptSummary,
+    ResourceSummary, add_profile_server, apply_project_mcp_action_to_entry, load_profile_document,
+    parse_add_intent, remove_profile_server,
 };
 use ofx_text::encode_terminal_safe;
 
@@ -53,6 +53,9 @@ pub(crate) enum Outcome {
         server: String,
         templates: bool,
     },
+    ListPrompts {
+        server: String,
+    },
 }
 
 pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRuntime) -> Outcome {
@@ -67,7 +70,7 @@ pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRunti
         return resource(rest);
     }
     if let Some(rest) = command.strip_prefix("prompt ") {
-        return Outcome::Show(prompt(rest).to_owned());
+        return prompt(rest);
     }
     let Some(config_path) = config_path else {
         return show(HOME_UNAVAILABLE);
@@ -118,6 +121,7 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
         }
         Outcome::Trust { body, action } => apply_project_action(state, host, &action, &body),
         Outcome::ListResources { server, templates } => host.list_resources(server, templates),
+        Outcome::ListPrompts { server } => host.list_prompts(server),
     }
 }
 
@@ -146,6 +150,38 @@ pub(crate) fn render_resource_listing(
             item.identity,
             item.title.as_deref().unwrap_or(&item.name)
         );
+    }
+    out
+}
+
+pub(crate) fn render_prompt_listing(
+    server: &str,
+    listing: Result<Vec<PromptSummary>, McpError>,
+) -> String {
+    let items = match listing {
+        Ok(items) => items,
+        Err(error) => return format!("MCP prompt listing failed: {error}."),
+    };
+    let mut out = format!("MCP prompts from {server} ({}):\n", items.len());
+    for item in &items {
+        let _ = write!(out, "  {server} :: {}", item.name);
+        if let Some(label) = item.title.as_ref().or(item.description.as_ref()) {
+            let _ = write!(out, " — {label}");
+        }
+        if !item.arguments.is_empty() {
+            out.push_str(" [");
+            for (index, argument) in item.arguments.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&argument.name);
+                if argument.required {
+                    out.push('*');
+                }
+            }
+            out.push(']');
+        }
+        out.push('\n');
     }
     out
 }
@@ -343,22 +379,24 @@ fn resource(rest: &str) -> Outcome {
     }
 }
 
-fn prompt(rest: &str) -> &'static str {
+fn prompt(rest: &str) -> Outcome {
     let mut tokens = rest.split(TRIMMED).filter(|token| !token.is_empty());
     match tokens.next() {
         Some("list") => match (tokens.next(), tokens.next()) {
-            (Some(_), None) => "MCP prompts are not available yet.",
-            _ => PROMPT_LIST_USAGE,
+            (Some(server), None) => Outcome::ListPrompts {
+                server: server.to_owned(),
+            },
+            _ => show(PROMPT_LIST_USAGE),
         },
-        Some("get") => match (tokens.next(), tokens.next()) {
+        Some("get") => show(match (tokens.next(), tokens.next()) {
             (Some(_), Some(_)) => "MCP prompt invocation is not available yet.",
             _ => PROMPT_GET_USAGE,
-        },
-        Some("complete") => match (tokens.next(), tokens.next(), tokens.next()) {
+        }),
+        Some("complete") => show(match (tokens.next(), tokens.next(), tokens.next()) {
             (Some(_), Some(_), Some(_)) => "MCP prompt completion is not available yet.",
             _ => PROMPT_COMPLETE_USAGE,
-        },
-        _ => PROMPT_USAGE,
+        }),
+        _ => show(PROMPT_USAGE),
     }
 }
 
@@ -398,7 +436,7 @@ mod tests {
     use std::path::PathBuf;
 
     use ofx_config::{ContextLimitName, ContextLimits};
-    use ofx_mcp::{ConnectOptions, NativeConfigLoad, SchemaLimits};
+    use ofx_mcp::{ConnectOptions, NativeConfigLoad, PromptArgument, SchemaLimits};
 
     use super::*;
 
@@ -614,7 +652,7 @@ mod tests {
             ("prompt", USAGE),
             ("prompt wat", PROMPT_USAGE),
             ("prompt list", PROMPT_LIST_USAGE),
-            ("prompt list docs", "MCP prompts are not available yet."),
+            ("prompt list docs extra", PROMPT_LIST_USAGE),
             ("prompt get docs", PROMPT_GET_USAGE),
             (
                 "prompt get docs review {}",
@@ -681,6 +719,54 @@ mod tests {
         assert_eq!(
             render_resource_listing("docs", false, Err(McpError::McpResourcesUnsupported)),
             "MCP resource listing failed: McpResourcesUnsupported."
+        );
+    }
+
+    #[test]
+    fn prompt_listings_label_each_prompt_and_mark_required_arguments() {
+        let (_home, path) = profile();
+        for config_path in [Some(path.as_path()), None] {
+            assert_eq!(
+                respond(" prompt \tlist  docs ", config_path, &runtime()),
+                Outcome::ListPrompts {
+                    server: "docs".to_owned()
+                }
+            );
+        }
+        let argument = |name: &str, required: bool| PromptArgument {
+            name: name.to_owned(),
+            required,
+        };
+        let item = |name: &str, title: Option<&str>, description: Option<&str>| PromptSummary {
+            name: name.to_owned(),
+            title: title.map(str::to_owned),
+            description: description.map(str::to_owned),
+            arguments: Vec::new(),
+        };
+        assert_eq!(
+            render_prompt_listing(
+                "docs",
+                Ok(vec![
+                    item("explain", None, None),
+                    PromptSummary {
+                        arguments: vec![argument("focus", true), argument("depth", false)],
+                        ..item("review", Some("Review"), Some("Review code"))
+                    },
+                    PromptSummary {
+                        arguments: vec![argument("topic", false)],
+                        ..item("summarize", None, Some("Summarize a topic"))
+                    },
+                ])
+            ),
+            "MCP prompts from docs (3):\n  docs :: explain\n  docs :: review — Review [focus*, depth]\n  docs :: summarize — Summarize a topic [topic]\n"
+        );
+        assert_eq!(
+            render_prompt_listing("docs", Ok(Vec::new())),
+            "MCP prompts from docs (0):\n"
+        );
+        assert_eq!(
+            render_prompt_listing("docs", Err(McpError::McpPromptsUnsupported)),
+            "MCP prompt listing failed: McpPromptsUnsupported."
         );
     }
 

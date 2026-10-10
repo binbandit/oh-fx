@@ -7,7 +7,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::feature_catalog::FeatureCatalogs;
+use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
@@ -271,6 +271,19 @@ impl Server {
         }
         self.ready_client()
             .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))
+    }
+
+    pub(crate) fn publish_catalog<T: FeatureCatalog>(
+        &self,
+        client: &Arc<McpClient>,
+        snapshot: Snapshot<T>,
+    ) -> bool {
+        let state = lock(&self.state);
+        if !matches!(&*state, State::Ready(connection) if Arc::ptr_eq(&connection.client, client)) {
+            return false;
+        }
+        self.features.publish(snapshot);
+        true
     }
 
     fn ready_client(&self) -> Option<Arc<McpClient>> {
