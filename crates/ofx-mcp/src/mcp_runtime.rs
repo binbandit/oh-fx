@@ -1729,13 +1729,19 @@ while IFS= read -r line; do
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"resources\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
     *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
     *'"method":"resources/list"'*)
+      echo resources >> "$STATE/catalogs"
       if [ -f "$STATE/broken" ]; then
         reply "$id" '{"resources":[{"uri":"memory://bad"}]}'
       else
         reply "$id" '{"resources":[{"uri":"memory://notes","name":"notes"}]}'
       fi ;;
     *'"method":"resources/templates/list"'*)
-      reply "$id" '{"resourceTemplates":[{"uriTemplate":"memory://items/{id}","name":"item"}]}' ;;
+      echo templates >> "$STATE/catalogs"
+      if [ -f "$STATE/templates.json" ]; then
+        reply "$id" "$(cat "$STATE/templates.json")"
+      else
+        reply "$id" '{"resourceTemplates":[{"uriTemplate":"memory://items/{id}","name":"item"}]}'
+      fi ;;
     *'"method":"resources/read"'*)
       uri=$(printf '%s' "$line" | sed -n 's/.*"uri":"\([^"]*\)".*/\1/p')
       echo "read $uri" >> "$STATE/requests"
@@ -1795,6 +1801,8 @@ done
             texts(&notes),
             [("memory://notes", Some("text/plain"), "v1")]
         );
+        let lists = || std::fs::read_to_string(state.path().join("catalogs")).unwrap();
+        assert_eq!(lists(), "resources\n");
         assert_eq!(
             runtime
                 .read_resource("fixture", "memory://notes")
@@ -1803,6 +1811,7 @@ done
             notes
         );
         assert_eq!(read_text(&runtime, "memory://items/7").await, "item");
+        assert_eq!(lists(), "resources\ntemplates\n");
         let failure = |error| Err(ResourceReadFailure::Error(error));
         assert_eq!(
             runtime.read_resource("fixture", "memory://other").await,
@@ -1912,6 +1921,39 @@ done
             requests(state.path()),
             "read memory://notes\nread memory://notes\n"
         );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn template_catalog_failures_surface_instead_of_not_found() {
+        let state = tempfile::tempdir().unwrap();
+        let templates = state.path().join("templates.json");
+        std::fs::write(
+            &templates,
+            r#"{"resourceTemplates":[],"nextCursor":"again"}"#,
+        )
+        .unwrap();
+        let runtime = runtime(vec![config("fixture", READ_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let failure = |error| Err(ResourceReadFailure::Error(error));
+        assert_eq!(
+            runtime.read_resource("fixture", "memory://missing").await,
+            failure(McpError::DuplicateCursor)
+        );
+        let bounded = format!("memory://{{value}}{}b", "a".repeat(2047));
+        std::fs::write(
+            &templates,
+            serde_json::json!({"resourceTemplates": [{"uriTemplate": bounded, "name": "bounded"}]})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime
+                .read_resource("fixture", &format!("memory://{}", "a".repeat(4096)))
+                .await,
+            failure(McpError::McpResourceTemplateMatchLimitExceeded)
+        );
+        assert_eq!(requests(state.path()), "");
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 }

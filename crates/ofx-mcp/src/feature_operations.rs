@@ -138,7 +138,10 @@ impl Server {
                     }
                 }
             }
-            if !identity.current(&self.features) || client.resources_invalidation.pending() {
+            let current = self
+                .while_current(&client, || identity.current(&self.features))
+                .unwrap_or(false);
+            if !current || client.resources_invalidation.pending() {
                 return Err(McpError::McpFeatureCatalogChanged.into());
             }
             let (outcome, received_at_ms) = match request_read(&client, uri, deadline).await {

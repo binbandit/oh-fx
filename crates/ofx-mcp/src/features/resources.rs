@@ -202,7 +202,9 @@ pub(crate) fn stale_fallback_eligible(error: &McpError) -> bool {
     match error {
         McpError::McpConnectionClosed => true,
         McpError::Io(error) => transient_transport_failure(error.as_ref()),
-        McpError::Http(error) => transient_transport_failure(error.as_ref()),
+        McpError::Http(error) => {
+            !error.is_body() && !error.is_decode() && transient_transport_failure(error.as_ref())
+        }
         _ => false,
     }
 }
@@ -257,6 +259,8 @@ fn parse_descriptor_fields(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
     use crate::features::common::{Catalog, CatalogBuilder, Page, ResourceData, parse_page};
@@ -780,5 +784,56 @@ mod tests {
         ] {
             assert!(!stale_fallback_eligible(&error), "{error}");
         }
+    }
+
+    async fn resetting_server(head: &'static [u8]) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket.write_all(head).await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            socket.set_zero_linger().unwrap();
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn http_failures_fall_back_only_when_the_connection_breaks_outside_the_body() {
+        let client =
+            ofx_http::build_connection_client(&ofx_http::ConnectionOptions::default()).unwrap();
+        let address = resetting_server(b"").await;
+        let before_head = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(stale_fallback_eligible(&McpError::from(before_head)));
+        let address =
+            resetting_server(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\npartial").await;
+        let body = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap_err();
+        assert!(transient_transport_failure(&body));
+        assert!(!stale_fallback_eligible(&McpError::from(body)));
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let refused = client
+            .get(format!("http://{closed}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(!stale_fallback_eligible(&McpError::from(refused)));
     }
 }

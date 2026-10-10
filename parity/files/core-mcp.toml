@@ -74,7 +74,7 @@ note = "Resource, template and prompt catalogs are fetched page by page and refr
 upstream = "src/core/mcp/feature_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_operations.rs"]
-note = "Resource, template and prompt listing and resource reads exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one, since every connection has one fixed authentication until OAuth lands. Prompt invocation, completion, modern resource update subscriptions, URL elicitation and input-required rounds are missing."
+note = "Resource, template and prompt listing and resource reads exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one until OAuth lands, as docs/differences/mcp.md records. Prompt invocation, completion, modern resource update subscriptions, URL elicitation and input-required rounds are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_result.zig"
@@ -85,7 +85,7 @@ modules = []
 upstream = "src/core/mcp/feature_snapshot.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_snapshot.rs"]
-note = "Concrete and template resource identities under one shared match budget exist, with the currency check before a read is sent and before it is cached. Currency compares the listed resources or templates instead of upstream's digest of every descriptor field, and runs just before the request rather than under a commit lock held across the send. Prompt and template-only identities are missing."
+note = "Concrete and template resource identities under one shared match budget exist, with the currency check before a read is sent and before it is cached, both against the connection that will send or sent the read. Currency compares the listed resources or templates instead of upstream's digest of every descriptor field, so a refresh that changes only a description keeps a resolved identity current. The check before sending runs just before the request, where upstream's guard spans the send for HTTP servers, as docs/differences/mcp.md records. Prompt and template-only identities are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_transport.zig"
