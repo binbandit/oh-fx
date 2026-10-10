@@ -35,11 +35,14 @@ impl AuthState {
         inner.credentials_present = false;
     }
 
-    pub(crate) fn credentials_installed(&self) {
+    pub(crate) fn refreshed(&self, expected_generation: u64) -> bool {
         let mut inner = self.lock();
-        inner.generation = inner.generation.saturating_add(1);
+        if inner.generation != expected_generation {
+            return false;
+        }
         inner.credentials_present = true;
         inner.challenge_present = false;
+        true
     }
 
     pub(crate) fn set_credentials_loaded(&self, loaded: bool) {
@@ -112,7 +115,7 @@ mod tests {
             AuthenticationState::Required
         );
         assert_eq!(state.pending().scope.as_deref(), Some("tools.call"));
-        state.credentials_installed();
+        assert!(state.refreshed(state.generation()));
         assert_eq!(
             state.authentication(&config(false)),
             AuthenticationState::Authenticated
@@ -133,11 +136,19 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_auth_generation_suppresses_a_stale_reauthentication_mark() {
+    fn a_refresh_keeps_the_generation_and_a_newer_one_fences_stale_results() {
         let state = AuthState::default();
         state.set_credentials_loaded(true);
         let earlier = state.generation();
-        state.credentials_installed();
+        assert!(state.refreshed(earlier));
+        assert_eq!(state.generation(), earlier);
+        state.store_pending(Challenge::default());
+        assert!(!state.refreshed(earlier));
+        assert_eq!(
+            state.authentication(&config(true)),
+            AuthenticationState::Required
+        );
+        assert!(state.refreshed(state.generation()));
         state.mark_reauthentication_required(earlier);
         assert_eq!(
             state.authentication(&config(true)),

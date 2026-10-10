@@ -646,9 +646,13 @@ async fn listener_main(shared: Arc<HttpShared>) {
                 sleep(Duration::from_millis(cursor.retry_ms.into())).await;
                 continue;
             }
+            Err(McpError::McpAuthenticationRequired) => {
+                shared.auth.reject_stream();
+                return;
+            }
             Err(
                 McpError::McpNotificationListenerUnsupported
-                | McpError::McpAuthenticationRequired
+                | McpError::McpRefreshRejected
                 | McpError::McpSessionExpired
                 | McpError::MissingFinalResponse,
             ) => return,
