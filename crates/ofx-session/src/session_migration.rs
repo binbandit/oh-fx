@@ -89,11 +89,11 @@ fn converted(
     id: &str,
     purpose: Purpose,
 ) -> Result<Option<Converted>, SessionError> {
-    let session = load_schema_v3(dir, id)?;
+    let (session, source_bytes) = load_schema_v3(dir, id)?;
     if session.subagent_child || has_owner_marker(dir)? {
         return Ok(None);
     }
-    session.convert(purpose).map(Some)
+    session.convert(purpose, source_bytes).map(Some)
 }
 
 pub(crate) fn source_log(dir: &PrivateDir, id: &str) -> Result<&'static str, SessionError> {
@@ -135,7 +135,7 @@ fn watermark_name(generation: &Identifier) -> String {
     format!("commit.{}.json", lowercase_hex(generation))
 }
 
-fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionError> {
+fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<(LegacySession, u64), SessionError> {
     require_schema_v3(dir, id)?;
     let events = open_managed_file(dir, schema_v3_log(dir)?, Access::ReadOnly)?
         .ok_or(SessionError::InvalidSessionFormat)?;
@@ -167,7 +167,7 @@ fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionEr
         Some(LegacyCheckpoint::Continuable(checkpoint)) => session.recovery = Some(checkpoint),
         None => {}
     }
-    Ok(session)
+    Ok((session, watermark.bytes))
 }
 
 fn read_watermark(

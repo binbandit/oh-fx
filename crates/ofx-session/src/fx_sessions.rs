@@ -44,12 +44,14 @@ impl FxSessions {
         sort_summaries_newest_first(summaries);
     }
 
-    pub(crate) fn archive(&self, id: &str) -> Result<SessionArchive, SessionError> {
-        let dir = self
-            .sessions
+    pub(crate) fn session_dir(&self, id: &str) -> Option<PrivateDir> {
+        self.sessions
             .as_ref()
             .and_then(|sessions| sessions.open_child(id).ok().flatten())
-            .ok_or(SessionError::SessionNotFound)?;
+    }
+
+    pub(crate) fn archive(&self, id: &str) -> Result<SessionArchive, SessionError> {
+        let dir = self.session_dir(id).ok_or(SessionError::SessionNotFound)?;
         let mut archive = load_archive(&dir, id, SessionError::FxSessionUnreadable).map_err(
             |error| match error {
                 SessionError::SessionNotFound => error,

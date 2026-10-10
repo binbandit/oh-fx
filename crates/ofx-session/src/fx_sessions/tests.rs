@@ -629,3 +629,5 @@ fn sessions_fx_saved_before_its_conversation_layout_are_listed_and_marked() {
     assert_eq!(ids(&everywhere), ["fx-legacy-elsewhere", "fx-legacy"]);
     assert_eq!(snapshot(&home.fx_profile()), before);
 }
+
+mod migration;

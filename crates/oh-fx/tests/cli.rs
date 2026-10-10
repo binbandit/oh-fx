@@ -390,7 +390,6 @@ fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelo
     for (args, kind) in [
         (&["models", "--json"][..], "models"),
         (&["balance", "--json"], "credits"),
-        (&["session", "migrate", "x", "--json"], "session"),
         (&["session", "recover", "x", "--json"], "session"),
     ] {
         let output = oh_fx(args, &[]);
@@ -505,7 +504,7 @@ fn full_disk_writes_follow_each_upstream_path() {
         (&["status", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (&["sessions", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (
-            &["session", "migrate", "x", "--json"],
+            &["session", "recover", "x", "--json"],
             "oh-fx: session is not available yet\noh-fx: WriteFailed\n",
         ),
         (&["replay", "--json"], ""),

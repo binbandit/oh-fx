@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use ofx_cli::OutputFormat;
-use ofx_session::SessionSummary;
+use ofx_session::{SessionMigration, SessionSummary};
 use ofx_text::encode_terminal_safe;
 use serde_json::{Map, Value, json};
 
@@ -170,6 +170,37 @@ impl SessionSummarySnapshot<'_> {
     }
 }
 
+pub struct SessionMigrationSnapshot<'a> {
+    pub migration: &'a SessionMigration,
+}
+
+impl SessionMigrationSnapshot<'_> {
+    pub fn render(&self, format: OutputFormat) -> String {
+        let migration = self.migration;
+        match format {
+            OutputFormat::Text => format!(
+                "[session migration] {}\nstatus: {}\nsource_schema_version: {}\nsource_bytes: {}\n",
+                migration.session_id,
+                migration.status.label(),
+                migration.source_schema_version,
+                migration.source_bytes
+            ),
+            OutputFormat::Json => {
+                let mut line = json!({
+                    "kind": "session_migration",
+                    "id": migration.session_id,
+                    "status": migration.status.label(),
+                    "source_schema_version": migration.source_schema_version,
+                    "source_bytes": migration.source_bytes,
+                })
+                .to_string();
+                line.push('\n');
+                line
+            }
+        }
+    }
+}
+
 fn insert_summary_fields(object: &mut Map<String, Value>, session: &SessionSummary) {
     let fields = [
         ("id", json!(session.id)),
@@ -206,6 +237,9 @@ pub fn session_lookup_message(code: &str) -> Option<&'static str> {
             "saved sessions are unreadable; run `oh-fx doctor` for recovery guidance"
         }
         "SessionNotFound" => "record not found",
+        "SessionMigrationUnavailable" => {
+            "session migrate converts v1 sessions and is not available with sessions v2 yet"
+        }
         "InvalidSessionFormat" | "InvalidUsageSidecar" | "InvalidRecoveryCheckpoint" => {
             "record is corrupt; run `oh-fx doctor` for recovery guidance"
         }

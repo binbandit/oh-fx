@@ -780,3 +780,139 @@ fn session_shows_a_session_fx_saved_without_touching_it() {
     );
     assert_eq!(fx_tree(&home), before);
 }
+
+fn save_schema_v3_in_fx(home: &Home, id: &str, workspace: &str) -> usize {
+    let generation = "01".repeat(16);
+    let session = home.root.join(".fx/sessions").join(id);
+    fs::create_dir_all(&session).expect("create an fx session");
+    for directory in [
+        home.root.join(".fx"),
+        home.root.join(".fx/sessions"),
+        session.clone(),
+    ] {
+        private(&directory, 0o700);
+    }
+    let workspace = home.root.join(workspace).display().to_string();
+    let started = format!(
+        "{{\"id\":\"{id}\",\"created_at_ms\":1,\"origin_workspace_root\":\"{workspace}\",\"workspace_root\":\"{workspace}\",\"conversation_language\":\"en\",\"preferences\":{{\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false}}}}"
+    );
+    let turn = "{\"conversation_language\":\"en\",\"total_input_tokens\":0,\"total_output_tokens\":0,\"turn\":{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}}";
+    let mut events = String::new();
+    let frames = [
+        ("session_started", started.as_str()),
+        ("history_turn_committed", turn),
+    ];
+    for (seq, (kind, payload)) in (1_u64..).zip(frames) {
+        let _ = writeln!(
+            events,
+            "{{\"schema_version\":1,\"log_generation\":\"{generation}\",\"seq\":{seq},\"event_id\":\"{seq:032x}\",\"timestamp_ms\":{},\"kind\":\"{kind}\",\"payload\":{payload}}}",
+            seq * 10
+        );
+    }
+    let committed = events.len();
+    let watermark = format!(
+        "{{\"schema_version\":1,\"session_id\":\"{id}\",\"log_generation\":\"{generation}\",\"through_seq\":2,\"through_event_id\":\"{:032x}\",\"through_event_log_bytes\":{committed}}}\n",
+        2
+    );
+    let authority = format!(
+        "{{\"schema_version\":1,\"session_id\":\"{id}\",\"authority_id\":\"{}\",\"storage_format\":\"event_log_v1\",\"source\":\"native_create\"}}\n",
+        "03".repeat(16)
+    );
+    for (name, bytes) in [
+        ("authority.json".to_owned(), authority),
+        ("events.jsonl".to_owned(), events),
+        (format!("commit.{generation}.json"), watermark),
+    ] {
+        fs::write(session.join(&name), bytes).expect("write an fx session file");
+        private(&session.join(&name), 0o600);
+    }
+    committed
+}
+
+#[test]
+fn session_migrate_reports_current_sessions_and_converts_one_fx_saved_before_0_0_8() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "own");
+    let own = ids(&home.listed(&[]))[0].clone();
+    save_in_fx(&home, "fx-current", "workspace", "Current", &["one"]);
+    let committed = save_schema_v3_in_fx(&home, "fx-legacy", "workspace");
+    let before = fx_tree(&home);
+
+    assert_eq!(
+        described(&home.session(&["migrate", &own], &[])),
+        format!(
+            "[session migration] {own}\nstatus: already_current\nsource_schema_version: 4\nsource_bytes: 0\n"
+        )
+    );
+    assert_eq!(
+        described(&home.session(&["migrate", "--id", "fx-current", "--json"], &[])),
+        "{\"kind\":\"session_migration\",\"id\":\"fx-current\",\"status\":\"already_current\",\"source_schema_version\":4,\"source_bytes\":0}\n"
+    );
+    assert!(!home.root.join("data/oh-fx/sessions/fx-current").exists());
+    assert_eq!(
+        described(&home.session(&["migrate", "fx-legacy", "--allow-large"], &[])),
+        format!(
+            "[session migration] fx-legacy\nstatus: migrated\nsource_schema_version: 3\nsource_bytes: {committed}\n"
+        )
+    );
+    assert_eq!(
+        described(&home.session(&["migrate", "fx-legacy", "--json"], &[])),
+        "{\"kind\":\"session_migration\",\"id\":\"fx-legacy\",\"status\":\"already_current\",\"source_schema_version\":4,\"source_bytes\":0}\n"
+    );
+    let listing = home.listed(&[]);
+    let converted = listing["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|session| session["id"] == "fx-legacy")
+        .expect("the converted session");
+    assert_eq!(converted.get("source"), None);
+    assert_eq!(converted["history_len"], 1);
+    assert_eq!(fx_tree(&home), before);
+}
+
+#[test]
+fn session_migrate_says_why_it_cannot_run() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    let sessions = home.root.join("data/oh-fx/sessions");
+    fs::create_dir_all(&sessions).expect("create the sessions directory");
+    for directory in [home.root.join("data/oh-fx"), sessions.clone()] {
+        private(&directory, 0o700);
+    }
+    break_session(&sessions, "broken-session");
+    for (id, code, message, environment) in [
+        ("missing", "SessionNotFound", "record not found", &[][..]),
+        ("../x", "InvalidSessionId", "invalid session id", &[]),
+        (
+            "broken-session",
+            "InvalidSessionFormat",
+            "record is corrupt; run `oh-fx doctor` for recovery guidance",
+            &[],
+        ),
+        (
+            "missing",
+            "SessionMigrationUnavailable",
+            "session migrate converts v1 sessions and is not available with sessions v2 yet",
+            &[("OH_FX_SESSIONS_V2", "1")],
+        ),
+    ] {
+        assert_eq!(
+            refused(&home.session(&["migrate", id], environment)),
+            (String::new(), format!("oh-fx session: {message}\n")),
+            "{id}"
+        );
+        assert_eq!(
+            refused(&home.session(&["migrate", id, "--json"], environment)),
+            (
+                format!(
+                    "{}\n",
+                    json!({"kind": "session", "error": message, "code": code})
+                ),
+                String::new()
+            ),
+            "{id}"
+        );
+    }
+}
