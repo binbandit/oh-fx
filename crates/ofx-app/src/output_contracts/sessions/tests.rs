@@ -1,4 +1,4 @@
-use ofx_session::SessionSource;
+use ofx_session::{SessionMigration, SessionMigrationStatus, SessionSource};
 
 use super::*;
 
@@ -197,5 +197,47 @@ fn a_session_summary_encodes_stored_text_for_the_terminal_and_keeps_it_in_json()
         snapshot
             .render(OutputFormat::Json)
             .contains("\"conversation_language\":\"en\u{9b}2J\u{202e}\\u001b[31m\"")
+    );
+}
+
+#[test]
+fn core_session_migration_snapshot_text_and_json_stay_stable() {
+    let migration = SessionMigration {
+        session_id: "session.v3".to_owned(),
+        source_schema_version: 3,
+        source_bytes: 4096,
+        status: SessionMigrationStatus::Migrated,
+    };
+    let snapshot = SessionMigrationSnapshot {
+        migration: &migration,
+    };
+    assert_eq!(
+        snapshot.render(OutputFormat::Text),
+        "[session migration] session.v3\nstatus: migrated\nsource_schema_version: 3\nsource_bytes: 4096\n"
+    );
+    assert_eq!(
+        snapshot.render(OutputFormat::Json),
+        "{\"kind\":\"session_migration\",\"id\":\"session.v3\",\"status\":\"migrated\",\"source_schema_version\":3,\"source_bytes\":4096}\n"
+    );
+    let current = SessionMigration {
+        session_id: "abc".to_owned(),
+        source_schema_version: 4,
+        source_bytes: 0,
+        status: SessionMigrationStatus::AlreadyCurrent,
+    };
+    assert_eq!(
+        SessionMigrationSnapshot {
+            migration: &current
+        }
+        .render(OutputFormat::Text),
+        "[session migration] abc\nstatus: already_current\nsource_schema_version: 4\nsource_bytes: 0\n"
+    );
+}
+
+#[test]
+fn migration_under_the_v2_store_explains_itself() {
+    assert_eq!(
+        session_lookup_message("SessionMigrationUnavailable"),
+        Some("session migrate converts v1 sessions and is not available with sessions v2 yet")
     );
 }

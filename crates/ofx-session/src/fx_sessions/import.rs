@@ -56,6 +56,7 @@ pub(crate) struct Imported {
     pub(crate) source: ImportSource,
     pub(crate) copy: PrivateDir,
     pub(crate) lock: AdvisoryLock,
+    pub(crate) converted_bytes: Option<u64>,
 }
 
 enum Contents {
@@ -213,10 +214,15 @@ fn owned_copy(
     let lock = copy
         .try_lock(SESSION_LOCK_FILE)?
         .ok_or(SessionError::SessionStartFailed)?;
+    let converted_bytes = match contents {
+        Contents::Current => None,
+        Contents::Converted(converted) => Some(converted.source_bytes()),
+    };
     Ok(Imported {
         source: before,
         copy,
         lock,
+        converted_bytes,
     })
 }
 
