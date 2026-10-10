@@ -848,10 +848,7 @@ impl Agent {
         let mut step = 0;
         loop {
             self.stop_at_step_limit(turn, step, events)?;
-            let entered = turn.trail.enter_step(step);
-            if entered {
-                turn.trace.step_id = ofx_trace::next_step_id();
-            }
+            let entered = enter_step(turn, step);
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
@@ -2809,11 +2806,7 @@ async fn run_group<'c>(
                     description.relabel(label);
                 }
                 if verdict == Verdict::Blocked {
-                    blocked = Some(BlockedCall {
-                        tool_name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                        title: description.title.clone(),
-                    });
+                    blocked = Some(blocked_call(call, &description));
                 }
                 let silent = shown_while_reviewed
                     || verdict == Verdict::Interrupted
@@ -2835,9 +2828,7 @@ async fn run_group<'c>(
                         if shown_while_reviewed {
                             events(tool_finished(turn_id, call, None));
                         }
-                        if verdict == Verdict::Interrupted {
-                            stopped_at = Some(call);
-                        }
+                        stopped_at = (verdict == Verdict::Interrupted).then_some(call);
                         discard(prepared);
                         break;
                     }
@@ -2852,18 +2843,11 @@ async fn run_group<'c>(
         }
     }
     group.for_each(discard);
+    drop(statuses);
+    let traced = (turn_id, trace, parallel);
+    let outcomes = settle_group(traced, dispatched, &mut reported, events, cancel).await;
     SettledGroup {
-        outcomes: {
-            drop(statuses);
-            settle_group(
-                (turn_id, trace, parallel),
-                dispatched,
-                &mut reported,
-                events,
-                cancel,
-            )
-            .await
-        },
+        outcomes,
         blocked,
         stopped_at,
     }
@@ -2956,6 +2940,22 @@ async fn settle_group<'c>(
         });
     }
     outcomes
+}
+
+fn blocked_call(call: &ToolCall, description: &CallDescription) -> BlockedCall {
+    BlockedCall {
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        title: description.title.clone(),
+    }
+}
+
+fn enter_step(turn: &mut Turn, step: u64) -> bool {
+    let entered = turn.trail.enter_step(step);
+    if entered {
+        turn.trace.step_id = ofx_trace::next_step_id();
+    }
+    entered
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
