@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use ofx_contract::parse_strict_json_value;
 use ofx_jsonrpc::{Frame, RequestId};
 use serde_json::{Map, Value, json};
 
@@ -257,12 +258,28 @@ fn sanitize_model_text(text: &str) -> String {
 }
 
 pub(crate) fn parse_json(bytes: &[u8]) -> Option<Value> {
-    serde_json::from_str(std::str::from_utf8(bytes).ok()?).ok()
+    parse_strict_json_value(bytes).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_that_repeats_a_key_at_any_depth_does_not_parse() {
+        assert_eq!(
+            parse_json(br#"{"b":1,"a":[{"c":"d"}]}"#).map(|value| value.to_string()),
+            Some(r#"{"b":1,"a":[{"c":"d"}]}"#.to_owned())
+        );
+        for repeated in [
+            br#"{"id":1,"id":2}"#.as_slice(),
+            br#"{"result":{"capabilities":{"tools":{},"tools":{}}}}"#,
+            br#"[{"a":1,"a":1}]"#,
+        ] {
+            assert_eq!(parse_json(repeated), None);
+        }
+        assert_eq!(parse_json(b"{\"a\":\"\xff\"}"), None);
+    }
 
     #[test]
     fn initialize_requests_advertise_only_elicitation_capabilities() {
