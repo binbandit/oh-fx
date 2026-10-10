@@ -2,7 +2,7 @@
 upstream = "src/core/subagent/agent_adapter.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/execution.rs", "crates/ofx-app/src/app_subagent_runtime.rs"]
-note = "Child turns run through Agent with inherited root-user review context, forwarded approval requests, restart notices in their live text, and the parent's MCP tools from the live catalog, and each child logs its turns into its own saved session with the work id; provider credential/capability routing, captured MCP authority views, child steering, and recovery checkpoints are absent; a resumed named child continues from its saved history and settings, and a replayed operation reads its reply from the child's history."
+note = "Child turns run through Agent with inherited root-user review context, forwarded approval requests, restart notices in their live text, and the parent's MCP tools from the live catalog, each child logs its turns into its own saved session with the work id, and child turns dispatch PostTurnEnd hooks with the subagent scope; provider credential/capability routing, captured MCP authority views, child steering, and recovery checkpoints are absent; a resumed named child continues from its saved history and settings, and a replayed operation reads its reply from the child's history."
 
 [[file]]
 upstream = "src/core/subagent/approval_registry.zig"

@@ -38,7 +38,7 @@ pub use history_turn::{
 };
 pub use hooks::{
     AttentionKind, AttentionRequiredInput, HookInvocation, HookRegistrationError, HookRuntime,
-    HookScope, HookView,
+    HookScope, HookView, PostTurnEndInput,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use model_capabilities::{
@@ -101,8 +101,8 @@ pub use types::{
     PermissionRule, ProviderReplay, QuestionBatchEntry, QuestionOption, ReasoningEffort,
     ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
     ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolResultStatus,
-    ToolStatusDetail, TurnSummary, TurnTokenProgress, Usage, is_valid_reasoning_effort,
-    valid_credential_account_id,
+    ToolStatusDetail, TurnPresentationOutcome, TurnSummary, TurnTokenProgress, Usage,
+    is_valid_reasoning_effort, valid_credential_account_id,
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,

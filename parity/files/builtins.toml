@@ -37,8 +37,8 @@ note = "Jev typesafe decision transport and parser are unimplemented."
 [[file]]
 upstream = "src/builtins/hooks.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/hooks.rs", "crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-tui/src/shell/app_worker_runtime.rs"]
-note = "Native foreground startup and accepted turns report Herdr state, and the fx.herdr.attention_required hook reports blocked for the interactive attention that the shell dispatches for permission and question prompts; idle follows the shell's matched turn completion instead of the fx.herdr.turn_end PostTurnEnd hook, and later session selection, manual compaction and route-recovery decision reporting are missing. Working admission timing differs as recorded in docs/differences/hooks.md; sounds remain unimplemented."
+modules = ["crates/ofx-app/src/hooks.rs", "crates/ofx-app/src/app_lifecycle.rs", "crates/ofx-app/src/app_agent_runtime.rs"]
+note = "Startup and working reports, the fx.herdr.turn_end hook reporting idle after interactive turns and the fx.herdr.attention_required hook reporting blocked for the interactive attention that the shell dispatches for permission and question prompts exist; later session selection, manual compaction and route-recovery decision reporting are missing. Working timing differs as recorded in docs/differences/hooks.md; sounds remain unimplemented."
 
 [[file]]
 upstream = "src/builtins/hooks/herdr.zig"

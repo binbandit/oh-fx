@@ -10,10 +10,10 @@ use ofx_agent::{
 use ofx_auth::ChatGptError;
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelControls, ModelOption, Notice,
-    NoticeTone, ProviderError, QuestionRequest, ReasoningEffort, RecoveredTurn, ResumeRefusal,
-    SessionCursor, SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId,
-    TurnOutcome, UiCommand, UiEvent,
+    BoxFuture, CompactionActivity, CompactionEnd, HookScope, HookView, ModelCatalog, ModelControls,
+    ModelOption, Notice, NoticeTone, ProviderError, QuestionRequest, ReasoningEffort,
+    RecoveredTurn, ResumeRefusal, SessionCursor, SessionScope, SkillBinding, StatuslineItem,
+    StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -35,6 +35,8 @@ use crate::app_session_runtime::{
 use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
 use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
+use crate::herdr::Herdr;
+use crate::hooks;
 use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
@@ -403,7 +405,7 @@ pub(crate) struct Controller {
     upgrade: UpgradeShortcut,
     pick_at_start: bool,
     catalog: CatalogFetch,
-    herdr: Option<Arc<crate::herdr::Herdr>>,
+    herdr: Option<Arc<Herdr>>,
     installation: Option<InstallTask>,
     listing: SessionListing,
     sign_in: Option<PendingSignIn>,
@@ -595,9 +597,12 @@ impl Controller {
         }
     }
 
-    pub(crate) fn with_herdr(mut self, herdr: Option<Arc<crate::herdr::Herdr>>) -> Self {
-        self.herdr = herdr;
-        self
+    pub(crate) fn with_lifecycle(self, herdr: Option<Arc<Herdr>>, hooks: HookView) -> Self {
+        Self {
+            agent: self.agent.with_lifecycle(hooks, HookScope::Interactive),
+            herdr,
+            ..self
+        }
     }
 
     pub(crate) fn requesting_ultrafast(mut self, requested: bool) -> Self {
@@ -648,9 +653,12 @@ impl Controller {
         if let Some(persistence) = &self.persistence {
             persistence.preload(&mut self.listing);
         }
-        if let Some(herdr) = &self.herdr {
-            herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
-        }
+        let session = self
+            .persistence
+            .as_ref()
+            .and_then(Persistence::active_id)
+            .map(str::to_owned);
+        hooks::announce(self.herdr.as_ref(), session).await;
         self.remember_agent_facts();
         self.serve(&mut commands).await;
         self.drain_installations().await;
@@ -1119,6 +1127,7 @@ impl Controller {
         prompt: &QueuedPrompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
+        self.report_working().await;
         self.state.skills().refresh();
         self.start_title_generation(&prompt.text);
         let cancel = CancellationToken::new();
@@ -1216,6 +1225,11 @@ impl Controller {
         self.remember_session_title(&prompt.text);
         self.settle_deferred_commands(open).await;
         open
+    }
+
+    async fn report_working(&mut self) {
+        self.agent.settle_lifecycle().await;
+        hooks::report_working(self.herdr.as_ref()).await;
     }
 
     async fn drain_installations(&mut self) {
@@ -1607,9 +1621,10 @@ mod tests {
 
     use ofx_config::{PrivateDir, ProfilePaths, Settings};
     use ofx_contract::{
-        ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, PermissionMode,
-        ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus, StatuslineItem,
-        StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
+        ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
+        PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus,
+        StatuslineItem, StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
+        TurnPresentationOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -1639,6 +1654,32 @@ mod tests {
         seen: Vec<UiEvent>,
         clipboard: Arc<TestClipboard>,
         worker: Arc<WorkerRuntime>,
+    }
+
+    fn saved_persistence(
+        home: &tempfile::TempDir,
+        setup: &AgentSetup,
+        launch_ultrafast: Option<bool>,
+    ) -> Persistence {
+        let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
+        let store = SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap())
+            .unwrap()
+            .with_fx_home(home.path().to_path_buf());
+        let route = session_route(setup).unwrap();
+        let preferences = SessionPreferences {
+            provider: route.provider.clone(),
+            model: setup.configured_model().to_owned(),
+            effort: ReasoningEffort::Auto,
+            fast_mode: false,
+            ultrafast_mode: false,
+        };
+        let overrides = LaunchOverrides {
+            model: None,
+            effort: None,
+            fast_mode: None,
+            ultrafast_mode: launch_ultrafast,
+        };
+        Persistence::new(store, route, preferences, overrides, None)
     }
 
     #[derive(Default)]
@@ -1872,27 +1913,35 @@ mod tests {
             upgrade: UpgradeShortcut,
             launch_ultrafast: Option<bool>,
         ) -> Self {
-            let workspace = fs::canonicalize(home.path().join("workspace")).unwrap();
-            let store = SessionStore::open(&home.path().join("data"), workspace.to_str().unwrap())
-                .unwrap()
-                .with_fx_home(home.path().to_path_buf());
-            let route = session_route(&setup).unwrap();
-            let preferences = SessionPreferences {
-                provider: route.provider.clone(),
-                model: setup.configured_model().to_owned(),
-                effort: ReasoningEffort::Auto,
-                fast_mode: false,
-                ultrafast_mode: false,
-            };
-            let overrides = LaunchOverrides {
-                model: None,
-                effort: None,
-                fast_mode: None,
-                ultrafast_mode: launch_ultrafast,
-            };
-            let persistence = Persistence::new(store, route, preferences, overrides, None);
+            let persistence = saved_persistence(&home, &setup, launch_ultrafast);
             let requested = launch_ultrafast == Some(true);
             Self::spawn(home, setup, Some(persistence), upgrade, requested)
+        }
+
+        async fn start_saved_with_hooks(server: &FakeServer, hooks: HookView) -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let setup = agent_setup(&home, server).await;
+            let persistence = saved_persistence(&home, &setup, None);
+            setup.attach_hooks(hooks.clone());
+            let (events_sender, events) = unbounded_channel();
+            let emit: Emit = Arc::new(move |event| {
+                let _ = events_sender.send(event);
+            });
+            let (commands, receiver) = unbounded_channel();
+            let worker = Arc::new(WorkerRuntime::default());
+            tokio::spawn(
+                Controller::new(setup, emit, Some(persistence), false, Arc::clone(&worker))
+                    .with_lifecycle(None, hooks)
+                    .run(receiver),
+            );
+            Self {
+                home,
+                commands,
+                events,
+                seen: Vec::new(),
+                clipboard: Arc::new(TestClipboard::default()),
+                worker,
+            }
         }
 
         fn with_setup(home: tempfile::TempDir, setup: AgentSetup) -> Self {
@@ -7761,6 +7810,47 @@ mod tests {
                 .iter()
                 .any(|tool| tool["function"]["name"] == "subagent");
             assert_eq!(offered, saved);
+        }
+    }
+
+    #[tokio::test]
+    async fn children_dispatch_post_turn_end_with_the_subagent_scope() {
+        let server = FakeServer::start([
+            delegate("read the notes"),
+            Reply::sse(&chat_text_events(&["child done"])),
+            Reply::sse(&chat_text_events(&["parent done"])),
+        ]);
+        let scopes = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&scopes);
+        let mut hooks = HookRuntime::default();
+        hooks
+            .register_post_turn_end("test.turn_end", move |input| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((input.invocation.scope, input.outcome));
+            })
+            .unwrap();
+        let mut harness = Harness::start_saved_with_hooks(&server, hooks.freeze()).await;
+        harness.submit("delegate the reading");
+        harness.until(finished(TurnOutcome::Completed)).await;
+        let ended = timeout(Duration::from_secs(10), async {
+            loop {
+                let seen = scopes.lock().unwrap().clone();
+                if seen.len() >= 2 {
+                    return seen;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(ended.len(), 2, "{ended:?}");
+        for scope in [HookScope::Subagent, HookScope::Interactive] {
+            assert!(
+                ended.contains(&(scope, TurnPresentationOutcome::Completed)),
+                "{ended:?}"
+            );
         }
     }
 

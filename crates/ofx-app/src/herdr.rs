@@ -5,7 +5,18 @@ use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use ofx_tui::{ForegroundLifecycle, ForegroundState};
+use ofx_tui::ForegroundLifecycle;
+
+#[derive(Clone, Copy)]
+pub(crate) enum State {
+    Idle,
+    Working,
+    Blocked,
+}
+
+pub(crate) trait Reporter: Send + Sync {
+    fn report(&self, state: State, status: Option<&[u8]>);
+}
 
 pub(crate) struct Herdr {
     connection: Mutex<Connection>,
@@ -19,7 +30,7 @@ struct Connection {
 }
 
 enum Request<'a> {
-    State(ForegroundState, Option<&'a [u8]>),
+    State(State, Option<&'a [u8]>),
     Session(&'a [u8]),
     Pane(Option<&'a [u8]>),
     Agent(Option<&'a [u8]>),
@@ -52,7 +63,7 @@ impl Herdr {
         if let Some(session) = session.filter(|id| !id.is_empty()) {
             self.send(&[Request::Session(session.as_bytes())]);
         }
-        self.report(ForegroundState::Idle, None);
+        self.report(State::Idle, None);
         self.send(&[Request::Pane(Some(b"fx")), Request::Agent(Some(b"fx"))]);
     }
 
@@ -86,8 +97,10 @@ impl ForegroundLifecycle for Herdr {
     fn shutdown(&self) {
         self.release();
     }
+}
 
-    fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
+impl Reporter for Herdr {
+    fn report(&self, state: State, status: Option<&[u8]>) {
         let status = status
             .filter(|value| !value.is_empty())
             .map(|value| &value[..value.len().min(32)]);
@@ -100,10 +113,6 @@ pub(crate) struct HerdrObserver(pub(crate) std::sync::Arc<Herdr>);
 impl ForegroundLifecycle for HerdrObserver {
     fn shutdown(&self) {
         self.0.shutdown();
-    }
-
-    fn report(&self, state: ForegroundState, status: Option<&[u8]>) {
-        self.0.report(state, status);
     }
 }
 
@@ -146,9 +155,9 @@ impl Connection {
                 write_string(
                     &mut output,
                     match state {
-                        ForegroundState::Idle => b"idle",
-                        ForegroundState::Working => b"working",
-                        ForegroundState::Blocked => b"blocked",
+                        State::Idle => b"idle",
+                        State::Working => b"working",
+                        State::Blocked => b"blocked",
                     },
                 )?;
                 if let Some(status) = status {
@@ -322,9 +331,9 @@ mod tests {
     fn socket_lifecycle_serializes_startup_reports_and_release() {
         let lines = capture(true, 10, |client| {
             client.initialize(Some("session-42"));
-            client.report(ForegroundState::Working, Some(b""));
-            client.report(ForegroundState::Blocked, Some(b"permission"));
-            client.report(ForegroundState::Idle, None);
+            client.report(State::Working, Some(b""));
+            client.report(State::Blocked, Some(b"permission"));
+            client.report(State::Idle, None);
         });
         assert_eq!(lines[0], b"{\"id\":\"1\",\"method\":\"pane.report_agent_session\",\"params\":{\"pane_id\":\"pane\\\"x\",\"source\":\"custom:fx\",\"agent\":\"fx\",\"agent_session_id\":\"session-42\"}}\n");
         let parsed: Vec<serde_json::Value> = lines
@@ -356,12 +365,12 @@ mod tests {
     #[test]
     fn shutdown_releases_once_and_suppresses_later_reports_and_initialization() {
         let lines = capture(true, 4, |client| {
-            client.report(ForegroundState::Working, None);
+            client.report(State::Working, None);
             client.shutdown();
             client.shutdown();
-            client.report(ForegroundState::Idle, None);
-            client.report(ForegroundState::Working, Some(b"late"));
-            client.report(ForegroundState::Blocked, Some(b"permission"));
+            client.report(State::Idle, None);
+            client.report(State::Working, Some(b"late"));
+            client.report(State::Blocked, Some(b"permission"));
             client.initialize(Some("late-session"));
         });
         let parsed: Vec<serde_json::Value> = lines
@@ -381,7 +390,7 @@ mod tests {
     fn socket_status_clamps_to_raw_bytes_inside_utf8() {
         let text = format!("{}é", "x".repeat(31));
         let lines = capture(true, 4, |client| {
-            client.report(ForegroundState::Blocked, Some(text.as_bytes()));
+            client.report(State::Blocked, Some(text.as_bytes()));
         });
         let mut expected = b"{\"id\":\"1\",\"method\":\"pane.report_agent\",\"params\":{\"pane_id\":\"pane\\\"x\",\"source\":\"custom:fx\",\"agent\":\"fx\",\"state\":\"blocked\",\"custom_status\":\"".to_vec();
         expected.extend_from_slice(&text.as_bytes()[..32]);
@@ -393,7 +402,7 @@ mod tests {
     fn never_replying_peer_uses_only_a_receive_timeout() {
         let lines = capture(false, 4, |client| {
             let started = std::time::Instant::now();
-            client.report(ForegroundState::Working, None);
+            client.report(State::Working, None);
             assert!(started.elapsed() >= Duration::from_millis(200));
             assert!(started.elapsed() < Duration::from_secs(2));
         });
@@ -406,7 +415,7 @@ mod tests {
     #[test]
     fn a_peer_slower_than_the_receive_timeout_still_gets_every_request() {
         let lines = capture_after(Duration::from_millis(300), true, 4, |client| {
-            client.report(ForegroundState::Working, None);
+            client.report(State::Working, None);
         });
         let states: Vec<serde_json::Value> = lines
             .iter()
@@ -434,11 +443,7 @@ mod tests {
             next_id: 1,
             closed: false,
         };
-        assert!(
-            connection
-                .send(&Request::State(ForegroundState::Idle, None))
-                .is_err()
-        );
+        assert!(connection.send(&Request::State(State::Idle, None)).is_err());
         assert_eq!(connection.next_id, 1);
     }
 }

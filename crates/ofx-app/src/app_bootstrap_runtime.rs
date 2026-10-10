@@ -4,7 +4,7 @@ use std::fs;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use ofx_agent::{
@@ -18,7 +18,7 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools,
+    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools, HookView,
     LiveAdditionalRoots, LivePermissionMode, ModelControls, ModelProvider, PermissionMode,
     QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool,
     is_provider_search_alias, parse_tool_args_object, provider_search_description,
@@ -377,6 +377,7 @@ impl Profile {
             permission_mode: permission_mode.clone(),
             parent: Mutex::new(config.clone()),
             mode: launch.mode,
+            hooks: OnceLock::new(),
         };
         Ok(AgentSetup {
             provider: route.provider,
@@ -950,6 +951,10 @@ impl AgentSetup {
 
     pub(crate) fn delegate_as(&self, config: &AgentConfig) {
         self.delegation.children.follow(config);
+    }
+
+    pub(crate) fn attach_hooks(&self, hooks: HookView) {
+        self.delegation.children.attach_hooks(hooks);
     }
 
     pub(crate) fn forget_children(&self) {
