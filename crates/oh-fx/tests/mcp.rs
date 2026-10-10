@@ -54,10 +54,12 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
       version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
-      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{},\"prompts\":{}},\"serverInfo\":{\"name\":\"docs\",\"version\":\"1.0\"}}" ;;
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{},\"prompts\":{},\"completions\":{}},\"serverInfo\":{\"name\":\"docs\",\"version\":\"1.0\"}}" ;;
     *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
     *'"method":"prompts/list"'*)
       reply "$id" '{"prompts":[{"name":"review","title":"Review","arguments":[{"name":"focus","required":true},{"name":"depth"}]},{"name":"explain","description":"Explain code"}]}' ;;
+    *'"method":"completion/complete"'*)
+      reply "$id" '{"completion":{"values":["balpha","bbeta"],"total":3,"hasMore":true}}' ;;
     *'"method":"prompts/get"'*'"name":"explain"'*)
       printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"Prompt request rejected by fixture"}}\n' "$id" ;;
     *'"method":"prompts/get"'*)
@@ -860,6 +862,28 @@ fn the_mcp_command_gets_a_prompt() {
     shown(
         &session,
         "MCP protocol error -32603: Prompt request rejected by fixture",
+    );
+    exit(session);
+}
+
+#[test]
+fn the_mcp_command_completes_prompt_and_resource_arguments() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("docs.sh", PROMPT_SERVER);
+    home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
+    let session = home.shell();
+    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    session.send(b"/mcp prompt complete docs review focus b\r");
+    shown(&session, "MCP completions from docs (2 of 3):");
+    shown(&session, "balpha");
+    shown(&session, "\u{2026} more available");
+    session.send(b"/mcp prompt complete docs missing focus b\r");
+    shown(&session, "MCP prompt completion failed: McpPromptNotFound.");
+    session.send(b"/mcp resource complete docs memory://{id} id 1\r");
+    shown(
+        &session,
+        "MCP resource completion failed: McpResourcesUnsupported.",
     );
     exit(session);
 }

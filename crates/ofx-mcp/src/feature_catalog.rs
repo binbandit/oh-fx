@@ -53,6 +53,10 @@ impl FeatureCatalogs {
         lock(&self.advertised).prompts.is_some()
     }
 
+    pub(crate) fn advertises_completion(&self) -> bool {
+        lock(&self.advertised).completion
+    }
+
     pub(crate) fn snapshot<T: FeatureCatalog>(&self) -> Option<Snapshot<T>> {
         lock(T::slot(self)).clone()
     }
