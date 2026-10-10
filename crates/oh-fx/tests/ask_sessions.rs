@@ -592,13 +592,132 @@ fn a_compaction_during_ask_writes_its_context_compaction_trace_lines() {
         "{written}"
     );
     assert!(
-        lines[8].starts_with("event=decision turn_id=1 step_id=2 decision=no_op "),
+        lines[8].starts_with("event=decision turn_id=1 step_id=1 decision=no_op "),
         "{written}"
     );
     assert!(
         lines[9].starts_with("request after compaction exact_input_tokens="),
         "{written}"
     );
+}
+
+#[test]
+fn an_ask_turn_writes_its_agent_and_tool_trace_lines_without_tool_arguments() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"secret.txt"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    fs::write(
+        home.root.join("workspace/secret.txt"),
+        "super secret file contents\n",
+    )
+    .expect("write secret.txt");
+    let log = home.root.join("trace.log");
+    let log_path = log.to_str().expect("a UTF-8 trace path");
+    let result = home.ask_json(
+        &["read it"],
+        &[
+            ("OH_FX_TRACE_LOG", log_path),
+            ("OH_FX_TRACE_SCOPES", "agent,gateway,tool"),
+        ],
+    );
+    assert_eq!(result["final_output"], "done", "{result}");
+    let written = fs::read_to_string(&log).expect("read the trace log");
+    let lines: Vec<&str> = written
+        .lines()
+        .map(|line| line.split_once(' ').expect("a timestamped line").1)
+        .collect();
+    let expected = [
+        "[agent] event=prompt_start turn_id=1 prompt_bytes=7 model=@openai/gpt-4o",
+        "[agent] step start step=1 limit=0 messages=",
+        "[agent] event=step_begin turn_id=1 step_id=1 step_index=1 step_limit=0 gateway_messages=",
+        "[agent] event=before_provider_preflight turn_id=1 step_id=1 model=@openai/gpt-4o messages=",
+        "[gateway] event=provider_options turn_id=1 step_id=1 model=@openai/gpt-4o fast_mode=false effort=auto reasoning=default fast=default",
+        "[agent] event=provider_admitted turn_id=1 step_id=1 model=@openai/gpt-4o",
+        "[agent] step completion step=1 content_bytes=0 tool_calls=1 finish_reason=tool-calls",
+        "[agent] event=assistant_completion turn_id=1 step_id=1 content_bytes=0 tool_call_count=1 finish_reason=tool-calls",
+        "[tool] event=returned_tool_call turn_id=1 step_id=1 call_id=call_1 tool_name=read_file args_bytes=21 args_preview=<object_fields=1 values=[<string_bytes=10>]>",
+        "[tool] event=tool_call turn_id=1 step_id=1 call_id=call_1 name=read_file",
+        "[tool] event=before_tool_execution turn_id=1 step_id=1 call_id=call_1 name=read_file",
+        "[tool] event=execution_start turn_id=1 step_id=1 call_id=call_1 name=read_file",
+        "[tool] event=after_tool_execution turn_id=1 step_id=1 call_id=call_1 name=read_file result_kind=model_output model_output_bytes=",
+        "[tool] event=execution_result turn_id=1 step_id=1 call_id=call_1 name=read_file result_kind=model_output model_output_bytes=",
+        "[agent] step start step=2 limit=0 messages=",
+        "[agent] event=step_begin turn_id=1 step_id=2 step_index=2 step_limit=0 gateway_messages=",
+        "[agent] event=before_provider_preflight turn_id=1 step_id=2 ",
+        "[gateway] event=provider_options turn_id=1 step_id=2 ",
+        "[agent] event=provider_admitted turn_id=1 step_id=2 ",
+        "[agent] step completion step=2 content_bytes=4 tool_calls=0 finish_reason=stop",
+        "[agent] event=assistant_completion turn_id=1 step_id=2 content_bytes=4 tool_call_count=0 finish_reason=stop",
+        "[agent] event=prompt_finish turn_id=1 outcome_kind=assistant",
+    ];
+    assert_eq!(lines.len(), expected.len(), "{written}");
+    for (line, start) in lines.iter().zip(expected) {
+        assert!(line.starts_with(start), "{line}\n{written}");
+    }
+    for hidden in [
+        "secret.txt",
+        "super secret",
+        "\"path\"",
+        "pk-test-0123456789",
+    ] {
+        assert!(!written.contains(hidden), "{hidden}\n{written}");
+    }
+}
+
+#[test]
+fn a_step_limit_writes_its_trace_lines_with_the_completed_tools() {
+    let server = FakeServer::start([Reply::sse(&chat_tool_call_events(
+        "call_1",
+        "read_file",
+        r#"{"path":"a"}"#,
+    ))]);
+    let home = Home::new(&server.base_url());
+    fs::write(home.root.join("workspace/a"), "alpha\n").expect("write a");
+    let log = home.root.join("trace.log");
+    let log_path = log.to_str().expect("a UTF-8 trace path");
+    home.ask_json(
+        &["read a"],
+        &[
+            ("OH_FX_TRACE_LOG", log_path),
+            ("OH_FX_MAX_AGENT_STEPS", "1"),
+        ],
+    );
+    let written = fs::read_to_string(&log).expect("read the trace log");
+    assert!(
+        written.contains("[agent] step start step=1 limit=1 "),
+        "{written}"
+    );
+    assert!(
+        written.contains("[agent] step completion step=1 "),
+        "{written}"
+    );
+    let tools = "completed_tool_count=1 completed_tool_names=read_file last_tool_call_name=read_file last_tool_call_id=call_1 outcome_kind=step_limit\n";
+    let reached = written
+        .lines()
+        .find_map(|line| {
+            line.split_once(" [agent] step limit reached ")
+                .map(|(_, rest)| rest)
+        })
+        .expect("a step limit line");
+    let messages = reached
+        .strip_prefix("turn_id=1 step_id=1 step_index=1 step_limit=1 gateway_messages=")
+        .and_then(|rest| rest.split_once(' '))
+        .map(|(count, _)| count)
+        .expect("the gateway message count");
+    assert!(written.contains(&format!(
+        "[agent] step limit reached turn_id=1 step_id=1 step_index=1 step_limit=1 gateway_messages={messages} {tools}"
+    )));
+    assert!(written.contains(&format!(
+        "[agent] event=step_limit_reached turn_id=1 step_id=1 step_index=1 step_limit=1 gateway_messages={messages} {tools}"
+    )));
+    assert!(written.contains("[agent] event=prompt_finish turn_id=1 outcome_kind=step_limit\n"));
+    assert!(!written.contains(r#"{"path":"a"}"#));
 }
 
 #[test]

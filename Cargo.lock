@@ -968,6 +968,7 @@ dependencies = [
  "ofx-skills",
  "ofx-testkit",
  "ofx-text",
+ "ofx-trace",
  "ofx-workspace",
  "reqwest",
  "rustix",
@@ -983,6 +984,7 @@ dependencies = [
 name = "ofx-trace"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tempfile",
 ]
 

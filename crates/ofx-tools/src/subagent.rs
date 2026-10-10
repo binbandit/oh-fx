@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
 use ofx_contract::{
-    BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall, SubagentActionState,
-    SubagentProvider, SubagentRequest, SubagentRequestError, SubagentRequestInput, SubagentResult,
+    BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall, ReasoningEffort,
+    SubagentActionState, SubagentProvider, SubagentRequest, SubagentRequestInput, SubagentResult,
     Tool, ToolActivity, ToolArgsError, ToolContext, ToolEffect, ToolOutput, ToolSpec,
     format_subagent_plain_action, parse_tool_args_object,
 };
+use ofx_trace::trace_log;
 use serde_json::{Map, Value};
 
 const TOOL_NAME: &str = "subagent";
+const SUBAGENT: &str = "subagent";
+const NONE: &str = "none";
 const DESCRIPTION: &str = "Delegate work and receive one terminal child result. Use run for one temporary child and one task. Use message with a stable name to create or continue a persistent conversation in this parent session. A plain message to a working child queues feedback for its next safe boundary without cancelling its current tool. A delivery receipt is not the child's final result; that result arrives separately. Optional instructions replace only that child's system overlay between turns; fx preserves its trusted base prompt. Optional model and effort apply only when a child is created and are rejected for an existing child. fx owns timing, worker identities, cancellation, permissions, persistence, and cleanup.";
 const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"task":{"type":"string","minLength":1,"maxLength":65536,"description":"One complete task for a temporary child. The child accepts no follow-up."},"model":{"type":"string","minLength":1,"maxLength":256,"description":"Optional model for this child, as a catalog model ID such as openai/gpt-5.6-terra. Unambiguous partial names resolve to catalog IDs; unknown or ambiguous names are rejected with candidate IDs. Inherits the parent's model when omitted."},"effort":{"type":"string","minLength":1,"maxLength":64,"description":"Optional reasoning effort for this child. Inherits the parent's effort when omitted."}},"additionalProperties":false,"required":["action","task"]},{"type":"object","properties":{"action":{"type":"string","enum":["message"]},"agent":{"type":"string","minLength":1,"maxLength":64,"description":"Stable lowercase name for one persistent conversation in this parent session. A new valid name creates it; later calls continue it."},"instructions":{"type":"string","minLength":1,"maxLength":65536,"description":"Optional persistent instructions for this child. Replaces its child-specific system overlay before this message when idle; rejected while the child is working. Omit to preserve the overlay or send live feedback. Cannot replace fx's trusted base prompt or widen authority."},"message":{"type":"string","minLength":1,"maxLength":65536,"description":"Message for that named agent: creates it on first use, continues an idle conversation, or queues feedback for a working child. Do not resend merely to poll for completion."},"model":{"type":"string","minLength":1,"maxLength":256,"description":"Optional model applied when this message creates the child, as a catalog model ID such as openai/gpt-5.6-terra. Unambiguous partial names resolve to catalog IDs; unknown or ambiguous names are rejected with candidate IDs. Inherits the parent's model when omitted. Rejected when the named child already exists."},"effort":{"type":"string","minLength":1,"maxLength":64,"description":"Optional reasoning effort applied when this message creates the child. Inherits the parent's effort when omitted. Rejected when the named child already exists."}},"additionalProperties":false,"required":["action","agent","message"]}]}},"additionalProperties":false,"required":["request"]}"#;
 const UNTARGETED_TITLE: &str = "Managing subagent";
@@ -95,7 +98,18 @@ impl PreparedCall for SubagentCall {
 
     fn execute(self: Box<Self>, context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         match self.request {
-            Ok(request) => self.provider.execute(request, context),
+            Ok(request) => {
+                let overrides = request.overrides();
+                trace_log!(
+                    SUBAGENT,
+                    "request accepted action={} agent={} model_override={} effort_override={}",
+                    request.action().label(),
+                    request.agent_name().unwrap_or(NONE),
+                    overrides.model.unwrap_or(NONE),
+                    overrides.effort.map_or(NONE, ReasoningEffort::label),
+                );
+                self.provider.execute(request, context)
+            }
             Err(refusal) => Box::pin(async move { refusal }),
         }
     }
@@ -106,8 +120,14 @@ fn decode(arguments: &str) -> Result<SubagentRequest, &'static str> {
         return Err("invalid_json");
     }
     let root: Value = serde_json::from_str(arguments).map_err(|_| "invalid_json")?;
-    let input = request_input(&root)?;
-    SubagentRequest::validate(input).map_err(SubagentRequestError::code)
+    let input = request_input(&root).inspect_err(|code| {
+        trace_log!(SUBAGENT, "request decode rejected code={code}");
+    })?;
+    SubagentRequest::validate(input).map_err(|error| {
+        let code = error.code();
+        trace_log!(SUBAGENT, "request validation rejected code={code}");
+        code
+    })
 }
 
 fn request_input(root: &Value) -> Result<SubagentRequestInput<'_>, &'static str> {

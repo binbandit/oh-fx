@@ -17,6 +17,7 @@ ofx-markdown.workspace = true
 ofx-permissions.workspace = true
 ofx-skills.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 ofx-workspace.workspace = true
 reqwest.workspace = true
 rustix = { workspace = true, features = ["fs"] }
