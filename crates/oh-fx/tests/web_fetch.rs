@@ -75,6 +75,7 @@ impl Home {
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("SHELL", "/bin/sh")
+            .env("PATH", "/usr/bin:/bin")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("HTTPS_PROXY", proxy_url)
             .env("SSL_CERT_FILE", self.root.join("web-ca.pem"))

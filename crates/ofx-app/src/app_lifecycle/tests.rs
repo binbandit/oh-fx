@@ -116,6 +116,7 @@ fn an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rota
         .env(CHILD_CODEX, codex.base_url())
         .env(CHILD_CATALOG, catalog.base_url())
         .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
         .env("TERM", "xterm-256color");
     let mut session = PtySession::spawn(command, 24, 80).unwrap();
     session
@@ -282,6 +283,7 @@ fn a_worker_panic_ends_the_shell_and_a_contained_one_does_not() {
     command
         .args([PANIC_TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD_PANIC, "1")
+        .env("PATH", "/usr/bin:/bin")
         .env("TERM", "xterm-256color");
     let mut session = PtySession::spawn(command, 24, 80).unwrap();
     session
@@ -444,6 +446,7 @@ fn quit_drains_accepted_installs_after_the_provider_worker_grace() {
     command
         .args([INSTALL_TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD_INSTALL, &home_path)
+        .env("PATH", "/usr/bin:/bin")
         .env("TERM", "xterm-256color")
         .env("OH_FX_AUTO_UPGRADE", "0");
     let mut session = PtySession::spawn(command, 40, 160).unwrap();
@@ -647,6 +650,7 @@ fn signalled_during_a_held_install(test: &str) -> (tempfile::TempDir, PtySession
     command
         .args([test, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD_UPGRADE, directory.path())
+        .env("PATH", "/usr/bin:/bin")
         .env("TERM", "xterm-256color");
     let session = PtySession::spawn(command, 24, 80).unwrap();
     session

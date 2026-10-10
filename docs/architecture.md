@@ -47,7 +47,7 @@ The shipping target is the native terminal binary. Upstream WASM, Node-API addon
 | 5 | `ofx-app` | Composition, controller, command handlers, hosts | `core/app`, `src/builtins` |
 | 5 | `ofx-acp` | Agent Client Protocol server | `src/acp` |
 | 6 | `oh-fx` | Binary entry point and fast paths | `src/main.zig` |
-| dev | `ofx-testkit` | Fake provider and MCP servers, PTY driver, TLS and proxy fixtures | test harnesses |
+| dev | `ofx-testkit` | Fake provider and MCP servers, PTY driver with host command stand-ins, TLS and proxy fixtures | test harnesses |
 
 Every crate may depend on `ofx-contract`, `ofx-text`, and `ofx-trace`. Otherwise a crate depends only on crates in lower layers. `ofx-agent` and `ofx-tui` depend on nothing but layer 0 crates and `ofx-markdown`/`ofx-vt` for the TUI.
 

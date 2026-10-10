@@ -271,6 +271,7 @@ mod tests {
         command
             .args([CHILD_TEST, "--exact", "--nocapture", "--test-threads=1"])
             .env(CHILD, &handshake)
+            .env("PATH", "/usr/bin:/bin")
             .env("TERM", "xterm-256color");
         let mut session = PtySession::spawn(command, 24, 80).unwrap();
         session.stall_output_after(FIRST_FRAME).unwrap();

@@ -56,6 +56,7 @@ impl Home {
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
             .env("SHELL", "/bin/sh")
+            .env("PATH", "/usr/bin:/bin")
             .env("TERM", "xterm-256color")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .envs(environment.iter().copied())

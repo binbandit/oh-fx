@@ -641,7 +641,7 @@ pub(crate) mod test_pty {
 
     pub(crate) fn child_session(test: &str, env: &[(&str, &str)]) -> PtySession {
         let mut command = child_command(test, env);
-        command.process_group(0);
+        command.env("PATH", "/usr/bin:/bin").process_group(0);
         PtySession::spawn(command, 24, 80).unwrap()
     }
 

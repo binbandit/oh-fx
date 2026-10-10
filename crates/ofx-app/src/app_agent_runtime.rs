@@ -38,7 +38,6 @@ use crate::approval_queue::ApprovalQueue;
 use crate::herdr::Herdr;
 use crate::hooks;
 use crate::model_cache_runtime::{ModelSource, model_controls};
-use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
 use crate::skill_commands::{
     InstallTask, complete_install, finish_install, handle_skills, is_install_command, wait_install,
@@ -548,6 +547,7 @@ impl Controller {
     pub(crate) fn new(
         mut setup: AgentSetup,
         emit: Emit,
+        clipboard: Arc<dyn Clipboard>,
         persistence: Option<Persistence>,
         pick_at_start: bool,
         worker: Arc<WorkerRuntime>,
@@ -579,7 +579,7 @@ impl Controller {
             worker,
             context_notices: Arc::new(Mutex::new(notices)),
             emit,
-            clipboard: Arc::new(NativeClipboard),
+            clipboard,
             rings: TraceRings::process(),
             last_reply: None,
             history_turns: 0,
@@ -635,12 +635,6 @@ impl Controller {
 
     pub(crate) fn with_upgrade(mut self, upgrade: UpgradeShortcut) -> Self {
         self.upgrade = upgrade;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
-        self.state.clipboard = clipboard;
         self
     }
 
@@ -1961,17 +1955,26 @@ mod tests {
             });
             let (commands, receiver) = unbounded_channel();
             let worker = Arc::new(WorkerRuntime::default());
+            let clipboard = Arc::new(TestClipboard::default());
+            let shared: Arc<dyn Clipboard> = clipboard.clone();
             tokio::spawn(
-                Controller::new(setup, emit, Some(persistence), false, Arc::clone(&worker))
-                    .with_lifecycle(None, hooks)
-                    .run(receiver),
+                Controller::new(
+                    setup,
+                    emit,
+                    shared,
+                    Some(persistence),
+                    false,
+                    Arc::clone(&worker),
+                )
+                .with_lifecycle(None, hooks)
+                .run(receiver),
             );
             Self {
                 home,
                 commands,
                 events,
                 seen: Vec::new(),
-                clipboard: Arc::new(TestClipboard::default()),
+                clipboard,
                 worker,
             }
         }
@@ -2081,9 +2084,8 @@ mod tests {
             let shared: Arc<dyn Clipboard> = clipboard.clone();
             let worker = Arc::new(WorkerRuntime::default());
             tokio::spawn(
-                Controller::new(setup, emit, persistence, false, Arc::clone(&worker))
+                Controller::new(setup, emit, shared, persistence, false, Arc::clone(&worker))
                     .requesting_ultrafast(ultrafast)
-                    .with_clipboard(shared)
                     .with_trace_rings(TraceRings {
                         compaction: Box::leak(Box::new(ofx_trace::Ring::new(64))),
                         tool_calls: Box::leak(Box::new(ofx_agent::ToolCallRing::new())),
@@ -6929,7 +6931,14 @@ mod tests {
         let worker = Arc::new(WorkerRuntime::default());
         (
             home,
-            Controller::new(setup, emit, None, false, worker),
+            Controller::new(
+                setup,
+                emit,
+                Arc::new(TestClipboard::default()),
+                None,
+                false,
+                worker,
+            ),
             events,
         )
     }
