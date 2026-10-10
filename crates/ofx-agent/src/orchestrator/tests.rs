@@ -1433,6 +1433,47 @@ async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_f
 }
 
 #[tokio::test]
+async fn a_parallel_call_that_finished_before_its_sibling_was_cancelled_settles_as_completed() {
+    let finishes = Arc::new(AtomicU64::new(0));
+    let cancel = CancellationToken::new();
+    let order = Arc::clone(&finishes);
+    let mut sibling = tokio::spawn(async move {
+        let output = ToolOutput::success("done");
+        (output, 1, order.fetch_add(1, Ordering::SeqCst))
+    });
+    while !sibling.is_finished() {
+        tokio::task::yield_now().await;
+    }
+    let watched = cancel.clone();
+    let order = Arc::clone(&finishes);
+    let mut waiting = tokio::spawn(async move {
+        watched.cancelled().await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        let output = ToolOutput::failure("stopped after cleanup");
+        (output, 2, order.fetch_add(1, Ordering::SeqCst))
+    });
+    let trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        trigger.cancel();
+    });
+    let mut grace = None;
+    let first = echo_call("call-1", r#"{"wait":true}"#);
+    let cancelled = settle(&first, &mut waiting, (&cancel, &finishes), &mut grace)
+        .await
+        .expect("the waiting call settles within the grace period");
+    assert!(cancelled.cancelled);
+    let second = echo_call("call-2", r#"{"text":"done"}"#);
+    let completed = settle(&second, &mut sibling, (&cancel, &finishes), &mut grace)
+        .await
+        .expect("the finished call settles");
+    assert!(!completed.cancelled);
+    assert!(!completed.panicked);
+    assert_eq!(completed.output, ToolOutput::success("done"));
+}
+
+#[tokio::test]
 async fn cancelling_while_a_parallel_group_is_admitted_runs_none_of_it() {
     let provider = FakeProvider::new(vec![tool_reply(&[
         ("call-1", r#"{"wait":true}"#),
