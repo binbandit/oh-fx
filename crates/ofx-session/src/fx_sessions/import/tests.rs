@@ -5,9 +5,11 @@ use std::path::Path;
 use ofx_config::{PrivateDir, ProviderId};
 use ofx_contract::ReasoningEffort;
 
+use super::super::import_from_fx;
 use super::super::tests::{
     Home, Saved, ids, shell_turn, shell_turn_with_an_unknown_event, snapshot,
 };
+use super::Imported;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
@@ -443,4 +445,64 @@ fn without_an_fx_home_or_an_fx_session_nothing_is_imported() {
         Some(SessionError::SessionNotFound)
     );
     assert!(staging_left(&home).is_empty());
+}
+
+fn own_dir(home: &Home) -> PrivateDir {
+    PrivateDir::open_existing(&home.own_sessions())
+        .unwrap()
+        .unwrap()
+}
+
+fn imported_from_fx(home: &Home) -> Imported {
+    import_from_fx(home.path(), &own_dir(home), ID)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn no_other_resume_can_save_into_a_copy_before_its_import_baseline_is_recorded() {
+    let home = Home::new();
+    saved(&["one"], 100).write(&home.fx_sessions());
+    let store = importing(&home);
+    let published = imported_from_fx(&home);
+    assert_eq!(
+        store.open_without_waiting(ID).err(),
+        Some(SessionError::SessionBusy)
+    );
+    drop(store.open_imported(ID, published).unwrap());
+
+    saved(&["one", "two in fx"], 200).write(&home.fx_sessions());
+    let refreshed = imported_from_fx(&home);
+    assert_eq!(
+        store.open_without_waiting(ID).err(),
+        Some(SessionError::SessionBusy)
+    );
+    drop(store.open_imported(ID, refreshed).unwrap());
+    let mut other = store.open_without_waiting(ID).unwrap();
+    other
+        .append(3, &own_turn("asked in another oh-fx"))
+        .unwrap();
+    drop(other);
+
+    saved(&["one", "two in fx", "three in fx"], 300).write(&home.fx_sessions());
+    drop(importing(&home).resume(ID).unwrap());
+    let log = String::from_utf8(copy_of(&home, "events.jsonl")).unwrap();
+    assert!(log.contains("two in fx"), "{log}");
+    assert!(log.contains("asked in another oh-fx"), "{log}");
+    assert!(!log.contains("three in fx"), "{log}");
+}
+
+#[test]
+fn a_copy_published_without_its_import_baseline_is_never_refreshed() {
+    let home = Home::new();
+    saved(&["one"], 100).write(&home.fx_sessions());
+    let store = importing(&home);
+    drop(imported_from_fx(&home));
+    let kept = copy_of(&home, "events.jsonl");
+    assert!(!home.own_sessions().join(ID).join("fx-import.json").exists());
+
+    saved(&["one", "two in fx"], 200).write(&home.fx_sessions());
+    drop(store.resume(ID).unwrap());
+    assert_eq!(copy_of(&home, "events.jsonl"), kept);
+    assert!(!home.own_sessions().join(ID).join("fx-import.json").exists());
 }

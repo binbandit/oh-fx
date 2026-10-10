@@ -1,7 +1,7 @@
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 
-use ofx_config::PrivateDir;
+use ofx_config::{AdvisoryLock, PrivateDir};
 use rustix::fs::{self, AtFlags, FileType, FlockOperation, Mode, OFlags};
 use rustix::io::Errno;
 use serde_json::{Value, json};
@@ -48,6 +48,12 @@ pub(crate) struct ImportSource {
     events: FileStamp,
 }
 
+pub(crate) struct Imported {
+    pub(crate) source: ImportSource,
+    pub(crate) copy: PrivateDir,
+    pub(crate) lock: AdvisoryLock,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CopyState {
     log_bytes: u64,
@@ -84,15 +90,15 @@ pub(crate) fn import(
     fx: &PrivateDir,
     sessions: &PrivateDir,
     id: &str,
-) -> Result<Option<ImportSource>, SessionError> {
+) -> Result<Option<Imported>, SessionError> {
     let Some(source) = fx.open_child(id).ok().flatten() else {
         return Ok(None);
     };
-    let (staging, stamp) = stage(fx, &source, sessions, id)?;
+    let (staging, imported) = stage(fx, &source, sessions, id)?;
     match publish_dir(sessions, &staging, id) {
         Ok(()) => {
             sync_dir(sessions)?;
-            Ok(Some(stamp))
+            Ok(Some(imported))
         }
         Err(SessionError::SessionAlreadyExists) => {
             remove_created_dir(sessions, &staging);
@@ -111,7 +117,7 @@ pub(crate) fn refresh(
     copy: &PrivateDir,
     id: &str,
     marker: &Marker,
-) -> Result<Option<ImportSource>, SessionError> {
+) -> Result<Option<Imported>, SessionError> {
     let Some(source) = fx.open_child(id).ok().flatten() else {
         return Ok(None);
     };
@@ -126,13 +132,13 @@ pub(crate) fn refresh(
     if !untouched(copy, id, marker) {
         return Ok(None);
     }
-    let (staging, stamp) = match stage(fx, &source, sessions, id) {
+    let (staging, imported) = match stage(fx, &source, sessions, id) {
         Ok(staged) => staged,
         Err(SessionError::FxSessionOpen) => return Err(SessionError::FxSessionOpen),
         Err(_) => return Ok(None),
     };
     replace(sessions, id, &staging)?;
-    Ok(Some(stamp))
+    Ok(Some(imported))
 }
 
 fn stage(
@@ -140,7 +146,7 @@ fn stage(
     source: &PrivateDir,
     sessions: &PrivateDir,
     id: &str,
-) -> Result<(String, ImportSource), SessionError> {
+) -> Result<(String, Imported), SessionError> {
     let _shared = share_lock(source)?;
     for name in UNFINISHED_COMPACTION {
         if present(source, name)? {
@@ -155,23 +161,36 @@ fn stage(
     }
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
-    let copied = sessions
-        .open_child_private(&staging)
-        .map_err(SessionError::from)
-        .and_then(|target| target.ok_or(SessionError::SessionStartFailed))
-        .and_then(|target| copy_session(source, &target))
-        .and_then(|()| {
-            if source_stamp(source)? == before {
-                Ok(())
-            } else {
-                Err(SessionError::FxSessionOpen)
-            }
-        });
-    if let Err(error) = copied {
-        remove_created_dir(sessions, &staging);
-        return Err(error);
+    match owned_copy(source, sessions, &staging, before) {
+        Ok(imported) => Ok((staging, imported)),
+        Err(error) => {
+            remove_created_dir(sessions, &staging);
+            Err(error)
+        }
     }
-    Ok((staging, before))
+}
+
+fn owned_copy(
+    source: &PrivateDir,
+    sessions: &PrivateDir,
+    staging: &str,
+    before: ImportSource,
+) -> Result<Imported, SessionError> {
+    let copy = sessions
+        .open_child_private(staging)?
+        .ok_or(SessionError::SessionStartFailed)?;
+    copy_session(source, &copy)?;
+    if source_stamp(source)? != before {
+        return Err(SessionError::FxSessionOpen);
+    }
+    let lock = copy
+        .try_lock(SESSION_LOCK_FILE)?
+        .ok_or(SessionError::SessionStartFailed)?;
+    Ok(Imported {
+        source: before,
+        copy,
+        lock,
+    })
 }
 
 fn replace(sessions: &PrivateDir, id: &str, staging: &str) -> Result<(), SessionError> {

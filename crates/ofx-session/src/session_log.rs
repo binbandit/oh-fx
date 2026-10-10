@@ -17,7 +17,7 @@ use ofx_contract::{
 };
 use ofx_text::lowercase_hex;
 
-use crate::fx_sessions::{seal, untouched_import};
+use crate::fx_sessions::{ImportSource, seal, untouched_import};
 use crate::history_snapshot::{CacheWriter, HistoryCache};
 use crate::session::infer_conversation_language;
 use crate::session_children::CONTROL_DIR;
@@ -81,6 +81,10 @@ impl OwnedSessionDir {
     fn acquire(dir: PrivateDir, lock_deadline: Duration) -> Result<Self, SessionError> {
         let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, lock_deadline)?
             .ok_or(SessionError::SessionBusy)?;
+        Ok(Self::holding(dir, lock))
+    }
+
+    fn holding(dir: PrivateDir, lock: AdvisoryLock) -> Self {
         let previous_owner_died = entry_exists(&dir, OWNER_LIVE_FILE).unwrap_or(false);
         let marker = format!(
             "{{\"pid\":{},\"opened_at_ms\":{}}}\n",
@@ -88,11 +92,11 @@ impl OwnedSessionDir {
             now_ms()
         );
         let _ = dir.replace(OWNER_LIVE_FILE, marker.as_bytes());
-        Ok(Self {
+        Self {
             dir,
             previous_owner_died,
             _lock: lock,
-        })
+        }
     }
 }
 
@@ -508,6 +512,10 @@ impl WritableSession {
         self.set_preferences(preferences, now_ms())
     }
 
+    pub(crate) fn seal_import(&self, source: ImportSource) -> Result<(), SessionError> {
+        seal(&self.owned.dir, &self.metadata.id, source)
+    }
+
     pub fn rebind_provider(
         &mut self,
         provider: SavedProvider,
@@ -614,7 +622,23 @@ pub(crate) fn resume_session(
     let dir = sessions
         .open_child_private(id)?
         .ok_or(SessionError::SessionNotFound)?;
-    let owned = OwnedSessionDir::acquire(dir, lock_deadline)?;
+    resume_owned(sessions, id, OwnedSessionDir::acquire(dir, lock_deadline)?)
+}
+
+pub(crate) fn resume_held_session(
+    sessions: &PrivateDir,
+    id: &str,
+    dir: PrivateDir,
+    lock: AdvisoryLock,
+) -> Result<WritableSession, SessionError> {
+    resume_owned(sessions, id, OwnedSessionDir::holding(dir, lock))
+}
+
+fn resume_owned(
+    sessions: &PrivateDir,
+    id: &str,
+    owned: OwnedSessionDir,
+) -> Result<WritableSession, SessionError> {
     let still_named = sessions
         .open_child(id)?
         .is_some_and(|named| same_directory(&named, &owned.dir).unwrap_or(false));
