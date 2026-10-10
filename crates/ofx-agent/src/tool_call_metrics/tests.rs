@@ -47,7 +47,7 @@ fn the_tool_call_ring_keeps_the_last_records_in_chronological_order() {
 fn args_and_result_are_truncated_and_their_total_length_tracked() {
     let ring = ToolCallRing::new();
     let long = "a".repeat(2200);
-    ring.record(recorded("read_file", &long, &long));
+    ring.record(&recorded("read_file", &long, &long));
     let call = &ring.snapshot().calls[0];
     assert_eq!(call.args.len(), MAX_ARGS_BYTES);
     assert_eq!(call.args_total_bytes, 2200);
@@ -100,7 +100,7 @@ fn tool_call_outcome_labels_remain_exact() {
 #[test]
 fn a_web_fetch_call_keeps_no_url_or_fetched_content() {
     let ring = ToolCallRing::new();
-    ring.record(recorded(
+    ring.record(&recorded(
         "web_fetch",
         "{\"url\":\"https://example.com/?token=secret\"}",
         "<content>\nsecret page\n</content>",
@@ -116,7 +116,7 @@ fn a_web_fetch_call_keeps_no_url_or_fetched_content() {
 fn a_result_keeps_the_body_of_its_envelope_and_names_are_cut() {
     let ring = ToolCallRing::new();
     let name = format!("{}é", "n".repeat(MAX_NAME_BYTES - 1));
-    ring.record(ToolCallRecord {
+    ring.record(&ToolCallRecord {
         subagent_id: 3,
         outcome: ToolCallOutcome::ToolFailed,
         ..recorded(
@@ -137,11 +137,11 @@ fn a_result_keeps_the_body_of_its_envelope_and_names_are_cut() {
 #[test]
 fn a_duration_is_measured_from_the_start_and_never_negative() {
     let ring = ToolCallRing::new();
-    ring.record(ToolCallRecord {
+    ring.record(&ToolCallRecord {
         started_at_ms: ofx_trace::timestamp_ms() + 60_000,
         ..recorded("shell", "{}", "")
     });
-    ring.record(ToolCallRecord {
+    ring.record(&ToolCallRecord {
         started_at_ms: ofx_trace::timestamp_ms() - 1_500,
         ..recorded("shell", "{}", "")
     });

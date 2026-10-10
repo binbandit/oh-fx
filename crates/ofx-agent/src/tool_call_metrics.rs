@@ -116,7 +116,7 @@ impl ToolCallRing {
         }
     }
 
-    pub(crate) fn record(&self, record: ToolCallRecord<'_>) {
+    pub(crate) fn record(&self, record: &ToolCallRecord<'_>) {
         let elapsed = ofx_trace::timestamp_ms().saturating_sub(record.started_at_ms);
         let duration_ms = u32::try_from(elapsed.max(0)).unwrap_or(u32::MAX);
         let (args, args_total_bytes, result, result_total_bytes) =

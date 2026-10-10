@@ -26,10 +26,10 @@ pub(super) struct ToolTrail {
     pub(super) finish: Option<&'static str>,
 }
 
-pub(super) struct Interrupted<'a> {
-    pub(super) prompt: &'a str,
-    pub(super) partial: &'a str,
-    pub(super) trail: &'a ToolTrail,
+struct Interrupted<'a> {
+    prompt: &'a str,
+    partial: &'a str,
+    trail: &'a ToolTrail,
 }
 
 impl ToolTrail {
@@ -252,7 +252,7 @@ pub(super) fn uncertain_provider_tool_rejected(context: TraceContext, calls: usi
     );
 }
 
-pub(super) fn cancel_observed(context: TraceContext, active_tool_known: bool) {
+fn cancel_observed(context: TraceContext, active_tool_known: bool) {
     trace_event!(
         INTERRUPT,
         "cancel_observed",
@@ -261,7 +261,7 @@ pub(super) fn cancel_observed(context: TraceContext, active_tool_known: bool) {
     );
 }
 
-pub(super) fn interrupted_persisted(context: TraceContext, interrupted: &Interrupted<'_>) {
+fn interrupted_persisted(context: TraceContext, interrupted: &Interrupted<'_>) {
     if !ofx_trace::enabled(AGENT) && !ofx_trace::enabled(INTERRUPT) {
         return;
     }
@@ -307,6 +307,21 @@ pub(super) fn interrupted_persisted(context: TraceContext, interrupted: &Interru
         "finish_event_emitted",
         context,
         "outcome_kind=interrupted"
+    );
+}
+
+pub(super) fn interrupted(context: TraceContext, prompt: &str, partial: &str, trail: &ToolTrail) {
+    if trail.finish.is_some() {
+        return;
+    }
+    cancel_observed(context, trail.cancelled_in_tools);
+    interrupted_persisted(
+        context,
+        &Interrupted {
+            prompt,
+            partial,
+            trail,
+        },
     );
 }
 
