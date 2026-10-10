@@ -45,7 +45,7 @@ use conversation_history::{ReplayScan, replay_history, visit_turns};
 pub(crate) use conversation_progress::{ConversationProgress, ProgressPoint};
 pub(crate) use conversation_recovery::{
     ConversationRecovery, RecoveredArtifact, RecoveredLog, classify_conversation_recovery,
-    copy_conversation_recovery_prefix, recovered_log,
+    converted_log, copy_conversation_recovery_prefix, recovered_log,
 };
 use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{

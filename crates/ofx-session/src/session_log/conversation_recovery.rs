@@ -123,6 +123,21 @@ pub(crate) fn recovered_log(
     })
 }
 
+pub(crate) fn converted_log(events: &[ConversationEvent]) -> Result<RecoveredLog, SessionError> {
+    let mut builder = ArchiveBuilder::default();
+    let mut artifacts = Vec::new();
+    for (seq, event) in (1_u64..).zip(events) {
+        artifacts.extend(referenced_artifacts(event));
+        builder
+            .apply(seq, event.clone())
+            .map_err(|_| SessionError::SessionRecoveryBoundaryInvalid)?;
+    }
+    Ok(RecoveredLog {
+        turns: builder.into_turns(),
+        artifacts,
+    })
+}
+
 pub(crate) fn copy_conversation_recovery_prefix(
     source: &PrivateDir,
     target: &PrivateDir,

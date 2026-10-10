@@ -210,6 +210,20 @@ impl Converted {
         self.source_bytes
     }
 
+    pub(crate) fn history_len(&self) -> usize {
+        self.history_len
+    }
+
+    pub(crate) fn events(&self) -> &[ConversationEvent] {
+        &self.events
+    }
+
+    #[must_use]
+    pub(crate) fn rebound(mut self, id: &str) -> Self {
+        id.clone_into(&mut self.metadata.id);
+        self
+    }
+
     pub(crate) fn summary(&self, title: Option<String>) -> SessionSummary {
         let metadata = &self.metadata;
         SessionSummary {

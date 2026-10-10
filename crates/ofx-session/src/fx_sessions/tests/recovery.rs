@@ -7,6 +7,7 @@ use ofx_config::PrivateDir;
 
 use super::{Home, Saved, shell_turn, snapshot};
 use crate::session_error::SessionError;
+use crate::session_migration::tests::{LegacyLog, reply};
 use crate::session_store::SessionStore;
 use crate::session_store_types::{SessionRecovery, SessionRecoveryStatus};
 
@@ -257,4 +258,41 @@ fn a_session_that_cannot_be_recovered_names_why() {
         .unwrap()
         .unwrap();
     assert_eq!(store.recover("busy"), Err(SessionError::SessionBusy));
+}
+
+#[test]
+fn a_schema_v3_session_is_recovered_from_the_log_its_watermark_commits() {
+    let home = Home::new();
+    let store = store(&home);
+    let two_turns = LegacyLog::started("fx-v3", WORKSPACE)
+        .turn(&reply("first", "one"))
+        .turn(&reply("second", "two"));
+    let committed = two_turns.frame_count();
+    two_turns
+        .turn(&reply("third", "uncommitted"))
+        .committed_through(committed)
+        .write(&home.fx_sessions());
+    let before = snapshot(&home.fx_profile());
+
+    let copy = store.recover("fx-v3").unwrap();
+    assert_eq!(copy, recovered("fx-v3", &copy, 2));
+    assert_eq!(snapshot(&home.fx_profile()), before);
+    store.migrate("fx-v3").unwrap();
+    let turns = |id: &str| {
+        store
+            .load(id)
+            .unwrap()
+            .history
+            .turns
+            .into_iter()
+            .map(|turn| turn.events)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(turns(&copy.recovered_session_id), turns("fx-v3"));
+
+    LegacyLog::started("own-v3", WORKSPACE)
+        .turn(&reply("kept", "here"))
+        .write(&home.own_sessions());
+    let own = store.recover("own-v3").unwrap();
+    assert_eq!(own, recovered("own-v3", &own, 1));
 }

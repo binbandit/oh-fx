@@ -21,9 +21,10 @@ use crate::session_log::managed_file::{
 };
 use crate::session_log::{
     ArchivedTurn, ConversationRecovery, MANIFEST_FILE, RecoveredArtifact, RecoveredLog,
-    SESSION_LOCK_FILE, classify_conversation_recovery, copy_conversation_recovery_prefix,
-    load_archive, read_metadata, recovered_log, staging_name,
+    SESSION_LOCK_FILE, classify_conversation_recovery, converted_log,
+    copy_conversation_recovery_prefix, load_archive, read_metadata, recovered_log, staging_name,
 };
+use crate::session_migration::{holds_schema_v3, read_schema_v3};
 use crate::session_store_types::{SessionRecovery, SessionRecoveryStatus};
 use crate::session_usage::UsageSnapshot;
 use crate::session_usage_sidecar;
@@ -57,6 +58,9 @@ impl SessionStore {
         let sessions = self.writable_sessions()?;
         let RecoverySource { dir: source, .. } = &self.recovery_source(sessions, id)?;
         if !holds_conversation_metadata(source)? {
+            if holds_schema_v3(source, id)? {
+                return recover_schema_v3(sessions, source, id);
+            }
             return Err(SessionError::SessionRecoveryRequiresCurrentSchema);
         }
         let metadata = read_metadata(source, id).map_err(|error| match error {
@@ -88,21 +92,21 @@ impl SessionStore {
             log: &log,
             usage: &usage,
         };
-        let unverified = publish_recovery(sessions, source, &recovered)?;
-        let status = if sync_dir(sessions).is_err() || !verified(sessions, &recovered_id, &log) {
-            SessionRecoveryStatus::Indeterminate
-        } else if unverified {
-            SessionRecoveryStatus::RecoveredWithUnverifiedArtifacts
-        } else {
-            SessionRecoveryStatus::Recovered
-        };
-        Ok(SessionRecovery {
-            source_session_id: id.to_owned(),
-            recovered_session_id: recovered_id,
-            history_len: log.turns.len(),
-            usage_incomplete: recovery.usage_incomplete,
-            status,
-        })
+        let unverified = publish_recovery(sessions, &recovered_id, |copy| {
+            stage_recovery(source, copy, &recovered)
+        })?;
+        Ok(finish(
+            sessions,
+            SessionRecovery {
+                source_session_id: id.to_owned(),
+                recovered_session_id: recovered_id.clone(),
+                history_len: log.turns.len(),
+                usage_incomplete: recovery.usage_incomplete,
+                status: SessionRecoveryStatus::Recovered,
+            },
+            &log,
+            unverified,
+        ))
     }
 
     fn recovery_source(
@@ -139,10 +143,63 @@ impl SessionStore {
     }
 }
 
-fn publish_recovery(
+fn recover_schema_v3(
     sessions: &PrivateDir,
     source: &PrivateDir,
-    recovered: &Recovered<'_>,
+    id: &str,
+) -> Result<SessionRecovery, SessionError> {
+    let converted = match read_schema_v3(source, id) {
+        Ok(Some(converted)) => converted,
+        Ok(None) => return Err(SessionError::SessionNotFound),
+        Err(_) => return Err(SessionError::SessionRecoveryBoundaryInvalid),
+    };
+    let recovered_id = generate_session_id().ok_or(SessionError::SessionStartFailed)?;
+    let converted = converted.rebound(&recovered_id);
+    let log = converted_log(converted.events())?;
+    let unverified = publish_recovery(sessions, &recovered_id, |copy| {
+        converted.write(copy)?;
+        let mut unverified = false;
+        for artifact in &log.artifacts {
+            unverified |= copy_missing_artifact(source, copy, artifact)?;
+        }
+        Ok(unverified)
+    })?;
+    Ok(finish(
+        sessions,
+        SessionRecovery {
+            source_session_id: id.to_owned(),
+            recovered_session_id: recovered_id.clone(),
+            history_len: converted.history_len(),
+            usage_incomplete: false,
+            status: SessionRecoveryStatus::Recovered,
+        },
+        &log,
+        unverified,
+    ))
+}
+
+fn finish(
+    sessions: &PrivateDir,
+    mut recovery: SessionRecovery,
+    log: &RecoveredLog,
+    unverified: bool,
+) -> SessionRecovery {
+    recovery.status = if sync_dir(sessions).is_err()
+        || !verified(sessions, &recovery.recovered_session_id, log)
+    {
+        SessionRecoveryStatus::Indeterminate
+    } else if unverified {
+        SessionRecoveryStatus::RecoveredWithUnverifiedArtifacts
+    } else {
+        SessionRecoveryStatus::Recovered
+    };
+    recovery
+}
+
+fn publish_recovery(
+    sessions: &PrivateDir,
+    recovered_id: &str,
+    stage: impl FnOnce(&PrivateDir) -> Result<bool, SessionError>,
 ) -> Result<bool, SessionError> {
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
@@ -151,7 +208,7 @@ fn publish_recovery(
         .ok()
         .flatten()
         .ok_or(SessionError::SessionStartFailed)
-        .and_then(|copy| stage_recovery(source, &copy, recovered));
+        .and_then(|copy| stage(&copy));
     let unverified = match staged {
         Ok(unverified) => unverified,
         Err(error) => {
@@ -159,7 +216,7 @@ fn publish_recovery(
             return Err(error);
         }
     };
-    if publish_dir(sessions, &staging, recovered.id).is_err() {
+    if publish_dir(sessions, &staging, recovered_id).is_err() {
         remove_created_dir(sessions, &staging);
         return Err(SessionError::SessionRecoveryIndeterminate);
     }
@@ -208,6 +265,34 @@ fn verified(sessions: &PrivateDir, id: &str, log: &RecoveredLog) -> bool {
         .flatten()
         .and_then(|dir| load_archive(&dir, id, SessionError::SessionNotFound).ok())
         .is_some_and(|archive| archive.turns == log.turns)
+}
+
+fn copy_missing_artifact(
+    source: &PrivateDir,
+    target: &PrivateDir,
+    artifact: &RecoveredArtifact,
+) -> Result<bool, SessionError> {
+    let converted = match artifact {
+        RecoveredArtifact::ToolOutput { handle, .. }
+        | RecoveredArtifact::DiffContent { handle, .. } => {
+            stored_in(target, &TOOL_RESULTS, handle)?
+        }
+        RecoveredArtifact::CommandReplay { .. } | RecoveredArtifact::CommandLog { .. } => false,
+    };
+    if converted {
+        return Ok(false);
+    }
+    copy_artifact(source, target, artifact)
+}
+
+fn stored_in(session: &PrivateDir, route: &[&str], handle: &str) -> Result<bool, SessionError> {
+    if !is_managed_name(handle) {
+        return Err(SessionError::SessionRecoveryBoundaryInvalid);
+    }
+    Ok(match open_route(session, route)? {
+        Some(dir) => open_managed_file(&dir, handle, Access::ReadOnly)?.is_some(),
+        None => false,
+    })
 }
 
 fn copy_artifact(

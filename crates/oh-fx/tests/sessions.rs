@@ -1078,3 +1078,25 @@ fn session_recover_says_why_it_cannot_run() {
         )
     );
 }
+
+#[test]
+fn session_recover_copies_a_session_fx_saved_before_0_0_8_from_its_committed_log() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    save_schema_v3_in_fx(&home, "fx-legacy", "workspace");
+    let before = fx_tree(&home);
+    let text = described(&home.session(&["recover", "fx-legacy"], &[]));
+    let copy = recovered_id(&text);
+    assert_eq!(
+        text,
+        format!(
+            "[session recovery] copied fx-legacy to {copy}\nhistory_turns: 1\nresume: oh-fx --resume {copy}\n"
+        )
+    );
+    let detail = described(&home.session(&[&copy], &[]));
+    assert!(
+        detail.contains("[user]\nasked in fx 0.0.7\n[assistant]\nanswered\n"),
+        "{detail}"
+    );
+    assert_eq!(fx_tree(&home), before);
+}
