@@ -2,21 +2,15 @@ use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use ofx_config::{ContextLimitName, ContextLimits};
-use ofx_contract::DynamicTools;
-
 use super::*;
 use crate::catalog_freshness::Freshness;
+use crate::error::McpError;
 use crate::health::CacheFreshness;
 use crate::mcp_contract::{EnvVar, McpServerConfig};
-use crate::mcp_runtime::McpRuntime;
-use crate::native_config::NativeConfigLoad;
-use crate::server_lifecycle::{Advertised, Server};
+use crate::server_lifecycle::{Advertised, CallFailure, Server};
 use crate::server_transport::ConnectOptions;
 use crate::server_views::snapshot_server;
-use crate::startup_admission::StartupPhase;
 use crate::timing::{sleep, timeout};
-use crate::tool_mcp_registry::SchemaLimits;
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
 
@@ -40,7 +34,12 @@ while IFS= read -r line; do
       else
         reply "$id" "$result"
       fi ;;
-    *'"method":"tools/call"'*) reply "$id" '{"content":[{"type":"text","text":"called"}]}' ;;
+    *'"method":"tools/call"'*)
+      reply "$id" '{"content":[{"type":"text","text":"called"}]}'
+      if [ -f "$STATE/notify" ]; then
+        rm "$STATE/notify"
+        printf '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n'
+      fi ;;
   esac
 done
 "#;
@@ -145,8 +144,15 @@ async fn a_failed_refresh_keeps_the_tools_and_retries_after_its_backoff() {
         retry_in_ms.is_some_and(|delay| delay <= 100),
         "{retry_in_ms:?}"
     );
-    assert!(call(&server, &alpha).await);
-    assert_eq!(lists(state.path()), 2);
+    let failed = ready_client(&server).tool_snapshot().metadata;
+    assert_eq!(
+        decide_refresh(failed, failed.retry_at_ms - 1, false),
+        RefreshAction::RetryLater
+    );
+    assert_eq!(
+        decide_refresh(failed, failed.retry_at_ms, false),
+        RefreshAction::Refresh
+    );
     sleep(Duration::from_millis(120)).await;
     assert!(call(&server, &alpha).await);
     assert_eq!(lists(state.path()), 3);
@@ -221,46 +227,45 @@ async fn a_refresh_that_is_abandoned_counts_as_failed() {
 }
 
 #[tokio::test]
-async fn a_list_that_expired_is_refreshed_in_the_background_when_tools_are_gathered() {
+async fn a_call_waits_for_the_list_a_change_notification_is_fetching() {
     let state = tempfile::tempdir().unwrap();
-    write(state.path(), "ttl", "0");
-    let limits = ContextLimits::default();
-    let runtime = McpRuntime::new(
-        NativeConfigLoad {
-            configs: vec![config(state.path())],
-            ..NativeConfigLoad::default()
-        },
-        ConnectOptions::default(),
-        Vec::new(),
-        SchemaLimits {
-            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
-            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
-        },
-    );
-    runtime.connect(StartupPhase::All).await;
-    let names = |runtime: &McpRuntime| -> Vec<String> {
-        runtime
-            .tools()
-            .iter()
-            .map(|tool| tool.spec().name.clone())
-            .collect()
-    };
-    write(state.path(), "name", "beta");
-    write(state.path(), "ttl", "60000");
-    let generation = runtime.generation();
-    assert_eq!(names(&runtime), ["mcp_fixture_alpha"]);
-    for _ in 0..200 {
-        if runtime.generation() != generation {
-            break;
-        }
-        sleep(Duration::from_millis(10)).await;
+    let server = started(state.path()).await;
+    let alpha = advertised(&server);
+    write(state.path(), "slow", "");
+    write(state.path(), "notify", "");
+    assert!(call(&server, &alpha).await);
+    while lists(state.path()) < 2 {
+        sleep(Duration::from_millis(5)).await;
     }
-    assert_eq!(names(&runtime), ["mcp_fixture_beta"]);
+    assert_eq!(health(&server).0, CacheFreshness::Refreshing);
+    assert!(call(&server, &alpha).await);
     assert_eq!(lists(state.path()), 2);
-    let settled = runtime.generation();
-    assert_eq!(names(&runtime), ["mcp_fixture_beta"]);
-    sleep(Duration::from_millis(50)).await;
-    assert_eq!(runtime.generation(), settled);
+    assert!(!ready_client(&server).tools_invalidation.pending());
+    assert_eq!(health(&server).0, CacheFreshness::Fresh);
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn a_call_is_refused_while_a_change_notification_waits_for_its_list() {
+    let state = tempfile::tempdir().unwrap();
+    let server = started(state.path()).await;
+    let alpha = advertised(&server);
+    write(state.path(), "fail", "");
+    write(state.path(), "notify", "");
+    assert!(call(&server, &alpha).await);
+    while lists(state.path()) < 2 {
+        sleep(Duration::from_millis(5)).await;
+    }
+    let refused = server.call(&alpha, "{}", CallOptions::default()).await;
+    assert!(matches!(
+        refused,
+        Err(CallFailure::Mcp(McpError::McpToolCatalogChanged))
+    ));
     assert_eq!(lists(state.path()), 2);
-    runtime.shutdown(ShutdownMode::Immediate).await;
+    std::fs::remove_file(state.path().join("fail")).unwrap();
+    sleep(Duration::from_millis(120)).await;
+    assert!(call(&server, &alpha).await);
+    assert_eq!(lists(state.path()), 3);
+    assert_eq!(health(&server), (CacheFreshness::Fresh, 0, None));
+    server.stop(ShutdownMode::Immediate).await;
 }

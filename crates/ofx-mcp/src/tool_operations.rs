@@ -35,10 +35,10 @@ impl McpClient {
         name: &str,
         arguments_json: &str,
         options: CallOptions,
+        deadline: Instant,
     ) -> Result<ToolCallOutcome, McpError> {
         let limits = Limits::default();
         validate_arguments(arguments_json, limits)?;
-        let deadline = Instant::now() + self.operation_timeout;
         let id = self.transport.next_request_id()?;
         let progress_token = options.progress.is_some().then_some(id);
         let body = build_tool_call_request(id, name, arguments_json, progress_token);

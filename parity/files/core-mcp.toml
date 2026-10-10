@@ -13,13 +13,13 @@ note = "A wasm32 shim for 64-bit atomics; oh-fx builds no wasm32 target, and its
 upstream = "src/core/mcp/catalog_freshness.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/catalog_freshness.rs"]
-note = "Page expiry, refresh decisions, the refreshing state, failed-refresh retention with retry backoff and explicit refresh requests exist for tool, resource, template and prompt catalogs; auth partitions, content digests and generation checks are missing until OAuth lands, and a refreshed tool list replaces the snapshot only when its tools differ."
+note = "Page expiry, refresh decisions, failed-refresh retention with retry backoff and explicit refresh requests exist for tool, resource, template and prompt catalogs, and the refreshing state for tool lists, the only catalogs upstream marks refreshing; auth partitions, content digests and generation checks are missing until OAuth lands, and a refreshed tool list replaces the snapshot only when its tools differ."
 
 [[file]]
 upstream = "src/core/mcp/catalog_refresh.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/catalog_refresh.rs"]
-note = "A tool list is listed again when it expired or a tools/list_changed notification made it stale, before a call, after the notification, on reload and in the background when a step gathers its tools, as docs/differences/mcp.md records. A refresh in flight shows refreshing while others keep the last list, a failed or abandoned refresh keeps the tools with failed_refresh and its retry backoff, and an unchanged list keeps its snapshot. Auth partitions, legacy session and credential recovery, and listener restarts are missing."
+note = "A tool list is listed again when it expired or a tools/list_changed notification made it stale, before a call, right after the notification and on reload, as docs/differences/mcp.md records. A refresh in flight shows refreshing, a call waits for it and is refused with McpToolCatalogChanged while a change stays unfetched, a failed or abandoned refresh keeps the tools with failed_refresh and its retry backoff, and an unchanged list keeps its snapshot. Auth partitions, legacy session and credential recovery, and listener restarts are missing."
 
 [[file]]
 upstream = "src/core/mcp/catalog_state.zig"
@@ -122,7 +122,7 @@ note = "Resource and template list pages, the catalog builders, resources/read r
 upstream = "src/core/mcp/features/tools.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/features/tools.rs"]
-note = "tools/list paging under the tool cap, tool validation and tools/call result parsing exist; the per-scope catalog cache shared with resources and prompts is missing."
+note = "tools/list paging under the tool cap with each page's expiry, tool validation and tools/call result parsing exist; the per-scope catalog cache shared with resources and prompts is missing."
 
 [[file]]
 upstream = "src/core/mcp/health.zig"
@@ -295,7 +295,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, the freshness and retry fields of the tool, resource, template and prompt catalogs, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"

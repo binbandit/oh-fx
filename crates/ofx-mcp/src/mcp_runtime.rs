@@ -573,11 +573,6 @@ impl DynamicTools for McpRuntime {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        if let Ok(runtime) = Handle::try_current() {
-            for server in self.current() {
-                server.refresh_stale_tools(&runtime);
-            }
-        }
         let generation = self.generation();
         let mut published = lock(&self.published);
         if published.generation != Some(generation) {

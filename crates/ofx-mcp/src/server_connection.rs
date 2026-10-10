@@ -4,7 +4,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 
 use crate::catalog_freshness::SnapshotMetadata;
@@ -46,6 +46,7 @@ pub(crate) struct McpClient {
     pub(crate) operation_timeout: Duration,
     pub(crate) tools: Mutex<ToolSnapshot>,
     pub(crate) tools_invalidation: Invalidation,
+    pub(crate) tools_settled: Notify,
     pub(crate) resources_invalidation: Invalidation,
     pub(crate) prompts_invalidation: Invalidation,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
@@ -88,6 +89,7 @@ impl McpClient {
                 metadata: SnapshotMetadata::fresh(connected.listing.expires_at_ms),
             }),
             tools_invalidation: Invalidation::default(),
+            tools_settled: Notify::new(),
             resources_invalidation: Invalidation::default(),
             prompts_invalidation: Invalidation::default(),
             notifications: Mutex::new(connected.notifications),
@@ -289,7 +291,12 @@ done
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let outcome = client
-            .call_tool("snapshot", "{}", CallOptions::default())
+            .call_tool(
+                "snapshot",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         let ToolCallOutcome::Complete(result) = outcome else {
@@ -334,6 +341,7 @@ done
                     progress: Some(Arc::new(move |update| lock(&sink_progress).push(update))),
                     ..CallOptions::default()
                 },
+                Instant::now() + Duration::from_secs(10),
             )
             .await
             .unwrap();
@@ -373,7 +381,12 @@ done
             .await
             .unwrap();
         let outcome = client
-            .call_tool("roots", "{}", CallOptions::default())
+            .call_tool(
+                "roots",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, ToolCallOutcome::Complete(_)));
@@ -639,7 +652,12 @@ printf '%s\n' "$3" > "$STATE/cidfile"
             })
         );
         client
-            .call_tool("alpha", "{}", CallOptions::default())
+            .call_tool(
+                "alpha",
+                "{}",
+                CallOptions::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert_eq!(

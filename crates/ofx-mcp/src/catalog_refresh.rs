@@ -1,14 +1,17 @@
+use std::pin::pin;
 use std::sync::Arc;
 
 use tokio::time::Instant;
 
 use crate::catalog_freshness::{
-    RefreshAction, SnapshotMetadata, begin_refresh, decide_refresh, failed_refresh, request_refresh,
+    Freshness, RefreshAction, SnapshotMetadata, begin_refresh, decide_refresh, failed_refresh,
+    request_refresh,
 };
 use crate::features::tools::ToolCatalog;
 use crate::operation_control::monotonic_millis;
 use crate::server_connection::{McpClient, lock};
 use crate::server_transport::discover_tools;
+use crate::timing::timeout_at;
 
 pub(crate) struct Refreshed {
     pub(crate) catalog: Arc<ToolCatalog>,
@@ -16,17 +19,21 @@ pub(crate) struct Refreshed {
 }
 
 impl McpClient {
-    pub(crate) fn tools_need_refresh(&self) -> bool {
-        decide_refresh(
-            lock(&self.tools).metadata,
-            monotonic_millis(),
-            self.tools_invalidation.pending(),
-        ) == RefreshAction::Refresh
-    }
-
     pub(crate) fn request_tool_refresh(&self) {
         let mut snapshot = lock(&self.tools);
         snapshot.metadata = request_refresh(snapshot.metadata);
+    }
+
+    pub(crate) async fn settled_tools(&self, deadline: Instant) -> Refreshed {
+        loop {
+            let mut settled = pin!(self.tools_settled.notified());
+            settled.as_mut().enable();
+            if lock(&self.tools).metadata.freshness != Freshness::Refreshing
+                || timeout_at(deadline, settled).await.is_err()
+            {
+                return self.refresh_tools(deadline).await;
+            }
+        }
     }
 
     pub(crate) async fn refresh_tools(&self, deadline: Instant) -> Refreshed {
@@ -53,16 +60,14 @@ impl McpClient {
             client: self,
             source: Some(source),
         };
-        let listed = discover_tools(&self.transport, deadline, |error| error).await;
-        pending.source = None;
-        let mut snapshot = lock(&self.tools);
-        let Ok(listing) = listed else {
-            snapshot.metadata = failed_refresh(source, monotonic_millis());
+        let Ok(listing) = discover_tools(&self.transport, deadline, |error| error).await else {
             return Refreshed {
-                catalog: Arc::clone(&snapshot.catalog),
+                catalog: self.tool_catalog(),
                 replaced: false,
             };
         };
+        pending.source = None;
+        let mut snapshot = lock(&self.tools);
         let replaced = snapshot.catalog.tools != listing.catalog.tools;
         if replaced {
             snapshot.catalog = Arc::new(listing.catalog);
@@ -87,6 +92,7 @@ impl Drop for PendingRefresh<'_> {
             let mut snapshot = lock(&self.client.tools);
             snapshot.metadata = failed_refresh(source, monotonic_millis());
         }
+        self.client.tools_settled.notify_waiters();
     }
 }
 
