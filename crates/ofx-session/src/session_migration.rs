@@ -1,7 +1,9 @@
 mod conversion;
 mod durable_state;
 mod durable_turn;
+mod legacy_checkpoint;
 mod legacy_frame;
+mod recovery_file;
 mod replay;
 
 use ofx_config::PrivateDir;
@@ -22,6 +24,7 @@ use crate::session_summary_codec::SessionSummary;
 
 pub(crate) use conversion::Converted;
 use durable_turn::LegacyTurn;
+use legacy_checkpoint::{Continuable, LegacyCheckpoint};
 use legacy_frame::decode_frame;
 use replay::Replay;
 
@@ -38,6 +41,7 @@ pub(crate) struct LegacySession {
     subagent_child: bool,
     turns: Vec<LegacyTurn>,
     context_history_start: usize,
+    recovery: Option<Box<Continuable>>,
 }
 
 struct Watermark {
@@ -112,11 +116,18 @@ fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionEr
         && replay.event_id == watermark.event_id
         && reader.offset() == watermark.bytes
         && replay.settled();
-    if committed {
-        Ok(replay.session)
-    } else {
-        Err(SessionError::InvalidSessionFormat)
+    if !committed {
+        return Err(SessionError::InvalidSessionFormat);
     }
+    let mut session = replay.session;
+    match replay.recovery {
+        Some(LegacyCheckpoint::Archived(turn)) => {
+            session.turns.push(LegacyTurn::Conversation(turn));
+        }
+        Some(LegacyCheckpoint::Continuable(checkpoint)) => session.recovery = Some(checkpoint),
+        None => {}
+    }
+    Ok(session)
 }
 
 fn read_watermark(

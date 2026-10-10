@@ -405,8 +405,6 @@ fn logs_holding_what_oh_fx_cannot_convert_yet_stay_unreadable() {
     for log in [
         LegacyLog::started("legacy-later", "/work").turn(&image_turn),
         LegacyLog::started("legacy-later", "/work").turn(&replay_turn),
-        LegacyLog::started("legacy-later", "/work")
-            .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT),
         LegacyLog::started("legacy-later", "/work").frame(
             "state_replacement_started",
             &format!(
@@ -606,7 +604,7 @@ fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
     let open = LegacyLog::started("legacy-open", "/work")
         .turn(&reply("one", "two"))
         .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT);
-    assert!(fixture.summary(&open).is_err());
+    assert_eq!(fixture.summary(&open).unwrap().unwrap().history_len, 2);
     let settled_later = LegacyLog::started("legacy-settled", "/work")
         .turn(&reply("one", "two"))
         .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
@@ -635,4 +633,5 @@ fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
     }
 }
 
+mod checkpoints;
 mod replacements;

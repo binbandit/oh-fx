@@ -5,6 +5,7 @@ use ofx_contract::ReasoningEffort;
 use sha2::{Digest, Sha256};
 
 use super::durable_turn::{LegacyTurn, history_turn, is_valid_work_id};
+use super::legacy_checkpoint::{LegacyCheckpoint, legacy_checkpoint};
 use crate::json_fields::{Fields, Json, parse_json};
 use crate::session_authority::{Identifier, parse_hex, parse_identifier};
 use crate::session_codec::{SavedProvider, SessionPreferences, parse_saved_provider};
@@ -57,7 +58,7 @@ pub(super) enum Event {
         turn: LegacyTurn,
     },
     UsageCheckpointed,
-    RecoverySet,
+    RecoverySet(LegacyCheckpoint),
     RecoveryCleared,
     ReplacementStarted(Replacement),
     ReplacementChunk(Chunk),
@@ -244,8 +245,8 @@ fn usage_checkpointed(payload: Json<'_>) -> Option<Event> {
 
 fn recovery_set(payload: Json<'_>) -> Option<Event> {
     let mut fields = Fields::new(payload)?;
-    matches!(fields.required("checkpoint")?, Json::Object(_)).then_some(())?;
-    fields.finish(Event::RecoverySet)
+    let checkpoint = legacy_checkpoint(fields.required("checkpoint")?)?;
+    fields.finish(Event::RecoverySet(checkpoint))
 }
 
 fn recovery_cleared(payload: Json<'_>) -> Option<Event> {
