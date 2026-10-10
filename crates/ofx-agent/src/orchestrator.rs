@@ -2859,6 +2859,22 @@ fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -
     }
 }
 
+fn refuse(
+    turn_id: TurnId,
+    call: &ToolCall,
+    rejection: Rejection,
+    events: EventSink<'_>,
+) -> Dispatched {
+    let Rejection {
+        reason,
+        refused,
+        description,
+        output,
+    } = rejection;
+    events(tool_rejected(turn_id, call, reason, description, &output));
+    Dispatched::Rejected(*output, reason, refused)
+}
+
 async fn run_group<'c>(
     (turn_id, trace, parallel): (TurnId, TraceContext, Option<ParallelGroup>),
     group: Vec<(&'c ToolCall, Prepared)>,
@@ -2880,15 +2896,8 @@ async fn run_group<'c>(
             break;
         }
         match prepared {
-            Prepared::Rejected(Rejection {
-                reason,
-                refused,
-                description,
-                output,
-            }) => {
-                events(tool_rejected(turn_id, call, reason, description, &output));
-                let rejected = Dispatched::Rejected(*output, reason, refused);
-                dispatched.push((call, rejected, None));
+            Prepared::Rejected(rejection) => {
+                dispatched.push((call, refuse(turn_id, call, rejection, events), None));
             }
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
