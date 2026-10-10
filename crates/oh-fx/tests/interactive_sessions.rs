@@ -2484,3 +2484,137 @@ fn a_shell_killed_while_its_first_turn_waits_to_retry_is_reopened_by_continue() 
     );
     exit(session);
 }
+
+fn upstream_shell_call(seq: u64, call_id: &str, command: &str) -> Vec<u8> {
+    let arguments = json!({"request": {"action": "run", "command": command}}).to_string();
+    frame(
+        seq,
+        &json!({"tool_call": {
+            "call_id": call_id,
+            "tool_name": "shell",
+            "arguments_json": arguments,
+            "argument_integrity": "valid",
+            "provisional_id": null,
+            "provider_result": null,
+            "final_identity": "valid",
+            "provenance": "fx_local"
+        }}),
+    )
+}
+
+fn append_fx_command_replay_turns(home: &Home, id: &str, replay: &str) {
+    home.append(
+        id,
+        &[
+            frame(
+                4,
+                &json!({"user": {"text": "list the files", "images": [], "work_id": null}}),
+            ),
+            upstream_shell_call(5, "call-ls", "ls"),
+            frame(
+                6,
+                &json!({"tool_result": {
+                    "call_id": "call-ls",
+                    "tool_name": "shell",
+                    "status": "success",
+                    "artifact_ref": replay,
+                    "tool_image_handle": null,
+                    "output_bytes": 12,
+                    "stored_bytes": 12,
+                    "completeness": "complete",
+                    "preview": "a.txt\nb.txt\n",
+                    "provider_native": false,
+                    "created_at_ms": 1,
+                    "permission_feedback": [],
+                    "committed_file_presentation": null,
+                    "command_replay_ref": replay,
+                    "command_replay_bytes": 29,
+                    "command_process_presentation": {"exit_code": 0},
+                    "terminal_action_presentation": null
+                }}),
+            ),
+            frame(7, &json!({"assistant": {"text": "Two files."}})),
+            frame(
+                8,
+                &json!({"turn_completed": {"files": [], "turn_summary": null}}),
+            ),
+            frame(
+                9,
+                &json!({"user": {"text": "run the tests", "images": [], "work_id": null}}),
+            ),
+            upstream_shell_call(10, "call-test", "cargo test"),
+            frame(
+                11,
+                &json!({"interrupted": {
+                    "reason": "cancelled",
+                    "partial_text": "Running the tests.",
+                    "command_replay_ref": replay,
+                    "command_replay_bytes": 29,
+                    "command_artifact_ref": "fx-command-artifact-1.log",
+                    "files": [],
+                    "turn_summary": null
+                }}),
+            ),
+        ]
+        .concat(),
+    );
+}
+
+#[test]
+fn a_session_holding_the_command_replays_fx_saved_resumes_and_keeps_them() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["Ready."])),
+        Reply::sse(&chat_text_events(&["Moved on."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let session = home.shell(&[], WELCOME);
+    session.send(b"first\r");
+    wait(&session, "Ready.");
+    exit(session);
+    let id = home.only_session();
+    let replay = format!("fx-command-replay-{}.bin", "0123456789abcdef".repeat(4));
+    append_fx_command_replay_turns(&home, &id, &replay);
+
+    let session = home.shell(&["-c"], "session resumed: first");
+    let screen = wait(&session, CANCELLATION);
+    assert!(
+        appears_in_order(
+            &screen,
+            &[
+                "┃ list the files",
+                "Two files.",
+                "┃ run the tests",
+                "Running the tests.",
+                CANCELLATION,
+            ]
+        ),
+        "{screen}"
+    );
+    session.send(b"next\r");
+    wait(&session, "Moved on.");
+    exit(session);
+    let messages = chat(&server.requests()[1]);
+    let tools: Vec<_> = messages
+        .iter()
+        .filter(|(role, _)| role == "tool")
+        .map(|(_, content)| content.as_str())
+        .collect();
+    assert_eq!(tools, ["a.txt\nb.txt\n", "aborted by user"]);
+    let frames = home.frames(&id);
+    assert_eq!(
+        frames[5]["event"]["tool_result"]["command_replay_ref"],
+        json!(replay)
+    );
+    assert_eq!(
+        frames[10]["event"]["interrupted"]["command_replay_bytes"],
+        29
+    );
+    assert_eq!(
+        frames[10]["event"]["interrupted"]["command_artifact_ref"],
+        "fx-command-artifact-1.log"
+    );
+    assert_eq!(
+        kinds(&frames)[11..],
+        ["user", "assistant", "turn_completed"]
+    );
+}
