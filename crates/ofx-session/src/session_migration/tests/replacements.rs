@@ -12,7 +12,47 @@ const REPLACEMENT_ID: &str = "07070707070707070707070707070707";
 const RAW_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const PREFERENCES_007: &str =
     "{\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false,\"provider\":\"gateway\"}";
-const PERMISSIONS_007: &str = "{\"schema_version\":2,\"next_generation\":2,\"rules\":[{\"id\":1,\"kind\":\"command\",\"canonical\":\"git status\",\"display_identity\":\"git status\",\"decision\":\"allow\",\"generation\":1}]}";
+
+fn identity_007(fields: &[&[u8]]) -> Vec<u8> {
+    let mut canonical = Vec::new();
+    for field in fields {
+        canonical.extend(u64::try_from(field.len()).unwrap().to_be_bytes());
+        canonical.extend_from_slice(field);
+    }
+    canonical
+}
+
+fn durable_007(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => serde_json::to_string(text).unwrap(),
+        Err(_) => format!(
+            "{{\"encoding\":\"base64\",\"data\":\"{}\"}}",
+            STANDARD.encode(bytes)
+        ),
+    }
+}
+
+fn permissions_007() -> String {
+    let command = identity_007(&[
+        b"fx-permission-state-v2",
+        b"git status",
+        b"/work",
+        b"false",
+        b"macos",
+    ]);
+    let digest = Sha256::digest(b"fn main() {}");
+    let file = identity_007(&[
+        b"fx-file-mutation-v1",
+        b"/work/src/main.rs",
+        digest.as_slice(),
+        &42_u64.to_be_bytes(),
+    ]);
+    format!(
+        "{{\"schema_version\":2,\"next_generation\":3,\"rules\":[{{\"id\":1,\"kind\":\"command\",\"canonical\":{},\"display_identity\":\"git status\",\"decision\":\"allow\",\"generation\":1}},{{\"id\":2,\"kind\":\"file_mutation\",\"canonical\":{},\"display_identity\":\"src/main.rs\",\"decision\":\"allow\",\"generation\":2}}]}}",
+        durable_007(&command),
+        durable_007(&file)
+    )
+}
 
 fn reply_007(prompt: &str, answer: &str) -> String {
     format!(
@@ -34,8 +74,9 @@ fn state_007(
     tail: &str,
 ) -> String {
     format!(
-        "{{\"id\":\"{id}\",\"origin_workspace_root\":\"/work\",\"workspace_root\":\"/work\",\"created_at_ms\":10,\"updated_at_ms\":{updated_at_ms},\"conversation_language\":\"en\",\"preferences\":{PREFERENCES_007},\"history\":[{}],\"total_input_tokens\":0,\"total_output_tokens\":0,\"context_history_start\":{context_history_start},\"permission_state\":{PERMISSIONS_007}{tail}}}",
-        history.join(",")
+        "{{\"id\":\"{id}\",\"origin_workspace_root\":\"/work\",\"workspace_root\":\"/work\",\"created_at_ms\":10,\"updated_at_ms\":{updated_at_ms},\"conversation_language\":\"en\",\"preferences\":{PREFERENCES_007},\"history\":[{}],\"total_input_tokens\":0,\"total_output_tokens\":0,\"context_history_start\":{context_history_start},\"permission_state\":{}{tail}}}",
+        history.join(","),
+        permissions_007()
     )
 }
 
@@ -295,6 +336,9 @@ fn a_replacement_whose_frames_do_not_add_up_makes_the_session_unreadable() {
     let fixture = Fixture::new();
     let good = || broken("compaction", &broken_state(50, ""));
     assert!(fixture.summary(&good()).unwrap().is_some());
+    let rules = permissions_007();
+    assert!(rules.contains("\\u0000"), "{rules}");
+    assert!(rules.contains("\"encoding\":\"base64\""), "{rules}");
     assert_unreadable(vec![
         (
             "chunk digest",
@@ -378,7 +422,7 @@ fn a_replacement_whose_state_does_not_check_out_makes_the_session_unreadable() {
             "rule generation",
             broken(
                 "compaction",
-                &broken_state(50, "").replace("\"next_generation\":2", "\"next_generation\":1"),
+                &broken_state(50, "").replace("\"next_generation\":3", "\"next_generation\":2"),
             ),
         ),
         (

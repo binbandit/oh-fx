@@ -7,7 +7,9 @@ use ofx_contract::{
 
 use crate::json_fields::{Fields, Json};
 use crate::session_authority::parse_identifier;
-use crate::session_codec::recovery_checkpoint::{durable_text, file_evidence, list, tag};
+use crate::session_codec::recovery_checkpoint::{
+    durable_bytes, durable_text, file_evidence, list, tag,
+};
 use crate::session_event::{FileEvidence, InterruptReason, ToolCallEvent};
 use crate::{process_presentation, turn_summary};
 
@@ -121,7 +123,7 @@ fn compacted_summary(fields: &mut Fields<'_>) -> Option<CompactedSummary> {
     };
     shaped.then_some(())?;
     for messages in [root_messages, feedback].into_iter().flatten() {
-        list(messages, durable_text)?;
+        list(messages, durable_bytes)?;
     }
     for complete in [root_complete, feedback_complete].into_iter().flatten() {
         complete.as_bool()?;
@@ -205,7 +207,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
         Json::Null => None,
         call => Some(interrupted_call(call)?),
     };
-    list(fields.required("completed_tool_names")?, durable_text)?;
+    list(fields.required("completed_tool_names")?, durable_bytes)?;
     let reason = fields.or(
         "terminal_reason",
         InterruptReason::Cancelled,

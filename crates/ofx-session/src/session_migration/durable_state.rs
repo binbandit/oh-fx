@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use crate::json_fields::{Fields, Json, parse_json, string};
 use crate::session_codec::SessionPreferences;
-use crate::session_codec::recovery_checkpoint::{durable_text, list};
+use crate::session_codec::recovery_checkpoint::{durable_bytes, list};
 
 use super::durable_turn::{LegacyTurn, history_turn, is_valid_work_id};
 use super::legacy_frame::preferences;
@@ -39,7 +39,7 @@ pub(super) struct DurableState {
 struct Rule {
     id: u64,
     kind: String,
-    canonical: String,
+    canonical: Vec<u8>,
     generation: u64,
 }
 
@@ -113,27 +113,27 @@ fn permission_state(value: Json<'_>) -> Option<()> {
                 && rule.id <= rule.generation
                 && rule.generation < next_generation
                 && ids.insert(rule.id)
-                && keys.insert((rule.kind.as_str(), rule.canonical.as_str()))
+                && keys.insert((rule.kind.as_str(), rule.canonical.as_slice()))
         })
         .then_some(())
 }
 
 fn rule(value: Json<'_>) -> Option<Rule> {
     let mut fields = Fields::new(value)?;
-    let identity = |text: String| {
+    let identity = |bytes: Vec<u8>| {
         (1..=MAX_RULE_IDENTITY_BYTES)
-            .contains(&text.len())
-            .then_some(text)
+            .contains(&bytes.len())
+            .then_some(bytes)
     };
     let rule = Rule {
         id: fields.unsigned("id")?,
         kind: fields
             .string("kind")
             .filter(|kind| RULE_KINDS.contains(&kind.as_str()))?,
-        canonical: identity(durable_text(fields.required("canonical")?)?)?,
+        canonical: identity(durable_bytes(fields.required("canonical")?)?)?,
         generation: fields.unsigned("generation")?,
     };
-    identity(durable_text(fields.required("display_identity")?)?)?;
+    identity(durable_bytes(fields.required("display_identity")?)?)?;
     fields
         .string("decision")
         .filter(|decision| RULE_DECISIONS.contains(&decision.as_str()))?;
