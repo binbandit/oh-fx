@@ -1,10 +1,12 @@
+use ofx_contract::ToolImage;
+use ofx_images::{ImageError, ImageList, parse_tool_images, supported_media_type};
 use serde_json::{Map, Value};
 
 use crate::feature_operations::{PromptSummary, ResourceSummary};
 use crate::features::common::{ResourceContent, ResourceData};
 use crate::features::completion::CompletionResult;
 use crate::features::prompts::PromptGetResult;
-use crate::tool_result::{UNSENT_BINARY_RESOURCE, project_media_for_text};
+use crate::tool_result::{IMAGE_CONTENT, UNSENT_BINARY_RESOURCE, project_media_for_text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FeatureAction {
@@ -99,8 +101,19 @@ pub(crate) fn resource_read(server: &str, uri: &str, contents: &[ResourceContent
                     entry.insert("text".to_owned(), Value::from(text.as_str()));
                 }
                 ResourceData::Blob(_) => {
+                    let image = content
+                        .mime_type
+                        .as_deref()
+                        .is_some_and(supported_media_type);
                     entry.insert("type".to_owned(), Value::from("blob"));
-                    entry.insert("delivery".to_owned(), Value::from(UNSENT_BINARY_RESOURCE));
+                    entry.insert(
+                        "delivery".to_owned(),
+                        Value::from(if image {
+                            IMAGE_CONTENT
+                        } else {
+                            UNSENT_BINARY_RESOURCE
+                        }),
+                    );
                 }
             }
             Value::Object(entry)
@@ -192,6 +205,29 @@ pub(crate) fn completion(
     Value::Object(envelope).to_string()
 }
 
+pub(crate) fn resource_images(contents: &[ResourceContent]) -> Result<Vec<ToolImage>, ImageError> {
+    let mut images = ImageList::default();
+    for content in contents {
+        if let (Some(mime_type), ResourceData::Blob(blob)) = (&content.mime_type, &content.data)
+            && supported_media_type(mime_type)
+        {
+            images.append(blob, mime_type)?;
+        }
+    }
+    Ok(images.into_images())
+}
+
+pub(crate) fn prompt_images(result: &PromptGetResult) -> Result<Vec<ToolImage>, ImageError> {
+    let mut content = Vec::new();
+    for message in &result.messages {
+        match serde_json::from_str(&message.content_json).unwrap_or(Value::Null) {
+            Value::Array(items) => content.extend(items),
+            value => content.push(value),
+        }
+    }
+    parse_tool_images(&content)
+}
+
 pub(crate) fn unsupported(action: FeatureAction, server: &str) -> String {
     let mut envelope = envelope(action, server);
     envelope.insert("unsupported".to_owned(), Value::Bool(true));
@@ -232,6 +268,29 @@ mod tests {
     use crate::features::prompts::{PromptArgument, PromptContentKind, PromptMessage, PromptRole};
 
     const ENVELOPE: &str = r#"{"trust":"untrusted_external","authority":"none""#;
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP0cAAAAASUVORK5CYII=";
+
+    fn blob(uri: &str, mime_type: Option<&str>, data: &str) -> ResourceContent {
+        ResourceContent {
+            uri: uri.to_owned(),
+            mime_type: mime_type.map(str::to_owned),
+            annotations_json: None,
+            metadata_json: None,
+            data: ResourceData::Blob(data.to_owned()),
+        }
+    }
+
+    fn prompt_message(
+        role: PromptRole,
+        content_kind: PromptContentKind,
+        content_json: &str,
+    ) -> PromptMessage {
+        PromptMessage {
+            role,
+            content_kind,
+            content_json: content_json.to_owned(),
+        }
+    }
 
     fn resource(identity: &str, details: [Option<&str>; 3]) -> ResourceSummary {
         let [title, description, mime_type] = details.map(|value| value.map(str::to_owned));
@@ -319,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_carry_text_and_describe_binary_contents_as_unsent() {
+    fn reads_carry_text_and_describe_images_as_sent_and_other_binary_contents_as_unsent() {
         let contents = [
             ResourceContent {
                 uri: "memory://plan".to_owned(),
@@ -328,43 +387,68 @@ mod tests {
                 metadata_json: Some(r#"{"z":1,"a":true}"#.to_owned()),
                 data: ResourceData::Text("line\none".to_owned()),
             },
-            ResourceContent {
-                uri: "memory://logo".to_owned(),
-                mime_type: Some("image/png".to_owned()),
-                annotations_json: None,
-                metadata_json: None,
-                data: ResourceData::Blob("aGk=".to_owned()),
-            },
+            blob("memory://logo", Some("image/png"), "aGk="),
+            blob("memory://report", Some("application/pdf"), "aGk="),
+            blob("memory://raw", None, "aGk="),
         ];
         assert_eq!(
             resource_read("docs", "memory://plan", &contents),
             format!(
-                r#"{ENVELOPE},"action":"resource_read","server":"docs","identity":"memory://plan","contents":[{{"uri":"memory://plan","mimeType":"text/markdown","annotations":{{"priority":0.5,"audience":["user"]}},"_meta":{{"z":1,"a":true}},"type":"text","text":"line\none"}},{{"uri":"memory://logo","mimeType":"image/png","type":"blob","delivery":"binary resource content was not sent to the model"}}]}}"#
+                r#"{ENVELOPE},"action":"resource_read","server":"docs","identity":"memory://plan","contents":[{{"uri":"memory://plan","mimeType":"text/markdown","annotations":{{"priority":0.5,"audience":["user"]}},"_meta":{{"z":1,"a":true}},"type":"text","text":"line\none"}},{{"uri":"memory://logo","mimeType":"image/png","type":"blob","delivery":"image content"}},{{"uri":"memory://report","mimeType":"application/pdf","type":"blob","delivery":"binary resource content was not sent to the model"}},{{"uri":"memory://raw","type":"blob","delivery":"binary resource content was not sent to the model"}}]}}"#
             )
         );
     }
 
     #[test]
-    fn prompt_messages_keep_their_content_and_describe_media_as_unsent() {
-        let message = |role, content_kind, content_json: &str| PromptMessage {
-            role,
-            content_kind,
-            content_json: content_json.to_owned(),
-        };
+    fn resource_reads_attach_their_supported_image_blobs() {
+        let contents = [
+            blob("memory://logo", Some("image/png"), PNG),
+            blob("memory://report", Some("application/pdf"), "aGk="),
+            blob("memory://raw", None, "aGk="),
+            ResourceContent {
+                data: ResourceData::Text(PNG.to_owned()),
+                ..blob("memory://text", Some("image/png"), "")
+            },
+            blob("memory://again", Some("image/png"), PNG),
+        ];
+        let images = resource_images(&contents).expect("the blobs are images");
+        assert_eq!(
+            images,
+            vec![
+                ToolImage {
+                    data: PNG.to_owned(),
+                    mime_type: "image/png".to_owned(),
+                    source_ref: None,
+                };
+                2
+            ]
+        );
+        assert_eq!(
+            resource_images(&[blob("memory://logo", Some("image/png"), "aGk=")]),
+            Err(ImageError::UnsupportedImageType)
+        );
+        assert_eq!(
+            resource_images(&[blob("memory://logo", Some("image/jpeg"), PNG)]),
+            Err(ImageError::InvalidImage)
+        );
+    }
+
+    #[test]
+    fn prompt_messages_keep_their_content_and_describe_images_as_sent() {
         let result = PromptGetResult {
             description: Some("Review the change".to_owned()),
             messages: vec![
-                message(
+                prompt_message(
                     PromptRole::User,
                     PromptContentKind::Text,
                     r#"{"type":"text","text":"PROMPT_TEXT","_meta":{"n":1000.0}}"#,
                 ),
-                message(
+                prompt_message(
                     PromptRole::Assistant,
                     PromptContentKind::Image,
                     r#"{"type":"image","data":"aGk=","mimeType":"image/png","annotations":{"priority":1}}"#,
                 ),
-                message(
+                prompt_message(
                     PromptRole::User,
                     PromptContentKind::Resource,
                     r#"{"type":"resource","resource":{"uri":"file:///a","blob":"aGk=","mimeType":"application/pdf"}}"#,
@@ -374,7 +458,7 @@ mod tests {
         assert_eq!(
             prompt_get("docs", "review", &result),
             format!(
-                r#"{ENVELOPE},"action":"prompt_get","server":"docs","identity":"review","description":"Review the change","messages":[{{"role":"user","contentKind":"text","content":{{"type":"text","text":"PROMPT_TEXT","_meta":{{"n":1000.0}}}}}},{{"role":"assistant","contentKind":"image","content":{{"type":"image","annotations":{{"priority":1}},"mimeType":"image/png","delivery":"unsupported media; content was not sent to the model"}}}},{{"role":"user","contentKind":"resource","content":{{"type":"resource","resource":{{"uri":"file:///a","mimeType":"application/pdf","delivery":"binary resource content was not sent to the model"}}}}}}]}}"#
+                r#"{ENVELOPE},"action":"prompt_get","server":"docs","identity":"review","description":"Review the change","messages":[{{"role":"user","contentKind":"text","content":{{"type":"text","text":"PROMPT_TEXT","_meta":{{"n":1000.0}}}}}},{{"role":"assistant","contentKind":"image","content":{{"type":"image","annotations":{{"priority":1}},"mimeType":"image/png","delivery":"image content"}}}},{{"role":"user","contentKind":"resource","content":{{"type":"resource","resource":{{"uri":"file:///a","mimeType":"application/pdf","delivery":"binary resource content was not sent to the model"}}}}}}]}}"#
             )
         );
         let bare = PromptGetResult {
@@ -387,6 +471,46 @@ mod tests {
                 r#"{ENVELOPE},"action":"prompt_get","server":"docs","identity":"plain","messages":[]}}"#
             )
         );
+    }
+
+    #[test]
+    fn prompt_gets_attach_the_images_of_every_message() {
+        let image = format!(r#"{{"type":"image","data":"{PNG}","mimeType":"image/png"}}"#);
+        let resource = format!(
+            r#"{{"type":"resource","resource":{{"uri":"file:///a.png","blob":"{PNG}","mimeType":"image/png"}}}}"#
+        );
+        let result = PromptGetResult {
+            description: None,
+            messages: vec![
+                prompt_message(
+                    PromptRole::User,
+                    PromptContentKind::Text,
+                    r#"{"type":"text","text":"look"}"#,
+                ),
+                prompt_message(PromptRole::User, PromptContentKind::Image, &image),
+                prompt_message(
+                    PromptRole::Assistant,
+                    PromptContentKind::Resource,
+                    &format!("[{resource}]"),
+                ),
+            ],
+        };
+        let images = prompt_images(&result).expect("the prompt carries images");
+        assert_eq!(images.len(), 2);
+        assert!(
+            images
+                .iter()
+                .all(|image| image.data == PNG && image.mime_type == "image/png")
+        );
+        let broken = PromptGetResult {
+            description: None,
+            messages: vec![prompt_message(
+                PromptRole::User,
+                PromptContentKind::Image,
+                r#"{"type":"image","mimeType":"image/png"}"#,
+            )],
+        };
+        assert_eq!(prompt_images(&broken), Err(ImageError::InvalidImage));
     }
 
     #[test]
