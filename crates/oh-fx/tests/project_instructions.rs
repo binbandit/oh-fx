@@ -531,7 +531,8 @@ fn batches_defer_only_the_writes_whose_own_scope_brings_new_rules() {
         display(&b),
         display(b.parent().unwrap())
     );
-    assert_eq!(system_texts(&requests[1])[2], combined);
+    assert_eq!(system_texts(&requests[1])[2], MCP_SERVERS_NONE);
+    assert_eq!(system_texts(&requests[1])[3], combined);
     assert_eq!(
         tool_results(&requests[1])
             .into_iter()
@@ -581,8 +582,9 @@ fn scoped_omission_notices_print_before_the_progress_lines_and_hide_link_targets
         )
     );
     let requests = server.requests();
+    assert_eq!(system_texts(&requests[1])[2], MCP_SERVERS_NONE);
     assert_eq!(
-        system_texts(&requests[1])[2],
+        system_texts(&requests[1])[3],
         format!(
             "{GUIDANCE}\n\n<scoped-rules from=\"{}\" scope=\"{}\">\nREAL LINKED\n</scoped-rules>\n\n<project-rules-omitted from=\"{}\" reason=\"non-regular rule file\" />\n\n<project-rules-omitted from=\"{}\" reason=\"unreadable rule file\" />\n\n<project-rules-omitted from=\"{}\" reason=\"symlinked rule file\" />",
             source("work/linked/AGENTS.md"),
@@ -757,7 +759,8 @@ fn shell_runs_are_deferred_by_their_working_directory_rules_only() {
         stderr(&output)
     );
     let requests = server.requests();
-    assert_eq!(system_texts(&requests[1])[2], scoped(&sub));
+    assert_eq!(system_texts(&requests[1])[2], MCP_SERVERS_NONE);
+    assert_eq!(system_texts(&requests[1])[3], scoped(&sub));
     let results = tool_results(&requests[3]);
     assert_eq!(results[0], ("call_1".to_owned(), DEFERRED.to_owned()));
     for (call_id, content) in &results[2..6] {
