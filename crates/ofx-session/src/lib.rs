@@ -28,6 +28,8 @@ mod session_store;
 mod session_store_paths;
 mod session_summary_codec;
 mod session_title_generation;
+mod session_usage;
+mod session_usage_sidecar;
 #[cfg(test)]
 mod spawn_gate;
 mod turn_summary;
@@ -57,3 +59,4 @@ pub use session_log::{
 pub use session_store::{ListScope, RememberedSession, ResumeTarget, SessionCatalog, SessionStore};
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource, SessionSummary};
 pub use session_title_generation::{TitleGate, TitleRequest, generate_title, prompt_excerpt};
+pub use session_usage::UsageSnapshot;

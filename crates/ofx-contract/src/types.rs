@@ -250,7 +250,7 @@ pub fn valid_credential_account_id(account_id: &str) -> bool {
         && account_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
-pub(crate) fn valid_gateway_generation_id(id: &str) -> bool {
+pub fn valid_gateway_generation_id(id: &str) -> bool {
     id.len() == GATEWAY_GENERATION_ID_BYTES
         && id
             .strip_prefix(GATEWAY_GENERATION_ID_PREFIX)
