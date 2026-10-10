@@ -400,6 +400,8 @@ fn a_missing_shared_or_linked_fx_folder_lists_nothing() {
     );
 }
 
+const REPLAY: &str = "\"fx-command-replay-00112233445566778899aabbccddeeff\"";
+
 fn frame(seq: u64, event: &str) -> String {
     format!("{{\"schema_version\":3,\"seq\":{seq},\"timestamp_ms\":2,\"event\":{event}}}\n")
 }
@@ -436,6 +438,21 @@ fn shell_turn_without_its_call() -> String {
     log_of(&events)
 }
 
+fn shell_turn_cancelled_with_its_replay() -> String {
+    let mut events = shell_events("null", "null");
+    events.truncate(2);
+    events.push(format!(
+        "{{\"interrupted\":{{\"reason\":\"cancelled\",\"partial_text\":null,\"command_replay_ref\":{REPLAY},\"command_replay_bytes\":64,\"command_artifact_ref\":\"fx-command-artifact-1.log\",\"files\":[],\"turn_summary\":null}}}}"
+    ));
+    log_of(&events)
+}
+
+fn shell_turn_with_an_unknown_event() -> String {
+    let mut events = shell_events("null", "null");
+    events.insert(3, "{\"unknown\":{}}".to_owned());
+    log_of(&events)
+}
+
 #[test]
 fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
     let home = Home::new();
@@ -447,27 +464,28 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
         prompts: &[],
         modified_s: 100,
     };
-    let plain = saved("fx-plain");
-    plain.write_files(
-        &home.fx_sessions(),
-        &plain.manifest(),
-        &shell_turn("null", "null"),
-    );
-    let replayed = saved("fx-replayed");
-    replayed.write_files(
-        &home.fx_sessions(),
-        &replayed.manifest(),
-        &shell_turn(
-            "\"fx-command-replay-00112233445566778899aabbccddeeff\"",
-            "64",
+    let unfinished = log_of(&shell_events("null", "null")[..3]);
+    for (id, log) in [
+        ("fx-plain", shell_turn("null", "null")),
+        ("fx-replayed", shell_turn(REPLAY, "64")),
+        (
+            "fx-cancelled-command",
+            shell_turn_cancelled_with_its_replay(),
         ),
-    );
-    let ultrafast = saved("fx-ultrafast");
-    ultrafast.write_files(
+        ("fx-unknown-event", shell_turn_with_an_unknown_event()),
+        ("fx-recovery-ahead", shell_turn("null", "null")),
+        ("fx-open-turn-recovery", unfinished.clone()),
+        ("fx-open-turn", unfinished),
+    ] {
+        let session = saved(id);
+        session.write_files(&home.fx_sessions(), &session.manifest(), &log);
+    }
+    let unknown_key = saved("fx-unknown-key");
+    unknown_key.write_files(
         &home.fx_sessions(),
-        &ultrafast.manifest().replace(
+        &unknown_key.manifest().replace(
             "\"fast_mode\":false,",
-            "\"fast_mode\":true,\"ultrafast_mode\":true,",
+            "\"fast_mode\":false,\"unknown\":true,",
         ),
         &shell_turn("null", "null"),
     );
@@ -479,17 +497,6 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
         let orphan = saved(id);
         orphan.write_files(&sessions, &orphan.manifest(), &without_call);
     }
-    let ahead = saved("fx-recovery-ahead");
-    ahead.write_files(
-        &home.fx_sessions(),
-        &ahead.manifest(),
-        &shell_turn("null", "null"),
-    );
-    let open_turn = saved("fx-open-turn-recovery");
-    let unfinished = log_of(&shell_events("null", "null")[..3]);
-    open_turn.write_files(&home.fx_sessions(), &open_turn.manifest(), &unfinished);
-    let open_turn_kept = saved("fx-open-turn");
-    open_turn_kept.write_files(&home.fx_sessions(), &open_turn_kept.manifest(), &unfinished);
     for (id, recovery) in [
         (
             "fx-recovery-ahead",
@@ -512,10 +519,20 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
     let page = catalog.listed_page(ListScope::AllWorkspaces, None, 50);
     assert_eq!(
         ids(&page),
-        ["own-orphan-result", "fx-plain", "fx-open-turn"]
+        [
+            "own-orphan-result",
+            "fx-replayed",
+            "fx-plain",
+            "fx-cancelled-command",
+            "fx-open-turn"
+        ]
     );
-    assert_eq!(page.summaries[1].history_len, 1);
-    assert_eq!(page.summaries[2].history_len, 0);
+    let turns: Vec<usize> = page
+        .summaries
+        .iter()
+        .map(|summary| summary.history_len)
+        .collect();
+    assert_eq!(turns, [1, 1, 1, 1, 0]);
     assert_eq!(catalog.skipped_invalid(), 0);
 }
 

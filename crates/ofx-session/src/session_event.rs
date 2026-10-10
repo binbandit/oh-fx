@@ -183,9 +183,9 @@ pub struct ToolResultEvent {
     #[serde(default)]
     committed_file_presentation: Null,
     #[serde(default)]
-    command_replay_ref: Null,
+    command_replay_ref: Option<String>,
     #[serde(default)]
-    command_replay_bytes: Null,
+    command_replay_bytes: Option<u64>,
     #[serde(default, with = "crate::process_presentation::frame")]
     pub command_process_presentation: Option<CommandProcessPresentation>,
     #[serde(default)]
@@ -216,8 +216,8 @@ impl ToolResultEvent {
             created_at_ms: 0,
             permission_feedback: Vec::new(),
             committed_file_presentation: Null,
-            command_replay_ref: Null,
-            command_replay_bytes: Null,
+            command_replay_ref: None,
+            command_replay_bytes: None,
             command_process_presentation: None,
             terminal_action_presentation: Null,
         }
@@ -312,11 +312,11 @@ pub struct InterruptedEvent {
     #[serde(default)]
     pub partial_text: Option<String>,
     #[serde(default)]
-    command_replay_ref: Null,
+    command_replay_ref: Option<String>,
     #[serde(default)]
-    command_replay_bytes: Null,
+    command_replay_bytes: Option<u64>,
     #[serde(default)]
-    command_artifact_ref: Null,
+    command_artifact_ref: Option<String>,
     #[serde(default)]
     pub(crate) files: Vec<FileEvidence>,
     #[serde(default, with = "crate::turn_summary")]
@@ -330,9 +330,9 @@ impl InterruptedEvent {
         Self {
             reason,
             partial_text,
-            command_replay_ref: Null,
-            command_replay_bytes: Null,
-            command_artifact_ref: Null,
+            command_replay_ref: None,
+            command_replay_bytes: None,
+            command_artifact_ref: None,
             files: Vec::new(),
             turn_summary: None,
             cancellation_origin: TurnOrigin,
@@ -649,12 +649,24 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
                     .permission_feedback
                     .iter()
                     .all(|feedback| feedback.len() <= MAX_TEXT_BYTES)
+                && is_valid_replay(
+                    result.command_replay_ref.as_deref(),
+                    result.command_replay_bytes,
+                )
         }
         ConversationEvent::Interrupted(interrupted) => {
             interrupted
                 .partial_text
                 .as_ref()
                 .is_none_or(|text| text.len() <= MAX_TEXT_BYTES)
+                && is_valid_replay(
+                    interrupted.command_replay_ref.as_deref(),
+                    interrupted.command_replay_bytes,
+                )
+                && interrupted
+                    .command_artifact_ref
+                    .as_deref()
+                    .is_none_or(is_valid_identity)
                 && are_valid_files(&interrupted.files)
         }
         ConversationEvent::ContextCheckpoint(checkpoint) => is_valid_text(&checkpoint.summary),
@@ -686,6 +698,14 @@ fn is_valid_text(text: &str) -> bool {
 
 fn is_valid_identity(value: &str) -> bool {
     (1..=MAX_IDENTITY_BYTES).contains(&value.len())
+}
+
+fn is_valid_replay(handle: Option<&str>, framed_bytes: Option<u64>) -> bool {
+    match (handle, framed_bytes) {
+        (None, None) => true,
+        (Some(handle), Some(_)) => is_valid_identity(handle),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
