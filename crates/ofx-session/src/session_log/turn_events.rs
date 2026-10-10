@@ -8,9 +8,9 @@ use crate::result_store::{make_handle, preview, store_result};
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{
-    ArtifactCompleteness, AssistantEvent, ConversationEvent, FileEvidence, InterruptReason,
-    InterruptedEvent, SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent,
-    ToolResultEvent, TurnCompletedEvent, UserEvent,
+    ArtifactCompleteness, AssistantEvent, CancellationOrigin, ConversationEvent, FileEvidence,
+    InterruptReason, InterruptedEvent, SavedReplay, SavedReplaySource, SteeringEvent,
+    ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::conversation_progress::ProgressPoint;
 
@@ -77,12 +77,16 @@ pub(crate) fn turn_events(
             }));
         }
         TurnEnd::Stopped { reason, partial } => {
-            let reason = match reason {
-                TurnStop::Cancelled => InterruptReason::Cancelled,
-                TurnStop::Failed => InterruptReason::Failed,
+            let (reason, origin) = match reason {
+                TurnStop::Cancelled => (InterruptReason::Cancelled, CancellationOrigin::Turn),
+                TurnStop::CompactionCancelled => {
+                    (InterruptReason::Cancelled, CancellationOrigin::Compaction)
+                }
+                TurnStop::Failed => (InterruptReason::Failed, CancellationOrigin::Turn),
             };
             let partial = (!partial.is_empty()).then(|| partial.to_owned());
             let mut interrupted = InterruptedEvent::new(reason, partial);
+            interrupted.cancellation_origin = origin;
             interrupted.files = turn.files.iter().map(FileEvidence::from).collect();
             events.push(ConversationEvent::Interrupted(interrupted));
         }

@@ -38,9 +38,9 @@ pub use session_conversation_log::SessionLog;
 pub use session_display_metadata::{MAX_TITLE_BYTES, prompt_display_title};
 pub use session_error::SessionError;
 pub use session_event::{
-    ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, ConversationEvent,
-    InterruptReason, InterruptedEvent, SavedReplay, SavedReplaySource, SteeringEvent,
-    ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
+    ArtifactCompleteness, AssistantEvent, CancellationOrigin, ContextCheckpointEvent,
+    ConversationEvent, InterruptReason, InterruptedEvent, SavedReplay, SavedReplaySource,
+    SteeringEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
 };
 pub use session_layout::is_valid_session_id;
 pub use session_log::{

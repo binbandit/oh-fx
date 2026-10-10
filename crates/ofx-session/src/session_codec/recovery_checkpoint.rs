@@ -14,7 +14,7 @@ use ofx_contract::{
 };
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
-use crate::json_fields::{Fields, Json, parse_json};
+use crate::json_fields::{Fields, Json, parse_json, string};
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
@@ -28,6 +28,7 @@ pub use route_credential::RouteCredential;
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;
 const CHECKPOINT_VERSION: u64 = 2;
 const EXECUTION_SCHEMA_VERSION: u64 = 10;
+const MAX_WORK_ID_BYTES: usize = 128;
 const CAUSES: [&str; 10] = [
     "network_interrupted",
     "connectivity_lost",
@@ -70,6 +71,7 @@ const CREDENTIAL_SOURCES: [&str; 8] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryCheckpoint {
     user: String,
+    work_id: Option<String>,
     assistant_source: String,
     execution: SavedExecution,
     cause: Option<ModelRecoveryCause>,
@@ -290,7 +292,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         .unsigned("version")
         .filter(|version| *version == CHECKPOINT_VERSION)?;
     fields.unsigned("turn_id")?;
-    let user = user_text(fields.required("user")?)?;
+    let (user, work_id) = user_turn(fields.required("user")?)?;
     let assistant_source = durable_text(fields.required("assistant_source")?)?;
     let execution = execution(fields.required("execution")?)?;
     let cause = one_of(&fields.required("cause")?, &CAUSES)?;
@@ -317,6 +319,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
         .find(|known| known.as_str() == cause),
         tool_state,
         user,
+        work_id,
         assistant_source,
         execution,
         route: RecoveryRoute {
@@ -365,11 +368,19 @@ fn strategy(
     }
 }
 
-fn user_text(value: Json<'_>) -> Option<String> {
+fn user_turn(value: Json<'_>) -> Option<(String, Option<String>)> {
     let mut fields = Fields::new(value)?;
     let text = durable_text(fields.required("text")?).filter(|text| !text.is_empty())?;
     fixed::<NoItems>(&mut fields, "images")?;
-    fields.finish(text)
+    let work_id = match fields.required("work_id") {
+        None => None,
+        Some(value) => Some(string(value).filter(|work_id| is_valid_work_id(work_id))?),
+    };
+    fields.finish((text, work_id))
+}
+
+fn is_valid_work_id(work_id: &str) -> bool {
+    (1..=MAX_WORK_ID_BYTES).contains(&work_id.len()) && !work_id.contains('\0')
 }
 
 fn execution(value: Json<'_>) -> Option<SavedExecution> {

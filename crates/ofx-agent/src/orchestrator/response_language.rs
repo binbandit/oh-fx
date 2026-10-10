@@ -42,6 +42,7 @@ impl TurnLanguage {
                 partial: self.stage.interruption_source(&partial).to_owned(),
             },
             Stop::Paused { failure } => Stop::Paused { failure },
+            Stop::CompactionInterrupted => Stop::CompactionInterrupted,
         }
     }
 }

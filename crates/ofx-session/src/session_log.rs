@@ -290,6 +290,7 @@ impl WritableSession {
             point,
             provider,
             credential,
+            self.work_id.as_deref(),
         )?;
         self.recovery = Recovery::Saved;
         Ok(())

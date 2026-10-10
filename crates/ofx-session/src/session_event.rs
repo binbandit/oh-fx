@@ -10,7 +10,7 @@ use ofx_contract::{
 };
 use serde::Serialize;
 
-use crate::fixed_field::{NoItems, Null, TurnOrigin, ValidIdentity};
+use crate::fixed_field::{NoItems, Null};
 use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
@@ -119,11 +119,11 @@ pub struct ToolCallEvent {
     #[serde(default = "valid_arguments", with = "wire_tag")]
     pub argument_integrity: ToolArgumentIntegrity,
     #[serde(default)]
-    provisional_id: Null,
+    pub(crate) provisional_id: Option<String>,
     #[serde(default)]
     pub provider_result: Option<String>,
-    #[serde(default)]
-    final_identity: ValidIdentity,
+    #[serde(default, with = "wire_tag")]
+    pub(crate) final_identity: FinalToolIdentity,
     #[serde(default, with = "wire_tag")]
     pub provenance: ToolExecutionProvenance,
 }
@@ -140,9 +140,9 @@ impl ToolCallEvent {
             tool_name: tool_name.into(),
             arguments_json: arguments_json.into(),
             argument_integrity,
-            provisional_id: Null,
+            provisional_id: None,
             provider_result: None,
-            final_identity: ValidIdentity,
+            final_identity: FinalToolIdentity::Valid,
             provenance: ToolExecutionProvenance::FxLocal,
         }
     }
@@ -329,8 +329,12 @@ pub struct InterruptedEvent {
     pub(crate) files: Vec<FileEvidence>,
     #[serde(default, with = "crate::turn_summary")]
     pub turn_summary: Option<TurnSummary>,
-    #[serde(default, skip_serializing)]
-    cancellation_origin: TurnOrigin,
+    #[serde(
+        default,
+        skip_serializing_if = "CancellationOrigin::is_turn",
+        with = "wire_tag"
+    )]
+    pub cancellation_origin: CancellationOrigin,
 }
 
 impl InterruptedEvent {
@@ -343,9 +347,31 @@ impl InterruptedEvent {
             command_artifact_ref: None,
             files: Vec::new(),
             turn_summary: None,
-            cancellation_origin: TurnOrigin,
+            cancellation_origin: CancellationOrigin::Turn,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CancellationOrigin {
+    #[default]
+    Turn,
+    Compaction,
+}
+
+impl CancellationOrigin {
+    fn is_turn(&self) -> bool {
+        *self == Self::Turn
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FinalToolIdentity {
+    #[default]
+    Valid,
+    Absent,
+    Empty,
+    WrongType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -639,6 +665,7 @@ fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
             is_valid_identity(&call.call_id)
                 && is_valid_identity(&call.tool_name)
                 && (1..=MAX_TEXT_BYTES).contains(&call.arguments_json.len())
+                && call.provisional_id.as_deref().is_none_or(is_valid_identity)
                 && call
                     .provider_result
                     .as_ref()
@@ -773,6 +800,30 @@ impl WireTag for ArtifactCompleteness {
             Self::Complete => "complete",
             Self::Partial => "partial",
             Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl WireTag for CancellationOrigin {
+    const ALL: &'static [Self] = &[Self::Turn, Self::Compaction];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Compaction => "compaction",
+        }
+    }
+}
+
+impl WireTag for FinalToolIdentity {
+    const ALL: &'static [Self] = &[Self::Valid, Self::Absent, Self::Empty, Self::WrongType];
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::Absent => "absent",
+            Self::Empty => "empty",
+            Self::WrongType => "wrong_type",
         }
     }
 }

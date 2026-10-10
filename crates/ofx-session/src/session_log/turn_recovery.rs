@@ -94,7 +94,7 @@ pub(crate) fn commit_checkpoint(
         dir,
         provider,
         timestamp_ms,
-        work_id: None,
+        work_id: checkpoint.work_id(),
     };
     let mut events = turn_events(&artifacts, &checkpoint.interrupted_turn(), written)?;
     if let Some(ConversationEvent::Interrupted(interrupted)) = events.last_mut() {
@@ -112,6 +112,7 @@ pub(crate) fn save_checkpoint(
     point: &RecoveryPoint<'_>,
     provider: &SavedProvider,
     credential: RouteCredential,
+    work_id: Option<&str>,
 ) -> Result<(), SessionError> {
     let steps = &point.turn.steps;
     let source = CheckpointSource {
@@ -135,6 +136,7 @@ pub(crate) fn save_checkpoint(
             })
             .collect(),
         files: point.turn.files.iter().map(FileEvidence::from).collect(),
+        work_id,
         created_at_ms: now_ms(),
     };
     let Some(bytes) = encode_recovery_file(conversation_seq, &source)? else {

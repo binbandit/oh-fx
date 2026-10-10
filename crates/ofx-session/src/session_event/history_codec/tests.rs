@@ -447,10 +447,10 @@ fn history_snapshot_codec_rejects_truncated_and_corrupt_payloads() {
         6,
         ConversationEvent::Interrupted(InterruptedEvent::new(InterruptReason::Failed, None)),
     ));
-    let mut compaction = interrupted;
-    let last = compaction.len() - 1;
-    compaction[last] = 1;
-    assert!(decode_history_envelope(&compaction).is_none());
+    let mut unknown_origin = interrupted;
+    let last = unknown_origin.len() - 1;
+    unknown_origin[last] = 2;
+    assert!(decode_history_envelope(&unknown_origin).is_none());
 }
 
 fn text_bytes(text: &str) -> Vec<u8> {

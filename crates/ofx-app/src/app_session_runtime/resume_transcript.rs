@@ -6,7 +6,8 @@ use ofx_contract::{
     TurnSummary,
 };
 use ofx_session::{
-    ConversationEvent, InterruptReason, SavedTurn, SessionError, ToolResultEvent, WritableSession,
+    CancellationOrigin, ConversationEvent, InterruptReason, SavedTurn, SessionError,
+    ToolResultEvent, WritableSession,
 };
 use ofx_tools::{answered_questions, resumed_skill_description};
 
@@ -87,14 +88,19 @@ impl TurnReplay<'_, '_> {
                     {
                         self.show(HistoryEntry::Assistant(partial));
                     }
-                    self.show(match interrupted.reason {
-                        InterruptReason::Cancelled => HistoryEntry::Cancelled,
-                        InterruptReason::Failed => HistoryEntry::Notice(Notice::new(
+                    match interrupted.reason {
+                        InterruptReason::Cancelled
+                            if interrupted.cancellation_origin == CancellationOrigin::Turn =>
+                        {
+                            self.show(HistoryEntry::Cancelled);
+                        }
+                        InterruptReason::Cancelled => {}
+                        InterruptReason::Failed => self.show(HistoryEntry::Notice(Notice::new(
                             NoticeTone::Error,
                             SYSTEM_TOPIC,
                             FAILED_TURN,
-                        )),
-                    });
+                        ))),
+                    }
                     self.show_summary(interrupted.turn_summary);
                 }
                 ConversationEvent::TurnCompleted(completed) => {

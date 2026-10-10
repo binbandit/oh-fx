@@ -161,6 +161,7 @@ enum Stop {
     Interrupted {
         partial: String,
     },
+    CompactionInterrupted,
     Failed {
         failure: TurnFailure,
         partial: String,
@@ -610,6 +611,15 @@ impl Agent {
                     String::new(),
                     None,
                     Ending::Stopped(TurnStop::Cancelled),
+                )
+            }
+            Err(Stop::CompactionInterrupted) => {
+                self.keep_partial_turn(turn.start, "");
+                (
+                    TurnOutcome::Interrupted,
+                    String::new(),
+                    None,
+                    Ending::Stopped(TurnStop::CompactionCancelled),
                 )
             }
             Err(Stop::Paused { failure }) => {

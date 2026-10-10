@@ -11,7 +11,7 @@ use super::{
     SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent,
     TurnCompletedEvent, UserEvent, WireTag, validate_event_shape,
 };
-use crate::fixed_field::{NoItems, Null, TurnOrigin, ValidIdentity};
+use crate::fixed_field::{NoItems, Null};
 use crate::session_codec::SavedProvider;
 
 const PROVIDER_ID_BYTES: usize = 64;
@@ -159,8 +159,7 @@ impl Encoder<'_> {
                 self.optional_text(interrupted.command_artifact_ref.as_deref())?;
                 self.files(&interrupted.files)?;
                 self.summary(interrupted.turn_summary);
-                self.byte(0);
-                Some(())
+                self.tag(interrupted.cancellation_origin)
             }
             ConversationEvent::ContextCheckpoint(checkpoint) => {
                 self.byte(7);
@@ -197,9 +196,9 @@ impl Encoder<'_> {
         self.text(&call.tool_name)?;
         self.text(&call.arguments_json)?;
         self.tag(call.argument_integrity)?;
-        self.absent();
+        self.optional_text(call.provisional_id.as_deref())?;
         self.optional_text(call.provider_result.as_deref())?;
-        self.byte(0);
+        self.tag(call.final_identity)?;
         self.tag(call.provenance)
     }
 
@@ -465,9 +464,9 @@ impl<'a> Decoder<'a> {
             tool_name: self.text()?,
             arguments_json: self.text()?,
             argument_integrity: self.tag::<ToolArgumentIntegrity>()?,
-            provisional_id: self.fixed::<Null>()?,
+            provisional_id: self.optional_text().ok()?,
             provider_result: self.optional_text().ok()?,
-            final_identity: self.fixed::<ValidIdentity>()?,
+            final_identity: self.tag()?,
             provenance: self.tag::<ToolExecutionProvenance>()?,
         })
     }
@@ -546,7 +545,7 @@ impl<'a> Decoder<'a> {
             command_artifact_ref: self.optional_text().ok()?,
             files: self.files()?,
             turn_summary: self.optional(Self::summary).ok()?,
-            cancellation_origin: self.fixed::<TurnOrigin>()?,
+            cancellation_origin: self.tag()?,
         })
     }
 

@@ -573,11 +573,7 @@ fn frames_with_unported_upstream_content_are_rejected_not_dropped() {
     let base = "{\"schema_version\":3,\"seq\":1,\"timestamp_ms\":1,\"event\":";
     for event in [
         "{\"user\":{\"text\":\"x\",\"images\":[{\"path\":\"/a.png\",\"media_type\":\"image/png\"}]}}",
-        "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"final_identity\":\"empty\"}}",
-        "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"provisional_id\":\"p\"}}",
         "{\"tool_call\":{\"call_id\":\"c\",\"tool_name\":\"t\",\"arguments_json\":\"{}\",\"argument_integrity\":\"bogus\"}}",
-        "{\"interrupted\":{\"reason\":\"failed\",\"cancellation_origin\":\"compaction\"}}",
-        "{\"interrupted\":{\"reason\":\"failed\",\"cancellation_origin\":0}}",
         "{\"interrupted\":{\"reason\":\"stopped\"}}",
         "{\"turn_completed\":{\"files\":[{\"path\":\"a\",\"tool_call_id\":\"c\"}]}}",
     ] {

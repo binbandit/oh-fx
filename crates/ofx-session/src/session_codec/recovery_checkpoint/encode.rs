@@ -16,6 +16,7 @@ pub(crate) struct CheckpointSource<'a> {
     pub(crate) replays: Vec<Option<SavedReplay>>,
     pub(crate) outputs: Vec<Vec<SavedOutput>>,
     pub(crate) files: Vec<FileEvidence>,
+    pub(crate) work_id: Option<&'a str>,
     pub(crate) created_at_ms: i64,
 }
 
@@ -52,6 +53,8 @@ struct CheckpointWire<'a> {
 struct UserWire<'a> {
     text: &'a str,
     images: NoItems,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +130,7 @@ pub(crate) fn encode_recovery_file(
         user: UserWire {
             text: point.turn.user,
             images: NoItems,
+            work_id: source.work_id,
         },
         assistant_source: point.source,
         execution: ExecutionWire {

@@ -8,6 +8,10 @@ impl RecoveryCheckpoint {
         &self.user
     }
 
+    pub(crate) fn work_id(&self) -> Option<&str> {
+        self.work_id.as_deref()
+    }
+
     pub(crate) fn authorizes(&self, credential: RouteCredential) -> bool {
         !self.route.may_have_sent
             || self

@@ -407,7 +407,7 @@ impl<'e> CompactionShown<'e> {
 
 pub(super) fn compaction_stop(error: CompactionError, cancel: &CancellationToken) -> Stop {
     if error == CompactionError::Cancelled || cancel.is_cancelled() {
-        Stop::interrupted()
+        Stop::CompactionInterrupted
     } else {
         Stop::failed(TurnFailure::Compaction(error))
     }

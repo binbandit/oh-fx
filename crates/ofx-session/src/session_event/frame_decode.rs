@@ -2,10 +2,10 @@ use ofx_contract::{ToolArgumentIntegrity, ToolExecutionProvenance, ToolResultSta
 
 use super::file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
 use super::{
-    AssistantEvent, CONVERSATION_SCHEMA_VERSION, ContextCheckpointEvent, ConversationEnvelope,
-    ConversationEvent, FileEvidence, FileEvidenceAction, InterruptedEvent, SavedReplay,
-    SavedReplaySource, SteeringEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent,
-    UserEvent, WireTag,
+    AssistantEvent, CONVERSATION_SCHEMA_VERSION, CancellationOrigin, ContextCheckpointEvent,
+    ConversationEnvelope, ConversationEvent, FileEvidence, FileEvidenceAction, FinalToolIdentity,
+    InterruptedEvent, SavedReplay, SavedReplaySource, SteeringEvent, ToolCallEvent,
+    ToolResultEvent, TurnCompletedEvent, UserEvent, WireTag,
 };
 use crate::json_fields::{Fields, Json, string};
 use crate::session_codec::parse_saved_provider;
@@ -103,9 +103,11 @@ fn tool_call(fields: &mut Fields<'_>) -> Option<ToolCallEvent> {
             ToolArgumentIntegrity::Valid,
             |value| tag(&value),
         )?,
-        provisional_id: fields.fixed("provisional_id")?,
+        provisional_id: fields.nullable("provisional_id", |value| string(value).map(Some))?,
         provider_result: fields.nullable("provider_result", |value| string(value).map(Some))?,
-        final_identity: fields.fixed("final_identity")?,
+        final_identity: fields.or("final_identity", FinalToolIdentity::Valid, |value| {
+            tag(&value)
+        })?,
         provenance: fields.or("provenance", ToolExecutionProvenance::FxLocal, |value| {
             tag(&value)
         })?,
@@ -155,7 +157,11 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<InterruptedEvent> {
         turn_summary: fields.nullable("turn_summary", |value| {
             turn_summary::read_frame(value).map(Some)
         })?,
-        cancellation_origin: fields.fixed("cancellation_origin")?,
+        cancellation_origin: fields.or(
+            "cancellation_origin",
+            CancellationOrigin::Turn,
+            |value| tag(&value),
+        )?,
     })
 }
 

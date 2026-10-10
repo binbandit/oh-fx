@@ -34,6 +34,7 @@ pub struct HistoryStep<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStop {
     Cancelled,
+    CompactionCancelled,
     Failed,
 }
 

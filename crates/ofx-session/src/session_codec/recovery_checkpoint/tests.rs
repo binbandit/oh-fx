@@ -13,6 +13,7 @@ const IDENTITY: &str = "abababababababababababababababababababababababababababab
 fn checkpoint() -> RecoveryCheckpoint {
     RecoveryCheckpoint {
         user: "fix the build".to_owned(),
+        work_id: None,
         assistant_source: "Looking at".to_owned(),
         execution: SavedExecution {
             tool_steps: vec![SavedToolStep {
@@ -257,7 +258,14 @@ fn checkpoints_upstream_rejects_or_oh_fx_cannot_hold_are_invalid() {
         ),
         base.replace("\"version\":2", "\"version\":3"),
         base.replace("\"images\":[]", "\"images\":[{\"id\":1}]"),
-        base.replace("\"images\":[]", "\"images\":[],\"work_id\":\"w\""),
+        base.replace("\"images\":[]", "\"images\":[],\"work_id\":\"\""),
+        base.replace("\"images\":[]", "\"images\":[],\"work_id\":null"),
+        base.replace("\"images\":[]", "\"images\":[],\"work_id\":1"),
+        base.replace(
+            "\"images\":[]",
+            &format!("\"images\":[],\"work_id\":\"{}\"", "w".repeat(129)),
+        ),
+        base.replace("\"images\":[]", "\"images\":[],\"work_id\":\"a\\u0000b\""),
         base.replace("\"text\":\"fix the build\"", "\"text\":\"\""),
         base.replace(
             "\"text\":\"fix the build\"",
@@ -629,6 +637,7 @@ fn a_recovery_point_is_written_in_upstream_recovery_json_form() {
             model_view_covers_full_file: true,
             stale: false,
         }],
+        work_id: None,
         created_at_ms: 5,
     };
     let written = encode_recovery_file(12, &source).unwrap().unwrap();
@@ -703,6 +712,7 @@ fn a_paused_point_and_a_spilled_output_are_written_as_upstream_writes_them() {
             preview: Some("fn".to_owned()),
         }]],
         files: Vec::new(),
+        work_id: None,
         created_at_ms: 5,
     };
     let written = String::from_utf8(encode_recovery_file(3, &source).unwrap().unwrap()).unwrap();
@@ -732,6 +742,7 @@ fn a_commands_process_presentation_is_written_and_read_in_upstreams_checkpoint_f
             preview: None,
         }]],
         files: Vec::new(),
+        work_id: None,
         created_at_ms: 5,
     };
     let written = encode_recovery_file(3, &source).unwrap().unwrap();
@@ -798,6 +809,7 @@ fn approval_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
             model_view_covers_full_file: true,
             stale: false,
         }],
+        work_id: None,
         created_at_ms: 5,
     };
     let written = encode_recovery_file(12, &source).unwrap().unwrap();
@@ -918,6 +930,7 @@ fn review_feedback_is_written_and_read_in_upstreams_checkpoint_form() {
             preview: None,
         }]],
         files: Vec::new(),
+        work_id: None,
         created_at_ms: 5,
     };
     let written = encode_recovery_file(3, &source).unwrap().unwrap();
