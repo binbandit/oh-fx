@@ -1127,6 +1127,7 @@ impl Controller {
         prompt: &QueuedPrompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
+        self.agent.settle_lifecycle().await;
         hooks::report_working(self.herdr.as_ref()).await;
         self.state.skills().refresh();
         self.start_title_generation(&prompt.text);

@@ -574,6 +574,7 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> TurnReport {
+        self.settle_lifecycle().await;
         self.turns += 1;
         self.recovery_pause.reset();
         let id = TurnId::new(self.turns);
@@ -583,8 +584,7 @@ impl Agent {
                 turn_id: id,
                 outcome: TurnOutcome::Failed,
             });
-            self.post_turn_end(id, TurnPresentationOutcome::Failed)
-                .await;
+            self.post_turn_end(id, TurnPresentationOutcome::Failed);
             return TurnReport {
                 outcome: TurnOutcome::Failed,
                 final_text: String::new(),
@@ -657,8 +657,7 @@ impl Agent {
                 text: Arc::from(final_text.as_str()),
             });
         }
-        self.post_turn_end(id, presentation_outcome(outcome, ending))
-            .await;
+        self.post_turn_end(id, presentation_outcome(outcome, ending));
         TurnReport {
             outcome,
             final_text,
@@ -667,9 +666,15 @@ impl Agent {
         }
     }
 
-    async fn post_turn_end(&self, turn_id: TurnId, outcome: TurnPresentationOutcome) {
-        if let Some(lifecycle) = &self.lifecycle {
-            lifecycle.post_turn_end(turn_id, outcome).await;
+    pub async fn settle_lifecycle(&mut self) {
+        if let Some(lifecycle) = &mut self.lifecycle {
+            lifecycle.settle().await;
+        }
+    }
+
+    fn post_turn_end(&mut self, turn_id: TurnId, outcome: TurnPresentationOutcome) {
+        if let Some(lifecycle) = &mut self.lifecycle {
+            lifecycle.post_turn_end(turn_id, outcome);
         }
     }
 
