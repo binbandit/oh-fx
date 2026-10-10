@@ -9,10 +9,10 @@ mod registry;
 pub use cli_ask::{AskArgs, AskError, AskLayout, AskOutput, read_stdin_prompt};
 pub use cli_replay::ReplayArgs;
 pub use cli_surface::{
-    CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, NO_ULTRAFAST_ARG,
-    OutputFormat, RequestedResume, SessionAction, SessionArgs, SessionListArgs, SessionTarget,
-    ULTRAFAST_ARG, UPGRADE_RELAUNCH_ARG, UsageArgs, WorkflowArgs, WorkspaceAction, WorkspaceArgs,
-    command_failure_json, parse_args,
+    CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, McpOperation,
+    NO_ULTRAFAST_ARG, OutputFormat, RequestedResume, SessionAction, SessionArgs, SessionListArgs,
+    SessionTarget, ULTRAFAST_ARG, UPGRADE_RELAUNCH_ARG, UsageArgs, WorkflowArgs, WorkspaceAction,
+    WorkspaceArgs, command_failure_json, parse_args,
 };
 pub use command_router::SlashCommand;
 pub use command_specs::{

@@ -163,6 +163,66 @@ pub enum McpError {
     StreamTooLong,
     #[error("LockBusy")]
     LockBusy,
+    #[error("InvalidAuthorizationIssuer")]
+    InvalidAuthorizationIssuer,
+    #[error("InvalidProtectedResourceMetadata")]
+    InvalidProtectedResourceMetadata,
+    #[error("McpAuthResourceMismatch")]
+    McpAuthResourceMismatch,
+    #[error("MissingMetadataField")]
+    MissingMetadataField,
+    #[error("InvalidMetadataField")]
+    InvalidMetadataField,
+    #[error("InvalidMetadataUrl")]
+    InvalidMetadataUrl,
+    #[error("ProtectedResourceMetadataUnavailable")]
+    ProtectedResourceMetadataUnavailable,
+    #[error("AuthorizationMetadataUnavailable")]
+    AuthorizationMetadataUnavailable,
+    #[error("InvalidAuthorizationMetadata")]
+    InvalidAuthorizationMetadata,
+    #[error("PkceS256NotSupported")]
+    PkceS256NotSupported,
+    #[error("ClientRegistrationUnavailable")]
+    ClientRegistrationUnavailable,
+    #[error("ClientRegistrationFailed")]
+    ClientRegistrationFailed,
+    #[error("InvalidOAuthScope")]
+    InvalidOAuthScope,
+    #[error("TooManyOAuthScopes")]
+    TooManyOAuthScopes,
+    #[error("OAuthStateMismatch")]
+    OAuthStateMismatch,
+    #[error("AuthorizationResponseIssuerMissing")]
+    AuthorizationResponseIssuerMissing,
+    #[error("InvalidAuthorizationRedirect")]
+    InvalidAuthorizationRedirect,
+    #[error("MissingQueryParameter")]
+    MissingQueryParameter,
+    #[error("InvalidPercentEncoding")]
+    InvalidPercentEncoding,
+    #[error("TokenExchangeFailed")]
+    TokenExchangeFailed,
+    #[error("McpCallbackPortUnavailable")]
+    McpCallbackPortUnavailable,
+    #[error("McpAuthorizationCallbackTimedOut")]
+    McpAuthorizationCallbackTimedOut,
+    #[error("InvalidAuthorizationCallback")]
+    InvalidAuthorizationCallback,
+    #[error("McpAuthorizationBrowserOpenFailed")]
+    McpAuthorizationBrowserOpenFailed,
+    #[error("RandomSourceUnavailable")]
+    RandomSourceUnavailable,
+    #[error("McpAuthenticationNotRemote")]
+    McpAuthenticationNotRemote,
+    #[error("McpStoredCredentialsNotAllowed")]
+    McpStoredCredentialsNotAllowed,
+    #[error("McpClientSecretEnvironmentMissing")]
+    McpClientSecretEnvironmentMissing,
+    #[error("McpAuthorizationIssuerMismatch")]
+    McpAuthorizationIssuerMismatch,
+    #[error("HomeNotSet")]
+    HomeNotSet,
     #[error(transparent)]
     Durable(#[from] DurableError),
     #[error(transparent)]

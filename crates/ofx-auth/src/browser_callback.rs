@@ -14,55 +14,55 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 const TERMINATOR: &[u8] = b"\r\n\r\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Response {
+pub enum Response {
     Ok,
     Failed,
     Unrelated,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ParseResult<C, E> {
+pub enum ParseResult<C, E> {
     Accepted(C),
     Unrelated,
     Failed(E),
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum AwaitError<E> {
+pub enum AwaitError<E> {
     Cancelled,
     ListenerFailed,
     Rejected(E),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BindError {
+pub enum BindError {
     PortUnavailable,
     Failed,
 }
 
-pub(crate) type Classifier<C, E> = Arc<dyn Fn(&str) -> ParseResult<C, E> + Send + Sync>;
+pub type Classifier<C, E> = Arc<dyn Fn(&str) -> ParseResult<C, E> + Send + Sync>;
 
 #[derive(Debug)]
-pub(crate) struct Accepted<C> {
+pub struct Accepted<C> {
     stream: TcpStream,
-    pub(crate) callback: C,
+    pub callback: C,
     cors_origin: Option<&'static str>,
 }
 
 impl<C> Accepted<C> {
-    pub(crate) async fn respond(mut self, outcome: Response) -> io::Result<()> {
+    pub async fn respond(mut self, outcome: Response) -> io::Result<()> {
         write_response_with_origin(&mut self.stream, outcome, self.cors_origin).await
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct CallbackListener {
+pub struct CallbackListener {
     listener: TcpListener,
     port: u16,
 }
 
 impl CallbackListener {
-    pub(crate) async fn bind(ports: &[u16]) -> Result<Self, BindError> {
+    pub async fn bind(ports: &[u16]) -> Result<Self, BindError> {
         for &port in ports {
             match TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).await {
                 Ok(listener) => {
@@ -76,11 +76,11 @@ impl CallbackListener {
         Err(BindError::PortUnavailable)
     }
 
-    pub(crate) fn port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
 
-    pub(crate) async fn accept<C, E>(
+    pub async fn accept<C, E>(
         &self,
         classify: &Classifier<C, E>,
         cancel: &CancellationToken,

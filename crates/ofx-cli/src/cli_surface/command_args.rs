@@ -375,19 +375,30 @@ fn take_session_operand(stream: &mut ArgStream) -> Option<SessionOperand> {
     Some(SessionOperand { value, exact })
 }
 
-pub(crate) fn validate_mcp(args: &[OsString]) -> Result<(), CliError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpOperation {
+    Auth(String),
+    Unported,
+}
+
+pub(crate) fn parse_mcp(args: &[OsString]) -> Result<McpOperation, CliError> {
     let usage = || CliError::Usage(TopLevelKind::Mcp);
     let [operation, rest @ ..] = args else {
         return Err(usage());
     };
     let named = |tokens: &[OsString]| matches!(tokens, [name] if !name.is_empty());
-    match operation.to_str() {
-        Some("add") => validate_mcp_add(rest),
-        Some("trust") if is_valid_mcp_trust(rest) => Ok(()),
-        Some("path") if rest.is_empty() => Ok(()),
-        Some("list") if rest.is_empty() || matches!(rest, [flag] if flag == "--connect") => Ok(()),
-        Some("remove" | "logout" | "auth") if named(rest) => Ok(()),
-        Some("auth") => Err(CliError::McpAuthUsage),
+    match (operation.to_str(), rest) {
+        (Some("auth"), [name]) if !name.is_empty() => {
+            Ok(McpOperation::Auth(name.to_string_lossy().into_owned()))
+        }
+        (Some("auth"), _) => Err(CliError::McpAuthUsage),
+        (Some("add"), _) => validate_mcp_add(rest).map(|()| McpOperation::Unported),
+        (Some("trust"), _) if is_valid_mcp_trust(rest) => Ok(McpOperation::Unported),
+        (Some("path"), []) => Ok(McpOperation::Unported),
+        (Some("list"), _) if rest.is_empty() || matches!(rest, [flag] if flag == "--connect") => {
+            Ok(McpOperation::Unported)
+        }
+        (Some("remove" | "logout"), _) if named(rest) => Ok(McpOperation::Unported),
         _ => Err(usage()),
     }
 }

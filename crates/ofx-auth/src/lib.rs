@@ -20,6 +20,10 @@ pub use auth_runtime::{
     grok_login_saved, login_failure_detail, prepare_chatgpt_credential, refresh_chatgpt_credential,
     sign_in_failure, stored_codex_login,
 };
+pub use browser_callback::{
+    Accepted, AwaitError, BindError, CallbackListener, Classifier, ParseResult,
+    Response as CallbackResponse,
+};
 pub use chatgpt_oauth::{
     CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptError, ChatGptOAuth,
     ChatGptSignIn, RefreshMode,
@@ -29,7 +33,9 @@ pub use credentials::{
     HOST_MANAGED_AUTH_MESSAGE, MISSING_CHATGPT_CREDENTIAL_MESSAGE, host_managed_auth,
     is_valid_auth_mode, parse_auth_mode,
 };
-pub use oauth::{FormBody, loopback_override, percent_encode};
+pub use oauth::{
+    FormBody, QueryError, loopback_override, percent_encode, pkce_challenge, query_value,
+};
 pub use provider_catalog::{label as provider_route_name, parse as parse_login_provider};
 pub use subscription_session::DeleteOutcome;
 pub use url_opener::{browser_allowed, open_url, open_url_bounded};

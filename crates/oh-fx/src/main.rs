@@ -8,6 +8,7 @@ mod doctor_command;
 mod github_workflow;
 mod help;
 mod login_command;
+mod mcp_command;
 mod models_command;
 mod permission_prompt;
 mod permissions_command;
@@ -31,8 +32,8 @@ use std::process::ExitCode;
 
 use ofx_auth::AUTH_MODE_VARIABLE;
 use ofx_cli::{
-    CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, OutputFormat,
-    RequestedResume, TopLevelKind,
+    CliError, Command, CommandLaunch, HelpLayout, Invocation, LaunchModifiers, McpOperation,
+    OutputFormat, RequestedResume, TopLevelKind,
 };
 use ofx_github::Workflow;
 use rustix::io::Errno;
@@ -113,6 +114,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Replay(args) => cli_replay::run(&args),
             Command::Pr(args) => github_workflow::run(Workflow::PullRequest, &args, &modifiers),
             Command::Issue(args) => github_workflow::run(Workflow::Issue, &args, &modifiers),
+            Command::Mcp(McpOperation::Auth(name)) => mcp_command::auth(&name),
             other => unavailable_command(&other),
         },
     }

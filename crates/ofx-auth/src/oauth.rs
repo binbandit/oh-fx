@@ -20,7 +20,7 @@ pub(crate) enum OAuthError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum QueryError {
+pub enum QueryError {
     #[error("MissingQueryParameter")]
     MissingQueryParameter,
     #[error("InvalidPercentEncoding")]
@@ -52,7 +52,7 @@ pub(crate) fn random_url_safe_secret() -> Result<Secret, OAuthError> {
     Ok(Secret::new(URL_SAFE_NO_PAD.encode(entropy.as_slice())))
 }
 
-pub(crate) fn pkce_challenge(verifier: &str) -> String {
+pub fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
@@ -89,7 +89,7 @@ pub fn percent_encode(out: &mut String, value: &str) {
     }
 }
 
-pub(crate) fn query_value(query: &str, key: &str) -> Result<Zeroizing<String>, QueryError> {
+pub fn query_value(query: &str, key: &str) -> Result<Zeroizing<String>, QueryError> {
     let value = query
         .split('&')
         .filter_map(|pair| pair.split_once('='))

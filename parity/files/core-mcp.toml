@@ -176,14 +176,14 @@ modules = []
 [[file]]
 upstream = "src/core/mcp/mcp_auth.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/mcp_auth.rs", "crates/ofx-mcp/src/oauth_uri.rs"]
-note = "Credentials, canonicalResource, the loopback and secure URL policy, refreshCredentials with the none, client_secret_post and client_secret_basic token endpoint methods, the invalid_grant rejection rule, JSON content type checks and token expiry exist; discovery, client registration, PKCE authorization, the loopback callback, challenges and revocation are missing."
+modules = ["crates/ofx-mcp/src/mcp_auth.rs", "crates/ofx-mcp/src/mcp_auth/authorization.rs", "crates/ofx-mcp/src/mcp_auth/metadata.rs", "crates/ofx-mcp/src/oauth_uri.rs"]
+note = "Credentials, canonicalResource, the loopback and secure URL policy, refreshCredentials with the none, client_secret_post and client_secret_basic token endpoint methods, the invalid_grant rejection rule, JSON content type checks, token expiry, protected resource and authorization server discovery with the issuer checks, configured, metadata document and dynamically registered clients, the scope policy, PKCE S256, the loopback callback (in ofx-auth's browser_callback.rs) and the code exchange behind authorizeInteractive exist; challenges, automated authorization, the Slack bridge and revocation are missing."
 
 [[file]]
 upstream = "src/core/mcp/mcp_auth_store.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_auth_store.rs"]
-note = "load and save of the private file store with upstream's bytes, entry isolation, identity matching and the timed credentials.lock exist under $XDG_DATA_HOME/oh-fx; the macOS keychain backend is not used, as docs/differences/mcp.md records, and status and delete are missing."
+note = "load and save of the private file store with upstream's bytes, entry isolation, identity matching and the timed credentials.lock exist under $XDG_DATA_HOME/oh-fx; a configured resource or issuer matches a grant by the coverage and trailing-slash rules discovery accepted it under, an authorization replaces every grant that lookup finds while a refresh replaces only its own, and the macOS keychain backend is not used, as docs/differences/mcp.md records, and status and delete are missing."
 
 [[file]]
 upstream = "src/core/mcp/mcp_contract.zig"
@@ -201,7 +201,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), the feature tool name among the reserved names, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; the deferred ask connections (required profile servers and approved project servers at ask startup outside a terminal, and the optional profile servers when a search, a selection or a feature call needs them, with the start's error reported to the selection and the feature call as McpConnectionTimedOut for a missed startup timeout, as connectServerCancellable names it, and a start dropped by cancellation recorded as failed with Cancelled, with the available_on_demand input of the model catalog) exist; ACP host channels, permission-filtered tool counts, the authentication input of the model catalog, the deferred connection that has_tool makes for a call and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), authenticateServer with authenticationServer's checks, the feature tool name among the reserved names, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; the deferred ask connections (required profile servers and approved project servers at ask startup outside a terminal, and the optional profile servers when a search, a selection or a feature call needs them, with the start's error reported to the selection and the feature call as McpConnectionTimedOut for a missed startup timeout, as connectServerCancellable names it, and a start dropped by cancellation recorded as failed with Cancelled, with the available_on_demand input of the model catalog) exist; ACP host channels, permission-filtered tool counts, the authentication input of the model catalog, the deferred connection that has_tool makes for a call and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -263,7 +263,7 @@ note = "Selected schemas with the merged server instructions, the truncation mar
 upstream = "src/core/mcp/server_auth.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_auth.rs"]
-note = "Static headers, header_env and bearer_token_env resolve when a server connects; loadStoredCredentials and the stored bearer, refreshed and saved before a request as refreshSharedCredentials does, exist; challenges, the failed state after a later refresh failure, automated authorization and logout are missing."
+note = "Static headers, header_env and bearer_token_env resolve when a server connects; loadStoredCredentials and the stored bearer, refreshed and saved before a request as refreshSharedCredentials does, and authenticate behind oh-fx mcp auth, which refuses a server that never reads stored grants as docs/differences/mcp.md records, exist; challenges, the failed state after a later refresh failure, automated authorization and logout are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_connection.zig"
