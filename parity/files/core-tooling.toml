@@ -132,9 +132,9 @@ note = "Local tools are advertised to requests; per-provider tool projection, pr
 
 [[file]]
 upstream = "src/core/tooling/tool_result_display.zig"
-status = "todo"
-modules = []
-note = "contentForDisplay serves the full transcript screen (OH-22) and the tool-call metrics of the trace report (OH-11)."
+status = "ported"
+modules = ["crates/ofx-text/src/tool_result_display.rs"]
+note = "contentForDisplay unwraps the path and content envelope of a tool result and keeps anything else whole; the tool-call ring of the trace report uses it, and the full transcript screen (OH-22) will."
 
 [[file]]
 upstream = "src/core/tooling/tool_result_errors.zig"

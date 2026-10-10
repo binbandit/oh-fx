@@ -8,7 +8,7 @@ note = "Batch validation in upstream's order with its sentinels, the legacy perm
 upstream = "src/tools/agent/subagent.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/subagent.rs", "crates/ofx-agent/src/subagent/tool_host.rs"]
-note = "Subagent decoding and a managed child host run Agent turns; `ask` and the interactive session register the tool when they save their session, and each child is saved as its own session and taken back when its parent resumes; model catalog override resolution and the live input-token status are absent."
+note = "Subagent decoding and a managed child host run Agent turns; `ask` and the interactive session register the tool when they save their session, and each child is saved as its own session and taken back when its parent resumes; the request decode, validation and accepted trace lines are written; model catalog override resolution and the live input-token status are absent."
 
 [[file]]
 upstream = "src/tools/agent/vision.zig"
