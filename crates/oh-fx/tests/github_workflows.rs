@@ -1,9 +1,9 @@
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -159,9 +159,7 @@ impl Run {
         let deadline = Instant::now() + HANG_GUARD;
         let stdout = closed(&self.stdout, deadline, "stdout");
         let stderr = closed(&self.stderr, deadline, "stderr");
-        self.end_group();
-        let status = self.child.wait().expect("wait for oh-fx");
-        self.reaped = true;
+        let status = self.end().expect("wait for oh-fx");
         Output {
             status,
             stdout,
@@ -169,19 +167,21 @@ impl Run {
         }
     }
 
-    fn end_group(&self) {
+    fn end(&mut self) -> io::Result<ExitStatus> {
         let _ = Command::new("/bin/kill")
             .args(["-KILL", "--", &format!("-{}", self.child.id())])
             .stderr(Stdio::null())
             .status();
+        let _ = self.child.kill();
+        self.reaped = true;
+        self.child.wait()
     }
 }
 
 impl Drop for Run {
     fn drop(&mut self) {
         if !self.reaped {
-            self.end_group();
-            let _ = self.child.wait();
+            let _ = self.end();
         }
     }
 }
@@ -591,7 +591,7 @@ fn a_held_fake_gh_ends_with_its_test() {
 
 fn running(script: &Path) -> bool {
     let listing = Command::new("ps")
-        .args(["-A", "-o", "args="])
+        .args(["-A", "-ww", "-o", "args="])
         .output()
         .expect("run ps");
     let script = script.to_str().expect("UTF-8 script path");
