@@ -14,8 +14,8 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_sse::{Event, Parser};
 use crate::legacy_streamable_http::HttpEndpoint;
-use crate::mcp_contract::HttpHeader;
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
+use crate::server_auth::HttpAuth;
 use crate::streamable_http::{EndpointError, MediaType, parse_media_type, validate_endpoint};
 use crate::timing::{spawn, timeout_at};
 use crate::transport::{Cancellation, McpTransport, ShutdownMode, TransportRequest};
@@ -35,7 +35,7 @@ enum ConnectionState {
 pub(crate) struct SseShared {
     http: reqwest::Client,
     discovery_url: String,
-    headers: Vec<HttpHeader>,
+    auth: Arc<HttpAuth>,
     responses: Correlator<String, McpError>,
     max_event_bytes: AtomicUsize,
     state: watch::Sender<ConnectionState>,
@@ -69,7 +69,7 @@ impl LegacySseClient {
         let shared = Arc::new(SseShared {
             http: endpoint.http,
             discovery_url: endpoint.url,
-            headers: endpoint.headers,
+            auth: endpoint.auth,
             responses: Correlator::new(),
             max_event_bytes: AtomicUsize::new(initial_max_event_bytes),
             state,
@@ -241,14 +241,15 @@ impl SseShared {
         body: &str,
         committed: Option<&AtomicBool>,
     ) -> Result<(), McpError> {
-        let mut builder = self
-            .http
-            .post(endpoint)
-            .header(ACCEPT, "application/json, text/event-stream")
-            .header(CONTENT_TYPE, "application/json");
-        for header in &self.headers {
-            builder = builder.header(header.name.as_str(), header.value.as_str());
-        }
+        let builder = self
+            .auth
+            .apply(
+                self.http
+                    .post(endpoint)
+                    .header(ACCEPT, "application/json, text/event-stream")
+                    .header(CONTENT_TYPE, "application/json"),
+            )
+            .await?;
         if let Some(committed) = committed {
             committed.store(true, Ordering::Release);
         }
@@ -271,14 +272,16 @@ impl SseShared {
     }
 
     async fn read_connection(&self) -> Result<(), McpError> {
-        let mut builder = self
-            .http
-            .get(&self.discovery_url)
-            .header(ACCEPT, "text/event-stream");
-        for header in &self.headers {
-            builder = builder.header(header.name.as_str(), header.value.as_str());
-        }
-        let mut response = builder.send().await?;
+        let mut response = self
+            .auth
+            .apply(
+                self.http
+                    .get(&self.discovery_url)
+                    .header(ACCEPT, "text/event-stream"),
+            )
+            .await?
+            .send()
+            .await?;
         reject_redirect_or_authentication(&response)?;
         if response.status() != StatusCode::OK {
             return Err(McpError::UnexpectedHttpStatus);

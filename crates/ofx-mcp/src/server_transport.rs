@@ -1,7 +1,9 @@
 use std::env;
 use std::fmt;
 use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ofx_http::ConnectionOptions;
@@ -16,6 +18,7 @@ use crate::legacy_http_sse::{LegacySseClient, SSE_PROTOCOL_VERSION, validate_ini
 use crate::legacy_streamable_http::{
     HTTP_INITIALIZED_NOTIFICATION, HttpEndpoint, HttpVersion, LegacyHttpClient,
 };
+use crate::mcp_auth_store::CredentialStore;
 use crate::mcp_contract::McpServerConfig;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::{
@@ -28,7 +31,7 @@ use crate::protocol_negotiation::{
     PROTOCOL_VERSION_ENVIRONMENT, classify_legacy_initialize_response,
     decide_legacy_initialize_transition, validate_startup_mode,
 };
-use crate::server_auth::resolve_headers;
+use crate::server_auth::HttpAuth;
 use crate::stdio_dispatcher::{
     ChildDiagnostics, StderrCapture, StdioDispatcher, StdioLaunch, StopMode,
 };
@@ -42,6 +45,7 @@ pub(crate) const DISCOVERY_RESPONSE_FRAME_CAP_BYTES: usize = 1024 * 1024;
 pub struct ConnectOptions {
     pub client_version: String,
     pub user_agent: String,
+    pub profile_data: Option<PathBuf>,
 }
 
 impl Default for ConnectOptions {
@@ -50,6 +54,7 @@ impl Default for ConnectOptions {
         Self {
             user_agent: format!("oh-fx/{client_version}"),
             client_version,
+            profile_data: None,
         }
     }
 }
@@ -67,11 +72,23 @@ pub(crate) struct ServerInfo {
 pub(crate) struct StartupFailure {
     pub error: McpError,
     pub diagnostics: Option<ChildDiagnostics>,
+    pub message: Option<String>,
 }
 
 impl StartupFailure {
     fn new(error: McpError, diagnostics: Option<ChildDiagnostics>) -> Self {
-        Self { error, diagnostics }
+        Self {
+            error,
+            diagnostics,
+            message: None,
+        }
+    }
+
+    fn explained(error: McpError, message: Option<String>) -> Self {
+        Self {
+            message,
+            ..Self::new(error, None)
+        }
     }
 }
 
@@ -330,7 +347,8 @@ pub(crate) async fn connect_http(
         &config.env,
         env::var(PROTOCOL_VERSION_ENVIRONMENT).ok().as_deref(),
     )?;
-    let (endpoint, notifications) = http_endpoint(config, options)?;
+    let (endpoint, notifications) = http_endpoint(config, options).await?;
+    let auth = Arc::clone(&endpoint.auth);
     let preferred = HttpVersion::PREFERRED;
     let body = build_legacy_initialize_request(
         1,
@@ -343,7 +361,8 @@ pub(crate) async fn connect_http(
         LegacyHttpClient::initialize(endpoint, &body, 1, DISCOVERY_RESPONSE_FRAME_CAP_BYTES);
     let (client, response) = timeout_at(deadline, initialize)
         .await
-        .map_err(|_| McpError::McpRequestTimedOut)??;
+        .map_err(|_| McpError::McpRequestTimedOut)?
+        .map_err(|error| StartupFailure::explained(error, auth.failure()))?;
     let started = Started {
         info: server_info(&response, client.version().as_str()),
         wire: client.version().wire(),
@@ -360,22 +379,28 @@ pub(crate) async fn connect_http(
     Ok(connected)
 }
 
-fn http_endpoint(
+async fn http_endpoint(
     config: &McpServerConfig,
     options: &ConnectOptions,
 ) -> Result<(HttpEndpoint, mpsc::UnboundedReceiver<Value>), McpError> {
     let url = config.remote_url()?;
     validate_endpoint(url)?;
-    let headers = resolve_headers(config, &|name| env::var(name).ok())?;
-    let (sender, notifications) = mpsc::unbounded_channel();
-    let endpoint = HttpEndpoint {
-        http: ofx_http::build_connection_client(&ConnectionOptions {
+    let client = |follow_redirects| {
+        ofx_http::build_connection_client(&ConnectionOptions {
             user_agent: options.user_agent.clone(),
+            follow_redirects,
             ..ConnectionOptions::default()
         })
-        .map_err(|_| McpError::HttpClientUnavailable)?,
+        .map_err(|_| McpError::HttpClientUnavailable)
+    };
+    let store = options.profile_data.as_deref().map(CredentialStore::new);
+    let auth =
+        HttpAuth::resolve(config, store, &client(false)?, &|name| env::var(name).ok()).await?;
+    let (sender, notifications) = mpsc::unbounded_channel();
+    let endpoint = HttpEndpoint {
+        http: client(ConnectionOptions::default().follow_redirects)?,
         url: url.to_owned(),
-        headers,
+        auth: Arc::new(auth),
         notifications: sender,
     };
     Ok((endpoint, notifications))
@@ -386,9 +411,11 @@ pub(crate) async fn connect_sse(
     options: &ConnectOptions,
     deadline: Instant,
 ) -> Result<Connected, StartupFailure> {
-    let (endpoint, notifications) = http_endpoint(config, options)?;
-    let client =
-        LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline).await?;
+    let (endpoint, notifications) = http_endpoint(config, options).await?;
+    let auth = Arc::clone(&endpoint.auth);
+    let client = LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline)
+        .await
+        .map_err(|error| StartupFailure::explained(error, auth.failure()))?;
     let transport = Transport::Sse(client);
     let started = Started {
         info: initialize_sse(&transport, options, deadline).await,
@@ -548,6 +575,9 @@ pub(crate) fn startup_failure_message(
     span_ms: u32,
     startup_timeout_ms: u32,
 ) -> String {
+    if let Some(message) = &failure.message {
+        return message.clone();
+    }
     let diagnostics = failure.diagnostics.as_ref();
     if let Some(diagnostics) = diagnostics
         && let Some(rejected) = &diagnostics.rejected_output

@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
+use ofx_config::DurableError;
 use ofx_jsonrpc::RpcError;
 
 use crate::mcp_contract::InvalidServerConfig;
@@ -126,6 +127,38 @@ pub enum McpError {
     InvalidSseEndpointEvent,
     #[error("CrossOriginSseEndpoint")]
     CrossOriginSseEndpoint,
+    #[error("InvalidMcpAuthEndpoint")]
+    InvalidMcpAuthEndpoint,
+    #[error("InsecureMcpAuthEndpoint")]
+    InsecureMcpAuthEndpoint,
+    #[error("McpAuthDocumentTooLarge")]
+    McpAuthDocumentTooLarge,
+    #[error("McpRefreshTokenMissing")]
+    McpRefreshTokenMissing,
+    #[error("McpRefreshRejected")]
+    McpRefreshRejected,
+    #[error("McpRefreshUnavailable")]
+    McpRefreshUnavailable,
+    #[error("InvalidTokenResponse")]
+    InvalidTokenResponse,
+    #[error("InvalidOAuthResponse")]
+    InvalidOAuthResponse,
+    #[error("InvalidOAuthResponseContentType")]
+    InvalidOAuthResponseContentType,
+    #[error("ClientSecretMissing")]
+    ClientSecretMissing,
+    #[error("UnsupportedTokenEndpointAuthenticationMethod")]
+    UnsupportedTokenEndpointAuthenticationMethod,
+    #[error("InvalidMcpCredentialStore")]
+    InvalidMcpCredentialStore,
+    #[error("McpCredentialStoreTooLarge")]
+    McpCredentialStoreTooLarge,
+    #[error("McpCredentialStoreUnavailable")]
+    McpCredentialStoreUnavailable,
+    #[error("LockBusy")]
+    LockBusy,
+    #[error(transparent)]
+    Durable(#[from] DurableError),
     #[error(transparent)]
     Endpoint(#[from] EndpointError),
     #[error(transparent)]
@@ -271,6 +304,7 @@ impl PartialEq for McpError {
             (Self::McpProtocolError(left), Self::McpProtocolError(right)) => left == right,
             (Self::Endpoint(left), Self::Endpoint(right)) => left == right,
             (Self::Header(left), Self::Header(right)) => left == right,
+            (Self::Durable(left), Self::Durable(right)) => left == right,
             (Self::Io(left), Self::Io(right)) => Arc::ptr_eq(left, right),
             (Self::Http(left), Self::Http(right)) => Arc::ptr_eq(left, right),
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),

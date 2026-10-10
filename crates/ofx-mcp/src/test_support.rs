@@ -88,6 +88,11 @@ impl Reply {
         .header("Content-Type", "text/event-stream")
     }
 
+    pub(crate) fn body(mut self, body: &str) -> Self {
+        self.parts = vec![body.as_bytes().to_vec()];
+        self
+    }
+
     pub(crate) fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_owned(), value.to_owned()));
         self

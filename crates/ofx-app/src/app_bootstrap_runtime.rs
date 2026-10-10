@@ -654,6 +654,7 @@ impl Profile {
         let options = ConnectOptions {
             client_version: ofx_upgrade::VERSION.to_owned(),
             user_agent: user_agent(),
+            profile_data: self.paths.as_ref().map(|paths| paths.data.clone()),
         };
         let reserved = tools.iter().map(|tool| tool.spec().name.clone()).collect();
         Ok(Some(Arc::new(McpRuntime::new(
