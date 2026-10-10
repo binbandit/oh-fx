@@ -2,13 +2,16 @@ use std::borrow::Cow;
 use std::mem;
 
 use ofx_contract::{
-    ChatMessage, ModelRecoveryCause, ProviderError, RecoveryStrategy, ToolChoice, TurnId, UiEvent,
+    ChatMessage, ModelRecoveryCause, ModelRequest, ProviderError, RecoveryStrategy, ToolChoice,
+    TurnId, UiEvent,
 };
+use tokio_util::sync::CancellationToken;
 
+use super::gateway_trace::{self, FailedAttempt, Recovering, Route};
 use super::{Agent, EventSink, Stop, Turn, TurnFailure};
 use crate::assistant_stream::LanguageStage;
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, Output, Strategy, ToolEvidence, failed_in_stream,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, Output, Strategy, ToolEvidence, failed_in_stream, recovery_cause,
 };
 
 const RESPONSE_RESTARTED: &str = "\n\n[Response interrupted. Restarting.]\n\n";
@@ -101,12 +104,19 @@ impl<'a> Restart<'a> {
     pub(super) fn observe(
         &mut self,
         partial: String,
-        observed: ToolEvidence,
+        (attempt, consumed, tool): (usize, usize, ToolEvidence),
         evidence: &mut ToolEvidence,
-    ) -> bool {
-        *evidence = evidence.observed(observed);
+    ) -> Observed {
+        *evidence = evidence.observed(tool);
+        let partial_bytes = partial.len();
         self.latest = partial;
-        !self.latest.is_empty()
+        Observed {
+            attempt,
+            consumed,
+            spoke: !self.latest.is_empty(),
+            tool,
+            partial_bytes,
+        }
     }
 
     pub(super) fn evidence(
@@ -130,7 +140,7 @@ impl<'a> Restart<'a> {
         cause == ModelRecoveryCause::ProviderUnavailable && self.unsent(observed, stage)
     }
 
-    fn unsent(&self, observed: ToolEvidence, stage: &LanguageStage) -> bool {
+    pub(super) fn unsent(&self, observed: ToolEvidence, stage: &LanguageStage) -> bool {
         self.source(stage).is_empty() && observed == ToolEvidence::None
     }
 
@@ -173,6 +183,7 @@ impl<'a> Restart<'a> {
             self.latest.clear();
             return false;
         }
+        gateway_trace::restarting_response(self.latest.len(), self.interrupted.len());
         self.interrupted = mem::take(&mut self.latest);
         true
     }
@@ -209,7 +220,14 @@ pub(super) fn restarted(turn_id: TurnId) -> UiEvent {
 }
 
 fn ends_with_tool_result(sent: &[ChatMessage]) -> bool {
-    matches!(sent.last(), Some(ChatMessage::Tool { .. }))
+    trailing_tool(sent).is_some()
+}
+
+fn trailing_tool(sent: &[ChatMessage]) -> Option<&str> {
+    match sent.last() {
+        Some(ChatMessage::Tool { tool_name, .. }) => Some(tool_name),
+        _ => None,
+    }
 }
 
 fn rejects_prefill(error: &ProviderError) -> bool {
@@ -230,11 +248,84 @@ impl Agent {
             && attempt < DEFAULT_MAX_PROVIDER_ATTEMPTS
             && restart.rejected_prefill(error, observed, &turn.language.stage);
         if rejected {
+            let tool_name = trailing_tool(restart.messages()).unwrap_or_default();
+            gateway_trace::assistant_prefill_recovery(turn.trace, tool_name, attempt);
             turn.continuation = Some(PREFILL_CONTINUATION);
             restart.resend(self.request_messages(turn));
         }
         rejected
     }
+
+    pub(super) fn prepare_retry<'a>(
+        &'a self,
+        turn: &mut Turn,
+        request: &mut ModelRequest<'_>,
+        restart: &mut Restart<'a>,
+        failed: Failed<'_>,
+        (cause, decided): (ModelRecoveryCause, Strategy),
+    ) {
+        self.trace_failure(turn, restart, failed, Recovering::Retry(decided));
+        if restart.replay_safe(cause, failed.1.tool, &turn.language.stage) {
+            if turn.fast_mode {
+                gateway_trace::recovery_fast_fallback(
+                    turn.trace,
+                    request.model,
+                    &self.config.model,
+                );
+            }
+            turn.fast_mode = false;
+            request.provider_options.fast = false;
+        }
+        let strategy = retried_strategy(turn.recovery, decided);
+        if strategy != turn.recovery {
+            turn.recovery = strategy;
+            request.tool_choice = recovery_tool_choice(strategy);
+            restart.resend(self.request_messages(turn));
+        }
+        turn.recovery_cause = Some(cause);
+    }
+
+    pub(super) fn trace_failure(
+        &self,
+        turn: &Turn,
+        restart: &Restart<'_>,
+        failed: Failed<'_>,
+        recovering: Recovering,
+    ) {
+        let (error, observed, cancel) = failed;
+        let replay_safe = recovery_cause(error.kind).is_some()
+            && restart.unsent(observed.tool, &turn.language.stage);
+        gateway_trace::failed_attempt(
+            turn.trace,
+            &FailedAttempt {
+                error,
+                attempt: observed.attempt,
+                consumed: observed.consumed,
+                spoke: observed.spoke,
+                tool: observed.tool,
+                cancel_requested: cancel.is_cancelled(),
+                replay_safe,
+                partial_bytes: observed.partial_bytes,
+            },
+            &Route {
+                selected_model: &self.config.model,
+                model: &self.config.model,
+                fast_mode: turn.fast_mode,
+            },
+            recovering,
+        );
+    }
+}
+
+pub(super) type Failed<'a> = (&'a ProviderError, Observed, &'a CancellationToken);
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Observed {
+    pub(super) attempt: usize,
+    pub(super) consumed: usize,
+    pub(super) spoke: bool,
+    pub(super) tool: ToolEvidence,
+    pub(super) partial_bytes: usize,
 }
 
 #[cfg(test)]

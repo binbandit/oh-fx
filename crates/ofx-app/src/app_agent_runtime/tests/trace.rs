@@ -51,7 +51,9 @@ async fn trace_saves_a_private_report_of_the_session_and_offers_it_to_the_clipbo
     assert!(report.contains(
         "\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n"
     ));
-    assert!(report.contains("\n## Context Compaction\n"));
+    assert!(report.contains("\n## Context Compaction\n(none recorded)\n"));
+    assert!(report.contains("\n## Network Calls\n(none recorded)\n"));
+    assert!(report.contains("\n## Tool Calls\n(none recorded)\n"));
     assert!(report.contains("\n## Runtime Context\nTERM: "));
     assert!(server.requests().is_empty());
 }

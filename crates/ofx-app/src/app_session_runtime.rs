@@ -10,7 +10,7 @@ mod shell_recovery;
 use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_agent::{Agent, ChildStore};
+use ofx_agent::{Agent, ChildStore, MeteredProvider};
 use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
@@ -286,7 +286,7 @@ impl LiveSession {
             return None;
         }
         Some(TitleGeneration {
-            provider: setup.model_provider(),
+            provider: Arc::new(MeteredProvider::new(setup.model_provider())),
             model: setup.title_model()?,
             session_id: self.id.clone(),
             excerpt: excerpt.to_owned(),

@@ -18,6 +18,7 @@ fn facts() -> TraceFacts {
         processing: false,
         stream_active: false,
         queued: 0,
+        rings: TraceRings::process(),
     }
 }
 
@@ -41,6 +42,7 @@ fn snapshot() -> Snapshot {
         },
         compaction: Vec::new(),
         tool_calls: ToolCallTrace::default(),
+        network: NetworkTrace::default(),
         tail: None,
     }
 }
@@ -77,7 +79,7 @@ fn turn(turn_id: u64, step_id: u64) -> TraceContext {
 fn a_quiet_session_reports_its_summary_state_and_runtime_context() {
     let report = snapshot().render();
     let expected = format!(
-        "# oh-fx trace\n\nPrivate diagnostic report. It may include prompts, file paths, command output, and file snippets.\n\n## Summary\ngenerated: 2026-05-28T20:26:40Z\nversion: {}\nplatform: {}/{}\nbuild: {}\nmodel: model-a\nfast_mode: on\npermission_mode: auto\nworkspace: /work/space\n\n## Current State\nagent_step_limit: 25\neffort: high\nprocess: pid=42 open_fds=7\nprocess_memory:\n    PID  PPID   RSS\n     42     1  1024\nOH_FX_TRACE: off\n\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n\n## Context Compaction\n(none recorded)\n\n## Tool Calls\n(none recorded)\n\n## Runtime Context\nTERM: xterm-256color\nTERM_PROGRAM: (unset)\nLANG: en_AU.UTF-8\nterminal_hosts: tmux=true cmux=false\n",
+        "# oh-fx trace\n\nPrivate diagnostic report. It may include prompts, file paths, command output, and file snippets.\n\n## Summary\ngenerated: 2026-05-28T20:26:40Z\nversion: {}\nplatform: {}/{}\nbuild: {}\nmodel: model-a\nfast_mode: on\npermission_mode: auto\nworkspace: /work/space\n\n## Current State\nagent_step_limit: 25\neffort: high\nprocess: pid=42 open_fds=7\nprocess_memory:\n    PID  PPID   RSS\n     42     1  1024\nOH_FX_TRACE: off\n\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n\n## Context Compaction\n(none recorded)\n\n## Network Calls\n(none recorded)\n\n## Tool Calls\n(none recorded)\n\n## Runtime Context\nTERM: xterm-256color\nTERM_PROGRAM: (unset)\nLANG: en_AU.UTF-8\nterminal_hosts: tmux=true cmux=false\n",
         ofx_upgrade::VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -172,6 +174,46 @@ fn problems_show_the_newest_three_compaction_failures_with_short_details() {
         .unwrap();
     assert_eq!(detail.len(), PROBLEM_DETAIL_LIMIT + " ...".len());
     assert!(detail.ends_with(" ..."));
+}
+
+#[test]
+fn failed_network_calls_are_problems_before_tools_and_get_their_own_section() {
+    let ring = ofx_trace::NetworkRing::new();
+    ring.record(ofx_trace::NetworkCall {
+        started_at_ms: GENERATED_MS,
+        status: 503,
+        turn_id: 2,
+        step_id: 3,
+        model: "model-a".to_owned(),
+        ..ofx_trace::NetworkCall::default()
+    });
+    let mut recorded = snapshot();
+    recorded.network = ring.snapshot();
+    recorded.compaction = vec![compaction(
+        1,
+        CompactionTraceKind::TransactionFailed,
+        true,
+        turn(2, 3),
+        "stage=summary",
+    )];
+    let report = recorded.render();
+    let line = "[2026-05-28T20:26:40.123Z] model=model-a source=parent status=503 duration=0ms bytes=0 turn=2 step=3\n";
+    assert!(
+        report.contains(&format!(
+            "\n## Problems\n- network {line}- context compaction transaction_failed turn_id=2 detail=stage=summary\n"
+        )),
+        "{report}"
+    );
+    let compaction_at = report.find("\n## Context Compaction\n").unwrap();
+    let network_at = report
+        .find("\n## Network Calls\nlast=1 ok=0 errors=1 ")
+        .unwrap();
+    let tools_at = report.find("\n## Tool Calls\n").unwrap();
+    assert!(
+        compaction_at < network_at && network_at < tools_at,
+        "{report}"
+    );
+    assert!(report[network_at..tools_at].ends_with(line), "{report}");
 }
 
 #[test]

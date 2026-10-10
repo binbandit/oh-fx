@@ -56,7 +56,7 @@ pub(crate) struct ToolCallRecord<'a> {
     pub(crate) subagent_id: u64,
 }
 
-pub(crate) struct ToolCallRing {
+pub struct ToolCallRing {
     state: Mutex<State>,
 }
 
@@ -95,16 +95,14 @@ impl ToolCallLifetime {
     }
 }
 
-pub fn tool_call_trace() -> ToolCallTrace {
-    TOOL_CALL_TRACE.snapshot()
-}
-
-pub fn reset_tool_call_trace() {
-    TOOL_CALL_TRACE.reset();
+impl Default for ToolCallRing {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToolCallRing {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: Mutex::new(State {
                 calls: VecDeque::new(),
@@ -161,7 +159,7 @@ impl ToolCallRing {
         state.calls.push_back(metric);
     }
 
-    pub(crate) fn snapshot(&self) -> ToolCallTrace {
+    pub fn snapshot(&self) -> ToolCallTrace {
         let state = self.lock();
         ToolCallTrace {
             calls: state.calls.iter().cloned().collect(),
@@ -169,7 +167,7 @@ impl ToolCallRing {
         }
     }
 
-    pub(crate) fn reset(&self) {
+    pub fn reset(&self) {
         let mut state = self.lock();
         state.calls.clear();
         state.lifetime = ToolCallLifetime::default();

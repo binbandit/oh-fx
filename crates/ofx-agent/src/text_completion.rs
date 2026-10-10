@@ -6,6 +6,7 @@ use ofx_text::mask_secrets;
 use ofx_trace::{preview, terminal_preview};
 use tokio_util::sync::CancellationToken;
 
+use crate::gateway_step::Meter;
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Evidence, Output, Progress, RetryPacing, ToolEvidence, decide,
     recovery_cause,
@@ -43,6 +44,7 @@ pub(crate) async fn complete(
     provider: &dyn ModelProvider,
     request: &ModelRequest<'_>,
     max_bytes: usize,
+    meter: Meter,
     cancel: &CancellationToken,
 ) -> Result<Outcome, Cancelled> {
     let mut attempt = 1;
@@ -57,7 +59,9 @@ pub(crate) async fn complete(
                 capture.append(&text, max_bytes);
             }
         };
+        let started_at_ms = ofx_trace::timestamp_ms();
         let streamed = provider.stream(request, &mut sink, cancel).await;
+        meter.record(request.model, started_at_ms, &streamed);
         if cancel.is_cancelled() {
             return Err(Cancelled);
         }

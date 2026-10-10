@@ -794,6 +794,7 @@ dependencies = [
  "ofx-images",
  "ofx-testkit",
  "ofx-text",
+ "ofx-trace",
  "ofx-upgrade",
  "reqwest",
  "serde",

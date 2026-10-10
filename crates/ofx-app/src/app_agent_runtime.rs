@@ -4,8 +4,8 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{
-    Agent, Compaction, CompactionError, EventSink, QuestionRequests, QueuedPrompt, TurnFailure,
-    TurnReport, WorkerRuntime,
+    Agent, Compaction, CompactionError, EventSink, QuestionRequests, QueuedPrompt, TraceRings,
+    TurnFailure, TurnReport, WorkerRuntime,
 };
 use ofx_auth::ChatGptError;
 use ofx_config::save_model_preference;
@@ -75,6 +75,7 @@ pub(crate) struct ControllerState {
     context_notices: Arc<Mutex<ContextNotices>>,
     emit: Emit,
     clipboard: Arc<dyn Clipboard>,
+    rings: TraceRings,
     last_reply: Option<Arc<str>>,
     history_turns: usize,
     context_to_compact: bool,
@@ -292,6 +293,7 @@ impl ControllerState {
             processing: work != Work::Idle,
             stream_active: work == Work::Turn,
             queued: self.worker.waiting_texts().len(),
+            rings: self.rings,
         };
         start_trace(&self.emit, Arc::clone(&self.clipboard), facts);
     }
@@ -578,6 +580,7 @@ impl Controller {
             context_notices: Arc::new(Mutex::new(notices)),
             emit,
             clipboard: Arc::new(NativeClipboard),
+            rings: TraceRings::process(),
             last_reply: None,
             history_turns: 0,
             context_to_compact: false,
@@ -592,7 +595,8 @@ impl Controller {
             agent: state
                 .setup
                 .agent(persistence.is_some())
-                .with_steering(Arc::clone(&state.worker)),
+                .with_steering(Arc::clone(&state.worker))
+                .with_trace_rings(state.rings),
             catalog: CatalogFetch {
                 source: state.setup.models_source(),
                 provider: state.setup.provider().label().to_owned(),
@@ -638,6 +642,15 @@ impl Controller {
     fn with_clipboard(mut self, clipboard: Arc<dyn Clipboard>) -> Self {
         self.state.clipboard = clipboard;
         self
+    }
+
+    #[cfg(test)]
+    fn with_trace_rings(mut self, rings: TraceRings) -> Self {
+        self.state.rings = rings;
+        Self {
+            agent: self.agent.with_trace_rings(rings),
+            ..self
+        }
     }
 
     pub(crate) async fn run(mut self, mut commands: UnboundedReceiver<UiCommand>) {
@@ -952,8 +965,7 @@ impl Controller {
         match persistence.resume_selected(id, &mut self.agent, &self.state.setup) {
             Ok(switched) => {
                 self.forget_tracked_changes();
-                ofx_agent::reset_compaction_trace();
-                ofx_agent::reset_tool_call_trace();
+                self.state.rings.reset();
                 self.state.setup.forget_children();
                 self.bind_children();
                 self.restore_preferences(switched.preferences);
@@ -1089,8 +1101,7 @@ impl Controller {
 
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
-        ofx_agent::reset_compaction_trace();
-        ofx_agent::reset_tool_call_trace();
+        self.state.rings.reset();
         self.forget_tracked_changes();
         self.state.setup.forget_children();
         let started = self
@@ -2073,6 +2084,11 @@ mod tests {
                 Controller::new(setup, emit, persistence, false, Arc::clone(&worker))
                     .requesting_ultrafast(ultrafast)
                     .with_clipboard(shared)
+                    .with_trace_rings(TraceRings {
+                        compaction: Box::leak(Box::new(ofx_trace::Ring::new(64))),
+                        tool_calls: Box::leak(Box::new(ofx_agent::ToolCallRing::new())),
+                        network: Box::leak(Box::new(ofx_trace::NetworkRing::new())),
+                    })
                     .with_upgrade(upgrade)
                     .run(receiver),
             );

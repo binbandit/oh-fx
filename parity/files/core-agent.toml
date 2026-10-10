@@ -92,7 +92,7 @@ note = "History, usage and request calibration exist; inline images and kernel c
 upstream = "src/core/agent/runtime/assistant_stream.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/assistant_stream.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Assistant normalization, text deltas, response language staging, the restart of an interrupted response with its notice, tool-start evidence with streamed tool input counted as progress, and the restored reply of a continued checkpoint, which the interactive session treats as already presented, exist; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
+note = "Assistant normalization, text deltas, response language staging, the restart of an interrupted response with its notice and its restarting response trace line, tool-start evidence with streamed tool input counted as progress, and the restored reply of a continued checkpoint, which the interactive session treats as already presented, exist; streamed tool provisional statuses and semantic lifecycle publication are absent on main."
 
 [[file]]
 upstream = "src/core/agent/runtime/checkpoint.zig"
@@ -127,8 +127,8 @@ note = "Turn completion with its PostTurnEnd checkpoint, the Stop candidate kept
 [[file]]
 upstream = "src/core/agent/runtime/gateway_step.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs", "crates/ofx-contract/src/stream_provider.rs"]
-note = "Model requests, provider completion and provider admission are implemented, and each step advertises the dynamic tools the turn selected that the source still publishes, replacing a changed definition and adding and retiring tools as executions report them; tool image projection, usage observations at admission and detailed delivery-certainty evidence are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs", "crates/ofx-contract/src/stream_provider.rs", "crates/ofx-agent/src/gateway_step.rs"]
+note = "Model requests, provider completion and provider admission are implemented, and each model request is recorded in the network ring as recordProviderResultMetric does: a completion with its bytes, tokens and stop reason, an HTTP failure under upstream's failure status, a failure the stream reported as a finish (error, content-filter, length or a missing finish) as a completed call with that stop reason, and a transport failure with its error code; title and chat-completions review requests are recorded through `MeteredProvider` without turn ids, as upstream passes them none, and the Codex reviewer, which upstream sends past this funnel, is not recorded; and each step advertises the dynamic tools the turn selected that the source still publishes, replacing a changed definition and adding and retiring tools as executions report them; tool image projection, usage observations at admission and detailed delivery-certainty evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/image_provider.zig"
@@ -157,8 +157,8 @@ note = "The recovery policy retries without a turn budget, throttles past the 15
 [[file]]
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the pause of a reconcile that starts a tool, the retry of a post-tool assistant prefill rejection with its continuation, the continue_response restart with its note, shell calls kept in their normalized form and projected into each request, and the <mcp_servers> section and its change notice placed after the project context and rendered once per turn, as appendStablePromptContext does, and the per-turn selected dynamic tools, which start empty because only ACP supplies initial ones, exist, with the prompt, step, completion, provider admission, invalid finish, interrupt and executed tool trace lines and their turn, step and subagent ids; the permission, rejected tool, history projection, recovery and stream error trace lines, vision and Gateway or compaction recovery checkpoints remain absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs", "crates/ofx-agent/src/orchestrator/gateway_trace.rs"]
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the pause of a reconcile that starts a tool, the retry of a post-tool assistant prefill rejection with its continuation, the continue_response restart with its note, shell calls kept in their normalized form and projected into each request, and the <mcp_servers> section and its change notice placed after the project context and rendered once per turn, as appendStablePromptContext does, and the per-turn selected dynamic tools, which start empty because only ACP supplies initial ones, exist, with the prompt, step, completion, provider admission, invalid finish, interrupt and executed tool trace lines and their turn, step and subagent ids, and the stream_error, route_failure, provider_completion_failed, provider_finish_missing, recovery_checkpoint_set, recovery_fast_fallback, assistant_prefill_recovery and recovery checkpoint clear failure lines as docs/differences/trace.md records; the permission, rejected tool and history projection trace lines, the auth replay and credential refresh lines, route recovery decisions, vision and Gateway or compaction recovery checkpoints remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
@@ -181,8 +181,8 @@ note = "The decision leaves out upstream's cancelled input, which upstream's cal
 [[file]]
 upstream = "src/core/agent/runtime/telemetry.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/ui.rs"]
-note = "Usage events and turn totals exist, with the step limit, returned tool call, cancel observed and provider options trace lines and the compact completed-tool names; gateway diagnostic metrics, history and role summaries and the turn summary accumulator are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/ui.rs", "crates/ofx-agent/src/gateway_step.rs"]
+note = "Usage events and turn totals exist, with the step limit, returned tool call, cancel observed and provider options trace lines and the compact completed-tool names; recordGatewayCallMetric is ported in gateway_step.rs with the stop-reason test; history and role summaries and the turn summary accumulator are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/finalization_flow.zig"
@@ -218,7 +218,7 @@ note = "Zig-only runtime test harness and fixtures; not shipped by the native pr
 upstream = "src/core/agent/runtime/text_completion.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/text_completion.rs"]
-note = "Compactor text requests stream into bounded results with upstream's failure reasons and masked one-line details, and each request writes its compaction model call trace line, with the classification and detail differences docs/differences/compaction.md records; host-managed authority/pulse and tool-image request context are absent."
+note = "Compactor text requests stream into bounded results with upstream's failure reasons and masked one-line details, and each request writes its compaction model call trace line and is recorded in the network ring with the compaction's turn and step, with the classification and detail differences docs/differences/compaction.md records; host-managed authority/pulse and tool-image request context are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tool_admission.zig"

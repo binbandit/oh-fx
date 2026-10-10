@@ -6,10 +6,10 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ofx_agent::{CompactionEvent, ToolCallTrace};
+use ofx_agent::{CompactionEvent, ToolCallTrace, TraceRings};
 use ofx_contract::{PermissionMode, ReasoningEffort, is_provider_search_alias};
 use ofx_text::mask_secrets;
-use ofx_trace::Sequenced;
+use ofx_trace::{NetworkTrace, Sequenced};
 
 use crate::context::civil_from_unix_days;
 
@@ -34,6 +34,7 @@ pub(crate) struct TraceFacts {
     pub(crate) processing: bool,
     pub(crate) stream_active: bool,
     pub(crate) queued: usize,
+    pub(crate) rings: TraceRings,
 }
 
 pub(super) struct Snapshot {
@@ -45,6 +46,7 @@ pub(super) struct Snapshot {
     terminal: Terminal,
     compaction: Vec<Sequenced<CompactionEvent>>,
     tool_calls: ToolCallTrace,
+    network: NetworkTrace,
     tail: Option<Tail>,
 }
 
@@ -72,6 +74,7 @@ struct Timestamp(i64);
 
 impl Snapshot {
     pub(super) fn capture(facts: TraceFacts) -> Self {
+        let rings = facts.rings;
         let trace_log = ofx_trace::active_log_path()
             .map(Path::to_path_buf)
             .or_else(|| std::env::var_os(LOG_VARIABLE).map(PathBuf::from));
@@ -96,8 +99,9 @@ impl Snapshot {
                 tmux: std::env::var_os("TMUX").is_some(),
                 cmux: std::env::var_os("CMUX_WORKSPACE_ID").is_some(),
             },
-            compaction: ofx_agent::compaction_trace(),
-            tool_calls: ofx_agent::tool_call_trace(),
+            compaction: rings.compaction.snapshot(),
+            tool_calls: rings.tool_calls.snapshot(),
+            network: rings.network.snapshot(),
             tail,
         }
     }
@@ -115,6 +119,7 @@ impl Snapshot {
         self.write_current_state(out)?;
         self.write_problems(out)?;
         self.write_compaction(out)?;
+        network_calls::write_section(out, &self.network)?;
         tool_calls::write_section(out, &self.tool_calls)?;
         self.write_runtime_context(out)?;
         if let Some(tail) = &self.tail {
@@ -190,6 +195,7 @@ impl Snapshot {
                 self.facts.processing, self.facts.stream_active, self.facts.queued
             )?;
         }
+        count += network_calls::write_problems(out, &self.network)?;
         count += tool_calls::write_problems(out, &self.tool_calls)?;
         for event in self
             .compaction
@@ -460,6 +466,7 @@ fn process_memory(pid: u32) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+mod network_calls;
 mod tool_calls;
 
 #[cfg(test)]
