@@ -121,9 +121,7 @@ pub(crate) fn refresh(
     let Some(source) = fx.open_child(id).ok().flatten() else {
         return Ok(None);
     };
-    if source_stamp(&source).is_ok_and(|current| current == marker.source)
-        || !untouched(copy, id, marker)
-    {
+    if !stale(&source, copy, id, marker) {
         return Ok(None);
     }
     let Ok(Some(_held)) = copy.try_lock(SESSION_LOCK_FILE) else {
@@ -267,6 +265,18 @@ fn source_stamp(source: &PrivateDir) -> Result<ImportSource, SessionError> {
         manifest: file_stamp(source, MANIFEST_FILE)?,
         events: file_stamp(source, EVENTS_FILE)?,
     })
+}
+
+pub(crate) fn outdated(fx: &PrivateDir, copy: &PrivateDir, id: &str) -> bool {
+    match (read_marker(copy), fx.open_child(id).ok().flatten()) {
+        (Some(marker), Some(source)) => stale(&source, copy, id, &marker),
+        _ => false,
+    }
+}
+
+fn stale(source: &PrivateDir, copy: &PrivateDir, id: &str, marker: &Marker) -> bool {
+    !source_stamp(source).is_ok_and(|current| current == marker.source)
+        && untouched(copy, id, marker)
 }
 
 pub(crate) fn untouched_import(copy: &PrivateDir, id: &str) -> Option<ImportSource> {

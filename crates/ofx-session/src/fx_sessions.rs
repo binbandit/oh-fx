@@ -13,7 +13,7 @@ use crate::session_log::managed_file::{has_private_dir_mode, session_directory_n
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
 pub(crate) use import::{ImportSource, Imported, seal, untouched_import};
-pub(crate) use remembered::{last_active, remembered_session_id};
+pub(crate) use remembered::{remembered_session_id, resumed_at};
 
 const PROFILE_DIR: &str = ".fx";
 const SESSIONS_DIR: &str = "sessions";

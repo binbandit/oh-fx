@@ -9,13 +9,11 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
-use crate::fx_sessions::{
-    FxSessions, Imported, import_from_fx, last_active, remembered_session_id,
-};
+use crate::fx_sessions::{FxSessions, Imported, import_from_fx, remembered_session_id, resumed_at};
 use crate::session_catalog_cache::{CatalogIndex, CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
-use crate::session_discovery::{Classification, classify_session};
+use crate::session_discovery::Classification;
 use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{
@@ -367,35 +365,24 @@ impl SessionStore {
 
     pub fn remembered_session(&self) -> Result<Option<RememberedSession>, SessionError> {
         let own = self.remembered_session_id()?;
-        let fx = self
-            .fx_home
-            .as_deref()
-            .and_then(|home| remembered_session_id(home, &self.workspace_root));
+        let fx = self.fx_home.as_deref().and_then(|home| {
+            remembered_session_id(home, &self.workspace_root).map(|id| (home, id))
+        });
         let (id, source) = match (own, fx) {
-            (Some(own), Some(fx))
-                if own != fx && self.last_active(&fx) > self.last_active(&own) =>
+            (Some(own), Some((home, fx)))
+                if own != fx && self.resumed_at(home, &fx) > self.resumed_at(home, &own) =>
             {
                 (fx, SessionSource::Fx)
             }
             (Some(own), _) => (own, SessionSource::OhFx),
-            (None, Some(fx)) => (fx, SessionSource::Fx),
+            (None, Some((_, fx))) => (fx, SessionSource::Fx),
             (None, None) => return Ok(None),
         };
         Ok(Some(RememberedSession { id, source }))
     }
 
-    fn last_active(&self, id: &str) -> Option<i64> {
-        let own = self
-            .sessions
-            .as_ref()
-            .and_then(|sessions| classify_session(sessions, id, Classification::Listing).ok())
-            .flatten()
-            .map(|summary| summary.updated_at_ms);
-        let fx = self
-            .fx_home
-            .as_deref()
-            .and_then(|home| last_active(home, id));
-        own.max(fx)
+    fn resumed_at(&self, home: &Path, id: &str) -> Option<i64> {
+        resumed_at(home, self.sessions.as_ref()?, id)
     }
 
     pub(crate) fn remembered_session_id(&self) -> Result<Option<String>, SessionError> {

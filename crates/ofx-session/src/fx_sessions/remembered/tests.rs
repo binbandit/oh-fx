@@ -129,6 +129,91 @@ fn a_session_both_pointers_name_is_continued_as_oh_fx_remembers_it() {
     );
 }
 
+fn import_fx_pointed(home: &Home, store: &SessionStore, own_s: u64) {
+    saved("fx-pointed", WORKSPACE, 300).write(&home.fx_sessions());
+    drop(store.resume("fx-pointed").unwrap());
+    saved("own-pointed", WORKSPACE, own_s).write(&home.own_sessions());
+    store.remember_session_id("own-pointed").unwrap();
+    point_fx_at(home, b"fx-pointed\n");
+}
+
+fn change_fx_pointed(home: &Home, modified_s: u64) {
+    Saved {
+        id: "fx-pointed",
+        workspace: WORKSPACE,
+        title: Some("fx-pointed"),
+        prompts: &["one", "two"],
+        modified_s,
+    }
+    .write(&home.fx_sessions());
+}
+
+#[test]
+fn an_fx_pointer_whose_oh_fx_copy_cannot_be_resumed_loses_to_the_oh_fx_pointer() {
+    for changed_in_fx in [false, true] {
+        let home = Home::new();
+        let store = importing(&home);
+        import_fx_pointed(&home, &store, 200);
+        if changed_in_fx {
+            change_fx_pointed(&home, 400);
+        }
+        let copy = home.own_sessions().join("fx-pointed").join("session.json");
+        fs::write(copy, "{").unwrap();
+        assert_eq!(
+            remembered(&store),
+            Some(named("own-pointed", SessionSource::OhFx)),
+            "{changed_in_fx}"
+        );
+        assert_eq!(
+            store.resume("fx-pointed").err(),
+            Some(SessionError::InvalidSessionFormat),
+            "{changed_in_fx}"
+        );
+        drop(store.resume("own-pointed").unwrap());
+    }
+}
+
+#[test]
+fn an_fx_pointer_to_a_copy_continued_in_oh_fx_counts_the_copy_and_not_fx() {
+    let home = Home::new();
+    let store = importing(&home);
+    import_fx_pointed(&home, &store, 4_102_444_800);
+    let continued = Saved {
+        id: "fx-pointed",
+        workspace: WORKSPACE,
+        title: Some("fx-pointed"),
+        prompts: &["one", "continued here"],
+        modified_s: 0,
+    };
+    fs::write(
+        home.own_sessions().join("fx-pointed").join("events.jsonl"),
+        continued.events(),
+    )
+    .unwrap();
+    change_fx_pointed(&home, 4_102_444_900);
+    assert_eq!(
+        remembered(&store),
+        Some(named("own-pointed", SessionSource::OhFx))
+    );
+}
+
+#[test]
+fn an_fx_pointer_to_an_untouched_copy_counts_fx_once_fx_changes_it() {
+    let home = Home::new();
+    let store = importing(&home);
+    import_fx_pointed(&home, &store, 4_102_444_800);
+    assert_eq!(
+        remembered(&store),
+        Some(named("own-pointed", SessionSource::OhFx))
+    );
+    change_fx_pointed(&home, 4_102_444_900);
+    assert_eq!(
+        remembered(&store),
+        Some(named("fx-pointed", SessionSource::Fx))
+    );
+    drop(store.resume("fx-pointed").unwrap());
+}
+
 #[test]
 fn an_fx_pointer_that_cannot_be_trusted_is_ignored() {
     let cases: [(&str, Spoil); 8] = [
