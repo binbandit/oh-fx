@@ -14,7 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
 use crate::mcp_commands::{
-    render_prompt_get, render_prompt_listing, render_resource_listing, render_resource_read,
+    Completion, render_completions, render_prompt_get, render_prompt_listing,
+    render_resource_listing, render_resource_read,
 };
 
 pub(crate) const TOPIC: &str = "mcp";
@@ -168,6 +169,36 @@ impl McpHost {
         self.show_when_ready(async move {
             let result = runtime.get_prompt(&server, &name, &arguments).await;
             render_prompt_get(&server, &name, result)
+        });
+    }
+
+    pub(crate) fn complete_prompt(&self, completion: Completion) {
+        let runtime = Arc::clone(&self.runtime);
+        self.show_when_ready(async move {
+            let result = runtime
+                .complete_prompt_argument(
+                    &completion.server,
+                    &completion.target,
+                    completion.argument(),
+                    &[],
+                )
+                .await;
+            render_completions(&completion.server, "MCP prompt completion failed", result)
+        });
+    }
+
+    pub(crate) fn complete_resource(&self, completion: Completion) {
+        let runtime = Arc::clone(&self.runtime);
+        self.show_when_ready(async move {
+            let result = runtime
+                .complete_resource_template_argument(
+                    &completion.server,
+                    &completion.target,
+                    completion.argument(),
+                    &[],
+                )
+                .await;
+            render_completions(&completion.server, "MCP resource completion failed", result)
         });
     }
 

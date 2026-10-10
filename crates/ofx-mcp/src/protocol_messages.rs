@@ -99,6 +99,10 @@ pub(crate) fn build_resource_read_request(request_id: u64, uri: &str) -> String 
     request_frame(request_id, "resources/read", &json!({"uri": uri}))
 }
 
+pub(crate) fn build_completion_request(request_id: u64, params: &Value) -> String {
+    request_frame(request_id, "completion/complete", params)
+}
+
 pub(crate) fn build_prompt_get_request(request_id: u64, name: &str, arguments: &Value) -> String {
     request_frame(
         request_id,
@@ -322,6 +326,13 @@ mod tests {
         assert_eq!(
             build_prompt_get_request(8, "review", &json!({"focus": "caf\u{e9}\n", "depth": "2"})),
             "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"prompts/get\",\"params\":{\"name\":\"review\",\"arguments\":{\"focus\":\"caf\u{e9}\\n\",\"depth\":\"2\"}}}"
+        );
+        assert_eq!(
+            build_completion_request(
+                9,
+                &json!({"ref": {"type": "ref/prompt", "name": "review"}, "argument": {"name": "focus", "value": "s"}})
+            ),
+            "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"completion/complete\",\"params\":{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"focus\",\"value\":\"s\"}}}"
         );
     }
 

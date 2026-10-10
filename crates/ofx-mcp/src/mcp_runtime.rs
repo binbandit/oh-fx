@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::McpError;
 use crate::feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
 use crate::features::common::ResourceContent;
+use crate::features::completion::{CompletionArgument, CompletionReference, CompletionResult};
 use crate::features::prompts::PromptGetResult;
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
@@ -216,6 +217,51 @@ impl McpRuntime {
     ) -> Result<PromptGetResult, FeatureFailure> {
         let (server, deadline) = self.feature_server(server_name).await?;
         server.get_prompt(name, arguments_json, deadline).await
+    }
+
+    pub async fn complete_prompt_argument(
+        &self,
+        server_name: &str,
+        prompt_name: &str,
+        argument: CompletionArgument<'_>,
+        context: &[CompletionArgument<'_>],
+    ) -> Result<CompletionResult, McpError> {
+        self.complete(
+            server_name,
+            CompletionReference::Prompt(prompt_name),
+            argument,
+            context,
+        )
+        .await
+    }
+
+    pub async fn complete_resource_template_argument(
+        &self,
+        server_name: &str,
+        uri_template: &str,
+        argument: CompletionArgument<'_>,
+        context: &[CompletionArgument<'_>],
+    ) -> Result<CompletionResult, McpError> {
+        self.complete(
+            server_name,
+            CompletionReference::ResourceTemplate(uri_template),
+            argument,
+            context,
+        )
+        .await
+    }
+
+    async fn complete(
+        &self,
+        server_name: &str,
+        reference: CompletionReference<'_>,
+        argument: CompletionArgument<'_>,
+        context: &[CompletionArgument<'_>],
+    ) -> Result<CompletionResult, McpError> {
+        let (server, deadline) = self.feature_server(server_name).await?;
+        server
+            .complete(reference, argument, context, deadline)
+            .await
     }
 
     async fn feature_server(&self, server_name: &str) -> Result<(Arc<Server>, Instant), McpError> {
@@ -2148,6 +2194,188 @@ done
         assert_eq!(
             requests(state.path()),
             format!("list\n{get}{get}list\n{get}")
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    const COMPLETION_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      capabilities='{"prompts":{},"resources":{"listChanged":true},"completions":{}}'
+      if [ -f "$STATE/resources-only" ]; then capabilities='{"resources":{},"completions":{}}'; fi
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":$capabilities,\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+    *'"method":"prompts/list"'*)
+      echo prompts >> "$STATE/requests"
+      reply "$id" '{"prompts":[{"name":"review","arguments":[{"name":"tone"}]}]}' ;;
+    *'"method":"resources/templates/list"'*)
+      echo templates >> "$STATE/requests"
+      if [ -f "$STATE/broken" ]; then
+        reply "$id" '{"resourceTemplates":[{"uriTemplate":"a://{x}","name":"a"},{"uriTemplate":"a://{x}","name":"a"}]}'
+      else
+        reply "$id" '{"resourceTemplates":[{"uriTemplate":"custom://project/{path}","name":"project"}]}'
+      fi ;;
+    *'"method":"completion/complete"'*)
+      params=$(printf '%s' "$line" | sed -n 's/.*"params":\(.*\)}$/\1/p')
+      echo "complete $params" >> "$STATE/requests"
+      if [ -f "$STATE/crash" ]; then exit 0; fi
+      case "$line" in
+        *'"value":"fail"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"rejected"}}\n' "$id" ;;
+        *'"ref/prompt"'*) reply "$id" '{"completion":{"values":["balpha","bbeta"],"total":5,"hasMore":true}}' ;;
+        *) reply "$id" '{"completion":{"values":["src/alpha"]}}' ;;
+      esac
+      if [ -f "$STATE/notify" ]; then
+        rm "$STATE/notify"
+        touch "$STATE/broken"
+        printf '{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}\n'
+      fi ;;
+  esac
+done
+"#;
+
+    fn completion<'a>(name: &'a str, value: &'a str) -> CompletionArgument<'a> {
+        CompletionArgument { name, value }
+    }
+
+    #[tokio::test]
+    async fn completions_resolve_their_reference_and_name_their_failures() {
+        let state = tempfile::tempdir().unwrap();
+        let resources_only = tempfile::tempdir().unwrap();
+        std::fs::write(resources_only.path().join("resources-only"), "").unwrap();
+        let runtime = runtime(vec![
+            config("fixture", COMPLETION_SERVER, state.path()),
+            config("resources", COMPLETION_SERVER, resources_only.path()),
+            config("tools", SERVER, resources_only.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(
+            runtime
+                .complete_prompt_argument("fixture", "review", completion("tone", "b"), &[])
+                .await,
+            Ok(CompletionResult {
+                values: vec!["balpha".to_owned(), "bbeta".to_owned()],
+                total: Some(5),
+                has_more: Some(true),
+            })
+        );
+        assert_eq!(
+            runtime
+                .complete_resource_template_argument(
+                    "fixture",
+                    "custom://project/{path}",
+                    completion("path", "src/"),
+                    &[completion("branch", "main")],
+                )
+                .await,
+            Ok(CompletionResult {
+                values: vec!["src/alpha".to_owned()],
+                total: None,
+                has_more: None,
+            })
+        );
+        let long = "x".repeat(4097);
+        for (reference, argument, expected) in [
+            (
+                "missing",
+                completion("tone", "b"),
+                McpError::McpPromptNotFound,
+            ),
+            (
+                "review",
+                completion("tone", &long),
+                McpError::InvalidArgument,
+            ),
+            (
+                "review",
+                completion("tone", "fail"),
+                McpError::ProtocolFailure,
+            ),
+        ] {
+            assert_eq!(
+                runtime
+                    .complete_prompt_argument("fixture", reference, argument, &[])
+                    .await,
+                Err(expected),
+                "{reference}"
+            );
+        }
+        assert_eq!(
+            runtime
+                .complete_resource_template_argument(
+                    "fixture",
+                    "custom://project/readme",
+                    completion("path", "src/"),
+                    &[],
+                )
+                .await,
+            Err(McpError::McpResourceTemplateNotFound)
+        );
+        for (server, expected) in [
+            ("missing", McpError::McpServerNotFound),
+            ("tools", McpError::McpCompletionUnsupported),
+            ("resources", McpError::McpPromptsUnsupported),
+        ] {
+            assert_eq!(
+                runtime
+                    .complete_prompt_argument(server, "review", completion("tone", "b"), &[])
+                    .await,
+                Err(expected),
+                "{server}"
+            );
+        }
+        assert_eq!(
+            requests(state.path()),
+            concat!(
+                "prompts\n",
+                "complete {\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"tone\",\"value\":\"b\"}}\n",
+                "templates\n",
+                "complete {\"ref\":{\"type\":\"ref/resource\",\"uri\":\"custom://project/{path}\"},\"argument\":{\"name\":\"path\",\"value\":\"src/\"},\"context\":{\"arguments\":{\"branch\":\"main\"}}}\n",
+                "complete {\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"tone\",\"value\":\"fail\"}}\n",
+            )
+        );
+        assert_eq!(requests(resources_only.path()), "");
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_completion_waits_for_a_changed_catalog_and_restarts_a_stopped_server() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("notify"), "").unwrap();
+        let runtime = runtime(vec![config("fixture", COMPLETION_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let template = "custom://project/{path}";
+        let complete = || {
+            runtime.complete_resource_template_argument(
+                "fixture",
+                template,
+                completion("path", "src/"),
+                &[],
+            )
+        };
+        let completed = Ok(CompletionResult {
+            values: vec!["src/alpha".to_owned()],
+            total: None,
+            has_more: None,
+        });
+        assert_eq!(complete().await, completed);
+        until_resources_invalidated(&runtime).await;
+        assert_eq!(complete().await, Err(McpError::McpFeatureCatalogChanged));
+        std::fs::remove_file(state.path().join("broken")).unwrap();
+        std::fs::write(state.path().join("crash"), "").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(complete().await, Err(McpError::McpConnectionClosed));
+        std::fs::remove_file(state.path().join("crash")).unwrap();
+        assert_eq!(complete().await, completed);
+        assert_eq!(runtime.current()[0].restarts(), 1);
+        let request = "complete {\"ref\":{\"type\":\"ref/resource\",\"uri\":\"custom://project/{path}\"},\"argument\":{\"name\":\"path\",\"value\":\"src/\"}}\n";
+        assert_eq!(
+            requests(state.path()),
+            format!("templates\n{request}templates\ntemplates\n{request}templates\n{request}")
         );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }

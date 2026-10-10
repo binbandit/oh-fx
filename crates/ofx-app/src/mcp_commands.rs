@@ -5,10 +5,10 @@ use std::sync::Arc;
 use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
 use ofx_contract::NoticeTone;
 use ofx_mcp::{
-    AddIntentError, FeatureFailure, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction,
-    PromptGetResult, PromptSummary, ResourceContent, ResourceData, ResourceSummary,
-    add_profile_server, apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
-    remove_profile_server,
+    AddIntentError, CompletionArgument, CompletionResult, FeatureFailure, McpError, McpRuntime,
+    ProfileConfigWarning, ProjectMcpAction, PromptGetResult, PromptSummary, ResourceContent,
+    ResourceData, ResourceSummary, add_profile_server, apply_project_mcp_action_to_entry,
+    load_profile_document, parse_add_intent, remove_profile_server,
 };
 use ofx_text::{encode_terminal_safe, mask_secrets};
 
@@ -67,6 +67,25 @@ pub(crate) enum Outcome {
         name: String,
         arguments: String,
     },
+    CompletePrompt(Completion),
+    CompleteResource(Completion),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Completion {
+    pub(crate) server: String,
+    pub(crate) target: String,
+    pub(crate) argument: String,
+    pub(crate) value: String,
+}
+
+impl Completion {
+    pub(crate) fn argument(&self) -> CompletionArgument<'_> {
+        CompletionArgument {
+            name: &self.argument,
+            value: &self.value,
+        }
+    }
 }
 
 pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRuntime) -> Outcome {
@@ -139,6 +158,8 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
             name,
             arguments,
         } => host.get_prompt(server, name, arguments),
+        Outcome::CompletePrompt(completion) => host.complete_prompt(completion),
+        Outcome::CompleteResource(completion) => host.complete_resource(completion),
     }
 }
 
@@ -219,6 +240,29 @@ pub(crate) fn render_prompt_get(
             message.content_kind.as_str(),
             message.content_json
         );
+    }
+    out
+}
+
+pub(crate) fn render_completions(
+    server: &str,
+    failure: &str,
+    result: Result<CompletionResult, McpError>,
+) -> String {
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => return format!("{failure}: {error}."),
+    };
+    let mut out = format!("MCP completions from {server} ({}", result.values.len());
+    if let Some(total) = result.total {
+        let _ = write!(out, " of {total}");
+    }
+    out.push_str("):\n");
+    for value in &result.values {
+        let _ = writeln!(out, "  {value}");
+    }
+    if result.has_more == Some(true) {
+        out.push_str("  \u{2026} more available\n");
     }
     out
 }
@@ -444,10 +488,8 @@ fn resource(rest: &str) -> Outcome {
             _ => show(RESOURCE_LIST_USAGE),
         },
         Some("read") => read_resource(rest),
-        Some("complete") => show(match (tokens.next(), tokens.next(), tokens.next()) {
-            (Some(_), Some(_), Some(_)) => "MCP resource completion is not available yet.",
-            _ => RESOURCE_COMPLETE_USAGE,
-        }),
+        Some("complete") => completion(rest)
+            .map_or_else(|| show(RESOURCE_COMPLETE_USAGE), Outcome::CompleteResource),
         _ => show(RESOURCE_USAGE),
     }
 }
@@ -489,10 +531,9 @@ fn prompt(rest: &str) -> Outcome {
             _ => show(PROMPT_LIST_USAGE),
         },
         Some("get") => get_prompt(rest),
-        Some("complete") => show(match (tokens.next(), tokens.next(), tokens.next()) {
-            (Some(_), Some(_), Some(_)) => "MCP prompt completion is not available yet.",
-            _ => PROMPT_COMPLETE_USAGE,
-        }),
+        Some("complete") => {
+            completion(rest).map_or_else(|| show(PROMPT_COMPLETE_USAGE), Outcome::CompletePrompt)
+        }
         _ => show(PROMPT_USAGE),
     }
 }
@@ -512,6 +553,20 @@ fn get_prompt(rest: &str) -> Outcome {
         name: name.to_owned(),
         arguments: arguments.to_owned(),
     }
+}
+
+fn completion(rest: &str) -> Option<Completion> {
+    let mut input = rest;
+    take_token(&mut input);
+    let server = take_token(&mut input)?;
+    let target = take_token(&mut input)?;
+    let argument = take_token(&mut input)?;
+    Some(Completion {
+        server: server.to_owned(),
+        target: target.to_owned(),
+        argument: argument.to_owned(),
+        value: input.trim_matches(TRIMMED).to_owned(),
+    })
 }
 
 fn with_profile_warning(body: String, config_path: Option<&Path>) -> String {
@@ -760,10 +815,7 @@ mod tests {
             ("resource read", RESOURCE_READ_USAGE),
             ("resource read docs \t ", RESOURCE_READ_USAGE),
             ("resource complete docs uri", RESOURCE_COMPLETE_USAGE),
-            (
-                "resource complete docs uri name",
-                "MCP resource completion is not available yet.",
-            ),
+            ("resource complete", RESOURCE_COMPLETE_USAGE),
             ("prompt", USAGE),
             ("prompt wat", PROMPT_USAGE),
             ("prompt list", PROMPT_LIST_USAGE),
@@ -772,10 +824,7 @@ mod tests {
             ("prompt get", PROMPT_GET_USAGE),
             ("prompt get \t docs \t", PROMPT_GET_USAGE),
             ("prompt complete docs review", PROMPT_COMPLETE_USAGE),
-            (
-                "prompt complete docs review topic x",
-                "MCP prompt completion is not available yet.",
-            ),
+            ("prompt complete docs \t", PROMPT_COMPLETE_USAGE),
             ("wat", USAGE),
         ] {
             assert_eq!(shown(command, path), expected, "{command}");
@@ -1036,6 +1085,71 @@ mod tests {
                 ))
             ),
             "MCP protocol error -32603: rejected SERVICE_TOKEN=[redacted]"
+        );
+    }
+
+    #[test]
+    fn completions_take_three_tokens_and_the_rest_of_the_line_as_the_value() {
+        let (_home, path) = profile();
+        let completion = |target: &str, argument: &str, value: &str| Completion {
+            server: "server-b".to_owned(),
+            target: target.to_owned(),
+            argument: argument.to_owned(),
+            value: value.to_owned(),
+        };
+        for config_path in [Some(path.as_path()), None] {
+            let respond = |command| respond(command, config_path, &runtime());
+            assert_eq!(
+                respond("prompt complete server-b shared tone very brief"),
+                Outcome::CompletePrompt(completion("shared", "tone", "very brief"))
+            );
+            assert_eq!(
+                respond("prompt \tcomplete server-b  shared\ttone \t"),
+                Outcome::CompletePrompt(completion("shared", "tone", ""))
+            );
+            assert_eq!(
+                respond("resource complete server-b custom://project/{path} path  src/ \t"),
+                Outcome::CompleteResource(completion("custom://project/{path}", "path", "src/"))
+            );
+        }
+        assert_eq!(
+            completion("shared", "tone", "b").argument(),
+            CompletionArgument {
+                name: "tone",
+                value: "b"
+            }
+        );
+        let result = |values: &[&str], total, has_more| {
+            Ok(CompletionResult {
+                values: values.iter().map(|value| (*value).to_owned()).collect(),
+                total,
+                has_more,
+            })
+        };
+        let failure = "MCP prompt completion failed";
+        assert_eq!(
+            render_completions(
+                "docs",
+                failure,
+                result(&["balpha", "bbeta"], Some(5), Some(true))
+            ),
+            "MCP completions from docs (2 of 5):\n  balpha\n  bbeta\n  \u{2026} more available\n"
+        );
+        assert_eq!(
+            render_completions("docs", failure, result(&["src/alpha"], None, Some(false))),
+            "MCP completions from docs (1):\n  src/alpha\n"
+        );
+        assert_eq!(
+            render_completions("docs", failure, result(&[], None, None)),
+            "MCP completions from docs (0):\n"
+        );
+        assert_eq!(
+            render_completions(
+                "docs",
+                "MCP resource completion failed",
+                Err(McpError::McpResourceTemplateNotFound)
+            ),
+            "MCP resource completion failed: McpResourceTemplateNotFound."
         );
     }
 

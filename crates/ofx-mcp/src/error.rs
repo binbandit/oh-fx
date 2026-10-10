@@ -68,8 +68,12 @@ pub enum McpError {
     McpPromptCatalogUnavailable,
     #[error("McpPromptNotFound")]
     McpPromptNotFound,
+    #[error("McpCompletionUnsupported")]
+    McpCompletionUnsupported,
     #[error("McpResourceNotFound")]
     McpResourceNotFound,
+    #[error("McpResourceTemplateNotFound")]
+    McpResourceTemplateNotFound,
     #[error("McpResourceTemplateMatchLimitExceeded")]
     McpResourceTemplateMatchLimitExceeded,
     #[error("McpFeatureCatalogChanged")]
@@ -166,6 +170,14 @@ pub enum McpError {
     InvalidMessage,
     #[error("InvalidArguments")]
     InvalidArguments,
+    #[error("InvalidReference")]
+    InvalidReference,
+    #[error("InvalidContext")]
+    InvalidContext,
+    #[error("CompletionLimitExceeded")]
+    CompletionLimitExceeded,
+    #[error("CompletionByteLimitExceeded")]
+    CompletionByteLimitExceeded,
     #[error("InvalidTool")]
     InvalidTool,
     #[error("DuplicateTool")]

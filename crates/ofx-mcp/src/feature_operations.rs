@@ -7,6 +7,9 @@ use crate::catalog_freshness::page_expiry;
 use crate::error::McpError;
 use crate::feature_catalog_runtime::FEATURE_RESPONSE_FRAME_CAP_BYTES;
 use crate::features::common::ResourceContent;
+use crate::features::completion::{
+    self, CompletionArgument, CompletionReference, CompletionResult, parse_result, request_params,
+};
 use crate::features::prompts::{
     self, GetOutcome, Prompt, PromptArgument, PromptGetResult, parse_get_outcome,
     validate_arguments_json,
@@ -16,7 +19,9 @@ use crate::features::resources::{
 };
 use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
-use crate::protocol_messages::{build_prompt_get_request, build_resource_read_request};
+use crate::protocol_messages::{
+    build_completion_request, build_prompt_get_request, build_resource_read_request,
+};
 use crate::server_connection::McpClient;
 use crate::server_lifecycle::{Lifecycle, RestartFailure, Server};
 use crate::tool_result::protocol_diagnostic;
@@ -198,6 +203,54 @@ impl Server {
                     Err(FeatureFailure::Diagnostic(protocol_diagnostic(&error)))
                 }
             };
+        }
+    }
+
+    pub(crate) async fn complete(
+        self: &Arc<Self>,
+        reference: CompletionReference<'_>,
+        argument: CompletionArgument<'_>,
+        context: &[CompletionArgument<'_>],
+        deadline: Instant,
+    ) -> Result<CompletionResult, McpError> {
+        if !self.features.advertises_completion() {
+            return Err(McpError::McpCompletionUnsupported);
+        }
+        match reference {
+            CompletionReference::Prompt(_) if !self.features.advertises_prompts() => {
+                return Err(McpError::McpPromptsUnsupported);
+            }
+            CompletionReference::ResourceTemplate(_) if !self.features.advertises_resources() => {
+                return Err(McpError::McpResourcesUnsupported);
+            }
+            CompletionReference::Prompt(_) | CompletionReference::ResourceTemplate(_) => {}
+        }
+        loop {
+            let identity = match reference {
+                CompletionReference::Prompt(name) => {
+                    self.prompt_identity(name, deadline, |_| Ok(())).await?.0
+                }
+                CompletionReference::ResourceTemplate(uri_template) => {
+                    self.template_identity(uri_template, deadline).await?
+                }
+            };
+            let Some(client) = self.feature_client(deadline).await? else {
+                continue;
+            };
+            let id = client.transport.next_request_id()?;
+            let params =
+                request_params(reference, argument, context, completion::Limits::default())?;
+            self.check_current(&client, &identity)?;
+            let response = client
+                .transport
+                .request(TransportRequest::new(
+                    id,
+                    build_completion_request(id, &params),
+                    FEATURE_RESPONSE_FRAME_CAP_BYTES,
+                    deadline,
+                ))
+                .await?;
+            return parse_result(&response, completion::Limits::default());
         }
     }
 
