@@ -24,6 +24,7 @@ use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
 use crate::model_catalog::ServerSummary;
 use crate::native_config::NativeConfigLoad;
 use crate::project_config::{WorkspaceDiagnostic, render_workspace_diagnostic};
+use crate::server_auth::{AuthenticationOutcome, authenticate};
 use crate::server_lifecycle::{Lifecycle, Server};
 use crate::server_transport::ConnectOptions;
 use crate::server_views::{health_failure, model_summary, snapshot_server};
@@ -571,6 +572,27 @@ impl McpRuntime {
                 .map(render_workspace_diagnostic)
                 .collect(),
         }
+    }
+
+    pub async fn authenticate_server(
+        &self,
+        name: &str,
+        open_url: &(dyn Fn(&str) -> bool + Sync),
+        cancel: &CancellationToken,
+    ) -> Result<AuthenticationOutcome, McpError> {
+        let server = self
+            .current()
+            .into_iter()
+            .find(|server| server.config.name == name)
+            .ok_or(McpError::McpServerNotFound)?;
+        authenticate(
+            &server.config,
+            &self.options,
+            open_url,
+            cancel,
+            &|variable| std::env::var(variable).ok(),
+        )
+        .await
     }
 
     pub(crate) fn current(&self) -> Vec<Arc<Server>> {

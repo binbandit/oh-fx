@@ -640,6 +640,10 @@ impl Profile {
         Ok((runtime, tools))
     }
 
+    pub fn mcp_command_runtime(&self) -> Result<Option<Arc<McpRuntime>>, ProfileStoreError> {
+        self.load_mcp_runtime(&[], &ContextLimits::default(), false)
+    }
+
     fn load_mcp_runtime(
         &self,
         tools: &[Arc<dyn Tool>],

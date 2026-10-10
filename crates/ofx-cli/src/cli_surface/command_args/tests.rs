@@ -411,11 +411,14 @@ fn provider_command_requires_exactly_one_valid_name() {
 
 #[test]
 fn mcp_subcommands_validate_their_operand_shapes() {
+    assert_eq!(
+        parse_mcp(&os(&["auth", "linear"])).ok(),
+        Some(McpOperation::Auth("linear".to_owned()))
+    );
     for args in [
         &["add", "fixture", "node", "server.js"][..],
         &["add", "fixture", "node"],
         &["add", "--transport", "http", "remote", "https://x.test/mcp"],
-        &["auth", "linear"],
         &["list"],
         &["list", "--connect"],
         &["path"],
@@ -426,7 +429,11 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["trust", "approve", "x"],
         &["trust", "reject", "x"],
     ] {
-        assert!(validate_mcp(&os(args)).is_ok(), "{args:?}");
+        assert_eq!(
+            parse_mcp(&os(args)).ok(),
+            Some(McpOperation::Unported),
+            "{args:?}"
+        );
     }
     for args in [
         &["add"][..],
@@ -434,12 +441,12 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["add", "--transport", "sse", "a", "b"],
         &["add", "--transport", "http", "a"],
     ] {
-        fails(validate_mcp(&os(args)), |error| {
+        fails(parse_mcp(&os(args)), |error| {
             matches!(error, CliError::McpAddUsage)
         });
     }
     for args in [&["auth"][..], &["auth", ""], &["auth", "a", "b"]] {
-        fails(validate_mcp(&os(args)), |error| {
+        fails(parse_mcp(&os(args)), |error| {
             matches!(error, CliError::McpAuthUsage)
         });
     }
@@ -454,6 +461,6 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["remove", ""],
         &["logout", "a", "b"],
     ] {
-        fails(validate_mcp(&os(args)), usage(TopLevelKind::Mcp));
+        fails(parse_mcp(&os(args)), usage(TopLevelKind::Mcp));
     }
 }
