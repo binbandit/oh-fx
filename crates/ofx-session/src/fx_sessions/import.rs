@@ -17,6 +17,7 @@ use crate::session_log::managed_file::{
 use crate::session_log::{
     EVENTS_FILE, MANIFEST_FILE, SESSION_LOCK_FILE, read_metadata, staging_name,
 };
+use crate::session_migration::{Converted, holds_schema_v3, read_schema_v3, schema_v3_watermark};
 
 const IMPORT_MARKER: &str = "fx-import.json";
 const MARKER_VERSION: u64 = 1;
@@ -44,14 +45,20 @@ struct FileStamp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ImportSource {
-    manifest: FileStamp,
+    manifest: Option<FileStamp>,
     events: FileStamp,
+    watermark: Option<FileStamp>,
 }
 
 pub(crate) struct Imported {
     pub(crate) source: ImportSource,
     pub(crate) copy: PrivateDir,
     pub(crate) lock: AdvisoryLock,
+}
+
+enum Contents {
+    Current,
+    Converted(Box<Converted>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,8 +80,9 @@ pub(crate) fn seal(copy: &PrivateDir, id: &str, source: ImportSource) -> Result<
     let marker = json!({
         "version": MARKER_VERSION,
         "source": {
-            "session_json": stamp_json(source.manifest),
+            "session_json": source.manifest.map(stamp_json),
             "events_jsonl": stamp_json(source.events),
+            "commit_json": source.watermark.map(stamp_json),
         },
         "copy": {
             "log_bytes": state.log_bytes,
@@ -152,14 +160,10 @@ fn stage(
         }
     }
     let before = source_stamp(source).map_err(|_| SessionError::FxSessionUnreadable)?;
-    match classify_session(fx, id, Classification::Resume) {
-        Ok(Some(_)) => {}
-        Ok(None) => return Err(SessionError::OneOffSessionNotResumable),
-        Err(_) => return Err(SessionError::FxSessionUnreadable),
-    }
+    let contents = contents(fx, source, id)?;
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
-    match owned_copy(source, sessions, &staging, before) {
+    match owned_copy(source, sessions, &staging, before, &contents) {
         Ok(imported) => Ok((staging, imported)),
         Err(error) => {
             remove_created_dir(sessions, &staging);
@@ -168,16 +172,38 @@ fn stage(
     }
 }
 
+fn contents(fx: &PrivateDir, source: &PrivateDir, id: &str) -> Result<Contents, SessionError> {
+    let unreadable = |_| SessionError::FxSessionUnreadable;
+    if holds_schema_v3(source, id).map_err(unreadable)? {
+        return match read_schema_v3(source, id).map_err(unreadable)? {
+            Some(converted) => Ok(Contents::Converted(Box::new(converted))),
+            None => Err(SessionError::OneOffSessionNotResumable),
+        };
+    }
+    match classify_session(fx, id, Classification::Resume) {
+        Ok(Some(_)) => Ok(Contents::Current),
+        Ok(None) => Err(SessionError::OneOffSessionNotResumable),
+        Err(_) => Err(SessionError::FxSessionUnreadable),
+    }
+}
+
 fn owned_copy(
     source: &PrivateDir,
     sessions: &PrivateDir,
     staging: &str,
     before: ImportSource,
+    contents: &Contents,
 ) -> Result<Imported, SessionError> {
     let copy = sessions
         .open_child_private(staging)?
         .ok_or(SessionError::SessionStartFailed)?;
-    copy_session(source, &copy)?;
+    match contents {
+        Contents::Current => copy_session(source, &copy)?,
+        Contents::Converted(converted) => {
+            copy_dirs(source, &copy)?;
+            converted.write(&copy)?;
+        }
+    }
     if source_stamp(source)? != before {
         return Err(SessionError::FxSessionOpen);
     }
@@ -261,9 +287,19 @@ fn widened<Field: Into<Wide>, Wide>(value: Field) -> Wide {
 }
 
 fn source_stamp(source: &PrivateDir) -> Result<ImportSource, SessionError> {
+    let manifest = if present(source, MANIFEST_FILE)? {
+        Some(file_stamp(source, MANIFEST_FILE)?)
+    } else {
+        None
+    };
+    let watermark = match schema_v3_watermark(source)? {
+        Some(name) if present(source, &name)? => Some(file_stamp(source, &name)?),
+        _ => None,
+    };
     Ok(ImportSource {
-        manifest: file_stamp(source, MANIFEST_FILE)?,
+        manifest,
         events: file_stamp(source, EVENTS_FILE)?,
+        watermark,
     })
 }
 
@@ -328,12 +364,17 @@ fn copy_session(source: &PrivateDir, target: &PrivateDir) -> Result<(), SessionE
     for name in COPIED_FILES {
         copy_file(source, target, name)?;
     }
+    copy_dirs(source, target)?;
+    sync_dir(target)
+}
+
+fn copy_dirs(source: &PrivateDir, target: &PrivateDir) -> Result<(), SessionError> {
     for name in COPIED_DIRS {
         if let Some(dir) = child_dir(source, name)? {
             copy_tree(&dir, target, name, NESTED_DIRS)?;
         }
     }
-    sync_dir(target)
+    Ok(())
 }
 
 fn child_dir(parent: &PrivateDir, name: &str) -> Result<Option<PrivateDir>, SessionError> {
@@ -416,8 +457,15 @@ pub(crate) fn read_marker(copy: &PrivateDir) -> Option<Marker> {
     };
     Some(Marker {
         source: ImportSource {
-            manifest: stamp_from(source.get("session_json")?)?,
+            manifest: match source.get("session_json")? {
+                Value::Null => None,
+                stamp => Some(stamp_from(stamp)?),
+            },
             events: stamp_from(source.get("events_jsonl")?)?,
+            watermark: match source.get("commit_json") {
+                None | Some(Value::Null) => None,
+                Some(stamp) => Some(stamp_from(stamp)?),
+            },
         },
         copy: CopyState {
             log_bytes: copy.get("log_bytes")?.as_u64()?,

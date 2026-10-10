@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
+use crate::session_migration::tests::{LegacyLog, REQUEST_CHECKPOINT, reply};
 use crate::session_store::{ListScope, SessionStore};
 use crate::session_summary_codec::ResumablePage;
 
@@ -586,4 +587,42 @@ fn fx_subagent_children_are_not_listed() {
             .summaries
             .is_empty()
     );
+}
+
+#[test]
+fn sessions_fx_saved_before_its_conversation_layout_are_listed_and_marked() {
+    let home = Home::new();
+    home.store("/work");
+    LegacyLog::started("fx-legacy", "/work")
+        .turn(&reply("old prompt", "old answer"))
+        .titled("Old work")
+        .write(&home.fx_sessions());
+    LegacyLog::started("fx-legacy-elsewhere", "/elsewhere")
+        .turn(&reply("one", "two"))
+        .turn(&reply("three", "four"))
+        .write(&home.fx_sessions());
+    let fenced = LegacyLog::started("fx-legacy-fenced", "/work")
+        .turn(&reply("one", "two"))
+        .write(&home.fx_sessions());
+    fs::write(fenced.join("authority.pending.json"), "{}").unwrap();
+    let child = LegacyLog::started("fx-legacy-child", "/work")
+        .turn(&reply("one", "two"))
+        .write(&home.fx_sessions());
+    fs::create_dir_all(child.join("subagent")).unwrap();
+    fs::write(child.join("subagent/owner.json"), "{}").unwrap();
+    LegacyLog::started("fx-legacy-later", "/work")
+        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
+        .write(&home.fx_sessions());
+    let before = snapshot(&home.fx_profile());
+
+    let here = home.listed("/work", ListScope::CurrentWorkspace);
+    assert_eq!(ids(&here), ["fx-legacy"]);
+    let legacy = &here.summaries[0];
+    assert_eq!(legacy.source, SessionSource::Fx);
+    assert_eq!(legacy.title.as_deref(), Some("Old work"));
+    assert_eq!(legacy.history_len, 1);
+    assert_eq!(legacy.updated_at_ms, 40);
+    let everywhere = home.listed("/work", ListScope::AllWorkspaces);
+    assert_eq!(ids(&everywhere), ["fx-legacy-elsewhere", "fx-legacy"]);
+    assert_eq!(snapshot(&home.fx_profile()), before);
 }
