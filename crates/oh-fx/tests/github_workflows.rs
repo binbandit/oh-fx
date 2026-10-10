@@ -1,15 +1,33 @@
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_testkit::{FakeServer, RecordedRequest, Reply, chat_text_events};
 use serde_json::{Value, json};
 
+const HANG_GUARD: Duration = Duration::from_mins(1);
+const GH_ENDS_WITHIN: Duration = Duration::from_secs(5);
+const FAKE_GH: &str = r#"#!/bin/sh
+printf '%s\0' "$@" > "$GH_ARGS_FILE"
+polls=0
+while [ -n "$GH_HOLD_FILE" ] && [ -e "$GH_HOLD_FILE" ]; do
+    if [ "$polls" -ge 400 ]; then
+        printf 'held for too long' >&2
+        exit 124
+    fi
+    polls=$((polls + 1))
+    sleep 0.05
+done
+printf '%s' "$GH_STDOUT"
+printf '%s' "$GH_STDERR" >&2
+exit "${GH_EXIT:-0}"
+"#;
 const KEY: (&str, &str) = ("PORTKEY_API_KEY", "pk-test-0123456789");
 const NULL_SNAPSHOT: &str = "Git snapshot\nBranch: unavailable\n\nStatus:\nunavailable\n\nRecent commits:\nunavailable\n\nStaged diff stat:\nnone\n\nUnstaged diff stat:\nnone\n";
 const ISSUE_CLOSING: &str = "If you need more context, inspect relevant files, errors, or logs. Return only: a plain-text title line without Markdown, a blank line, then a GitHub-flavored Markdown body with sections '## Summary', '## Steps to Reproduce', '## Expected', and '## Actual'. Do not create the issue with gh or publish anything unless I explicitly ask you to.";
@@ -62,11 +80,7 @@ impl Home {
         let bin = self.root.join("bin");
         fs::create_dir_all(&bin).expect("create the bin directory");
         let gh = bin.join("gh");
-        fs::write(
-            &gh,
-            "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$GH_ARGS_FILE\"\nwhile [ -n \"$GH_WAIT_FILE\" ] && [ ! -e \"$GH_WAIT_FILE\" ]; do sleep 0.05; done\nprintf '%s' \"$GH_STDOUT\"\nprintf '%s' \"$GH_STDERR\" >&2\nexit \"${GH_EXIT:-0}\"\n",
-        )
-        .expect("write the fake gh");
+        fs::write(&gh, FAKE_GH).expect("write the fake gh");
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("make gh runnable");
         format!("{}:/usr/bin:/bin", bin.display())
     }
@@ -83,9 +97,7 @@ impl Home {
     }
 
     fn run_with(&self, args: &[&str], path: &str, environment: &[(&str, &str)]) -> Output {
-        self.command(args, path, environment)
-            .output()
-            .expect("run oh-fx")
+        Run::spawn(&mut self.command(args, path, environment)).finish()
     }
 
     fn command(&self, args: &[&str], path: &str, environment: &[(&str, &str)]) -> Command {
@@ -105,8 +117,107 @@ impl Home {
             .env("SHELL", "/bin/sh")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env(KEY.0, KEY.1)
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .process_group(0);
         command
+    }
+}
+
+struct Run {
+    child: Child,
+    stdout: Receiver<Vec<u8>>,
+    stderr: Receiver<Vec<u8>>,
+    reaped: bool,
+}
+
+impl Run {
+    fn spawn(command: &mut Command) -> Self {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn oh-fx");
+        let stdout = drain(child.stdout.take().expect("stdout"));
+        let stderr = drain(child.stderr.take().expect("stderr"));
+        Self {
+            child,
+            stdout,
+            stderr,
+            reaped: false,
+        }
+    }
+
+    fn signal(&self, name: &str) {
+        let sent = Command::new("/bin/kill")
+            .arg(format!("-{name}"))
+            .arg(self.child.id().to_string())
+            .status()
+            .expect("run kill");
+        assert!(sent.success(), "kill -{name}");
+    }
+
+    fn finish(mut self) -> Output {
+        let deadline = Instant::now() + HANG_GUARD;
+        let stdout = closed(&self.stdout, deadline, "stdout");
+        let stderr = closed(&self.stderr, deadline, "stderr");
+        let status = self.end().expect("wait for oh-fx");
+        Output {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+
+    fn end(&mut self) -> io::Result<ExitStatus> {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", self.child.id())])
+            .stderr(Stdio::null())
+            .status();
+        let _ = self.child.kill();
+        self.reaped = true;
+        self.child.wait()
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.end();
+        }
+    }
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        let _ = sender.send(bytes);
+    });
+    receiver
+}
+
+fn closed(pipe: &Receiver<Vec<u8>>, deadline: Instant, name: &str) -> Vec<u8> {
+    pipe.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_else(|_| panic!("oh-fx left its {name} open past the hang guard"))
+}
+
+struct Hold(PathBuf);
+
+impl Hold {
+    fn new(path: PathBuf) -> Self {
+        fs::write(&path, "").expect("hold gh");
+        Self(path)
+    }
+
+    fn path(&self) -> &str {
+        self.0.to_str().expect("UTF-8 hold path")
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -421,63 +532,73 @@ fn a_failed_draft_exits_without_publishing() {
     assert_eq!(home.gh_args(), None);
 }
 
-fn exit_within(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
-    let deadline = Instant::now() + limit;
-    loop {
-        if let Some(status) = child.try_wait().expect("poll oh-fx") {
-            return Some(status);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
 #[test]
 fn a_signal_while_gh_publishes_ends_oh_fx_by_that_signal() {
     for (name, signal) in [("TERM", 15), ("INT", 2)] {
         let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
         let home = Home::new(&server);
         let path = home.fake_gh();
-        let release = home.root.join("release");
-        let mut child = home
-            .command(
-                &["issue", "--create"],
-                &path,
-                &[
-                    ("GH_WAIT_FILE", release.to_str().unwrap()),
-                    ("GH_STDOUT", "https://github.com/o/r/issues/3"),
-                ],
-            )
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn oh-fx");
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let hold = Hold::new(home.root.join("hold"));
+        let run = Run::spawn(&mut home.command(
+            &["issue", "--create"],
+            &path,
+            &[
+                ("GH_HOLD_FILE", hold.path()),
+                ("GH_STDOUT", "https://github.com/o/r/issues/3"),
+            ],
+        ));
+        let deadline = Instant::now() + HANG_GUARD;
         while home.gh_args().is_none() {
             assert!(Instant::now() < deadline, "gh never started");
             thread::sleep(Duration::from_millis(20));
         }
-        let killed = Command::new("kill")
-            .arg(format!("-{name}"))
-            .arg(child.id().to_string())
-            .status()
-            .expect("run kill");
-        assert!(killed.success());
-        let ended = exit_within(&mut child, Duration::from_secs(5));
-        fs::write(&release, "").expect("release gh");
-        let status = ended.unwrap_or_else(|| child.wait().expect("wait for oh-fx"));
-        let mut printed = String::new();
-        child
-            .stdout
-            .take()
-            .expect("stdout")
-            .read_to_string(&mut printed)
-            .expect("read stdout");
-        assert_eq!(status.signal(), Some(signal), "{name}: {status:?}");
-        assert_eq!(printed, "", "{name}");
+        run.signal(name);
+        let output = run.finish();
+        assert_eq!(
+            output.status.signal(),
+            Some(signal),
+            "{name}: {:?}",
+            output.status
+        );
+        assert_eq!(stdout(&output), "", "{name}");
     }
+}
+
+#[test]
+fn a_held_fake_gh_ends_when_its_run_is_dropped() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Title\n\nBody"]))]);
+    let home = Home::new(&server);
+    let path = home.fake_gh();
+    let hold = Hold::new(home.root.join("hold"));
+    let run = Run::spawn(&mut home.command(
+        &["issue", "--create"],
+        &path,
+        &[("GH_HOLD_FILE", hold.path())],
+    ));
+    let deadline = Instant::now() + HANG_GUARD;
+    while home.gh_args().is_none() {
+        assert!(Instant::now() < deadline, "gh never started");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let gh = home.root.join("bin/gh");
+    assert!(running(&gh), "the fake gh is held");
+    drop(run);
+    let deadline = Instant::now() + GH_ENDS_WITHIN;
+    while running(&gh) {
+        assert!(Instant::now() < deadline, "the fake gh outlived its run");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn running(script: &Path) -> bool {
+    let listing = Command::new("ps")
+        .args(["-A", "-ww", "-o", "args="])
+        .output()
+        .expect("run ps");
+    let script = script.to_str().expect("UTF-8 script path");
+    String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .any(|line| line.contains(script))
 }
 
 #[test]
