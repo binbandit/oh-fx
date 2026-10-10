@@ -29,7 +29,7 @@ mod usage_report;
 mod workspace_menu;
 
 pub use additional_roots::LiveAdditionalRoots;
-pub use applicable_target::{ApplicableTarget, TargetKind};
+pub use applicable_target::{ApplicableTarget, TargetKind, applicable_targets_for_images};
 pub use auto_classifier::{ReviewFailure, ReviewTransport, ReviewTransportOutcome};
 pub use compactor_settings::AutoCompactPercent;
 pub use file_evidence::{FileEvidence, FileEvidenceAction, file_evidence_context};

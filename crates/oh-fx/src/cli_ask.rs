@@ -581,6 +581,7 @@ async fn prepare_agent(
     };
     let images = CapturedImages::capture(request.images.to_vec(), cancel)
         .map_err(|error| Failure::code(error.to_string()))?;
+    let context_targets = images.context_targets();
     let (reasoning_effort, fast_mode) = requested_reasoning(
         args,
         profile.settings(),
@@ -600,6 +601,7 @@ async fn prepare_agent(
         mode: Some(default_mode()),
         permission_prompts: permission_prompts_allowed(args),
         open_browser: false,
+        context_targets: &context_targets,
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending

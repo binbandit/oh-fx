@@ -165,6 +165,7 @@ async fn bootstrap(
                 mode: None,
                 permission_prompts: false,
                 open_browser: ofx_auth::browser_allowed(),
+                context_targets: &[],
             },
             &CancellationToken::new(),
         )

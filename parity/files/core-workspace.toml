@@ -8,7 +8,7 @@ note = "Bounded 100-operation LIFO history, clear, atomic preimage restoration, 
 upstream = "src/core/workspace/context_contract.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/applicable_target.rs", "crates/ofx-agent/src/project_context.rs"]
-note = "Tool targets and project-context delivery exist; upstream extra-root scope and file-evidence freshness context are absent."
+note = "Tool targets, image attachment targets, and project-context delivery exist; upstream extra-root scope and file-evidence freshness context are absent."
 
 [[file]]
 upstream = "src/core/workspace/current_branch.zig"

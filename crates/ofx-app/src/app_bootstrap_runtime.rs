@@ -17,10 +17,10 @@ use ofx_config::{
     ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, HookView, LiveAdditionalRoots,
-    LivePermissionMode, McpServersCatalog, ModelControls, ModelProvider, PermissionMode,
-    QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool,
-    is_provider_search_alias, parse_tool_args_object, provider_search_description,
+    ActiveMode, ApplicableTarget, ApprovalAnswer, CallDescription, CapabilityResolver, HookView,
+    LiveAdditionalRoots, LivePermissionMode, McpServersCatalog, ModelControls, ModelProvider,
+    PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles,
+    Tool, is_provider_search_alias, parse_tool_args_object, provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -147,6 +147,7 @@ pub struct Launch<'a> {
     pub mode: Option<ActiveMode>,
     pub permission_prompts: bool,
     pub open_browser: bool,
+    pub context_targets: &'a [ApplicableTarget],
 }
 
 pub struct AgentSetup {
@@ -335,7 +336,7 @@ impl Profile {
         let mut limits = self.settings.context_limits();
         limits.apply_command_line(launch.context_limits);
         let skills = self.load_skills(&limits, interactive);
-        let mut project = self.project_context(&limits);
+        let mut project = self.project_context(&limits, launch.context_targets);
         let context_notices = project
             .as_mut()
             .map(|(_, snapshot)| mem::take(&mut snapshot.notices))
@@ -665,6 +666,7 @@ impl Profile {
     fn project_context(
         &self,
         limits: &ContextLimits,
+        targets: &[ApplicableTarget],
     ) -> Option<(Arc<HostProjectContext>, ProjectContext)> {
         if !self.settings.context_enabled() {
             return None;
@@ -676,6 +678,7 @@ impl Profile {
                 home: self.home.as_deref(),
                 config_directory: self.paths.as_ref().map(|paths| paths.config.as_path()),
             },
+            targets,
             limits,
         );
         Some((
@@ -1098,6 +1101,7 @@ mod tests {
                     mode: None,
                     permission_prompts: false,
                     open_browser: false,
+                    context_targets: &[],
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -1153,6 +1157,7 @@ mod tests {
                     mode: None,
                     permission_prompts: false,
                     open_browser: false,
+                    context_targets: &[],
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -1249,6 +1254,7 @@ mod tests {
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
                     open_browser: false,
+                    context_targets: &[],
                     mode: Some(ActiveMode {
                         registry: &INSPECTION,
                         id: "inspect",
@@ -1432,6 +1438,7 @@ mod tests {
                     endpoints: SubscriptionEndpoints::default(),
                     mode: None,
                     open_browser: false,
+                    context_targets: &[],
                 },
                 &CancellationToken::new(),
             )
