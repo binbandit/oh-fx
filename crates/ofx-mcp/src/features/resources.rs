@@ -713,6 +713,11 @@ mod tests {
         for (result, expected) in cases {
             assert_eq!(read(&result, limits), Err(expected), "{result}");
         }
+    }
+
+    #[test]
+    fn resource_read_protocol_errors_keep_their_code_message_and_bounded_data() {
+        let limits = Limits::default();
         let failure = |error: Value| {
             parse_read_outcome(
                 &json!({"jsonrpc": "2.0", "id": 1, "error": error}).to_string(),

@@ -42,6 +42,8 @@ while IFS= read -r line; do
       reply "$id" '{"resources":[{"uri":"memory://plan","name":"plan"},{"uri":"memory://notes","name":"notes","title":"Team notes"}]}' ;;
     *'"method":"resources/templates/list"'*)
       reply "$id" '{"resourceTemplates":[{"uriTemplate":"memory://{id}","name":"by id"}]}' ;;
+    *'"method":"resources/read"'*)
+      reply "$id" '{"contents":[{"uri":"memory://plan","mimeType":"text/markdown","text":"Ship it"}]}' ;;
   esac
 done
 "#;
@@ -832,5 +834,25 @@ fn the_mcp_command_lists_prompts() {
     );
     session.send(b"/mcp prompt list missing\r");
     shown(&session, "MCP prompt listing failed: McpServerNotFound.");
+    exit(session);
+}
+
+#[test]
+fn the_mcp_command_reads_a_resource() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("docs.sh", RESOURCE_SERVER);
+    home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
+    let session = home.shell();
+    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    session.send(b"/mcp resource read docs memory://plan\r");
+    shown(
+        &session,
+        "[untrusted MCP resource content] docs :: memory://plan",
+    );
+    shown(&session, "memory://plan (text/markdown)");
+    shown(&session, "Ship it");
+    session.send(b"/mcp resource read docs other://plan\r");
+    shown(&session, "MCP resource read failed: McpResourceNotFound.");
     exit(session);
 }

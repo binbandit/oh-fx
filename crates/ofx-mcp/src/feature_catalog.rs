@@ -205,6 +205,7 @@ impl FeatureCatalog for Prompt {
 mod tests {
     use super::*;
     use crate::catalog_freshness::Freshness;
+    use crate::features::common::ResourceData;
 
     #[test]
     fn resource_invalidations_clear_only_through_the_generation_a_refresh_saw() {
@@ -271,5 +272,52 @@ mod tests {
         catalogs.reset(ServerCapabilities::default());
         assert!(catalogs.snapshot::<Prompt>().is_none());
         assert!(!catalogs.advertises_prompts());
+    }
+
+    fn read(uri: &str) -> Arc<[ResourceContent]> {
+        Arc::from(vec![ResourceContent {
+            uri: uri.to_owned(),
+            mime_type: None,
+            annotations_json: None,
+            metadata_json: None,
+            data: ResourceData::Text(uri.to_owned()),
+        }])
+    }
+
+    #[test]
+    fn the_read_cache_replaces_by_uri_and_evicts_the_oldest_of_64_entries() {
+        let catalogs = FeatureCatalogs::default();
+        for index in 0..MAX_CACHED_READS {
+            let uri = format!("memory://{index}");
+            catalogs.publish_read(&uri, read(&uri), u64::MAX);
+        }
+        catalogs.publish_read("memory://0", read("memory://again"), u64::MAX);
+        catalogs.publish_read("memory://new", read("memory://new"), u64::MAX);
+        assert!(catalogs.cached_read("memory://1", 0, false).is_none());
+        assert_eq!(
+            catalogs.cached_read("memory://0", 0, false).unwrap()[0].uri,
+            "memory://again"
+        );
+        assert!(catalogs.cached_read("memory://2", 0, false).is_some());
+        assert!(catalogs.cached_read("memory://new", 0, false).is_some());
+    }
+
+    #[test]
+    fn expired_and_reloaded_reads_serve_only_as_stale_fallbacks() {
+        let catalogs = FeatureCatalogs::default();
+        catalogs.publish_read("memory://ttl", read("memory://ttl"), 100);
+        assert!(catalogs.cached_read("memory://ttl", 99, false).is_some());
+        assert!(catalogs.cached_read("memory://ttl", 99, true).is_none());
+        assert!(catalogs.cached_read("memory://ttl", 100, false).is_none());
+        assert!(catalogs.cached_read("memory://ttl", 100, true).is_some());
+        catalogs.publish_read("memory://kept", read("memory://kept"), u64::MAX);
+        catalogs.request_refresh();
+        assert!(catalogs.cached_read("memory://kept", 0, false).is_none());
+        assert!(catalogs.cached_read("memory://kept", 0, true).is_some());
+        catalogs.clear_reads();
+        assert!(catalogs.cached_read("memory://kept", 0, true).is_none());
+        catalogs.publish_read("memory://kept", read("memory://kept"), u64::MAX);
+        catalogs.reset(ServerCapabilities::default());
+        assert!(catalogs.cached_read("memory://kept", 0, true).is_none());
     }
 }
