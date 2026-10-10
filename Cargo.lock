@@ -862,12 +862,15 @@ dependencies = [
 name = "ofx-mcp"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "getrandom 0.4.3",
+ "ofx-auth",
  "ofx-config",
  "ofx-contract",
  "ofx-http",
  "ofx-jsonrpc",
  "ofx-text",
+ "ofx-trace",
  "reqwest",
  "rustix",
  "serde_json",
@@ -875,6 +878,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "zeroize",
 ]
 
 [[package]]
