@@ -118,7 +118,7 @@ The `slack` command (`slack install`, `slack status`, and `slack refresh`) preda
 
 ## Feedback command
 
-`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and bounded launcher wait difference recorded in [differences/slash-commands.md](differences/slash-commands.md). `/trace`, the trace log, the compaction, tool-call and network rings, and the compactor, agent, tool, worker, subagent, recovery, stream-error and gateway trace lines are ported in `ofx-trace`, `ofx-agent`, `ofx-gateway`, `ofx-tools`, and `ofx-app`, as [differences/trace.md](differences/trace.md) records; the remaining trace emissions and interactive tracing remain deferred.
+`/feedback` is ported independently of the trace report. It keeps upstream's command order, Product category, no-payload routing and notice text with the issue-form URL substitution and bounded launcher wait difference recorded in [differences/slash-commands.md](differences/slash-commands.md). `/trace`, the trace log, the compaction, tool-call and network rings, and the compactor, agent, tool, worker, subagent, recovery, stream-error, gateway and auth trace lines are ported in `ofx-trace`, `ofx-agent`, `ofx-gateway`, `ofx-auth`, `ofx-tools`, and `ofx-app`, as [differences/trace.md](differences/trace.md) records; the remaining trace emissions and interactive tracing remain deferred.
 
 ## Deferred areas
 

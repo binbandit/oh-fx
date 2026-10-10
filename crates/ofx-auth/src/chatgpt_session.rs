@@ -9,6 +9,7 @@ const MUTATION_LOCK_FILE_NAME: &str = "chatgpt-auth.lock";
 pub(crate) struct ChatGptPolicy;
 impl SessionPolicy for ChatGptPolicy {
     type Error = ChatGptError;
+    const LABEL: &'static str = "ChatGPT";
     const AUTH_FILE_NAME: &'static str = AUTH_FILE_NAME;
     const LOCK_FILE_NAME: &'static str = "chatgpt-auth.lock";
     const VALIDATE_ACCOUNT_ON_WRITE: bool = false;

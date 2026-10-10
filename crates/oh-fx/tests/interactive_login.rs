@@ -68,6 +68,7 @@ impl Home {
             .env("TERM", "xterm-256color")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("OH_FX_NO_OPEN_BROWSER", "1")
+            .env("OH_FX_TRACE_LOG", self.trace_log())
             .env("OH_FX_E2E_CHATGPT_ISSUER_URL", servers.auth.base_url())
             .env(
                 "OH_FX_E2E_CHATGPT_TOKEN_URL",
@@ -89,6 +90,10 @@ impl Home {
         PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty")
     }
 
+    fn trace_log(&self) -> PathBuf {
+        self.root.join("trace.log")
+    }
+
     fn login(&self) -> PathBuf {
         self.root.join("data/oh-fx/chatgpt-auth.json")
     }
@@ -106,6 +111,10 @@ fn servers(replies: usize) -> Servers {
         "refresh_token": "rt-shell",
         "expires_in": 3600,
     });
+    servers_exchanging(Reply::status(200, tokens.to_string()), replies)
+}
+
+fn servers_exchanging(exchange: Reply, replies: usize) -> Servers {
     let model = json!({
         "slug": MODEL,
         "visibility": "list",
@@ -119,7 +128,7 @@ fn servers(replies: usize) -> Servers {
     ]
     .map(|event| event.to_string());
     Servers {
-        auth: FakeServer::start([Reply::status(200, tokens.to_string())]),
+        auth: FakeServer::start([exchange]),
         catalog: FakeServer::start([
             Reply::status(200, json!({"version": "0.153.1"}).to_string()),
             Reply::status(200, json!({"models": [model]}).to_string()),
@@ -259,4 +268,42 @@ fn a_session_continued_without_its_codex_login_asks_for_one() {
     assert!(screen.contains("run /login"), "{screen}");
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn a_rejected_code_exchange_ends_the_sign_in_and_traces_it_without_the_code() {
+    let home = Home::new();
+    let rejected = json!({"error": "invalid_grant", "error_description": "code rejected"});
+    let servers = servers_exchanging(Reply::status(400, rejected.to_string()), 0);
+    let mut session = home.shell(&servers);
+    let url = hold_and_sign_in(&session);
+    authorize(&url);
+    wait(
+        &session,
+        "Codex sign-in failed. The current credential is unchanged.",
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    assert!(!home.login().exists());
+    let log = fs::read_to_string(home.trace_log()).expect("read the trace log");
+    let token_url = format!("{}/oauth/token", servers.auth.base_url());
+    for line in [
+        format!("[auth] ChatGPT OAuth request rejected url={token_url}\n"),
+        "[auth] login failed source=chatgpt_subscription err=ChatGptOAuthRequestFailed\n"
+            .to_owned(),
+    ] {
+        assert!(log.contains(&line), "{line}{log}");
+    }
+    let exchange = servers.auth.requests()[0].body_text();
+    let verifier = exchange
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("code_verifier="))
+        .expect("the code verifier");
+    for secret in [verifier, "code=granted"] {
+        assert!(
+            !log.contains(secret),
+            "{secret} reached the trace log:\n{log}"
+        );
+    }
+    assert!(servers.codex.requests().is_empty());
 }
