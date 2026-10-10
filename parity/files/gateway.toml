@@ -2,7 +2,7 @@
 upstream = "src/gateway/chat_completions.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/chat_completions.rs"]
-note = "Custom chat-completions transport, admitted before it connects, with its connection, response-head and error-body timeouts, is implemented; Vercel Gateway transport routing and upstream retry ownership are absent."
+note = "Custom chat-completions transport, admitted before it connects, with its connection, response-head and error-body timeouts, is implemented; Vercel Gateway transport routing and upstream retry ownership are absent, and the provider_replay_omitted lines are not written because this transport neither keeps nor sends reasoning replay."
 
 [[file]]
 upstream = "src/gateway/chat_completions_protocol.zig"
@@ -14,7 +14,7 @@ note = "Function selection, request validation, provider-executed history refusa
 upstream = "src/gateway/client.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/client.rs"]
-note = "Request and HTTP failure helpers exist, and the agent path's ten-minute mid-stream stall watchdog runs on the Codex and custom transports; Vercel-specific client endpoints, hosted-provider integration and the gateway's own connection-setup and patient response-head waits are absent."
+note = "Request and HTTP failure helpers exist, the bounded GET the Codex catalog and version lookups use writes runBoundedHttpOperation's bounded termination lines, and the agent path's ten-minute mid-stream stall watchdog runs on the Codex and custom transports; Vercel-specific client endpoints with their attempt, pool, SSE and resolved-model trace lines, hosted-provider integration and the gateway's own connection-setup and patient response-head waits are absent."
 
 [[file]]
 upstream = "src/gateway/generation_usage.zig"
@@ -47,7 +47,7 @@ note = "Excluded JavaScript host FFI entrypoint; this ledger targets the native 
 upstream = "src/gateway/openai_codex.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex.rs"]
-note = "Responses transport, admission once its credential headers are built, the 30-second connection timeout with an unlimited response-head wait, replay, and tool-start and streamed tool input events are implemented; provisional tool status rows are tracked separately by OH-6."
+note = "Responses transport, admission once its credential headers are built, the 30-second connection timeout with an unlimited response-head wait, replay with its provider_replay_omitted trace line, and tool-start and streamed tool input events are implemented; provisional tool status rows are tracked separately by OH-6."
 
 [[file]]
 upstream = "src/gateway/openai_codex_models.zig"
@@ -65,7 +65,7 @@ note = "Direct Codex Responses review uses catalog-selected gpt-5.6-luna and dis
 upstream = "src/gateway/provider_versions.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/provider_versions.rs"]
-note = "Bounded Codex npm release lookup exists; upstream Grok stable endpoint/plain-version parsing and Grok environment overrides are absent."
+note = "Bounded Codex npm release lookup exists with its failed, rejected and invalid metadata trace lines; upstream Grok stable endpoint/plain-version parsing and Grok environment overrides are absent."
 
 [[file]]
 upstream = "src/gateway/responses_permission_reviewer.zig"

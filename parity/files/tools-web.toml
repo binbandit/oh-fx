@@ -8,7 +8,7 @@ note = "MIME and sniff classification, conversion dispatch and content caps matc
 upstream = "src/tools/web/fetch.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/web/fetch.rs"]
-note = "URL fetch, converted-text cache/progress and result envelopes exist; binary artifact storage/reference publication, quota settlement and stale artifact refetch are absent. These are pending port gaps."
+note = "URL fetch, converted-text cache/progress and result envelopes exist, and each transport call is recorded in the network ring as a web_fetch_target with its status, bytes or error and no URL; binary artifact storage/reference publication, quota settlement and stale artifact refetch are absent. These are pending port gaps."
 
 [[file]]
 upstream = "src/tools/web/fetch_args.zig"

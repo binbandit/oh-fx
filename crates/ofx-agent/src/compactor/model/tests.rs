@@ -1,9 +1,15 @@
 use ofx_contract::{Completion, ProviderError, ProviderErrorKind, ToolCall, ToolSpec, Usage};
-use ofx_trace::{Ring, TraceContext};
+use ofx_trace::{NetworkRing, Ring, TraceContext};
 
 use super::*;
 use crate::compactor::trace::{CompactionEvent, CompactionTraceKind};
 use crate::scripted_provider::{ScriptedProvider, calling, failure, text};
+
+const CONTEXT: TraceContext = TraceContext {
+    turn_id: 4,
+    step_id: 9,
+    subagent_id: 0,
+};
 
 fn ring() -> &'static Ring<CompactionEvent> {
     Box::leak(Box::new(Ring::new(64)))
@@ -48,14 +54,8 @@ fn traced_summarizer<'a>(
         conversation,
         session_id: None,
         cancel,
-        trace: Tracer::new(
-            ring,
-            TraceContext {
-                turn_id: 4,
-                step_id: 9,
-                subagent_id: 0,
-            },
-        ),
+        trace: Tracer::new(ring, CONTEXT),
+        meter: Meter::new(Box::leak(Box::new(NetworkRing::new())), CONTEXT),
     }
 }
 

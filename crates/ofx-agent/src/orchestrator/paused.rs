@@ -1,14 +1,15 @@
 use ofx_contract::{
     Completion, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,
-    ModelRecoveryRequiredAction, ProviderError, ProviderErrorKind, RecoveryProgress,
-    RecoveryStrategy, RouteRecoveryKind, RouteRecoveryStatus, UiEvent,
+    ModelRecoveryRequiredAction, ProviderErrorKind, RecoveryProgress, RecoveryStrategy,
+    RouteRecoveryKind, RouteRecoveryStatus, UiEvent,
 };
 
-use super::recovery::Restart;
+use super::gateway_trace::Recovering;
+use super::recovery::{Failed, Restart};
 use super::turn_trace;
 use super::{Agent, EventSink, Stop, Turn, TurnFailure, failure_diagnostic, recovered_status};
 use crate::model_response_recovery::{
-    DEFAULT_MAX_PROVIDER_ATTEMPTS, ToolEvidence, failed_in_stream,
+    DEFAULT_MAX_PROVIDER_ATTEMPTS, ToolEvidence, failed_in_stream, recovery_cause,
 };
 
 const UNEXPECTED_TOOL_CALL: &str = "UnexpectedToolCallDuringReconciliation";
@@ -95,15 +96,19 @@ impl Agent {
     pub(super) fn reconcile_broken(
         &self,
         turn: &mut Turn,
-        (observed, cause, error): (ToolEvidence, Option<ModelRecoveryCause>, &ProviderError),
-        (attempt, consumed): (usize, usize),
+        failed: Failed<'_>,
         restart: &Restart<'_>,
         events: EventSink<'_>,
     ) -> Result<(), Stop> {
-        if turn.recovery != Some(RecoveryStrategy::ReconcileTool) || observed == ToolEvidence::None
+        let (error, observed, _) = failed;
+        if turn.recovery != Some(RecoveryStrategy::ReconcileTool)
+            || observed.tool == ToolEvidence::None
         {
             return Ok(());
         }
+        self.trace_failure(turn, restart, failed, Recovering::Pause);
+        let (attempt, consumed) = (observed.attempt, observed.consumed);
+        let cause = recovery_cause(error.kind);
         let ended_in_stream = match cause {
             Some(cause) => failed_in_stream(cause, error),
             None => error.status.is_none() && error.kind == ProviderErrorKind::ProviderError,

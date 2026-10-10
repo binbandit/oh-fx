@@ -7,6 +7,7 @@ use ofx_contract::{
     ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec, valued_execution_failure_json,
 };
 use ofx_text::{clipped_label, is_model_safe_text, redact_url_for_display};
+use ofx_trace::{NETWORK_CALLS, NetworkCall, NetworkCallKind, NetworkRing};
 
 use super::content::{Kind, MAX_CONVERTED_CONTENT_BYTES, classify};
 use super::fetch_args::{decode, validate};
@@ -38,11 +39,22 @@ pub struct WebFetch {
     state: Arc<FetchState>,
 }
 
-#[derive(Default)]
 struct FetchState {
     cache: FetchCache,
     transport: Transport,
     progress: Option<WebFetchProgress>,
+    network: &'static NetworkRing,
+}
+
+impl Default for FetchState {
+    fn default() -> Self {
+        Self {
+            cache: FetchCache::default(),
+            transport: Transport::default(),
+            progress: None,
+            network: &NETWORK_CALLS,
+        }
+    }
 }
 
 impl Default for WebFetch {
@@ -61,10 +73,15 @@ impl WebFetch {
     }
 
     #[cfg(test)]
-    fn through(transport: Transport, progress: WebFetchProgress) -> Self {
+    fn through(
+        transport: Transport,
+        progress: WebFetchProgress,
+        network: &'static NetworkRing,
+    ) -> Self {
         Self::with_state(FetchState {
             transport,
             progress: Some(progress),
+            network,
             ..FetchState::default()
         })
     }
@@ -125,13 +142,33 @@ impl PreparedCall for WebFetchCall {
                 return ToolOutput::success(format_page(&page, true));
             }
             state.report("Fetching", &url.retrieval_url);
+            let started_at_ms = ofx_trace::timestamp_ms();
             let retrieved = state.transport.fetch(&url, &context.cancellation).await;
-            run_blocking(move || state.complete(&url, retrieved)).await
+            let finished_at_ms = ofx_trace::timestamp_ms();
+            run_blocking(move || {
+                let (output, target) = state.complete(&url, retrieved);
+                state.record(&target, started_at_ms, finished_at_ms);
+                output
+            })
+            .await
         })
     }
 }
 
 impl FetchState {
+    fn record(&self, target: &Target, started_at_ms: i64, finished_at_ms: i64) {
+        let elapsed = finished_at_ms.saturating_sub(started_at_ms).max(0);
+        self.network.record(NetworkCall {
+            kind: NetworkCallKind::WebFetchTarget,
+            started_at_ms,
+            duration_ms: u32::try_from(elapsed).unwrap_or(u32::MAX),
+            status: target.status,
+            response_bytes: u32::try_from(target.bytes).unwrap_or(u32::MAX),
+            error: target.error.to_owned(),
+            ..NetworkCall::default()
+        });
+    }
+
     fn report(&self, action: &str, url: &str) {
         if let Some(progress) = &self.progress {
             let display = redact_url_for_display(url);
@@ -146,14 +183,18 @@ impl FetchState {
         &self,
         url: &ValidatedUrl,
         retrieved: Result<Retrieved, TransportError>,
-    ) -> ToolOutput {
+    ) -> (ToolOutput, Target) {
         let submitted = &url.retrieval_url;
         let response = match retrieved {
             Ok(Retrieved::Response(response)) => response,
             Ok(Retrieved::CrossHostRedirect(target)) => {
-                return ToolOutput::failure(cross_host_failure(submitted, &target));
+                let output = ToolOutput::failure(cross_host_failure(submitted, &target));
+                return (output, Target::unanswered(""));
             }
-            Err(error) => return ToolOutput::failure(transport_failure(submitted, error)),
+            Err(error) => {
+                let output = ToolOutput::failure(transport_failure(submitted, error));
+                return (output, Target::unanswered(error.0));
+            }
         };
         let final_url = response.final_url.clone();
         let status = response.status;
@@ -161,22 +202,40 @@ impl FetchState {
         let body = match settle(response) {
             Ok(Settled::Success { body }) => body,
             Ok(Settled::NonSuccessStatus { body }) => {
-                return ToolOutput::failure(non_success_failure(submitted, status, &body));
+                let output = ToolOutput::failure(non_success_failure(submitted, status, &body));
+                return (output, Target::answered(status, body.len()));
             }
             Ok(Settled::UnexpectedContentEncoding { encoding }) => {
-                return ToolOutput::failure(unexpected_encoding_failure(
-                    submitted, status, &encoding,
-                ));
+                let failure = unexpected_encoding_failure(submitted, status, &encoding);
+                return (ToolOutput::failure(failure), Target::answered(status, 0));
             }
-            Err(error) => return ToolOutput::failure(transport_failure(submitted, error)),
+            Err(error) => {
+                let output = ToolOutput::failure(transport_failure(submitted, error));
+                return (output, Target::unanswered(error.0));
+            }
         };
+        let target = Target::answered(status, body.len());
+        (
+            self.converted(submitted, final_url, status, content_type.as_deref(), &body),
+            target,
+        )
+    }
+
+    fn converted(
+        &self,
+        submitted: &str,
+        final_url: String,
+        status: u16,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> ToolOutput {
         self.report("Converting", &final_url);
-        let classification = classify(content_type.as_deref(), &body);
+        let classification = classify(content_type, body);
         let converted_content = match classification.kind {
-            Kind::Html if is_model_safe_text(&body) => {
-                String::from_utf8_lossy(&convert(&body, MAX_CONVERTED_CONTENT_BYTES)).into_owned()
+            Kind::Html if is_model_safe_text(body) => {
+                String::from_utf8_lossy(&convert(body, MAX_CONVERTED_CONTENT_BYTES)).into_owned()
             }
-            Kind::Text if is_model_safe_text(&body) => String::from_utf8_lossy(&body).into_owned(),
+            Kind::Text if is_model_safe_text(body) => String::from_utf8_lossy(body).into_owned(),
             Kind::Html | Kind::Text => UNSAFE_TEXT.to_owned(),
             Kind::Binary => String::new(),
         };
@@ -193,6 +252,30 @@ impl FetchState {
         let output = format_page(&page, false);
         self.cache.insert(submitted, page, Instant::now());
         ToolOutput::success(output)
+    }
+}
+
+struct Target {
+    status: u16,
+    bytes: usize,
+    error: &'static str,
+}
+
+impl Target {
+    const fn answered(status: u16, bytes: usize) -> Self {
+        Self {
+            status,
+            bytes,
+            error: "",
+        }
+    }
+
+    const fn unanswered(error: &'static str) -> Self {
+        Self {
+            status: 0,
+            bytes: 0,
+            error,
+        }
     }
 }
 

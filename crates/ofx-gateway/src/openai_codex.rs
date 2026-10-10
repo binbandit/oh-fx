@@ -8,6 +8,7 @@ use ofx_contract::{
     StreamSink, valid_credential_account_id,
 };
 use ofx_http::{ClientError, ConnectionOptions, SseDecoder, build_connection_client};
+use ofx_trace::trace_log;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use tokio_util::sync::CancellationToken;
@@ -329,6 +330,18 @@ fn replay_source(model: &str) -> ReplaySource {
 
 fn replay_parts<'a>(request: &ModelRequest<'a>) -> Vec<Option<&'a str>> {
     let source = replay_source(request.model);
+    let mismatched = request.messages.iter().any(|message| {
+        matches!(message, ChatMessage::Assistant {
+            provider_replay: Some(replay),
+            ..
+        } if !replay.matches(&source))
+    });
+    if mismatched {
+        trace_log!(
+            "gateway",
+            "provider_replay_omitted provider=codex reason=source_mismatch"
+        );
+    }
     request
         .messages
         .iter()

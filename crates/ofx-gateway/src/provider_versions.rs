@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_config::{DurableError, PrivateDir};
 use ofx_contract::parse_strict_json_value;
+use ofx_trace::trace_log;
 use reqwest::StatusCode;
 use serde_json::{Map, Value};
 use tokio::time::Instant;
@@ -17,6 +18,8 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const REFRESH_INTERVAL_MS: i64 = 60_000;
 const TRIMMED: [char; 4] = [' ', '\r', '\n', '\t'];
+const MODELS: &str = "models";
+const PROVIDER: &str = "codex";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Version(String);
@@ -105,10 +108,26 @@ impl VersionLookup<'_> {
         let deadline = (Instant::now() + LOOKUP_TIMEOUT).min(outer_deadline);
         let request = self.client.get(self.url);
         match bounded_get(request, MAX_RESPONSE_BYTES, deadline, cancel).await {
-            Ok((StatusCode::OK, body)) => {
-                parse_codex_release(&body).ok_or(VersionError::Unavailable)
+            Ok((StatusCode::OK, body)) => parse_codex_release(&body).ok_or_else(|| {
+                trace_log!(
+                    MODELS,
+                    "provider version metadata invalid provider={PROVIDER}"
+                );
+                VersionError::Unavailable
+            }),
+            Ok((status, _)) => {
+                trace_log!(
+                    MODELS,
+                    "provider version lookup rejected provider={PROVIDER} status={}",
+                    status.as_u16()
+                );
+                Err(VersionError::Unavailable)
             }
-            Ok(_) | Err(BoundedFailure::Failed | BoundedFailure::TooLarge) => {
+            Err(BoundedFailure::Failed(code)) => {
+                trace_log!(
+                    MODELS,
+                    "provider version lookup failed provider={PROVIDER} err={code}"
+                );
                 Err(VersionError::Unavailable)
             }
             Err(BoundedFailure::Cancelled) => Err(VersionError::Cancelled),

@@ -13,6 +13,7 @@ use crate::compactor::{
     self, Compacted, CompactionError, Correction, Size, Step, Summarizer, Tracer,
 };
 use crate::execution_memory::{history_turns, retain};
+use crate::gateway_step::Meter;
 use crate::prompt_context::{Calibration, RequestCost};
 
 const CONTEXT_LENGTH_EXCEEDED: &str = "context_length_exceeded";
@@ -500,6 +501,7 @@ impl Agent {
             session_id: self.session_id.as_deref(),
             cancel,
             trace,
+            meter: Meter::new(self.network_calls, trace.context()),
         };
         let request = compactor::Request {
             turns: &turns,

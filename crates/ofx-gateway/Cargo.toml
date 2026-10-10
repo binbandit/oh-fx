@@ -13,6 +13,7 @@ ofx-contract.workspace = true
 ofx-http.workspace = true
 ofx-images.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 ofx-upgrade.workspace = true
 reqwest.workspace = true
 serde.workspace = true

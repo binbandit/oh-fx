@@ -4,6 +4,7 @@ use ofx_contract::{
     file_evidence_context,
 };
 
+use super::gateway_trace;
 use super::recovery::Restart;
 use super::turn_ledger::TurnRecord;
 use super::{Agent, Stop, Turn, TurnFailure};
@@ -201,7 +202,7 @@ impl Agent {
         let mut point_turn = turn_so_far(&self.history, turn);
         let files = turn.earlier_files.turn_files(&point_turn.steps);
         point_turn.files = &files;
-        log.record_recovery(&RecoveryPoint {
+        let recorded = log.record_recovery(&RecoveryPoint {
             turn_id: turn.id,
             turn: point_turn,
             source,
@@ -214,7 +215,11 @@ impl Agent {
             ultrafast_mode: self.config.ultrafast_mode,
             attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
             consumed_attempts,
-        })
+        });
+        if recorded.is_ok() {
+            gateway_trace::recovery_checkpoint_set(turn.trace, consumed_attempts, cause, progress);
+        }
+        recorded
     }
 
     pub(super) fn record_wait(
@@ -238,9 +243,11 @@ impl Agent {
         })
     }
 
-    pub(super) fn discard_recovery(&self) {
-        if let Some(log) = self.log.as_ref() {
-            let _ = log.clear_recovery();
+    pub(super) fn discard_recovery(&self, occasion: &str) {
+        if let Some(log) = self.log.as_ref()
+            && let Err(failure) = log.clear_recovery()
+        {
+            gateway_trace::recovery_clear_failed(occasion, &failure.code);
         }
     }
 }

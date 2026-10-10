@@ -19,7 +19,7 @@ pub(crate) use model::Summarizer;
 pub(crate) use summarize::SummaryModel;
 use trace::Optional;
 pub(crate) use trace::Tracer;
-pub use trace::{CompactionEvent, CompactionTraceKind, compaction_trace, reset_compaction_trace};
+pub use trace::{CompactionEvent, CompactionTraceKind};
 pub(crate) use window::{Correction, Size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

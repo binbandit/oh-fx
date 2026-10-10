@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use ofx_contract::{ChatMessage, ProviderError, ProviderOptions, ToolCall, ToolChoice, Usage};
+use ofx_trace::{NetworkRing, TraceContext};
 
 use super::*;
 use crate::scripted_provider::{ScriptedProvider, calling, failure, text};
@@ -16,6 +17,13 @@ fn request(messages: &[ChatMessage]) -> ModelRequest<'_> {
         provider_options: ProviderOptions::default(),
         session_id: None,
     }
+}
+
+fn meter() -> Meter {
+    Meter::new(
+        Box::leak(Box::new(NetworkRing::new())),
+        TraceContext::default(),
+    )
 }
 
 fn answered(error: ProviderError, status: u16) -> ProviderError {
@@ -55,7 +63,7 @@ async fn a_complete_reply_is_returned_whole_with_its_usage() {
     let messages = [ChatMessage::user("write them")];
     let cancel = CancellationToken::new();
     assert_eq!(
-        complete(&provider, &request(&messages), 1024, &cancel).await,
+        complete(&provider, &request(&messages), 1024, meter(), &cancel).await,
         Ok(Outcome {
             reply: Ok("the notes".to_owned()),
             usage,
@@ -71,7 +79,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     let call = ToolCall::new("c", "shell", "{}");
     let calls = ScriptedProvider::new(vec![Ok(calling(call))]);
     assert_eq!(
-        complete(&calls, &request(&messages), 1024, &cancel).await,
+        complete(&calls, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(Reason::ToolCall, ""))
     );
     let truncated = ScriptedProvider::new(vec![Err(failure(
@@ -79,7 +87,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         "OutputTruncated",
     ))]);
     assert_eq!(
-        complete(&truncated, &request(&messages), 1024, &cancel).await,
+        complete(&truncated, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(Reason::Incomplete, "finish_reason=length bytes=0"))
     );
     let unfinished = ScriptedProvider::new(vec![Ok(Completion {
@@ -87,7 +95,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         ..text("partial")
     })]);
     assert_eq!(
-        complete(&unfinished, &request(&messages), 1024, &cancel).await,
+        complete(&unfinished, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(
             Reason::Incomplete,
             "finish_reason=tool_calls bytes=7"
@@ -95,7 +103,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
     );
     let oversized = ScriptedProvider::new(vec![Ok(text("0123456789"))]);
     assert_eq!(
-        complete(&oversized, &request(&messages), 9, &cancel).await,
+        complete(&oversized, &request(&messages), 9, meter(), &cancel).await,
         Ok(unusable(Reason::Truncated, "bytes=10"))
     );
     let refused = ScriptedProvider::new(vec![Err(answered(
@@ -103,7 +111,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         400,
     ))]);
     assert_eq!(
-        complete(&refused, &request(&messages), 1024, &cancel).await,
+        complete(&refused, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(Reason::Provider, "kind=invalid_request detail="))
     );
     assert_eq!(refused.seen().len(), 1);
@@ -112,7 +120,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         "InvalidFinishReason",
     ))]);
     assert_eq!(
-        complete(&broken, &request(&messages), 1024, &cancel).await,
+        complete(&broken, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(Reason::Transport, "err=InvalidFinishReason"))
     );
     let filtered = ScriptedProvider::new(vec![Err(failure(
@@ -120,7 +128,7 @@ async fn a_tool_call_a_truncated_or_an_oversized_reply_is_not_used() {
         "ContentFiltered",
     ))]);
     assert_eq!(
-        complete(&filtered, &request(&messages), 1024, &cancel).await,
+        complete(&filtered, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(Reason::Transport, "err=ContentFiltered"))
     );
 }
@@ -150,7 +158,7 @@ async fn a_provider_error_detail_is_masked_before_its_preview_is_cut() {
             let Ok(Outcome {
                 reply: Err(rejection),
                 ..
-            }) = complete(&rejected, &request(&messages), 1024, &cancel).await
+            }) = complete(&rejected, &request(&messages), 1024, meter(), &cancel).await
             else {
                 panic!("the request should fail");
             };
@@ -179,7 +187,7 @@ async fn a_provider_error_detail_is_masked_and_kept_to_one_safe_line() {
     let Ok(Outcome {
         reply: Err(rejection),
         ..
-    }) = complete(&rejected, &request(&messages), 1024, &cancel).await
+    }) = complete(&rejected, &request(&messages), 1024, meter(), &cancel).await
     else {
         panic!("the request should fail");
     };
@@ -198,7 +206,7 @@ async fn a_provider_error_detail_is_masked_and_kept_to_one_safe_line() {
         ..failure(ProviderErrorKind::ProviderError, "ProviderError")
     })]);
     assert_eq!(
-        complete(&unmapped, &request(&messages), 1024, &cancel).await,
+        complete(&unmapped, &request(&messages), 1024, meter(), &cancel).await,
         Ok(unusable(Reason::Provider, "kind=provider_error detail="))
     );
 }
@@ -220,7 +228,7 @@ async fn transient_failures_are_retried_before_anything_streams() {
     let cancel = CancellationToken::new();
     let started = tokio::time::Instant::now();
     assert_eq!(
-        complete(&provider, &request(&messages), 1024, &cancel).await,
+        complete(&provider, &request(&messages), 1024, meter(), &cancel).await,
         Ok(replied("the notes"))
     );
     assert_eq!(provider.seen().len(), 3);
@@ -234,7 +242,7 @@ async fn cancellation_stops_the_request() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     assert_eq!(
-        complete(&provider, &request(&messages), 1024, &cancel).await,
+        complete(&provider, &request(&messages), 1024, meter(), &cancel).await,
         Err(Cancelled)
     );
     assert!(provider.seen().is_empty());
@@ -244,9 +252,68 @@ async fn cancellation_stops_the_request() {
             &interrupted,
             &request(&messages),
             1024,
+            meter(),
             &CancellationToken::new()
         )
         .await,
         Err(Cancelled)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn each_request_reaches_the_network_ring_with_the_callers_ids() {
+    let ring: &'static NetworkRing = Box::leak(Box::new(NetworkRing::new()));
+    let context = TraceContext {
+        turn_id: 3,
+        step_id: 5,
+        subagent_id: 0,
+    };
+    let provider = ScriptedProvider::new(vec![
+        Err(failure(
+            ProviderErrorKind::TransportInterrupted,
+            "ReadFailed",
+        )),
+        Ok(Completion {
+            usage: Usage {
+                input_tokens: Some(70),
+                output_tokens: Some(9),
+            },
+            ..text("the notes")
+        }),
+    ]);
+    let messages = [ChatMessage::user("write them")];
+    let outcome = complete(
+        &provider,
+        &request(&messages),
+        1024,
+        Meter::new(ring, context),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        outcome.map(|outcome| outcome.reply),
+        Ok(Ok("the notes".to_owned()))
+    );
+    let calls = ring.snapshot().calls;
+    let shown: Vec<_> = calls
+        .iter()
+        .map(|call| {
+            (
+                call.model.as_str(),
+                call.status,
+                call.error.as_str(),
+                call.stop_reason.as_str(),
+                call.response_bytes,
+                (call.input_tokens, call.output_tokens),
+                (call.turn_id, call.step_id),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("m", 0, "ReadFailed", "", 0, (0, 0), (3, 5)),
+            ("m", 200, "", "stop", 9, (70, 9), (3, 5)),
+        ]
     );
 }

@@ -6,6 +6,7 @@ use ofx_contract::{ActionLabel, PathAccess, ToolCallId, ToolResultStatus};
 use ofx_testkit::WEB_CA_PEM;
 #[cfg(target_os = "linux")]
 use ofx_testkit::{ConnectProxy, FakeServer, Reply};
+use ofx_trace::{NetworkCallKind, NetworkRing};
 use reqwest::Proxy;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -18,6 +19,7 @@ struct Fixture {
     _proxy: ConnectProxy,
     tool: WebFetch,
     progress: Arc<Mutex<Vec<String>>>,
+    network: &'static NetworkRing,
     _roots: tempfile::TempDir,
 }
 
@@ -26,12 +28,18 @@ impl Fixture {
     fn new(replies: impl IntoIterator<Item = Reply>) -> Self {
         let server = FakeServer::start_web_tls(replies);
         let proxy = ConnectProxy::start(server.address());
-        let (tool, progress, roots) = tool_through(proxy.url());
+        let Through {
+            tool,
+            progress,
+            network,
+            roots,
+        } = tool_through(proxy.url());
         Self {
             server,
             _proxy: proxy,
             tool,
             progress,
+            network,
             _roots: roots,
         }
     }
@@ -45,17 +53,48 @@ impl Fixture {
     }
 }
 
-fn tool_through(proxy: String) -> (WebFetch, Arc<Mutex<Vec<String>>>, tempfile::TempDir) {
+struct Through {
+    tool: WebFetch,
+    progress: Arc<Mutex<Vec<String>>>,
+    network: &'static NetworkRing,
+    roots: tempfile::TempDir,
+}
+
+fn tool_through(proxy: String) -> Through {
     let roots = tempfile::tempdir().unwrap();
     let ca_file = roots.path().join("web-ca.pem");
     std::fs::write(&ca_file, WEB_CA_PEM).unwrap();
     let progress = Arc::new(Mutex::new(Vec::new()));
     let lines = Arc::clone(&progress);
+    let network: &'static NetworkRing = Box::leak(Box::new(NetworkRing::new()));
     let tool = WebFetch::through(
         Transport::through(Proxy::all(proxy).unwrap(), ca_file, unresolved),
         Arc::new(move |line: &str| lines.lock().unwrap().push(line.to_owned())),
+        network,
     );
-    (tool, progress, roots)
+    Through {
+        tool,
+        progress,
+        network,
+        roots,
+    }
+}
+
+fn recorded(network: &NetworkRing) -> Vec<(NetworkCallKind, u16, u32, String, String)> {
+    network
+        .snapshot()
+        .calls
+        .into_iter()
+        .map(|call| {
+            (
+                call.kind,
+                call.status,
+                call.response_bytes,
+                call.error,
+                call.model,
+            )
+        })
+        .collect()
 }
 
 fn unresolved(_: String) -> BoxFuture<'static, io::Result<Vec<SocketAddr>>> {
@@ -183,6 +222,16 @@ async fn returns_bounded_untrusted_content_in_the_upstream_format() {
         )
     );
     assert_eq!(fixture.server.requests()[0].path, "/docs");
+    assert_eq!(
+        recorded(fixture.network),
+        [(
+            NetworkCallKind::WebFetchTarget,
+            200,
+            41,
+            String::new(),
+            String::new()
+        )]
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -322,6 +371,15 @@ async fn returns_structured_failures_for_status_encoding_and_cross_host_redirect
     );
     assert_eq!(fixture.server.requests().len(), 3);
     assert_eq!(fixture.progress().len(), 3);
+    let target = NetworkCallKind::WebFetchTarget;
+    assert_eq!(
+        recorded(fixture.network),
+        [
+            (target, 404, 7, String::new(), String::new()),
+            (target, 200, 0, String::new(), String::new()),
+            (target, 0, 0, String::new(), String::new()),
+        ]
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -364,7 +422,12 @@ async fn transport_failures_keep_root_causes_and_redact_signed_urls() {
     let closed = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = closed.local_addr().unwrap();
     drop(closed);
-    let (tool, progress, _roots) = tool_through(format!("http://{address}"));
+    let Through {
+        tool,
+        progress,
+        network,
+        roots: _roots,
+    } = tool_through(format!("http://{address}"));
     assert_eq!(
         call(
             &tool,
@@ -383,6 +446,19 @@ async fn transport_failures_keep_root_causes_and_redact_signed_urls() {
     cancelled.cancel();
     let error = failure_details(&call_with(&tool, "https://docs.example.test/", cancelled).await);
     assert_eq!(error["details"]["error"], "Canceled");
+    let target = NetworkCallKind::WebFetchTarget;
+    assert_eq!(
+        recorded(network),
+        [
+            (target, 0, 0, "ConnectionRefused".to_owned(), String::new()),
+            (target, 0, 0, "Canceled".to_owned(), String::new()),
+        ]
+    );
+    let calls = network.snapshot().calls;
+    assert!(calls.iter().all(|call| call.started_at_ms > 0
+        && call.turn_id == 0
+        && call.stop_reason.is_empty()
+        && call.input_tokens == 0));
 }
 
 #[test]
