@@ -1089,6 +1089,7 @@ mod tests {
     #[test]
     fn cancelling_a_turn_during_its_compaction_reports_the_compaction_cancelled() {
         let mut test = compacting_turn();
+        test.hold_clock();
         test.type_bytes(b"\x03");
         test.step();
         assert_eq!(
