@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::catalog_freshness::Freshness;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
@@ -234,12 +235,15 @@ impl Server {
     }
 
     async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
-        if client
-            .settled_tools(deadline)
-            .await
-            .is_ok_and(|refreshed| refreshed.replaced)
-        {
-            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        while let Ok(refreshed) = client.settled_tools(deadline).await {
+            if refreshed.replaced {
+                self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+            }
+            if !client.tools_invalidation.pending()
+                || client.tool_snapshot().metadata.freshness == Freshness::FailedRefresh
+            {
+                return;
+            }
         }
     }
 

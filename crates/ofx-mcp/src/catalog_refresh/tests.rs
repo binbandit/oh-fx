@@ -435,10 +435,61 @@ async fn a_change_notified_while_a_list_is_in_flight_is_listed_once_that_list_en
     server.stop(ShutdownMode::Immediate).await;
 }
 
+async fn notified_twice_while_the_watcher_lists(
+    state: &Path,
+) -> (Arc<Server>, Advertised, Arc<McpClient>) {
+    let server = started(state).await;
+    let alpha = advertised(&server);
+    let client = ready_client(&server);
+    hold_listings(state);
+    write(state, "notify", "");
+    assert!(call_directly(&client, &alpha).await);
+    while lists(state) < 2 {
+        sleep(Duration::from_millis(5)).await;
+    }
+    write(state, "name", "beta");
+    write(state, "notify", "");
+    assert!(call_directly(&client, &alpha).await);
+    sleep(Duration::from_millis(100)).await;
+    (server, alpha, client)
+}
+
 async fn listed_beta(client: &McpClient) -> bool {
     let listed = Instant::now() + Duration::from_secs(5);
     while client.tool_catalog().tools[0].name != "beta" && Instant::now() < listed {
         sleep(Duration::from_millis(10)).await;
     }
     client.tool_catalog().tools[0].name == "beta" && !client.tools_invalidation.pending()
+}
+
+#[tokio::test]
+async fn a_change_a_reload_receives_during_the_watchers_list_is_still_listed() {
+    let state = tempfile::tempdir().unwrap();
+    let (server, _, client) = notified_twice_while_the_watcher_lists(state.path()).await;
+    server
+        .refresh_tools(&client, Instant::now() + Duration::from_secs(5))
+        .await;
+    release_listings(state.path());
+    assert!(listed_beta(&client).await);
+    assert_eq!(lists(state.path()), 3);
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn a_change_a_cancelled_call_receives_during_the_watchers_list_is_still_listed() {
+    let state = tempfile::tempdir().unwrap();
+    let (server, alpha, client) = notified_twice_while_the_watcher_lists(state.path()).await;
+    assert!(
+        timeout(
+            Duration::from_millis(50),
+            server.call(&alpha, "{}", CallOptions::default())
+        )
+        .await
+        .is_err()
+    );
+    release_listings(state.path());
+    assert!(listed_beta(&client).await);
+    assert_eq!(lists(state.path()), 3);
+    assert_eq!(lines(state.path(), "calls"), 2);
+    server.stop(ShutdownMode::Immediate).await;
 }
