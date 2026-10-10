@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
 use ofx_contract::{
-    CommandProcessPresentation, HistoryCut, HistoryTurn, RecordedOutput, RecoveredTurn,
-    RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+    CommandProcessPresentation, DeliveryOutcome, FileChangeStats, HistoryCut, HistoryTurn,
+    RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
+    RequestTicket,
 };
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
@@ -511,6 +512,22 @@ impl ConversationLog for SavedArguments {
     fn clear_recovery(&self) -> Result<(), LogFailure> {
         Ok(())
     }
+    fn begin_request(&self) -> Result<RequestTicket, LogFailure> {
+        Ok(RequestTicket {
+            sequence: 1,
+            started_at: std::time::Instant::now(),
+        })
+    }
+
+    fn finish_request(
+        &self,
+        _ticket: RequestTicket,
+        _outcome: DeliveryOutcome,
+    ) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn record_committed_lines(&self, _change: FileChangeStats) {}
 }
 
 #[tokio::test(start_paused = true)]

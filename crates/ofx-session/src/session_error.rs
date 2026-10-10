@@ -98,6 +98,8 @@ pub enum SessionError {
     InvalidUsageSnapshot,
     #[error("UsageCapacityExceeded")]
     UsageCapacityExceeded,
+    #[error("UsageSequenceOverflow")]
+    UsageSequenceOverflow,
     #[error(transparent)]
     Storage(DurableError),
     #[error("{0:?}")]

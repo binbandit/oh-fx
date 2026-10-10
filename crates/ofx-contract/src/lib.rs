@@ -34,10 +34,10 @@ pub use auto_classifier::{ReviewFailure, ReviewTransport, ReviewTransportOutcome
 pub use compactor_settings::AutoCompactPercent;
 pub use file_evidence::{FileEvidence, FileEvidenceAction, file_evidence_context};
 pub use history_turn::{
-    ConversationLog, HistoryCut, HistorySteering, HistoryStep, HistoryTurn,
+    ConversationLog, DeliveryOutcome, HistoryCut, HistorySteering, HistoryStep, HistoryTurn,
     INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, LogFailure, RecordedOutput,
     RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy, RecoveryToolState,
-    RestoredHistory, StepResult, TurnEnd, TurnStop,
+    RequestTicket, RestoredHistory, StepResult, TurnEnd, TurnStop,
 };
 pub use hooks::{
     AttentionKind, AttentionRequiredInput, HookDispatchError, HookHandlerError, HookInvocation,

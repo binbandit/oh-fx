@@ -41,6 +41,8 @@ use crate::compactor::{CompactionError, CompactionEvent, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::gateway_step::Meter;
 use crate::lifecycle::{LifecycleContext, ToolPreparation};
+use request_usage::RequestUsage;
+
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, ToolEvidence, recovery_cause,
 };
@@ -62,6 +64,7 @@ mod paused;
 mod project_gate;
 mod provider_tools;
 mod recovery;
+mod request_usage;
 mod response_language;
 mod steering;
 mod turn_ledger;
@@ -1225,7 +1228,7 @@ impl Agent {
                     events,
                     cancel,
                 )
-                .await;
+                .await?;
             let consumed = attempt - usize::from(!admitted);
             let counted = (attempt, consumed, tool);
             let observed = restart.observe(partial, counted, &mut turn.tool_evidence);
@@ -1307,17 +1310,22 @@ impl Agent {
         (pending, number): (&mut Option<RouteRecoveryStatus>, usize),
         events: EventSink<'_>,
         cancel: &CancellationToken,
-    ) -> Attempt {
+    ) -> Result<Attempt, Stop> {
         let turn_id = turn.id;
         let trace = turn.trace;
         let mut streamed_text = StreamText::default();
         let mut streamed_bytes = 0;
         let mut admitted = false;
         let mut tool = ToolEvidence::None;
+        let mut usage = RequestUsage::new(self.log.as_deref());
+        let attempt_cancel = cancel.child_token();
         let mut sink = |event: StreamEvent| match event {
             StreamEvent::Admitted => {
                 admitted = true;
                 turn_trace::provider_admitted(trace, request.model);
+                if !usage.admit() {
+                    attempt_cancel.cancel();
+                }
                 if let Some(status) = pending.take() {
                     events(UiEvent::Recovery { turn_id, status });
                 }
@@ -1366,19 +1374,29 @@ impl Agent {
         let streamed = match body {
             Some(body) => {
                 self.provider
-                    .stream_body(request, body, &mut sink, cancel)
+                    .stream_body(request, body, &mut sink, &attempt_cancel)
                     .await
             }
-            None => self.provider.stream(request, &mut sink, cancel).await,
+            None => {
+                self.provider
+                    .stream(request, &mut sink, &attempt_cancel)
+                    .await
+            }
         };
         Meter::new(self.network_calls, trace).record(request.model, started_at_ms, &streamed);
-        Attempt {
+        if let Err(failure) = usage.settle(&streamed) {
+            return Err(Stop::Failed {
+                failure: TurnFailure::Persistence(failure),
+                partial: streamed_text.partial,
+            });
+        }
+        Ok(Attempt {
             streamed,
             partial: streamed_text.partial,
             streamed_bytes,
             admitted,
             tool,
-        }
+        })
     }
 
     pub fn recovery_pause(&self) -> RecoveryPause {
@@ -1706,6 +1724,9 @@ impl Agent {
                 continue;
             };
             turn.selected_tools.record(&output);
+            if executed && let (Some(change), Some(log)) = (output.file_change, &self.log) {
+                log.record_committed_lines(change);
+            }
             let status = output.status;
             if executed && !interrupted && (status == ToolResultStatus::Success || !parallel) {
                 turn.trail.completed(call);

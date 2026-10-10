@@ -1,6 +1,6 @@
 use ofx_contract::{
-    FileEvidence, HistoryCut, HistoryTurn, RecoveryPoint, RecoveryProgress, RestoredHistory,
-    TurnEnd,
+    DeliveryOutcome, FileChangeStats, FileEvidence, HistoryCut, HistoryTurn, RecoveryPoint,
+    RecoveryProgress, RequestTicket, RestoredHistory, TurnEnd,
 };
 
 use super::*;
@@ -34,9 +34,19 @@ pub(super) enum Logged {
     RecoveryCleared,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Accounted {
+    Begun(u64),
+    Finished(u64, DeliveryOutcome),
+    Lines(u32, u32),
+}
+
 #[derive(Default)]
 pub(super) struct MemoryLog {
     pub(super) entries: Arc<Mutex<Vec<Logged>>>,
+    pub(super) accounted: Arc<Mutex<Vec<Accounted>>>,
+    pub(super) refused_request: Option<&'static str>,
+    pub(super) refused_settlement: Option<&'static str>,
     pub(super) failing: Option<&'static str>,
     pub(super) blocked: Option<&'static str>,
     pub(super) refused_checkpoint: Option<&'static str>,
@@ -215,6 +225,49 @@ impl ConversationLog for MemoryLog {
     fn clear_recovery(&self) -> Result<(), LogFailure> {
         self.entries.lock().unwrap().push(Logged::RecoveryCleared);
         Ok(())
+    }
+
+    fn begin_request(&self) -> Result<RequestTicket, LogFailure> {
+        let mut accounted = self.accounted.lock().unwrap();
+        if let Some(code) = self.refused_request {
+            return Err(LogFailure {
+                code: code.to_owned(),
+            });
+        }
+        let begun = accounted
+            .iter()
+            .filter(|entry| matches!(entry, Accounted::Begun(_)))
+            .count();
+        let sequence = u64::try_from(begun).unwrap() + 1;
+        accounted.push(Accounted::Begun(sequence));
+        Ok(RequestTicket {
+            sequence,
+            started_at: std::time::Instant::now(),
+        })
+    }
+
+    fn finish_request(
+        &self,
+        ticket: RequestTicket,
+        outcome: DeliveryOutcome,
+    ) -> Result<(), LogFailure> {
+        self.accounted
+            .lock()
+            .unwrap()
+            .push(Accounted::Finished(ticket.sequence, outcome));
+        match self.refused_settlement {
+            Some(code) => Err(LogFailure {
+                code: code.to_owned(),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    fn record_committed_lines(&self, change: FileChangeStats) {
+        self.accounted
+            .lock()
+            .unwrap()
+            .push(Accounted::Lines(change.additions, change.deletions));
     }
 }
 
