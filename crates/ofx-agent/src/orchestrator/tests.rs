@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use ofx_contract::{
     ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
-    CommandRequest, Concurrency, FileMutation, FileMutationState, ModelRecoveryAction,
-    PreparedCall, ProviderReplay, ReasoningEffort, RecoveryToolState, ReplaySource,
-    RootUserRequests, StreamSink, SubagentStatus, ToolActivity, ToolCallId, ToolChoice, ToolEffect,
+    CommandRequest, Concurrency, FileChangeStats, FileMutation, FileMutationState,
+    ModelRecoveryAction, PreparedCall, ProviderReplay, ReasoningEffort, RecoveryToolState,
+    ReplaySource, RootUserRequests, StreamSink, SubagentStatus, ToolActivity, ToolCallId,
+    ToolChoice, ToolEffect,
 };
 
 use super::*;
@@ -460,6 +461,10 @@ impl PreparedCall for EchoCall {
             if self.arguments.contains("whole") {
                 return ToolOutput::success(format!("echo {}", self.arguments))
                     .covering_full_file(true);
+            }
+            if self.arguments.contains("lines") {
+                return ToolOutput::success(format!("echo {}", self.arguments))
+                    .with_file_change(FileChangeStats::from_lines(3, 1));
             }
             if self.arguments.contains("noticed") {
                 return ToolOutput::success(format!("echo {}", self.arguments))
@@ -2912,6 +2917,7 @@ mod project_context;
 mod provider_executed;
 mod recovery;
 mod recovery_pause;
+mod request_usage;
 mod response_language;
 mod response_restart;
 mod reviews;

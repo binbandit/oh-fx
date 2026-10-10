@@ -72,6 +72,13 @@ impl Home {
             .collect()
     }
 
+    fn usage(&self, id: &str) -> Value {
+        serde_json::from_slice(
+            &fs::read(self.sessions().join(id).join("usage-v2.json")).expect("read usage-v2.json"),
+        )
+        .expect("session usage")
+    }
+
     fn metadata(&self, id: &str) -> Value {
         serde_json::from_slice(
             &fs::read(self.sessions().join(id).join("session.json")).expect("read session.json"),
@@ -238,6 +245,33 @@ fn ask_saves_its_turn_and_resuming_sends_it_ahead_of_the_next_prompt() {
             "user: fourth",
         ]
     );
+}
+
+#[test]
+fn every_request_a_session_sends_is_accounted_in_its_usage() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["two"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    let usage = home.usage(&id);
+    assert_eq!(usage["schema_version"], 1);
+    assert_eq!(usage["session_id"], id.as_str());
+    let snapshot = &usage["snapshot"];
+    assert_eq!(snapshot["schema_version"], 3);
+    assert_eq!(snapshot["next_sequence"], 2);
+    assert_eq!(snapshot["settled_through_sequence"], 1);
+    assert_eq!(snapshot["api_duration_complete"], true);
+    assert_eq!(snapshot["billing"], "incomplete");
+    assert_eq!(snapshot["incidents"][0]["completeness"], "incomplete");
+    assert_eq!(snapshot["input_tokens"], 0);
+
+    home.ask_json(&["--resume", &id, "second"], &[]);
+    let resumed = &home.usage(&id)["snapshot"];
+    assert_eq!(resumed["next_sequence"], 3);
+    assert_eq!(resumed["settled_through_sequence"], 2);
+    assert_eq!(resumed["wall_duration_complete"], true);
 }
 
 #[test]
