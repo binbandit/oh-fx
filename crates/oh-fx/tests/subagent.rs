@@ -320,6 +320,91 @@ fn requests_the_tool_rejects_never_reach_a_child() {
     );
 }
 
+fn traced_ask(home: &Home, prompt: &str) -> (Output, String) {
+    let log = home.root.join("trace.log");
+    let output = home
+        .command()
+        .args(["ask", prompt])
+        .env("OH_FX_TRACE_LOG", &log)
+        .env("OH_FX_TRACE_SCOPES", "agent,subagent")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run oh-fx");
+    (
+        output,
+        fs::read_to_string(&log).expect("read the trace log"),
+    )
+}
+
+#[test]
+fn a_child_run_traces_its_request_admission_and_its_own_ids() {
+    let server = FakeServer::start([
+        delegate("call_1", &json!({"action": "run", "task": "inspect auth"})),
+        text("child report"),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let (output, written) = traced_ask(&home, "check the auth module");
+    assert!(output.status.success(), "{}", stderr(&output));
+    for expected in [
+        " [agent] event=prompt_start turn_id=1 prompt_bytes=21 model=model-a\n",
+        " [subagent] request accepted action=run agent=none model_override=none effort_override=none\n",
+        " [agent] event=prompt_start turn_id=2 subagent_id=1 prompt_bytes=12 model=model-a\n",
+        " [agent] event=prompt_finish turn_id=2 subagent_id=1 outcome_kind=assistant\n",
+        " [agent] event=prompt_finish turn_id=1 outcome_kind=assistant\n",
+    ] {
+        assert!(written.contains(expected), "{expected}\n{written}");
+    }
+    let operation = written
+        .lines()
+        .find_map(|line| {
+            line.split_once(" [subagent] admission requested operation=")
+                .map(|(_, rest)| rest)
+        })
+        .and_then(|rest| rest.strip_suffix(" action=run agent=none override=no"))
+        .expect("the admission line");
+    let identity = written
+        .lines()
+        .find_map(|line| {
+            line.split_once(" [subagent] event=trace_identity ")
+                .map(|(_, rest)| rest)
+        })
+        .expect("the child's trace identity");
+    assert!(
+        identity.starts_with("turn_id=2 subagent_id=1 child_id="),
+        "{identity}"
+    );
+    assert!(identity.contains(" parent_id="), "{identity}");
+    assert!(
+        identity.ends_with(&format!(" work_id={operation}")),
+        "{identity}"
+    );
+}
+
+#[test]
+fn rejected_requests_trace_why_they_never_reached_a_child() {
+    let server = FakeServer::start([
+        delegate(
+            "call_1",
+            &json!({"action": "message", "agent": "Reviewer", "message": "hi"}),
+        ),
+        delegate("call_2", &json!({"action": "inspect"})),
+        text("parent done"),
+    ]);
+    let home = Home::connected(&server);
+    let (output, written) = traced_ask(&home, "say hi");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        written.contains(" [subagent] request validation rejected code=invalid_agent\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains(" [subagent] request decode rejected code=invalid_enum\n"),
+        "{written}"
+    );
+    assert!(!written.contains("admission requested"), "{written}");
+}
+
 #[test]
 fn ask_without_a_saved_session_offers_no_subagent() {
     let server = FakeServer::start([text("hello")]);
