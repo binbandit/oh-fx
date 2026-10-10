@@ -5,6 +5,7 @@ use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
 use crate::error::McpError;
+use crate::json_number::{non_negative_u64, ttl_milliseconds};
 use crate::mcp_contract::validate_json_rpc_response_envelope;
 
 const MAX_SCHEMA_DEPTH: usize = 64;
@@ -231,7 +232,7 @@ pub(crate) fn parse_list_page(response: &str, limits: Limits) -> Result<Page, Mc
         Some(_) => return Err(McpError::InvalidListResult),
     };
     if let Some(ttl) = result.get("ttlMs")
-        && !is_valid_ttl(ttl)
+        && ttl_milliseconds(ttl).is_none()
     {
         return Err(McpError::InvalidListResult);
     }
@@ -246,13 +247,6 @@ pub(crate) fn parse_list_page(response: &str, limits: Limits) -> Result<Page, Mc
         next_cursor,
         cache_scope,
     })
-}
-
-fn is_valid_ttl(value: &Value) -> bool {
-    let Value::Number(number) = value else {
-        return false;
-    };
-    number.is_u64() || number.as_f64().is_some_and(|ttl| ttl < 0.0)
 }
 
 fn require_complete_result(result: &Map<String, Value>) -> Result<(), McpError> {
@@ -534,7 +528,7 @@ fn parse_resource_link(
     }
     if object
         .get("size")
-        .is_some_and(|size| size.as_u64().is_none())
+        .is_some_and(|size| non_negative_u64(size).is_none())
     {
         return Err(McpError::InvalidContent);
     }
@@ -744,6 +738,23 @@ mod tests {
         builder.append_page(parsed, Limits::default()).unwrap();
         assert_eq!(builder.next_cursor(), Some(""));
         assert!(builder.finish().unwrap().tools.is_empty());
+    }
+
+    #[test]
+    fn tools_list_accepts_integral_ttl_in_any_notation() {
+        for ttl in ["1000.0", "1e3", "-0.5"] {
+            let response =
+                format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"ttlMs":{ttl},"tools":[]}}}}"#);
+            assert!(
+                parse_list_page(&response, Limits::default()).is_ok(),
+                "{ttl}"
+            );
+        }
+        let fractional = r#"{"jsonrpc":"2.0","id":1,"result":{"ttlMs":1.5,"tools":[]}}"#;
+        assert_eq!(
+            parse_list_page(fractional, Limits::default()).err(),
+            Some(McpError::InvalidListResult)
+        );
     }
 
     #[test]
@@ -1141,6 +1152,27 @@ mod tests {
             ),
             Err(McpError::InvalidContent)
         );
+    }
+
+    #[test]
+    fn resource_link_sizes_accept_integral_values_in_any_notation() {
+        let outcome = |size: &str| {
+            parse_call_outcome(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"resource_link","uri":"file:///a","name":"a","size":{size}}}]}}}}"#
+                ),
+                64 * 1024,
+                Limits::default(),
+            )
+            .err()
+        };
+        for size in ["1024", "1024.0", "1.024e3", "0"] {
+            assert_eq!(outcome(size), None, "{size}");
+        }
+        for size in ["-1", "1.5", "\"1\"", "1e30"] {
+            assert_eq!(outcome(size), Some(McpError::InvalidContent), "{size}");
+        }
+        assert_eq!(outcome("1e400"), Some(McpError::InvalidEnvelope));
     }
 
     #[test]

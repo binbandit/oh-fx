@@ -3,6 +3,7 @@ mod docker_run;
 mod error;
 mod features;
 mod health;
+mod json_number;
 mod legacy_elicitation_runtime;
 mod legacy_http_sse;
 mod legacy_sse;
