@@ -225,3 +225,225 @@ fn insert_json(object: &mut Map<String, Value>, key: &str, json: Option<&str>) {
         object.insert(key.to_owned(), value);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::prompts::{PromptArgument, PromptContentKind, PromptMessage, PromptRole};
+
+    const ENVELOPE: &str = r#"{"trust":"untrusted_external","authority":"none""#;
+
+    fn resource(identity: &str, details: [Option<&str>; 3]) -> ResourceSummary {
+        let [title, description, mime_type] = details.map(|value| value.map(str::to_owned));
+        ResourceSummary {
+            identity: identity.to_owned(),
+            name: "plan".to_owned(),
+            title,
+            description,
+            mime_type,
+        }
+    }
+
+    #[test]
+    fn every_action_keeps_its_upstream_name() {
+        for action in FeatureAction::ALL {
+            assert_eq!(FeatureAction::parse(action.as_str()), Some(action));
+        }
+        assert_eq!(FeatureAction::parse("resource_subscribe"), None);
+        assert_eq!(FeatureAction::parse("Resource_list"), None);
+    }
+
+    #[test]
+    fn catalogs_list_each_item_with_its_server_and_identity() {
+        assert_eq!(
+            resource_catalog(
+                FeatureAction::ResourceList,
+                "docs",
+                &[
+                    resource(
+                        "memory://plan",
+                        [Some("Plan"), Some("The \"plan\""), Some("text/markdown")]
+                    ),
+                    resource("memory://notes", [None; 3]),
+                ],
+                false,
+            ),
+            format!(
+                r#"{ENVELOPE},"action":"resource_list","server":"docs","items":[{{"server":"docs","identity":"memory://plan","name":"plan","title":"Plan","description":"The \"plan\"","mimeType":"text/markdown","template":false}},{{"server":"docs","identity":"memory://notes","name":"plan","template":false}}]}}"#
+            )
+        );
+        assert_eq!(
+            resource_catalog(
+                FeatureAction::ResourceTemplates,
+                "docs",
+                &[resource("memory://{id}", [None, None, Some("text/plain")])],
+                true,
+            ),
+            format!(
+                r#"{ENVELOPE},"action":"resource_templates","server":"docs","items":[{{"server":"docs","identity":"memory://{{id}}","name":"plan","mimeType":"text/plain","template":true}}]}}"#
+            )
+        );
+        assert_eq!(
+            resource_catalog(FeatureAction::ResourceList, "docs", &[], false),
+            format!(r#"{ENVELOPE},"action":"resource_list","server":"docs","items":[]}}"#)
+        );
+        let prompts = [
+            PromptSummary {
+                name: "review".to_owned(),
+                title: Some("Review".to_owned()),
+                description: Some("Review code".to_owned()),
+                arguments: vec![
+                    PromptArgument {
+                        name: "focus".to_owned(),
+                        description: Some("What to check".to_owned()),
+                        required: true,
+                    },
+                    PromptArgument {
+                        name: "depth".to_owned(),
+                        description: None,
+                        required: false,
+                    },
+                ],
+            },
+            PromptSummary {
+                name: "plain".to_owned(),
+                title: None,
+                description: None,
+                arguments: Vec::new(),
+            },
+        ];
+        assert_eq!(
+            prompt_catalog("docs", &prompts),
+            format!(
+                r#"{ENVELOPE},"action":"prompt_list","server":"docs","items":[{{"server":"docs","identity":"review","title":"Review","description":"Review code","arguments":[{{"name":"focus","required":true,"description":"What to check"}},{{"name":"depth","required":false}}]}},{{"server":"docs","identity":"plain","arguments":[]}}]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn reads_carry_text_and_describe_binary_contents_as_unsent() {
+        let contents = [
+            ResourceContent {
+                uri: "memory://plan".to_owned(),
+                mime_type: Some("text/markdown".to_owned()),
+                annotations_json: Some(r#"{"priority":0.5,"audience":["user"]}"#.to_owned()),
+                metadata_json: Some(r#"{"z":1,"a":true}"#.to_owned()),
+                data: ResourceData::Text("line\none".to_owned()),
+            },
+            ResourceContent {
+                uri: "memory://logo".to_owned(),
+                mime_type: Some("image/png".to_owned()),
+                annotations_json: None,
+                metadata_json: None,
+                data: ResourceData::Blob("aGk=".to_owned()),
+            },
+        ];
+        assert_eq!(
+            resource_read("docs", "memory://plan", &contents),
+            format!(
+                r#"{ENVELOPE},"action":"resource_read","server":"docs","identity":"memory://plan","contents":[{{"uri":"memory://plan","mimeType":"text/markdown","annotations":{{"priority":0.5,"audience":["user"]}},"_meta":{{"z":1,"a":true}},"type":"text","text":"line\none"}},{{"uri":"memory://logo","mimeType":"image/png","type":"blob","delivery":"binary resource content was not sent to the model"}}]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn prompt_messages_keep_their_content_and_describe_media_as_unsent() {
+        let message = |role, content_kind, content_json: &str| PromptMessage {
+            role,
+            content_kind,
+            content_json: content_json.to_owned(),
+        };
+        let result = PromptGetResult {
+            description: Some("Review the change".to_owned()),
+            messages: vec![
+                message(
+                    PromptRole::User,
+                    PromptContentKind::Text,
+                    r#"{"type":"text","text":"PROMPT_TEXT","_meta":{"n":1000.0}}"#,
+                ),
+                message(
+                    PromptRole::Assistant,
+                    PromptContentKind::Image,
+                    r#"{"type":"image","data":"aGk=","mimeType":"image/png","annotations":{"priority":1}}"#,
+                ),
+                message(
+                    PromptRole::User,
+                    PromptContentKind::Resource,
+                    r#"{"type":"resource","resource":{"uri":"file:///a","blob":"aGk=","mimeType":"application/pdf"}}"#,
+                ),
+            ],
+        };
+        assert_eq!(
+            prompt_get("docs", "review", &result),
+            format!(
+                r#"{ENVELOPE},"action":"prompt_get","server":"docs","identity":"review","description":"Review the change","messages":[{{"role":"user","contentKind":"text","content":{{"type":"text","text":"PROMPT_TEXT","_meta":{{"n":1000.0}}}}}},{{"role":"assistant","contentKind":"image","content":{{"type":"image","annotations":{{"priority":1}},"mimeType":"image/png","delivery":"unsupported media; content was not sent to the model"}}}},{{"role":"user","contentKind":"resource","content":{{"type":"resource","resource":{{"uri":"file:///a","mimeType":"application/pdf","delivery":"binary resource content was not sent to the model"}}}}}}]}}"#
+            )
+        );
+        let bare = PromptGetResult {
+            description: None,
+            messages: Vec::new(),
+        };
+        assert_eq!(
+            prompt_get("docs", "plain", &bare),
+            format!(
+                r#"{ENVELOPE},"action":"prompt_get","server":"docs","identity":"plain","messages":[]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn completions_name_their_reference_and_argument() {
+        let mut result = CompletionResult {
+            values: vec!["balpha".to_owned(), "beta".to_owned()],
+            total: Some(5),
+            has_more: Some(false),
+        };
+        assert_eq!(
+            completion(
+                FeatureAction::PromptComplete,
+                "docs",
+                "review",
+                "tone",
+                &result
+            ),
+            format!(
+                r#"{ENVELOPE},"action":"prompt_complete","server":"docs","identity":"review","argument":"tone","values":["balpha","beta"],"total":5,"hasMore":false}}"#
+            )
+        );
+        result.total = None;
+        result.has_more = None;
+        assert_eq!(
+            completion(
+                FeatureAction::ResourceComplete,
+                "docs",
+                "custom://project/{path}",
+                "path",
+                &result
+            ),
+            format!(
+                r#"{ENVELOPE},"action":"resource_complete","server":"docs","identity":"custom://project/{{path}}","argument":"path","values":["balpha","beta"]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn unsupported_features_name_the_missing_capability() {
+        for (action, feature) in [
+            (FeatureAction::ResourceList, "resources"),
+            (FeatureAction::ResourceTemplates, "resources"),
+            (FeatureAction::ResourceRead, "resources"),
+            (FeatureAction::ResourceComplete, "resources"),
+            (FeatureAction::PromptList, "prompts"),
+            (FeatureAction::PromptGet, "prompts"),
+            (FeatureAction::PromptComplete, "prompts"),
+        ] {
+            assert_eq!(
+                unsupported(action, "tools"),
+                format!(
+                    r#"{ENVELOPE},"action":"{}","server":"tools","unsupported":true,"message":"tools did not advertise a {feature} capability, so this feature is unavailable on that server. Use its tools or pick another server."}}"#,
+                    action.as_str()
+                )
+            );
+        }
+    }
+}

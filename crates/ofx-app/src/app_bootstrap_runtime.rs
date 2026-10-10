@@ -364,8 +364,7 @@ impl Profile {
         let permissions =
             self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
-        let mcp = self.mcp_runtime(&tools, &limits, interactive)?;
-        let features: Arc<dyn Tool> = Arc::new(McpFeatures::new(mcp.clone()));
+        let (mcp, features) = self.mcp_runtime(&tools, &limits, interactive)?;
         let tools = tool_set::with_features(tools, &features);
         let children = ChildFactory {
             route: Mutex::new(route.children()),
@@ -627,6 +626,17 @@ impl Profile {
     }
 
     fn mcp_runtime(
+        &self,
+        tools: &[Arc<dyn Tool>],
+        limits: &ContextLimits,
+        interactive: bool,
+    ) -> Result<(Option<Arc<McpRuntime>>, Arc<dyn Tool>), ProfileStoreError> {
+        let runtime = self.load_mcp_runtime(tools, limits, interactive)?;
+        let features = Arc::new(McpFeatures::new(runtime.clone()));
+        Ok((runtime, features))
+    }
+
+    fn load_mcp_runtime(
         &self,
         tools: &[Arc<dyn Tool>],
         limits: &ContextLimits,
