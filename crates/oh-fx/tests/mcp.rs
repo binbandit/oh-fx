@@ -97,6 +97,7 @@ while IFS= read -r line; do
   esac
 done
 "#;
+const NO_SERVERS: &str = include_str!("../../../parity/goldens/mcp_servers_section.txt");
 const SHELL_WAIT: Duration = Duration::from_secs(15);
 const FAILING_SERVER: &str = "#!/bin/sh\necho 'fatal: missing token' >&2\nexit 3\n";
 const LAUNCH_MARKER: &str = "#!/bin/sh\ntouch \"$MCP_STATE/launched\"\nexit 1\n";
@@ -366,18 +367,26 @@ fn ask_lists_the_configured_servers_to_the_model() {
     }));
     let output = home.ask(&["ask", "hi"]);
     assert!(output.status.success(), "{}", stderr(&output));
-    let section = system_texts(&server.requests()[0])
-        .into_iter()
-        .find(|text| text.contains("<mcp_servers>"))
-        .expect("the servers section");
-    let none = include_str!("../../../parity/goldens/mcp_servers_section.txt");
-    let (header, footer) = none.split_once("  <none />\n").unwrap();
     assert_eq!(
-        section,
-        format!(
-            "{header}  <server name=\"fixture\" state=\"ready\" tools=\"1\" loaded=\"true\" />\n  <server name=\"zeta\" state=\"disabled\" />\n{footer}"
+        servers_section(&server.requests()[0]),
+        listed_servers(
+            "  <server name=\"fixture\" state=\"ready\" tools=\"1\" loaded=\"true\" />\n  <server name=\"zeta\" state=\"disabled\" />\n"
         )
     );
+}
+
+fn servers_section(request: &RecordedRequest) -> String {
+    system_texts(request)
+        .into_iter()
+        .find(|text| text.contains("<mcp_servers>"))
+        .expect("the servers section")
+}
+
+fn listed_servers(entries: &str) -> String {
+    let (header, footer) = NO_SERVERS
+        .split_once("  <none />\n")
+        .expect("the empty servers entry");
+    format!("{header}{entries}{footer}")
 }
 
 fn feature_call(id: &str, arguments: &Value) -> Reply {
@@ -450,6 +459,10 @@ fn ask_uses_resources_prompts_and_completion_through_mcp_features() {
     let tools = tool_names(&requests[0]);
     let skill = tools.iter().position(|name| name == "skill").unwrap();
     assert_eq!(tools[skill + 1], "mcp_features");
+    assert_eq!(
+        servers_section(&requests[0]),
+        listed_servers("  <server name=\"fixture\" state=\"ready\" tools=\"0\" />\n")
+    );
     let envelope = r#"{"trust":"untrusted_external","authority":"none""#;
     let results: Vec<String> = requests[1..].iter().map(last_tool_result).collect();
     assert_eq!(
@@ -502,6 +515,7 @@ fn ask_without_mcp_servers_still_offers_mcp_features_and_says_there_is_no_runtim
         "{:?}",
         tool_names(&requests[0])
     );
+    assert_eq!(servers_section(&requests[0]), NO_SERVERS);
     assert_eq!(
         last_tool_result(&requests[1]),
         "No MCP runtime is available."
