@@ -9,6 +9,7 @@ fn session(id: &str, title: &str, workspace: &str, turns: usize) -> SessionRow {
         workspace_root: workspace.to_owned(),
         updated_at_ms: 1_000,
         turns,
+        from_fx: false,
     }
 }
 
@@ -69,6 +70,32 @@ fn resume_menu_renders_each_session_on_one_line_with_a_right_metadata_cluster() 
         "  Redesign resume menu    resume-catalog · 8m · 24 turns"
     );
     assert!(!rendered[2].contains('●'));
+}
+
+#[test]
+fn resume_menu_marks_fx_sessions_with_a_trailing_cluster_item_only_when_one_is_listed() {
+    let own = session(
+        "one",
+        "Redesign resume menu",
+        "/Users/example/Developer/Fx/worktrees/resume-catalog",
+        24,
+    );
+    let from_fx = SessionRow {
+        from_fx: true,
+        ..session("two", "Started in fx", "/Users/example/fx-work", 1)
+    };
+    let rendered = texts(&view(&[own.clone(), from_fx]), 120, 5);
+    assert_eq!(
+        rendered[2..],
+        [
+            "  Redesign resume menu    resume-catalog · 8m · 24 turns",
+            "  Started in fx           fx-work        · 8m · 1 turn   · fx",
+        ]
+    );
+    assert_eq!(
+        texts(&view(&[own]), 120, 4)[2],
+        "  Redesign resume menu    resume-catalog · 8m · 24 turns"
+    );
 }
 
 #[test]

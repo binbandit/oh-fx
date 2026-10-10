@@ -1455,6 +1455,99 @@ fn picking_at_launch_resumes_the_choice_or_starts_fresh_when_closed() {
     assert_eq!(home.session_ids().len(), 2);
 }
 
+const FX_ID: &str = "fx0123456789";
+
+fn save_in_fx(home: &Home) -> PathBuf {
+    let fx = home.root.join(".fx");
+    let session = fx.join("sessions").join(FX_ID);
+    fs::create_dir_all(&session).expect("create an fx session");
+    for directory in [&fx, &fx.join("sessions"), &session] {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .expect("make an fx folder private");
+    }
+    let workspace = fs::canonicalize(&home.workspace).expect("canonical workspace");
+    let manifest = json!({
+        "schema_version": 4,
+        "id": FX_ID,
+        "origin_workspace_root": workspace,
+        "workspace_root": workspace,
+        "created_at_ms": 1,
+        "updated_at_ms": 2,
+        "conversation_language": "en",
+        "provider": "gateway",
+        "model": "openai/gpt-5",
+        "effort": "auto",
+        "fast_mode": false,
+        "title": "Started in fx",
+        "subagent_child": false,
+    });
+    let mut events = String::new();
+    for (event, seq) in [
+        json!({"user": {"text": "asked in fx", "images": [], "work_id": null}}),
+        json!({"assistant": {"text": "answered in fx", "provider_replay": null, "standalone_response": false}}),
+        json!({"turn_completed": {"files": [], "turn_summary": null}}),
+    ]
+    .into_iter()
+    .zip(1_u64..)
+    {
+        events.push_str(
+            &json!({"schema_version": 3, "seq": seq, "timestamp_ms": 2, "event": event})
+                .to_string(),
+        );
+        events.push('\n');
+    }
+    for (name, bytes) in [
+        ("session.json", manifest.to_string()),
+        ("events.jsonl", events),
+        ("session.lock", String::new()),
+    ] {
+        fs::write(session.join(name), bytes).expect("write an fx session file");
+        fs::set_permissions(session.join(name), fs::Permissions::from_mode(0o600))
+            .expect("make an fx file private");
+    }
+    session
+}
+
+#[test]
+fn the_launch_picker_marks_an_fx_session_and_enter_continues_it_here() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["Continued."]))]);
+    let home = Home::new(&server.base_url());
+    let fx = save_in_fx(&home);
+    let untouched = fs::read(fx.join("events.jsonl")).expect("read fx's log");
+    let session = home.spawn(&["-r"]);
+    let screen = wait(&session, PICKER_HEADER);
+    let row = screen
+        .lines()
+        .find(|line| line.contains("Started in fx"))
+        .unwrap_or_else(|| panic!("the fx session is listed:\n{screen}"));
+    assert!(row.trim_end().ends_with("· 1 turn · fx"), "{row:?}");
+    session.send(b"\r");
+    wait(&session, "session resumed: Started in fx");
+    let screen = wait(&session, "continues with local.");
+    assert!(
+        screen.contains("This session was saved with the gateway provider, which oh-fx cannot use"),
+        "{screen}"
+    );
+    session.send(b"keep going\r");
+    wait(&session, "Continued.");
+    exit(session);
+    assert_eq!(
+        chat(&server.requests()[0]),
+        [
+            ("user".to_owned(), "asked in fx".to_owned()),
+            ("assistant".to_owned(), "answered in fx".to_owned()),
+            ("user".to_owned(), "keep going".to_owned()),
+        ]
+    );
+    assert_eq!(home.session_ids(), [FX_ID]);
+    assert_eq!(home.metadata(FX_ID)["provider"]["name"], "local");
+    assert_eq!(home.remembered().as_deref(), Some(FX_ID));
+    assert_eq!(
+        fs::read(fx.join("events.jsonl")).expect("read fx's log"),
+        untouched
+    );
+}
+
 #[test]
 fn resume_waits_for_a_running_response() {
     let server = FakeServer::start([Reply::held_sse(

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use ofx_contract::{SessionCursor, SessionPage, SessionRow, SessionScope};
 use ofx_session::{
-    ListScope, ResumeContinuation, SessionCatalog, SessionError, SessionStore, SessionSummary,
+    ListScope, ResumeContinuation, SessionCatalog, SessionError, SessionSource, SessionStore,
+    SessionSummary,
 };
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -148,7 +149,7 @@ impl SessionListing {
         let store = store.try_clone()?;
         self.scan = Some(Scan {
             active_id: active_id.map(str::to_owned),
-            task: tokio::task::spawn_blocking(move || store.catalog()),
+            task: tokio::task::spawn_blocking(move || store.catalog_with_fx_sessions()),
         });
         Ok(())
     }
@@ -193,6 +194,7 @@ fn row(summary: SessionSummary) -> SessionRow {
         workspace_root: summary.workspace_root,
         updated_at_ms: summary.updated_at_ms,
         turns: summary.history_len,
+        from_fx: summary.source == SessionSource::Fx,
     }
 }
 

@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use ofx_config::ProviderId;
@@ -132,6 +134,103 @@ async fn session_picker_loads_on_demand_and_shares_one_catalog_across_workspace_
             SessionScope::AllWorkspaces,
             vec![later.as_str(), there.as_str(), here.as_str()]
         )]
+    );
+}
+
+fn save_in_fx(home: &Path, id: &str, workspace: &str, modified_s: u64) {
+    let fx = home.join(".fx");
+    let session = fx.join("sessions").join(id);
+    std::fs::create_dir_all(&session).unwrap();
+    for directory in [&fx, &fx.join("sessions"), &session] {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let manifest = format!(
+        "{{\"schema_version\":4,\"id\":\"{id}\",\"origin_workspace_root\":\"{workspace}\",\"workspace_root\":\"{workspace}\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
+    );
+    let mut events = String::new();
+    for (event, seq) in [
+        "{\"user\":{\"text\":\"asked in fx\",\"images\":[],\"work_id\":null}}",
+        "{\"assistant\":{\"text\":\"answered in fx\",\"provider_replay\":null,\"standalone_response\":false}}",
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}",
+    ]
+    .iter()
+    .zip(1_u64..)
+    {
+        let _ = writeln!(
+            events,
+            "{{\"schema_version\":3,\"seq\":{seq},\"timestamp_ms\":2,\"event\":{event}}}"
+        );
+    }
+    for (name, bytes) in [
+        ("session.json", manifest),
+        ("events.jsonl", events),
+        ("session.lock", String::new()),
+    ] {
+        std::fs::write(session.join(name), bytes).unwrap();
+        std::fs::set_permissions(session.join(name), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+    }
+    std::fs::File::options()
+        .write(true)
+        .open(session.join("events.jsonl"))
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(modified_s))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_picker_lists_the_fx_sessions_it_can_import_beside_its_own_and_marks_them() {
+    let home = tempfile::tempdir().unwrap();
+    let data = home.path().join("data");
+    let own = saved(&data, "/here", "saved in oh-fx");
+    save_in_fx(home.path(), "fx0123456789", "/here", 200);
+    save_in_fx(home.path(), "fx-elsewhere", "/there", 100);
+    let importing = store(&data, "/here").with_fx_home(home.path().to_path_buf());
+    let mut listing = SessionListing::default();
+    for scope in [SessionScope::CurrentWorkspace, SessionScope::AllWorkspaces] {
+        assert!(matches!(
+            listing.request(&importing, None, first_page(scope), Instant::now()),
+            Ok(Listed::Waiting)
+        ));
+    }
+    let answers = settle(&mut listing, &importing, None).await;
+    let marked: Vec<Vec<(&str, bool)>> = answers
+        .iter()
+        .map(|answer| {
+            answer
+                .page
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .map(|row| (row.id.as_str(), row.from_fx))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        marked,
+        [
+            vec![(own.as_str(), false), ("fx0123456789", true)],
+            vec![
+                (own.as_str(), false),
+                ("fx0123456789", true),
+                ("fx-elsewhere", true)
+            ],
+        ]
+    );
+
+    let plain = store(&data, "/here");
+    let mut listing = SessionListing::default();
+    let _ = listing.request(
+        &plain,
+        None,
+        first_page(SessionScope::AllWorkspaces),
+        Instant::now(),
+    );
+    let answers = settle(&mut listing, &plain, None).await;
+    assert_eq!(
+        answered(&answers),
+        [(SessionScope::AllWorkspaces, vec![own.as_str()])]
     );
 }
 
