@@ -386,6 +386,28 @@ mod tests {
             builder.append_page(page(&json!({"resources": []})).unwrap(), 0, limits),
             Err(McpError::PaginationLimitExceeded)
         );
+        let one = Limits {
+            resources: 1,
+            ..Limits::default()
+        };
+        let mut builder = CatalogBuilder::<Resource>::default();
+        let first = json!({"resources": [{"uri": "a://", "name": "a"}], "nextCursor": "next"});
+        builder.append_page(page(&first).unwrap(), 0, one).unwrap();
+        assert_eq!(
+            builder.append_page(page(&first).unwrap(), 0, one),
+            Err(McpError::DuplicateCursor)
+        );
+        let mut builder = CatalogBuilder::<Resource>::default();
+        builder.append_page(page(&first).unwrap(), 0, one).unwrap();
+        assert_eq!(
+            builder.append_page(
+                page(&json!({"resources": [{"uri": "b://", "name": "b"}], "cacheScope": "public"}))
+                    .unwrap(),
+                0,
+                one
+            ),
+            Err(McpError::InconsistentCacheScope)
+        );
         let mut builder = CatalogBuilder::<Resource>::default();
         let limits = Limits {
             resources: 1,

@@ -607,6 +607,14 @@ printf '%s\n' "$3" > "$STATE/cidfile"
         );
         assert_eq!(
             client.classify_notification(
+                &json!({"jsonrpc":"2.0","method":"notifications/prompts/list_changed"})
+            ),
+            None
+        );
+        assert!(!client.resources_invalidation.pending());
+        assert!(!client.prompts_invalidation.pending());
+        assert_eq!(
+            client.classify_notification(
                 &json!({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}})
             ),
             Some(ServerNotification::Other {

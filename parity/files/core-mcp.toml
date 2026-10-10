@@ -67,7 +67,7 @@ note = "Resource, template and prompt catalog slots, the advertised capabilities
 upstream = "src/core/mcp/feature_catalog_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_catalog_runtime.rs"]
-note = "Resource, template and prompt catalogs are fetched page by page and refreshed by freshness and list_changed invalidation. A stopped stdio server is restarted under the refresh lock first. A new connection starts with empty catalogs, while a failed server keeps its last catalogs and capabilities and serves them after a failed refresh. Auth identity checks during paging are missing."
+note = "Resource, template and prompt catalogs are fetched page by page and refreshed by freshness and list_changed invalidation. A stopped stdio server is restarted under the refresh lock first. A new connection starts with empty catalogs, while a failed server keeps its last catalogs and capabilities and serves them after a failed refresh. A catalog fetched from a connection that was replaced meanwhile is not published; the latest published catalog is served instead, or McpResourceCatalogUnavailable or McpPromptCatalogUnavailable when there is none. Auth identity checks during paging are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_operations.zig"
@@ -104,13 +104,13 @@ modules = []
 [[file]]
 upstream = "src/core/mcp/features/prompts.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/features/prompts.rs"]
-note = "prompts/list pages, prompt and argument validation and the prompt catalog builder exist; prompts/get results, argument checks and the get request builder are missing."
+modules = ["crates/ofx-mcp/src/features/prompts.rs", "crates/ofx-mcp/src/features/common.rs"]
+note = "prompts/list pages, prompt and argument descriptor validation and the prompt catalog builder exist; prompts/get results, the prompts/get arguments check (validateArgumentsJson) and the get request builder are missing."
 
 [[file]]
 upstream = "src/core/mcp/features/resources.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/features/resources.rs"]
+modules = ["crates/ofx-mcp/src/features/resources.rs", "crates/ofx-mcp/src/features/common.rs"]
 note = "Resource and template list pages, the catalog builders and the RFC 6570 template syntax check exist; reads, the template matcher and stale-fallback eligibility are missing."
 
 [[file]]
@@ -261,7 +261,7 @@ note = "Static headers, header_env and bearer_token_env resolve when a server co
 upstream = "src/core/mcp/server_connection.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_connection.rs"]
-note = "Connection state, request ids, cancellation and queued notifications exist; resource, prompt and completion feature caches and host-channel connections are missing."
+note = "Connection state, request ids, cancellation and queued notifications exist, and the resource, template and prompt catalogs live in feature_catalog.rs; the resource read cache, completion state and host-channel connections are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_lifecycle.zig"

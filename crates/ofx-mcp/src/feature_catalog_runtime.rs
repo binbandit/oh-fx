@@ -53,15 +53,18 @@ impl Server {
             return match fetch::<T>(&client, deadline).await {
                 Ok(catalog) => {
                     let items: Arc<[T]> = catalog.items.into();
-                    if matches!(self.lifecycle(), Lifecycle::Ready(published) if Arc::ptr_eq(&published, &client))
-                    {
-                        self.features.publish(Snapshot {
-                            items: Arc::clone(&items),
-                            metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
-                        });
+                    let snapshot = Snapshot {
+                        items: Arc::clone(&items),
+                        metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
+                    };
+                    if self.publish_catalog(&client, snapshot) {
                         invalidation.clear_through(generation);
+                        return Ok(items);
                     }
-                    Ok(items)
+                    self.features
+                        .snapshot::<T>()
+                        .map(|latest| latest.items)
+                        .ok_or_else(T::unavailable)
                 }
                 Err(error) => self.keep_after_failure(current, error),
             };

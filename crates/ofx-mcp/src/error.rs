@@ -60,8 +60,12 @@ pub enum McpError {
     McpServerNotFound,
     #[error("McpResourcesUnsupported")]
     McpResourcesUnsupported,
+    #[error("McpResourceCatalogUnavailable")]
+    McpResourceCatalogUnavailable,
     #[error("McpPromptsUnsupported")]
     McpPromptsUnsupported,
+    #[error("McpPromptCatalogUnavailable")]
+    McpPromptCatalogUnavailable,
     #[error("McpHeaderEnvironmentMissing")]
     McpHeaderEnvironmentMissing,
     #[error("McpBearerEnvironmentMissing")]

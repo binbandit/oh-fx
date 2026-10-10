@@ -512,6 +512,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::catalog_freshness::SnapshotMetadata;
+    use crate::feature_catalog::Snapshot;
+    use crate::features::resources::Resource;
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
     use crate::project_config::WorkspaceDiagnosticCause;
 
@@ -1427,6 +1430,32 @@ done
             failure.starts_with("MCP server did not complete startup within ")
                 && !failure.contains("startup_timeout_ms"),
             "{failure}"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_catalog_fetched_from_a_replaced_connection_is_never_published() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = exiting(state.path(), 1);
+        runtime.connect(StartupPhase::All).await;
+        let server = stopped_after_a_list_change(&runtime).await;
+        let Lifecycle::Ready(stopped) = server.lifecycle() else {
+            panic!("the server is not ready");
+        };
+        let listing = runtime.list_resources("fixture", false).await.unwrap();
+        let outdated = Snapshot {
+            items: Arc::from(vec![Resource {
+                uri: "memory://stale".to_owned(),
+                name: "stale".to_owned(),
+                title: None,
+            }]),
+            metadata: SnapshotMetadata::fresh(u64::MAX),
+        };
+        assert!(!server.publish_catalog(&stopped, outdated));
+        assert_eq!(
+            runtime.list_resources("fixture", false).await.unwrap(),
+            listing
         );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
