@@ -132,6 +132,45 @@ fn ask_sends_global_ancestor_and_workspace_rules_after_the_system_prompt() {
 }
 
 #[test]
+fn attached_images_bring_the_rules_of_their_directories_at_startup() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["seen"]))]);
+    let home = Home::new(
+        &server.base_url(),
+        &json!({"providers": {"portkey": {
+            "protocol": "openai-chat-completions",
+            "base_url": server.base_url(),
+            "auth": {"type": "none"},
+            "headers": {"x-portkey-api-key": "${PORTKEY_API_KEY}"},
+            "models": ["@openai/gpt-4o"],
+            "model_metadata": {"@openai/gpt-4o": {"supports_vision": true}}
+        }}}),
+    );
+    let project = home.write("projects/work/AGENTS.md", "WORKSPACE RULE\n");
+    let photos = home.write("projects/work/photos/AGENTS.md", "PHOTO RULE\n");
+    home.write("projects/work/other/AGENTS.md", "OTHER RULE\n");
+    fs::write(
+        home.path("projects/work/photos/shot.png"),
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01",
+    )
+    .expect("write the image");
+    let output = home.ask(
+        "projects/work",
+        &["ask", "--no-save", "--image", "photos/shot.png", "hi"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let texts = system_texts(&server.requests()[0]);
+    assert_eq!(
+        texts[2],
+        format!(
+            "{GUIDANCE}\n\n<project-rules from=\"{}\">\nWORKSPACE RULE\n</project-rules>\n\n<scoped-rules from=\"{}\" scope=\"{}\">\nPHOTO RULE\n</scoped-rules>",
+            display(&project),
+            display(&photos),
+            display(photos.parent().unwrap()),
+        )
+    );
+}
+
+#[test]
 fn the_context_setting_turns_project_instructions_off() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["done"])),

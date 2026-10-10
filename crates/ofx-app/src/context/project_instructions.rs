@@ -46,6 +46,7 @@ pub(crate) struct ProfileLocation<'a> {
 pub(crate) fn gather_project_context(
     workspace_root: &Path,
     profile: ProfileLocation<'_>,
+    targets: &[ApplicableTarget],
     limits: InstructionLimits,
 ) -> ProjectContext {
     let nothing_delivered = DeliveryState::default();
@@ -83,6 +84,9 @@ pub(crate) fn gather_project_context(
         selection.omit(workspace_root, OmissionReason::UnsafeTarget);
         None
     };
+    for target in targets {
+        selection.collect_target_candidates(target);
+    }
     selection.finish(global.as_ref(), project.as_ref())
 }
 
