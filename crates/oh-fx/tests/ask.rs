@@ -1500,6 +1500,65 @@ fn unsaved_images_over_the_pixel_limit_are_left_out_with_upstreams_notice() {
 }
 
 #[test]
+fn images_read_with_read_file_follow_the_tool_run_as_upstream_sends_them() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"shot.png"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["a pixel"])),
+    ]);
+    let home = Home::with_settings(&vision_settings(
+        &server.base_url(),
+        Some(json!({"supports_vision": true})),
+    ));
+    fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
+    let output = home.ask(&["ask", "--no-save", "what is in shot.png"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let body = requests[1].body_text();
+    assert!(
+        body.contains(concat!(
+            r#"{"role":"tool","content":"<path>shot.png</path>\n<content>image attached (image/png, 24 bytes)</content>","tool_call_id":"call_1"},"#,
+            r#"{"role":"user","content":[{"type":"text","text":"The tool \"read_file\" returned 1 image(s)."},"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}}]}]"#,
+        )),
+        "{body}"
+    );
+}
+
+#[test]
+fn images_read_with_read_file_stay_out_of_requests_to_unconfirmed_models() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "call_1",
+            "read_file",
+            r#"{"path":"shot.png"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["no picture"])),
+    ]);
+    let home = Home::with_settings(&vision_settings(&server.base_url(), None));
+    fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
+    let output = home.ask(&["ask", "--no-save", "what is in shot.png"], &KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let body = server.requests()[1].json();
+    let messages = body["messages"].as_array().unwrap();
+    let tool = messages
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap();
+    assert!(
+        tool["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("[Tool images were retained but not sent: oh-fx could not confirm image input support for this model")
+    );
+    assert!(!server.requests()[1].body_text().contains("image_url"));
+}
+
+#[test]
 fn images_stop_before_any_request_when_the_model_cannot_take_them() {
     let server = FakeServer::start([]);
     for (metadata, notice, code) in [

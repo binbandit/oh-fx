@@ -64,3 +64,6 @@ pub(super) fn image_tool_result(
         }],
     })
 }
+
+#[cfg(test)]
+mod tests;
