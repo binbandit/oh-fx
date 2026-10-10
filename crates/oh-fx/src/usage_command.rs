@@ -7,7 +7,7 @@ use ofx_app::UsageSnapshot;
 use ofx_cli::{OutputFormat, TopLevelKind, UsageArgs, command_failure_json};
 use ofx_config::ProfilePaths;
 use ofx_contract::{UsageReport, UsageScope};
-use ofx_session::ProfileUsage;
+use ofx_session::{ProfileUsage, UsageRecovery};
 
 const HOME_NOT_SET: &str = "HomeNotSet";
 
@@ -42,8 +42,9 @@ fn collect(scope: UsageScope) -> Result<UsageReport, String> {
         return Err(HOME_NOT_SET.to_owned());
     }
     let paths = ProfilePaths::from_environment().ok_or_else(|| HOME_NOT_SET.to_owned())?;
+    let recovery = UsageRecovery::collect(&paths.data);
     ProfileUsage::open(&paths.data)
-        .and_then(|mut usage| usage.report(scope, now_ms()))
+        .and_then(|mut usage| usage.report(scope, now_ms(), &recovery))
         .map_err(|error| error.to_string())
 }
 

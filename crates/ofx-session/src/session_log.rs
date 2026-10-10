@@ -7,6 +7,8 @@ mod turn_recovery;
 mod turn_restore;
 mod usage_checkpoint;
 
+use usage_checkpoint::UsageRecoveryTracking;
+
 use std::fs::File;
 use std::mem;
 use std::process;
@@ -120,6 +122,7 @@ pub struct WritableSession {
     recovery: Recovery,
     work_id: Option<String>,
     usage: Usage,
+    usage_recovery: UsageRecoveryTracking,
 }
 
 impl WritableSession {
@@ -587,6 +590,7 @@ pub(crate) fn start_session(
                 recovery: Recovery::Absent,
                 work_id: None,
                 usage: Usage::fresh(),
+                usage_recovery: UsageRecoveryTracking::default(),
             }
         });
     let session = match prepared {
@@ -689,6 +693,7 @@ fn resume_owned(
         recovery,
         work_id: None,
         usage,
+        usage_recovery: UsageRecoveryTracking::default(),
     })
 }
 

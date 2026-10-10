@@ -214,6 +214,13 @@ impl UsageSnapshot {
         self.incidents.push(incident);
     }
 
+    pub(crate) fn needs_profile_recovery(&self) -> bool {
+        self.settled_through_sequence != self.next_sequence.saturating_sub(1)
+            || !self.pending.is_empty()
+            || !self.publication_backlog.is_empty()
+            || !self.incidents.is_empty()
+    }
+
     pub(crate) fn validate(&self) -> Result<(), UsageSnapshotError> {
         self.validate_contract(false).map(|_| ())
     }

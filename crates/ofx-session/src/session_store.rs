@@ -28,8 +28,9 @@ use crate::session_summary_codec::{
     ResumablePage, ResumeContinuation, SessionSource, SessionSummary, listed_page_from_summaries,
     resumable_page_from_summaries, sort_summaries_newest_first,
 };
+use crate::usage_recovery_registry::RecoveryRegistry;
 
-const SESSIONS_DIR: &str = "sessions";
+pub(crate) const SESSIONS_DIR: &str = "sessions";
 const CONTINUE_DIR: &str = "continue";
 const MAX_REMEMBERED_SESSION_BYTES: usize = 256;
 const MAX_LATEST_SELECTION_RETRIES: usize = 3;
@@ -147,7 +148,7 @@ impl SessionStore {
         let sessions = self.writable_sessions()?;
         let id = generate_session_id().ok_or(SessionError::SessionStartFailed)?;
         let now = now_ms();
-        start_session(
+        let session = start_session(
             sessions,
             SessionMetadata {
                 id,
@@ -160,7 +161,15 @@ impl SessionStore {
                 title: None,
                 subagent_child: false,
             },
-        )
+        )?;
+        Ok(self.tracked(session))
+    }
+
+    fn tracked(&self, mut session: WritableSession) -> WritableSession {
+        if let Some(data) = self.data.as_ref().and_then(|data| data.try_clone().ok()) {
+            session.track_usage_recovery(RecoveryRegistry::new(data));
+        }
+        session
     }
 
     #[must_use]
@@ -180,10 +189,11 @@ impl SessionStore {
         id: &str,
         deadline: Duration,
     ) -> Result<WritableSession, SessionError> {
-        match self.import_from_fx(id)? {
+        let session = match self.import_from_fx(id)? {
             Some(imported) => self.open_imported(id, imported),
             None => self.open_within(id, deadline),
-        }
+        }?;
+        Ok(self.tracked(session))
     }
 
     pub(crate) fn open_imported(
@@ -279,12 +289,12 @@ impl SessionStore {
     ) -> Result<WritableSession, SessionError> {
         let session = match summary.source {
             SessionSource::Fx => self.open_importing(&summary.id, self.lock_deadline)?,
-            SessionSource::OhFx => resume_session(
+            SessionSource::OhFx => self.tracked(resume_session(
                 self.writable_sessions()
                     .map_err(|_| SessionError::SessionNotFound)?,
                 &summary.id,
                 self.lock_deadline,
-            )?,
+            )?),
         };
         if session.metadata().workspace_root == self.workspace_root {
             Ok(session)

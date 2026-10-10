@@ -47,7 +47,7 @@ note = "Signals the still-running background run_command processes of fx 0.0.7 a
 upstream = "src/core/session/profile_usage_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/profile_usage_runtime.rs"]
-note = "Rolling reports are built from the durable ledger, with unresolved pending markers as pending incidents and a marker newer than the report as an incomplete one; the publisher sink appends each event under one mutex and reports a conflicting duplicate as ConflictingUsagePublication, and process exit abandons the ledger lock without the mutex; the recovered session usage input and the three-scope set the dashboard loads arrive with usage recovery and the dashboard."
+note = "Rolling reports are built from the durable ledger, with unresolved pending markers as pending incidents and a marker newer than the report as an incomplete one; the publisher sink appends each event under one mutex and reports a conflicting duplicate as ConflictingUsagePublication, and process exit abandons the ledger lock without the mutex; the recovered session usage extends coverage, adds its records and makes those the ledger lacks pending incidents, as buildSnapshot does; the three-scope set the dashboard loads arrives with the dashboard."
 
 [[file]]
 upstream = "src/core/session/profile_usage_store.zig"
@@ -186,8 +186,8 @@ note = "Buffered line reading exists, and the committed prefix of an fx schema-v
 [[file]]
 upstream = "src/core/session/session_store.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists, a listing can include the sessions fx saves in ~/.fx/sessions, read-only, resuming one by id or from the session picker copies it into oh-fx's store, and -c and resume last also reach the session fx remembers and the newest fx session of the workspace, converting a schema-v3 session fx 0.0.1 to 0.0.7 saved; legacy snapshot migration is not ported because no public fx release wrote those snapshots, the legacy image repair comes with the rest of NEW-G, the .resume-catalog index and history-cache.bin exist, and doctor (OH-41) and v2 routing (OH-27) remain."
+modules = ["crates/ofx-session/src/session_store.rs", "crates/ofx-session/src/usage_recovery_registry.rs"]
+note = "Modern create, resume and list storage exists, the usage recovery markers (prepare, finish, mark, clear and list, with upstream's marker format, modes and 512-session bound) wrap each usage checkpoint of the sessions it opens, a listing can include the sessions fx saves in ~/.fx/sessions, read-only, resuming one by id or from the session picker copies it into oh-fx's store, and -c and resume last also reach the session fx remembers and the newest fx session of the workspace, converting a schema-v3 session fx 0.0.1 to 0.0.7 saved; legacy snapshot migration is not ported because no public fx release wrote those snapshots, the legacy image repair comes with the rest of NEW-G, the .resume-catalog index and history-cache.bin exist, and doctor (OH-41) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"
@@ -231,8 +231,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/session/usage_recovery.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/usage_recovery.rs"]
+note = "collectFromHomeConservative exists for oh-fx's own sessions: only marked sessions are read, a checkpoint is trusted when it is newer than its marker, their publication backlog, incidents and pending generations are folded within the 4096-record bounds, an unsettled or unreadable session or a marker newer than its checkpoint makes the recovery unknown, and an unreadable index does too; the cancelable variant and the sessions v2 markers wait for the dashboard and the v2 store."
 
 [[file]]
 upstream = "src/core/session/usage_report.zig"

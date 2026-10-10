@@ -10,8 +10,22 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_usage::{PublicationBatch, ReserveFailure};
 use crate::session_usage_sidecar;
+use crate::usage_recovery_registry::RecoveryRegistry;
+
+#[derive(Default)]
+pub(crate) struct UsageRecoveryTracking {
+    registry: Option<RecoveryRegistry>,
+    marked: bool,
+}
 
 impl WritableSession {
+    pub(crate) fn track_usage_recovery(&mut self, registry: RecoveryRegistry) {
+        self.usage_recovery = UsageRecoveryTracking {
+            registry: Some(registry),
+            marked: self.usage.snapshot(now_ms()).needs_profile_recovery(),
+        };
+    }
+
     pub(crate) fn begin_request(&mut self) -> Result<RequestTicket, SessionError> {
         let now = now_ms();
         let sequence = self.usage.reserve(now).map_err(|failure| match failure {
@@ -96,7 +110,23 @@ impl WritableSession {
 
     fn write_usage(&mut self, now: i64) -> Result<(), SessionError> {
         let snapshot = self.usage.snapshot(now);
-        session_usage_sidecar::write(&self.owned.dir, &self.metadata.id, &snapshot)
+        let owed = snapshot.needs_profile_recovery();
+        let marked = self.usage_recovery.marked;
+        if owed && let Some(registry) = &self.usage_recovery.registry {
+            let updated_at_ms = self.metadata.updated_at_ms;
+            let protected = if marked {
+                updated_at_ms
+            } else {
+                now.max(updated_at_ms.saturating_add(1))
+            };
+            registry.mark(&self.metadata.id, protected, !marked)?;
+        }
+        session_usage_sidecar::write(&self.owned.dir, &self.metadata.id, &snapshot)?;
+        if !owed && let Some(registry) = &self.usage_recovery.registry {
+            registry.clear(&self.metadata.id)?;
+        }
+        self.usage_recovery.marked = owed;
+        Ok(())
     }
 }
 

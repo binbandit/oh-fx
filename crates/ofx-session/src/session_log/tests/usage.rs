@@ -13,6 +13,7 @@ use crate::session_conversation_log::SessionLog;
 use crate::session_usage::Availability;
 use crate::session_usage_sidecar::{SIDECAR_FILE, load_conversation};
 use crate::usage_publisher::UsagePublisher;
+use crate::usage_recovery_registry::RecoveryRegistry;
 
 const FRESH_SIDECAR: &str = "{\"schema_version\":1,\"session_id\":\"fresh\",\"snapshot\":{\"schema_version\":3,\"billing\":\"complete\",\"api_duration_complete\":true,\"wall_duration_complete\":true,\"code_complete\":true,\"next_sequence\":1,\"settled_through_sequence\":0,\"api_duration_ms\":0,\"wall_duration_ms\":0,\"total_cost\":0,\"input_tokens\":0,\"output_tokens\":0,\"cache_read_tokens\":0,\"cache_write_tokens\":0,\"reasoning_tokens\":0,\"request_count\":0,\"billable_web_search_calls\":0,\"lines_added\":0,\"lines_removed\":0,\"models\":[],\"pending\":[],\"publication_backlog\":[],\"incidents\":[]}}";
 
@@ -47,6 +48,10 @@ fn exact_billing(generation_id: &str) -> ProviderBilling {
 fn publishing_log(session: &Arc<Mutex<WritableSession>>, publisher: &UsagePublisher) -> SessionLog {
     SessionLog::new(Arc::clone(session), codex(), RouteCredential::configured())
         .publishing_with(Some(publisher.scheduler()))
+}
+
+fn recovery_registry(data: &Path) -> RecoveryRegistry {
+    RecoveryRegistry::new(PrivateDir::open_existing(data).unwrap().unwrap())
 }
 
 fn settle_exact(log: &SessionLog, generation_id: &str) {
@@ -297,7 +302,10 @@ fn a_session_publishes_its_exact_usage_to_the_profile_ledger() {
 fn an_abandoned_ledger_leaves_the_backlog_for_the_next_resume() {
     let fixture = Fixture::new();
     let data = fixture.root.path().join("data/oh-fx");
-    let session = Arc::new(Mutex::new(fixture.start("held")));
+    let mut started = fixture.start("held");
+    started.track_usage_recovery(recovery_registry(&data));
+    let session = Arc::new(Mutex::new(started));
+    let marker = data.join("usage-recovery/held");
     let profile = ProfilePublisher::open(&data).unwrap();
     profile.abandon_for_process_exit();
     let publisher = UsagePublisher::new(&session, profile);
@@ -308,9 +316,12 @@ fn an_abandoned_ledger_leaves_the_backlog_for_the_next_resume() {
     assert_eq!(held.billing, Availability::Pending);
     assert_eq!(held.publication_backlog.len(), 1);
     assert!(!data.join("usage.jsonl").exists());
+    assert!(marker.exists());
     drop((log, publisher, session));
 
-    let resumed = Arc::new(Mutex::new(fixture.resume("held").unwrap()));
+    let mut reopened = fixture.resume("held").unwrap();
+    reopened.track_usage_recovery(recovery_registry(&data));
+    let resumed = Arc::new(Mutex::new(reopened));
     let publisher = UsagePublisher::new(&resumed, ProfilePublisher::open(&data).unwrap());
     publisher.schedule();
     drop(publisher);
@@ -318,6 +329,7 @@ fn an_abandoned_ledger_leaves_the_backlog_for_the_next_resume() {
     assert_eq!(settled.billing, Availability::Complete);
     assert!(settled.publication_backlog.is_empty());
     assert_eq!(settled.input_tokens, 17);
+    assert!(!marker.exists());
     let ledger = ProfileUsageStore::open(&data).unwrap().load().unwrap();
     assert_eq!(ledger.facts, held.publication_backlog);
 }

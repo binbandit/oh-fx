@@ -29,6 +29,6 @@ note = "Workspace, config, MCP config, auth, startup, state, session count, git 
 
 [[file]]
 upstream = "src/core/cli/usage_cli_runtime.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/oh-fx/src/usage_command.rs"]
-note = "The command reports the --period window from the profile usage ledger without creating profile state, with upstream's HOME, unsafe-storage and unavailable failures; folding in unpublished session usage from the recovery registry arrives with usage recovery."
+note = "The command collects unpublished session usage from the recovery registry and reports the --period window from it and the profile usage ledger without creating profile state, with upstream's HOME, unsafe-storage and unavailable failures."
