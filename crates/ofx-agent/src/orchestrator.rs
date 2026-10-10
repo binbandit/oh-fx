@@ -224,8 +224,7 @@ struct Turn {
     shell_corrections: ShellValidationRetry,
     shell_failures: ShellExecutionFailureRetry,
     fast_mode: bool,
-    fast_notice_shown: bool,
-    tool_image_notice_shown: bool,
+    notices: CatalogNotices,
     compaction: TurnCompaction,
     raw_outputs: Vec<RecordedOutput>,
     earlier_files: EarlierEvidence,
@@ -241,6 +240,12 @@ struct Turn {
     trace: TraceContext,
     selected_tools: SelectedTools,
     trail: ToolTrail,
+}
+
+#[derive(Default)]
+struct CatalogNotices {
+    fast: bool,
+    tool_images: bool,
 }
 
 #[derive(Default)]
@@ -611,8 +616,7 @@ impl Agent {
             shell_corrections: ShellValidationRetry::default(),
             shell_failures: ShellExecutionFailureRetry::default(),
             fast_mode: self.config.fast_mode,
-            fast_notice_shown: false,
-            tool_image_notice_shown: false,
+            notices: CatalogNotices::default(),
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
             earlier_files: EarlierEvidence::default(),
@@ -1186,8 +1190,8 @@ impl Agent {
         let options = known
             .model
             .provider_options(self.config.reasoning_effort.as_deref(), turn.fast_mode);
-        if turn.fast_mode && !options.fast && known.catalog_unavailable && !turn.fast_notice_shown {
-            turn.fast_notice_shown = true;
+        if turn.fast_mode && !options.fast && known.catalog_unavailable && !turn.notices.fast {
+            turn.notices.fast = true;
             events(UiEvent::Operational {
                 turn_id: turn.id,
                 text: format!("{FAST_UNAVAILABLE_NOTICE}\n"),
@@ -1726,7 +1730,7 @@ impl Agent {
                 turn.shell_corrections.observe(call, &output.content);
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
-            let images = output.images;
+            let images = output.images.into_vec();
             let bytes = output.content.len();
             let result_kind = turn_trace::result_kind(&output);
             let (model_output, truncated) =

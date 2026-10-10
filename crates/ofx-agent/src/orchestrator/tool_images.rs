@@ -46,9 +46,9 @@ impl Agent {
         }
         if support == ImageInputSupport::Unknown
             && known.is_some_and(|known| known.catalog_unavailable)
-            && !turn.tool_image_notice_shown
+            && !turn.notices.tool_images
         {
-            turn.tool_image_notice_shown = true;
+            turn.notices.tool_images = true;
             events(UiEvent::Operational {
                 turn_id: turn.id,
                 text: format!("{CATALOG_UNAVAILABLE_NOTICE}\n"),
