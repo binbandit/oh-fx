@@ -289,7 +289,7 @@ mod stored {
             let fixture = Fixture::start(token).await;
             fixture
                 .store()
-                .save("remote", &fixture.credentials(1, refresh))
+                .save(&fixture.lookup(), &fixture.credentials(1, refresh))
                 .unwrap();
             assert_eq!(authentication_after(&fixture).await, expected, "{token}");
         }
@@ -455,6 +455,58 @@ mod stored {
             .unwrap()
             .unwrap();
         assert_eq!(refreshed.access_token.as_str(), "renewed-token");
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_lands_after_a_new_challenge_is_discarded() {
+        let state = Arc::new(AuthState::default());
+        let challenged = Arc::clone(&state);
+        let server = FakeServer::start(move |request| {
+            if request.path == "/token" {
+                challenged.store_pending(Challenge {
+                    scope: Some("tools.admin".to_owned()),
+                    ..Challenge::default()
+                });
+            }
+            reply(request, RENEWED)
+        })
+        .await;
+        let fixture = Fixture {
+            server,
+            data: tempfile::tempdir().unwrap(),
+        };
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let auth = HttpAuth::resolve(
+            &fixture.config(),
+            Some(fixture.store()),
+            &state,
+            || Ok(oauth_client()),
+            &|_| None,
+        )
+        .await
+        .ok()
+        .unwrap();
+        let builder = auth
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization(builder).as_deref(),
+            Some("Bearer stored-token")
+        );
+        assert_eq!(token_requests(&fixture), 1);
+        assert_eq!(
+            state.authentication(&fixture.config()),
+            crate::health::AuthenticationState::Required
+        );
+        let saved = fixture.store().load(&fixture.lookup()).unwrap().unwrap();
+        assert_eq!(saved.access_token.as_str(), "stored-token");
     }
 
     #[tokio::test]

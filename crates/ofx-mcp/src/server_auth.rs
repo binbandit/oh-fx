@@ -432,4 +432,7 @@ pub(crate) async fn authenticate(
 }
 
 #[cfg(test)]
+mod capture_tests;
+
+#[cfg(test)]
 mod tests;

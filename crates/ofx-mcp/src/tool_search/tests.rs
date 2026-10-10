@@ -277,6 +277,29 @@ async fn authentication_guidance_needs_an_observed_challenge() {
 }
 
 #[tokio::test]
+async fn oauth_guidance_needs_a_challenge_and_comes_before_the_bearer_guidance() {
+    let variable = "OH_FX_TOOL_SEARCH_UNSET_TOKEN";
+    assert!(std::env::var_os(variable).is_none());
+    let mut broken = failing("broken");
+    broken.bearer_token_env = Some(variable.to_owned());
+    broken.auth = Some(crate::mcp_contract::McpAuthConfig::default());
+    let runtime = connected(vec![broken], &[]).await;
+    assert_eq!(
+        search(&runtime, "broken", None).model_output,
+        format!(
+            r#"{{"tools":[],"count":0,"authentication_required":{{"server":"broken","interactive":false,"environment":"{variable}","message":"Set this environment variable before starting oh-fx."}}}}"#
+        )
+    );
+    runtime_server(&runtime, "broken")
+        .auth
+        .store_pending(crate::mcp_auth::Challenge::default());
+    assert_eq!(
+        search(&runtime, "broken", None).model_output,
+        r#"{"tools":[],"count":0,"authentication_required":{"server":"broken","interactive":true,"message":"Run /mcp auth broken --open in an interactive oh-fx session."}}"#
+    );
+}
+
+#[tokio::test]
 async fn an_oversized_result_omits_trailing_tools_with_a_cursor_and_a_notice() {
     let fixture = Fixture::new();
     let long = format!("List Datadog monitors {}", "x".repeat(300));
