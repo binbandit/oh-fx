@@ -797,8 +797,8 @@ fn responses_reasoning_replay_keeps_the_streamed_copy_of_a_live_reencrypted_item
     let completion = stream.finish().unwrap();
     assert_eq!(completion.content.as_deref(), Some(answer));
     assert_eq!(completion.finish, ResponsesFinish::Stop);
-    assert_eq!(completion.usage.input_tokens, Some(2967));
-    assert_eq!(completion.usage.output_tokens, Some(79));
+    assert_eq!(completion.usage.input, Some(2967));
+    assert_eq!(completion.usage.output, Some(79));
     let state: Value = serde_json::from_str(replay_of(&completion).unwrap()).unwrap();
     assert_eq!(
         state,
@@ -1044,8 +1044,9 @@ fn responses_terminal_failure_classification_is_conservative_and_diagnostics_are
         let detail = failure.detail(|text| text);
         assert!(detail.len() <= 256);
         assert!(detail.starts_with(code));
-        assert_eq!(completion.usage.input_tokens, Some(7));
-        assert_eq!(completion.usage.output_tokens, Some(3));
+        assert_eq!(completion.usage.input, Some(7));
+        assert_eq!(completion.usage.output, Some(3));
+        assert_eq!(completion.generation_id.as_deref(), Some("resp_failure"));
     }
     let mut stream = Stream::new();
     stream
@@ -1559,12 +1560,93 @@ fn responses_usage_projection_retains_optional_cached_and_reasoning_detail() {
             .clone()
     };
     let usage = parse_usage(&object(
-        r#"{"usage": {"input_tokens": 17, "output_tokens": 7, "input_tokens_details": {"cached_tokens": 5}}}"#,
+        r#"{"usage": {"input_tokens": 17, "output_tokens": 7, "input_tokens_details": {"cached_tokens": 5, "cache_write_tokens": 2}, "output_tokens_details": {"reasoning_tokens": 3}}}"#,
     ));
-    assert_eq!(usage.input_tokens, Some(17));
-    assert_eq!(usage.output_tokens, Some(7));
     assert_eq!(
-        parse_usage(&object(r#"{"usage": {"input_tokens": -1}}"#)).input_tokens,
+        usage,
+        UsageCounts {
+            input: Some(17),
+            output: Some(7),
+            cache_read: Some(5),
+            cache_write: Some(2),
+            reasoning: Some(3),
+        }
+    );
+    assert_eq!(
+        parse_usage(&object(r#"{"usage": {"input_tokens": -1}}"#)).input,
+        None
+    );
+    let partial = parse_usage(&object(
+        r#"{"usage": {"input_tokens": 4, "input_tokens_details": null, "output_tokens_details": {"reasoning_tokens": -2}}}"#,
+    ));
+    assert_eq!(
+        partial,
+        UsageCounts {
+            input: Some(4),
+            ..UsageCounts::default()
+        }
+    );
+}
+
+#[test]
+fn responses_protocol_owns_one_subscription_billing_projection() {
+    let usage = UsageCounts {
+        input: Some(17),
+        output: Some(7),
+        cache_read: Some(5),
+        cache_write: Some(2),
+        reasoning: Some(3),
+    };
+    assert_eq!(
+        subscription_billing("resp_1".to_owned(), "codex", "gpt-test", 42, usage),
+        Some(ProviderBilling {
+            generation_id: "resp_1".to_owned(),
+            created_at_ms: 42,
+            model: "codex/gpt-test".to_owned(),
+            total_cost: 0.0,
+            input_tokens: 17,
+            output_tokens: 7,
+            cache_read_tokens: 5,
+            cache_write_tokens: 2,
+            reasoning_tokens: Some(3),
+            billable_web_search_calls: 0,
+        })
+    );
+
+    let bounded = subscription_billing(
+        "resp_2".to_owned(),
+        "grok",
+        "grok-test",
+        43,
+        UsageCounts {
+            input: Some(10),
+            output: Some(4),
+            cache_read: Some(11),
+            cache_write: Some(12),
+            reasoning: Some(5),
+        },
+    )
+    .unwrap();
+    assert_eq!(bounded.model, "grok/grok-test");
+    assert_eq!(
+        (
+            bounded.cache_read_tokens,
+            bounded.cache_write_tokens,
+            bounded.reasoning_tokens
+        ),
+        (0, 0, None)
+    );
+
+    let input_only = UsageCounts {
+        input: Some(10),
+        ..UsageCounts::default()
+    };
+    assert_eq!(
+        subscription_billing("resp_3".to_owned(), "codex", "gpt-test", 44, input_only),
+        None
+    );
+    assert_eq!(
+        subscription_billing("resp_4".to_owned(), "codex", "gpt-test", -1, usage),
         None
     );
 }

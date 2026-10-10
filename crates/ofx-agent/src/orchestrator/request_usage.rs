@@ -27,9 +27,19 @@ impl<'a> RequestUsage<'a> {
         self,
         streamed: &Result<Completion, ProviderError>,
     ) -> Result<(), LogFailure> {
-        match (self.log, self.begun) {
-            (Some(log), Some(Ok(ticket))) => log.finish_request(ticket, delivery_outcome(streamed)),
-            (_, Some(Err(failure))) => Err(failure),
+        match (self.log, self.begun, streamed) {
+            (
+                Some(log),
+                Some(Ok(ticket)),
+                Ok(Completion {
+                    billing: Some(billing),
+                    ..
+                }),
+            ) => log.finish_exact_request(ticket, billing),
+            (Some(log), Some(Ok(ticket)), _) => {
+                log.finish_request(ticket, delivery_outcome(streamed))
+            }
+            (_, Some(Err(failure)), _) => Err(failure),
             _ => Ok(()),
         }
     }

@@ -5,7 +5,7 @@ use crate::file_evidence::FileEvidence;
 use crate::ids::{ToolCallId, TurnId};
 use crate::types::{
     ChatMessage, CommandProcessPresentation, FileChangeStats, ModelRecoveryAction,
-    ModelRecoveryCause, ProviderReplay, ToolCall, ToolResultStatus,
+    ModelRecoveryCause, ProviderBilling, ProviderReplay, ToolCall, ToolResultStatus,
 };
 
 pub const INTERRUPTED_BEFORE_COMPLETION: &str = "The previous response ended before completion.";
@@ -200,6 +200,12 @@ pub trait ConversationLog: Send + Sync {
         &self,
         ticket: RequestTicket,
         outcome: DeliveryOutcome,
+    ) -> Result<(), LogFailure>;
+
+    fn finish_exact_request(
+        &self,
+        ticket: RequestTicket,
+        billing: &ProviderBilling,
     ) -> Result<(), LogFailure>;
 
     fn record_committed_lines(&self, change: FileChangeStats);

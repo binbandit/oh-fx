@@ -134,7 +134,7 @@ note = "Both implementations saturate byte counters, split spans on ASCII whites
 upstream = "src/core/shared/types.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/types.rs", "crates/ofx-contract/src/ui.rs", "crates/ofx-contract/src/file_evidence.rs"]
-note = "Core messages, file evidence, permission/review/events and usage contracts exist, tool calls carry upstream's provider result and execution provenance, and turn summaries with their token progress exist, and image attachments exist; tool images, the other rich persisted presentations and diagnostic metrics are absent."
+note = "Core messages, file evidence, permission/review/events, usage contracts and exact provider billing exist, with the cache and reasoning counters of Usage kept in the gateway's own usage counts, tool calls carry upstream's provider result and execution provenance, and turn summaries with their token progress exist, and image attachments exist; tool images, the other rich persisted presentations and diagnostic metrics are absent."
 
 [[file]]
 upstream = "src/core/shared/unicode_display_data.zig"

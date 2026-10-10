@@ -19,7 +19,7 @@ pub(crate) const CONTENT_FILTER: &str = "content-filter";
 pub(crate) const ERROR: &str = "error";
 pub(crate) const MISSING_FINISH: &str = "";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Settlement<'a> {
     Completed(&'a Completion),
     Finished(&'static str),

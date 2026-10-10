@@ -56,9 +56,9 @@ impl ReviewFailure {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ReviewTransportOutcome {
-    Completion(Completion),
+    Completion(Box<Completion>),
     TransientFailure,
     PermanentFailure,
     TimedOut,

@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt::Write;
 use std::future::Future;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ofx_config::ResolvedConnection;
 use ofx_contract::{
@@ -13,6 +13,7 @@ use ofx_http::{
     ClientError, ConnectionOptions, SseDecoder, SseError, build_connection_client,
     certificate_bundle_load_failure,
 };
+use ofx_text::lowercase_hex;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, LOCATION, RETRY_AFTER};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use tokio_util::sync::CancellationToken;
@@ -24,6 +25,7 @@ use crate::chat_completions_protocol::{
 use crate::gateway_error_format::{
     format_http_error_message, format_http_recovery_diagnostic, sanitize_external_text,
 };
+use crate::responses_protocol::subscription_billing;
 use crate::secret_mask::mask_configured_secrets;
 use crate::stall_watch::StallWatch;
 
@@ -47,6 +49,7 @@ const RETRYABLE_CONNECT_ERRORS: [io::ErrorKind; 9] = [
 ];
 
 pub struct ChatCompletionsProvider {
+    id: String,
     client: reqwest::Client,
     chat_url: String,
     bearer_token: Option<String>,
@@ -57,6 +60,7 @@ pub struct ChatCompletionsProvider {
 impl ChatCompletionsProvider {
     pub fn new(connection: ResolvedConnection, user_agent: &str) -> Result<Self, ClientError> {
         let ResolvedConnection {
+            id,
             chat_url,
             bearer_token,
             headers,
@@ -74,6 +78,7 @@ impl ChatCompletionsProvider {
             follow_redirects: false,
         })?;
         Ok(Self {
+            id,
             client,
             chat_url,
             bearer_token,
@@ -95,7 +100,7 @@ impl ChatCompletionsProvider {
             return Err(ProviderError::cancelled());
         }
         let prepared = build_request(request, self.options).map_err(protocol_failure)?;
-        self.post(prepared, sink, cancel).await
+        self.post(prepared, request.model, sink, cancel).await
     }
 
     async fn complete_body(
@@ -113,12 +118,13 @@ impl ChatCompletionsProvider {
             body: body.into_bytes(),
             selection,
         };
-        self.post(prepared, sink, cancel).await
+        self.post(prepared, request.model, sink, cancel).await
     }
 
     async fn post(
         &self,
         prepared: PreparedRequest,
+        model: &str,
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
@@ -153,9 +159,17 @@ impl ChatCompletionsProvider {
             limits,
             secrets: &self.secrets,
         };
-        stream
+        let mut completion = stream
             .consume(&mut response, &mut reducer, sink, cancel)
-            .await
+            .await?;
+        completion.billing = reducer
+            .take_generation_id()
+            .or_else(local_generation_id)
+            .and_then(|id| {
+                subscription_billing(id, &self.id, model, now_ms(), reducer.usage_counts())
+            })
+            .map(Box::new);
+        Ok(completion)
     }
 
     async fn unexpected_body(
@@ -184,6 +198,20 @@ impl ChatCompletionsProvider {
         ProviderError::new(ProviderErrorKind::Protocol, "UnexpectedContentType")
             .with_detail(sanitized(detail, &self.secrets))
     }
+}
+
+fn local_generation_id() -> Option<String> {
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).ok()?;
+    Some(format!("local-{}", lowercase_hex(&random)))
+}
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 pub(crate) fn sanitized(text: String, secrets: &[String]) -> String {

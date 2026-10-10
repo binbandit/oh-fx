@@ -111,7 +111,7 @@ fn send<'a>(
             .stream_body(request, body, &mut discarded, cancel)
             .await
         {
-            Ok(completion) => ReviewTransportOutcome::Completion(completion),
+            Ok(completion) => ReviewTransportOutcome::Completion(Box::new(completion)),
             Err(error) => failure(&error),
         }
     })
@@ -122,7 +122,7 @@ fn responses_failure(error: &ProviderError) -> ReviewTransportOutcome {
         ProviderErrorKind::Cancelled => ReviewTransportOutcome::Cancelled,
         ProviderErrorKind::Timeout => ReviewTransportOutcome::TimedOut,
         ProviderErrorKind::Protocol if error.code == OUTPUT_TRUNCATED => {
-            ReviewTransportOutcome::Completion(undecided())
+            ReviewTransportOutcome::Completion(Box::new(undecided()))
         }
         ProviderErrorKind::ProviderError if error.code == CONTENT_FILTERED => {
             ReviewTransportOutcome::PermanentFailure
@@ -150,7 +150,7 @@ fn chat_completions_failure(error: &ProviderError) -> ReviewTransportOutcome {
         ProviderErrorKind::Cancelled => ReviewTransportOutcome::Cancelled,
         ProviderErrorKind::Timeout => ReviewTransportOutcome::TimedOut,
         ProviderErrorKind::Protocol if error.code == REQUIRED_TOOL_MISSING => {
-            ReviewTransportOutcome::Completion(undecided())
+            ReviewTransportOutcome::Completion(Box::new(undecided()))
         }
         _ => ReviewTransportOutcome::PermanentFailure,
     }
@@ -162,6 +162,7 @@ fn undecided() -> Completion {
         tool_calls: Vec::new(),
         finish_reason: FinishReason::Stop,
         usage: Usage::default(),
+        billing: None,
         provider_replay: None,
     }
 }
