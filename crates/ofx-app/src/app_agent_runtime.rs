@@ -1127,8 +1127,7 @@ impl Controller {
         prompt: &QueuedPrompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
-        self.agent.settle_lifecycle().await;
-        hooks::report_working(self.herdr.as_ref()).await;
+        self.report_working().await;
         self.state.skills().refresh();
         self.start_title_generation(&prompt.text);
         let cancel = CancellationToken::new();
@@ -1226,6 +1225,11 @@ impl Controller {
         self.remember_session_title(&prompt.text);
         self.settle_deferred_commands(open).await;
         open
+    }
+
+    async fn report_working(&mut self) {
+        self.agent.settle_lifecycle().await;
+        hooks::report_working(self.herdr.as_ref()).await;
     }
 
     async fn drain_installations(&mut self) {
