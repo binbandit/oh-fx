@@ -720,6 +720,18 @@ mod tests {
     }
 
     #[test]
+    fn prompt_content_writes_numbers_back_as_serde_json_holds_them() {
+        let outcome = parse_get_outcome(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"messages":[{"role":"user","content":{"type":"text","text":"x","_meta":{"n":1e3,"r":0.50,"i":7}}}]}}"#,
+            Limits::default(),
+        );
+        assert_eq!(
+            messages(outcome)[0].content_json,
+            r#"{"type":"text","text":"x","_meta":{"n":1000.0,"r":0.5,"i":7}}"#
+        );
+    }
+
+    #[test]
     fn prompt_content_enforces_the_shared_json_depth_boundary() {
         let limits = Limits {
             common: common::Limits {
