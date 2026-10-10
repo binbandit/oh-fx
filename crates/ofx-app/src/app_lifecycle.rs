@@ -12,8 +12,8 @@ use std::time::Duration;
 use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{
-    BoxFuture, DynamicTools, HookRegistrationError, Notice, NoticeTone, PermissionMode, UiCommand,
-    UiEvent,
+    BoxFuture, DynamicTools, HookRegistrationError, HookView, Notice, NoticeTone, PermissionMode,
+    UiCommand, UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
@@ -320,7 +320,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         lifecycle: lifecycle.as_ref().map(|client| {
             Box::new(HerdrObserver(Arc::clone(client))) as Box<dyn ofx_tui::ForegroundLifecycle>
         }),
-        hooks,
+        hooks: hooks.clone(),
         steering: Some(Box::new(WaitingSteering(Arc::clone(&steering)))),
         opening: session.opening,
         statusline: session.setup.statusline(),
@@ -342,7 +342,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         session.executions,
         steering,
         runtime,
-        lifecycle,
+        (lifecycle, hooks),
         upgrade.shortcut(),
     );
     host(
@@ -363,7 +363,7 @@ fn agent_work(
     executions: ManagedExecutions,
     steering: Arc<WorkerRuntime>,
     runtime: Runtime,
-    herdr: Option<Arc<Herdr>>,
+    (herdr, hooks): (Option<Arc<Herdr>>, HookView),
     upgrade: UpgradeShortcut,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
     let refreshes = setup.refreshes();
@@ -377,7 +377,7 @@ fn agent_work(
             pick_at_start,
             steering,
         )
-        .with_herdr(herdr)
+        .with_lifecycle(herdr, hooks)
         .requesting_ultrafast(ultrafast_requested)
         .with_upgrade(upgrade);
         runtime.block_on(async {

@@ -82,7 +82,7 @@ use crate::footer::picker_presentation::{catalog_menu_hint_row, menu_hint_row, m
 use crate::footer::question_ui::question_hint_row;
 use crate::footer::skills_menu_presentation::{MAX_MENU_ROWS, skills_menu_band};
 use crate::footer::statusline::Statusline;
-use crate::host::{Clipboard, ForegroundLifecycle, ForegroundState, SteeringQueue};
+use crate::host::{Clipboard, ForegroundLifecycle, SteeringQueue};
 use crate::input::TerminalInput;
 use crate::input::gesture_state;
 use crate::output::activity_status::{
@@ -354,12 +354,6 @@ struct Setup {
 }
 
 impl<'a> Shell<'a> {
-    fn foreground(&self, state: ForegroundState) {
-        if let Some(observer) = &self.options.lifecycle {
-            observer.report(state, None);
-        }
-    }
-
     fn attention_required(&self, turn_id: TurnId, kind: AttentionKind) {
         self.options
             .hooks

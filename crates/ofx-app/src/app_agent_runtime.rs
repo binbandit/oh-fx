@@ -10,10 +10,10 @@ use ofx_agent::{
 use ofx_auth::ChatGptError;
 use ofx_config::save_model_preference;
 use ofx_contract::{
-    BoxFuture, CompactionActivity, CompactionEnd, ModelCatalog, ModelControls, ModelOption, Notice,
-    NoticeTone, ProviderError, QuestionRequest, ReasoningEffort, RecoveredTurn, ResumeRefusal,
-    SessionCursor, SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, TurnId,
-    TurnOutcome, UiCommand, UiEvent,
+    BoxFuture, CompactionActivity, CompactionEnd, HookScope, HookView, ModelCatalog, ModelControls,
+    ModelOption, Notice, NoticeTone, ProviderError, QuestionRequest, ReasoningEffort,
+    RecoveredTurn, ResumeRefusal, SessionCursor, SessionScope, SkillBinding, StatuslineItem,
+    StatuslineToggles, TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -35,6 +35,8 @@ use crate::app_session_runtime::{
 use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
 use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
+use crate::herdr::Herdr;
+use crate::hooks;
 use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::native::NativeClipboard;
 use crate::session_commands::{SessionFacts, SettingsAccess, handle_statusline, set_statusline};
@@ -403,7 +405,7 @@ pub(crate) struct Controller {
     upgrade: UpgradeShortcut,
     pick_at_start: bool,
     catalog: CatalogFetch,
-    herdr: Option<Arc<crate::herdr::Herdr>>,
+    herdr: Option<Arc<Herdr>>,
     installation: Option<InstallTask>,
     listing: SessionListing,
     sign_in: Option<PendingSignIn>,
@@ -595,9 +597,12 @@ impl Controller {
         }
     }
 
-    pub(crate) fn with_herdr(mut self, herdr: Option<Arc<crate::herdr::Herdr>>) -> Self {
-        self.herdr = herdr;
-        self
+    pub(crate) fn with_lifecycle(self, herdr: Option<Arc<Herdr>>, hooks: HookView) -> Self {
+        Self {
+            agent: self.agent.with_lifecycle(hooks, HookScope::Interactive),
+            herdr,
+            ..self
+        }
     }
 
     pub(crate) fn requesting_ultrafast(mut self, requested: bool) -> Self {
@@ -648,9 +653,12 @@ impl Controller {
         if let Some(persistence) = &self.persistence {
             persistence.preload(&mut self.listing);
         }
-        if let Some(herdr) = &self.herdr {
-            herdr.initialize(self.persistence.as_ref().and_then(Persistence::active_id));
-        }
+        let session = self
+            .persistence
+            .as_ref()
+            .and_then(Persistence::active_id)
+            .map(str::to_owned);
+        hooks::announce(self.herdr.as_ref(), session).await;
         self.remember_agent_facts();
         self.serve(&mut commands).await;
         self.drain_installations().await;
@@ -1119,6 +1127,7 @@ impl Controller {
         prompt: &QueuedPrompt,
         commands: &mut UnboundedReceiver<UiCommand>,
     ) -> bool {
+        hooks::report_working(self.herdr.as_ref()).await;
         self.state.skills().refresh();
         self.start_title_generation(&prompt.text);
         let cancel = CancellationToken::new();
