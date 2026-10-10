@@ -144,9 +144,9 @@ note = "Modern conversation event encoding and sequencing exist, file evidence o
 
 [[file]]
 upstream = "src/core/session/session_json.zig"
-status = "todo"
-modules = []
-note = "The v1 and v2 legacy snapshot decoders are not ported: no public fx release wrote those snapshots, as session_migration's row records, and the snapshot writer upstream uses for test fixtures is not shipped; writeExecutionMemoryJson renders the session detail output of oh-fx session (OH-41)."
+status = "partial"
+modules = ["crates/ofx-session/src/session_json.rs"]
+note = "writeExecutionMemoryJson's presentation form, which session_codec writes, renders each turn's execution in oh-fx session <id> --json, without replays or turn summaries, as upstream's does. The v1 and v2 legacy snapshot decoders are not ported: no public fx release wrote those snapshots, as session_migration's row records, and the snapshot writer upstream uses for test fixtures is not shipped."
 
 [[file]]
 upstream = "src/core/session/session_layout.zig"
@@ -157,8 +157,8 @@ note = "Session-ID validation/generation exists; terminal-specific IDs and v2 di
 [[file]]
 upstream = "src/core/session/session_log.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_migration/conversion.rs", "crates/ofx-session/src/session_migration/recovery_file.rs"]
-note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy is missing, and an in-place import fx left unfinished is read as recoverInterruptedLegacyImport resolves it, from events.v3.backup until the new metadata exists, without repairing fx's files; the permission sidecar is not written, as for oh-fx's own sessions, and the usage sidecar is written when a session starts and read when it resumes, and the conversion writes the usage a schema-v3 session saved last into it."
+modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_log/conversation_archive.rs", "crates/ofx-session/src/session_migration/conversion.rs", "crates/ofx-session/src/session_migration/recovery_file.rs"]
+note = "Modern append/replay exists, loadConversationArchive and the ConversationTurnBuilder read the whole log, compacted summaries in place, for oh-fx session <id>, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy is missing, and an in-place import fx left unfinished is read as recoverInterruptedLegacyImport resolves it, from events.v3.backup until the new metadata exists, without repairing fx's files; the permission sidecar is not written, as for oh-fx's own sessions, and the usage sidecar is written when a session starts and read when it resumes, and the conversion writes the usage a schema-v3 session saved last into it."
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
@@ -187,7 +187,7 @@ note = "Buffered line reading exists, and the committed prefix of an fx schema-v
 upstream = "src/core/session/session_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_store.rs"]
-note = "Modern create, resume and list storage exists, a listing can include the sessions fx saves in ~/.fx/sessions, read-only, resuming one by id or from the session picker copies it into oh-fx's store, and -c and resume last also reach the session fx remembers and the newest fx session of the workspace, converting a schema-v3 session fx 0.0.1 to 0.0.7 saved; legacy snapshot migration is not ported because no public fx release wrote those snapshots, the legacy image repair comes with the rest of NEW-G, the .resume-catalog index and history-cache.bin exist, and doctor (OH-41) and v2 routing (OH-27) remain."
+note = "Modern create, resume and list storage exists, a listing can include the sessions fx saves in ~/.fx/sessions, read-only, resuming one by id or from the session picker copies it into oh-fx's store, and -c and resume last also reach the session fx remembers and the newest fx session of the workspace, converting a schema-v3 session fx 0.0.1 to 0.0.7 saved; legacy snapshot migration is not ported because no public fx release wrote those snapshots, the legacy image repair comes with the rest of NEW-G, the .resume-catalog index and history-cache.bin exist, loadReadOnlyAdmissionDetail answers oh-fx session <id> for conversation sessions, reading an fx session that oh-fx does not hold in place, and doctor (OH-41) and v2 routing (OH-27) remain."
 
 [[file]]
 upstream = "src/core/session/session_store_paths.zig"

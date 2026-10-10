@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::execution_memory::{Cut, HistoryTurn, Note, ToolStep};
 
+pub use checkpoint::checkpoint_model_text;
 pub(crate) use checkpoint::{Payload, encode_checkpoint, restore_checkpoint};
 pub(crate) use model::Summarizer;
 pub(crate) use summarize::SummaryModel;

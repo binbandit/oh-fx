@@ -650,3 +650,133 @@ fn session_last_encodes_stored_text_for_the_terminal() {
         serde_json::from_str(&described(&home.session(&["last", "--json"], &[]))).expect("JSON");
     assert_eq!(json["conversation_language"], "en\u{9b}2J\u{202e}");
 }
+
+fn saved_metadata(home: &Home, id: &str) -> Value {
+    let path = home
+        .root
+        .join("data/oh-fx/sessions")
+        .join(id)
+        .join("session.json");
+    serde_json::from_slice(&fs::read(path).expect("read session.json")).expect("a manifest")
+}
+
+#[test]
+fn session_shows_every_saved_turn_of_a_session_by_id() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("elsewhere", "Fix the parser");
+    let listing = home.listed(&["--all"]);
+    let id = listing["sessions"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let saved = saved_metadata(&home, &id);
+    let (created, updated, language) = (
+        &saved["created_at_ms"],
+        &saved["updated_at_ms"],
+        saved["conversation_language"].as_str().expect("a language"),
+    );
+
+    let text = format!(
+        "[session] {id}\ncreated_at_ms: {created}\nupdated_at_ms: {updated}\nlanguage: {language}\nhistory_len: 1\n\n[turn 1]\n[user]\nFix the parser\n[assistant]\ndone\n"
+    );
+    let json = format!(
+        "{{\"kind\":\"session_detail\",\"id\":\"{id}\",\"created_at_ms\":{created},\"updated_at_ms\":{updated},\"history_len\":1,\"conversation_language\":\"{language}\",\"history\":[{{\"kind\":\"assistant\",\"user\":{{\"text\":\"Fix the parser\",\"images\":[]}},\"assistant\":\"done\",\"execution\":{{\"schema_version\":3,\"tool_steps\":[],\"files\":[],\"steering\":[]}}}}]}}\n"
+    );
+    let padded = format!(" {id}\t");
+    for (args, expected) in [
+        (vec![id.as_str()], &text),
+        (vec!["--id", id.as_str()], &text),
+        (vec![padded.as_str()], &text),
+        (vec![id.as_str(), "--json"], &json),
+        (vec!["--json", "--id", id.as_str()], &json),
+    ] {
+        assert_eq!(&described(&home.session(&args, &[])), expected, "{args:?}");
+    }
+}
+
+#[test]
+fn session_says_why_a_session_cannot_be_shown() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "kept");
+    let sessions = home.root.join("data/oh-fx/sessions");
+    break_session(&sessions, "broken-session");
+    fs::create_dir_all(sessions.join("future")).expect("create a session directory");
+    fs::write(
+        sessions.join("future/session.json"),
+        "{\"schema_version\":99}",
+    )
+    .expect("write a future session");
+    for (id, code, message) in [
+        ("missing", "SessionNotFound", "record not found".to_owned()),
+        ("../x", "InvalidSessionId", "invalid session id".to_owned()),
+        (
+            "broken-session",
+            "InvalidSessionFormat",
+            "session broken-session is corrupt; run `oh-fx session recover broken-session`"
+                .to_owned(),
+        ),
+        (
+            "future",
+            "UnsupportedSessionSchema",
+            "session future uses an unsupported session version".to_owned(),
+        ),
+    ] {
+        assert_eq!(
+            refused(&home.session(&[id], &[])),
+            (String::new(), format!("oh-fx session: {message}\n")),
+            "{id}"
+        );
+        assert_eq!(
+            refused(&home.session(&["--id", id, "--json"], &[])),
+            (
+                format!(
+                    "{}\n",
+                    json!({"kind": "session", "error": message, "code": code})
+                ),
+                String::new()
+            ),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        refused(&home.session(&["missing"], &[("OH_FX_SESSIONS_V2", "true")])),
+        (
+            String::new(),
+            "oh-fx: session is not available yet\n".to_owned()
+        )
+    );
+}
+
+#[test]
+fn session_shows_a_session_fx_saved_without_touching_it() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "own");
+    save_in_fx(&home, "fx-here", "workspace", "From fx", &["one", "two"]);
+    save_in_fx(&home, "fx-orphan-result", "workspace", "Unreadable", &[]);
+    let mut orphaned = fx_shell_turn("null", "null");
+    orphaned.remove(1);
+    rewrite_fx_log(&home, "fx-orphan-result", &orphaned);
+    let before = fx_tree(&home);
+
+    assert_eq!(
+        described(&home.session(&["fx-here"], &[])),
+        "[session] fx-here\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: en\nhistory_len: 2\nsource: fx\n\n[turn 1]\n[user]\none\n[assistant]\ndone\n\n[turn 2]\n[user]\ntwo\n[assistant]\ndone\n"
+    );
+    let json: Value = serde_json::from_str(&described(&home.session(&["fx-here", "--json"], &[])))
+        .expect("a JSON detail");
+    assert_eq!(json["kind"], "session_detail");
+    assert_eq!(json["history_len"], 2);
+    assert_eq!(json["source"], "fx");
+    assert_eq!(
+        refused(&home.session(&["fx-orphan-result"], &[])),
+        (
+            String::new(),
+            "oh-fx session: this fx session holds data oh-fx cannot read yet; keep using it in fx\n"
+                .to_owned()
+        )
+    );
+    assert_eq!(fx_tree(&home), before);
+}

@@ -20,8 +20,8 @@ use crate::session_log::managed_file::{
     file_type, has_private_dir_mode, permissions, private_file_mode, session_directory_names,
 };
 use crate::session_log::{
-    LOCK_DEADLINE, SavedSession, SessionDisposal, WritableSession, delete_session, load_session,
-    now_ms, resume_held_session, resume_session, start_session,
+    LOCK_DEADLINE, SavedSession, SessionArchive, SessionDisposal, WritableSession, delete_session,
+    load_archive, load_session, now_ms, resume_held_session, resume_session, start_session,
 };
 use crate::session_store_paths::{is_valid_workspace_root, normalize_workspace_root};
 use crate::session_summary_codec::{
@@ -320,6 +320,24 @@ impl SessionStore {
             .as_ref()
             .ok_or(SessionError::SessionNotFound)?;
         load_session(sessions, id)
+    }
+
+    pub fn archive_with_fx(
+        &self,
+        id: &str,
+        fx: &FxSessions,
+    ) -> Result<SessionArchive, SessionError> {
+        if !is_valid_session_id(id) {
+            return Err(SessionError::InvalidSessionId);
+        }
+        let Some(sessions) = &self.sessions else {
+            return fx.archive(id);
+        };
+        match sessions.open_child(id) {
+            Ok(Some(dir)) => load_archive(&dir, id, SessionError::SessionNotFound),
+            Ok(None) => fx.archive(id),
+            Err(_) => Err(SessionError::SessionNotFound),
+        }
     }
 
     pub fn try_clone(&self) -> Result<Self, SessionError> {

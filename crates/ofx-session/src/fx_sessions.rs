@@ -10,6 +10,7 @@ use crate::session_catalog_cache::{CatalogIndex, scan_catalog};
 use crate::session_discovery::Classification;
 use crate::session_error::SessionError;
 use crate::session_log::managed_file::{has_private_dir_mode, session_directory_names};
+use crate::session_log::{SessionArchive, load_archive};
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
 pub(crate) use import::{ImportSource, Imported, seal, untouched_import};
@@ -41,6 +42,22 @@ impl FxSessions {
                 .filter(|summary| !stored.contains(summary.id.as_str())),
         );
         sort_summaries_newest_first(summaries);
+    }
+
+    pub(crate) fn archive(&self, id: &str) -> Result<SessionArchive, SessionError> {
+        let dir = self
+            .sessions
+            .as_ref()
+            .and_then(|sessions| sessions.open_child(id).ok().flatten())
+            .ok_or(SessionError::SessionNotFound)?;
+        let mut archive = load_archive(&dir, id, SessionError::FxSessionUnreadable).map_err(
+            |error| match error {
+                SessionError::SessionNotFound => error,
+                _ => SessionError::FxSessionUnreadable,
+            },
+        )?;
+        archive.source = SessionSource::Fx;
+        Ok(archive)
     }
 
     fn summaries(&self) -> Vec<SessionSummary> {
