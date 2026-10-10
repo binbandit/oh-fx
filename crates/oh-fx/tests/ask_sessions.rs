@@ -1450,3 +1450,90 @@ fn ask_resume_last_opens_the_newest_session_of_this_workspace_saved_by_either_ag
     expected.sort();
     assert_eq!(home.session_ids(), expected);
 }
+
+const V3_GENERATION: &str = "01010101010101010101010101010101";
+
+fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
+    let fx = home.root.join(".fx");
+    let session = fx.join("sessions").join(FX_ID);
+    fs::create_dir_all(&session).expect("create an fx session");
+    for directory in [fx.clone(), fx.join("sessions"), session.clone()] {
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("make an fx folder private");
+    }
+    let started = format!(
+        "{{\"id\":\"{FX_ID}\",\"created_at_ms\":1,\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"conversation_language\":\"en\",\"preferences\":{{\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false}}}}"
+    );
+    let turn = "{\"conversation_language\":\"en\",\"total_input_tokens\":7,\"total_output_tokens\":3,\"turn\":{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered in fx 0.0.7\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}}";
+    let mut events = String::new();
+    for (seq, (kind, payload)) in (1_u64..).zip([
+        ("session_started", started.as_str()),
+        ("history_turn_committed", turn),
+    ]) {
+        let _ = writeln!(
+            events,
+            "{{\"schema_version\":1,\"log_generation\":\"{V3_GENERATION}\",\"seq\":{seq},\"event_id\":\"{seq:032x}\",\"timestamp_ms\":{},\"kind\":\"{kind}\",\"payload\":{payload}}}",
+            seq * 10
+        );
+    }
+    let watermark = format!(
+        "{{\"schema_version\":1,\"session_id\":\"{FX_ID}\",\"log_generation\":\"{V3_GENERATION}\",\"through_seq\":2,\"through_event_id\":\"{:032x}\",\"through_event_log_bytes\":{}}}\n",
+        2,
+        events.len()
+    );
+    let authority = format!(
+        "{{\"schema_version\":1,\"session_id\":\"{FX_ID}\",\"authority_id\":\"{}\",\"storage_format\":\"event_log_v1\",\"source\":\"native_create\"}}\n",
+        "03".repeat(16)
+    );
+    for (name, bytes) in [
+        ("authority.json".to_owned(), authority),
+        ("events.jsonl".to_owned(), events),
+        (format!("commit.{V3_GENERATION}.json"), watermark),
+    ] {
+        fs::write(session.join(&name), bytes).expect("write an fx session file");
+        fs::set_permissions(session.join(&name), fs::Permissions::from_mode(0o600))
+            .expect("make an fx file private");
+    }
+    session
+}
+
+#[test]
+fn ask_resumes_a_session_fx_saved_before_its_conversation_layout() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["continued"]))]);
+    let home = Home::new(&server.base_url());
+    let source = save_schema_v3_in_fx(&home);
+    let untouched: Vec<Vec<u8>> = ["authority.json", "events.jsonl"]
+        .iter()
+        .map(|name| fs::read(source.join(name)).expect("read an fx file"))
+        .collect();
+
+    let output = home.ask(&["ask", "--json", "--resume", FX_ID, "keep going"], &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "oh-fx ask: This session was saved with the gateway provider, which oh-fx cannot use yet; it continues with portkey.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["final_output"], "continued");
+    assert_eq!(session_id(&result), FX_ID);
+    assert_eq!(
+        texts(&conversation(&server.requests()[0])),
+        [
+            "user: asked in fx 0.0.7",
+            "assistant: answered in fx 0.0.7",
+            "user: keep going"
+        ]
+    );
+    let metadata = home.metadata(FX_ID);
+    assert_eq!(metadata["schema_version"], 4);
+    assert_eq!(metadata["title"], "asked in fx 0.0.7");
+    assert_eq!(metadata["effort"], "high");
+    assert_eq!(home.frames(FX_ID).len(), 6);
+    let after: Vec<Vec<u8>> = ["authority.json", "events.jsonl"]
+        .iter()
+        .map(|name| fs::read(source.join(name)).expect("read an fx file"))
+        .collect();
+    assert_eq!(after, untouched);
+    assert!(!source.join("session.json").exists());
+}
