@@ -158,14 +158,15 @@ fn requests_decode_stable_server_qualified_identities() {
     );
 }
 
+fn assert_refused(cases: &[(&str, &str)]) {
+    for (arguments, message) in cases {
+        assert_eq!(decode(arguments), Err(*message), "{arguments}");
+    }
+}
+
 #[test]
 fn malformed_requests_fail_with_upstreams_messages() {
-    let large = "x".repeat(MAX_ARGUMENTS_JSON_BYTES);
-    let wide = "y".repeat(MAX_CONTEXT_BYTES);
-    let many: Map<String, Value> = (0..=MAX_CONTEXT_ARGUMENTS)
-        .map(|index| (format!("k{index}"), Value::from("v")))
-        .collect();
-    let cases = [
+    assert_refused(&[
         ("{", "Invalid mcp_features arguments."),
         ("[]", "Invalid mcp_features arguments."),
         (
@@ -225,6 +226,17 @@ fn malformed_requests_fail_with_upstreams_messages() {
             r#"{"action":"resource_complete","server":"s","uri_template":"t","argument":""}"#,
             "completion actions require argument.",
         ),
+    ]);
+}
+
+#[test]
+fn prompt_arguments_and_completion_context_fail_past_their_limits() {
+    let large = "x".repeat(MAX_ARGUMENTS_JSON_BYTES);
+    let wide = "y".repeat(MAX_CONTEXT_BYTES);
+    let many: Map<String, Value> = (0..=MAX_CONTEXT_ARGUMENTS)
+        .map(|index| (format!("k{index}"), Value::from("v")))
+        .collect();
+    assert_refused(&[
         (
             r#"{"action":"prompt_list","server":"s","arguments":{}}"#,
             "mcp_features arguments are invalid or too large.",
@@ -268,10 +280,7 @@ fn malformed_requests_fail_with_upstreams_messages() {
             ),
             "mcp_features completion context is invalid or too large.",
         ),
-    ];
-    for (arguments, message) in cases {
-        assert_eq!(decode(arguments), Err(message), "{arguments}");
-    }
+    ]);
     let at_limit = "z".repeat(MAX_CONTEXT_BYTES - 1);
     assert_eq!(
         decoded(&format!(
@@ -326,27 +335,54 @@ async fn calls_without_a_runtime_say_so() {
     );
 }
 
+struct Connected {
+    state: tempfile::TempDir,
+    _tools_only: tempfile::TempDir,
+    runtime: Arc<McpRuntime>,
+    tool: McpFeatures,
+}
+
+impl Connected {
+    async fn start() -> Self {
+        let state = tempfile::tempdir().unwrap();
+        let tools_only = tempfile::tempdir().unwrap();
+        std::fs::write(tools_only.path().join("tools-only"), "").unwrap();
+        let runtime = runtime(vec![
+            config("fixture", state.path()),
+            config("tools", tools_only.path()),
+        ]);
+        runtime.connect(StartupPhase::All).await;
+        let tool = McpFeatures::new(Some(Arc::clone(&runtime)));
+        Self {
+            state,
+            _tools_only: tools_only,
+            runtime,
+            tool,
+        }
+    }
+
+    async fn stop(self) {
+        self.runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+}
+
+fn success(content: String) -> ToolOutput {
+    ToolOutput::success(content)
+}
+
 #[tokio::test]
-async fn every_action_answers_with_an_untrusted_data_envelope() {
-    let state = tempfile::tempdir().unwrap();
-    let tools_only = tempfile::tempdir().unwrap();
-    std::fs::write(tools_only.path().join("tools-only"), "").unwrap();
-    let runtime = runtime(vec![
-        config("fixture", state.path()),
-        config("tools", tools_only.path()),
-    ]);
-    runtime.connect(StartupPhase::All).await;
-    let tool = McpFeatures::new(Some(Arc::clone(&runtime)));
-    let success = |content: String| ToolOutput::success(content);
+async fn resource_actions_answer_with_untrusted_data_envelopes() {
+    let connected = Connected::start().await;
+    let tool = &connected.tool;
     assert_eq!(
-        run(&tool, r#"{"action":"resource_list","server":"fixture"}"#).await,
+        run(tool, r#"{"action":"resource_list","server":"fixture"}"#).await,
         success(format!(
             r#"{ENVELOPE},"action":"resource_list","server":"fixture","items":[{{"server":"fixture","identity":"memory://denied","name":"denied","template":false}},{{"server":"fixture","identity":"memory://plan","name":"plan","title":"Plan","description":"The plan","mimeType":"text/markdown","template":false}}]}}"#
         ))
     );
     assert_eq!(
         run(
-            &tool,
+            tool,
             r#"{"action":"resource_templates","server":"fixture"}"#
         )
         .await,
@@ -356,7 +392,7 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
     );
     assert_eq!(
         run(
-            &tool,
+            tool,
             r#"{"action":"resource_read","server":"fixture","uri":"memory://plan"}"#
         )
         .await,
@@ -366,21 +402,28 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
     );
     assert_eq!(
         run(
-            &tool,
+            tool,
             r#"{"action":"resource_read","server":"fixture","uri":"memory://denied"}"#
         )
         .await,
         success("MCP protocol error -32602: Resource request rejected by fixture".to_owned())
     );
+    connected.stop().await;
+}
+
+#[tokio::test]
+async fn prompt_and_completion_actions_answer_with_untrusted_data_envelopes() {
+    let connected = Connected::start().await;
+    let tool = &connected.tool;
     assert_eq!(
-        run(&tool, r#"{"action":"prompt_list","server":"fixture"}"#).await,
+        run(tool, r#"{"action":"prompt_list","server":"fixture"}"#).await,
         success(format!(
             r#"{ENVELOPE},"action":"prompt_list","server":"fixture","items":[{{"server":"fixture","identity":"review","description":"Review code","arguments":[{{"name":"tone","required":true,"description":"How to say it"}}]}}]}}"#
         ))
     );
     assert_eq!(
         run(
-            &tool,
+            tool,
             r#"{"action":"prompt_get","server":"fixture","prompt":"review","arguments":{"tone":"brief"}}"#
         )
         .await,
@@ -390,7 +433,7 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
     );
     assert_eq!(
         run(
-            &tool,
+            tool,
             r#"{"action":"prompt_complete","server":"fixture","prompt":"review","argument":"tone","value":"b"}"#
         )
         .await,
@@ -400,7 +443,7 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
     );
     assert_eq!(
         run(
-            &tool,
+            tool,
             r#"{"action":"resource_complete","server":"fixture","uri_template":"memory://{id}","argument":"id","value":"7","context":{"kind":"note"}}"#
         )
         .await,
@@ -409,13 +452,20 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
         ))
     );
     assert_eq!(
-        std::fs::read_to_string(state.path().join("requests")).unwrap(),
+        std::fs::read_to_string(connected.state.path().join("requests")).unwrap(),
         concat!(
             "get {\"name\":\"review\",\"arguments\":{\"tone\":\"brief\"}}\n",
             "complete {\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"tone\",\"value\":\"b\"}}\n",
             "complete {\"ref\":{\"type\":\"ref/resource\",\"uri\":\"memory://{id}\"},\"argument\":{\"name\":\"id\",\"value\":\"7\"},\"context\":{\"arguments\":{\"kind\":\"note\"}}}\n",
         )
     );
+    connected.stop().await;
+}
+
+#[tokio::test]
+async fn servers_without_a_feature_answer_unsupported_and_failures_name_their_error() {
+    let connected = Connected::start().await;
+    let tool = &connected.tool;
     for (arguments, action, feature) in [
         (
             r#"{"action":"resource_list","server":"tools"}"#,
@@ -434,7 +484,7 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
         ),
     ] {
         assert_eq!(
-            run(&tool, arguments).await,
+            run(tool, arguments).await,
             success(format!(
                 r#"{ENVELOPE},"action":"{action}","server":"tools","unsupported":true,"message":"tools did not advertise a {feature} capability, so this feature is unavailable on that server. Use its tools or pick another server."}}"#
             )),
@@ -464,9 +514,9 @@ async fn every_action_answers_with_an_untrusted_data_envelope() {
             "McpResourceNotFound",
         ),
     ] {
-        assert_eq!(run(&tool, arguments).await, failure(error), "{arguments}");
+        assert_eq!(run(tool, arguments).await, failure(error), "{arguments}");
     }
-    runtime.shutdown(ShutdownMode::Immediate).await;
+    connected.stop().await;
 }
 
 #[tokio::test]
