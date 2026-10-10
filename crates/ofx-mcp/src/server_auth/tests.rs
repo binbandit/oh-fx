@@ -116,6 +116,10 @@ mod stored {
             CredentialStore::new(&self.data())
         }
 
+        fn lookup(&self) -> GrantLookup {
+            GrantLookup::for_server(&self.config()).unwrap()
+        }
+
         fn config(&self) -> McpServerConfig {
             McpServerConfig {
                 bearer_token_env: Some("OH_FX_TEST_UNSET_BEARER".to_owned()),
@@ -166,7 +170,7 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(i64::MAX, None))
+            .save(&fixture.lookup(), &fixture.credentials(i64::MAX, None))
             .unwrap();
         let client = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -187,7 +191,7 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(i64::MAX, None))
+            .save(&fixture.lookup(), &fixture.credentials(i64::MAX, None))
             .unwrap();
         let refused = McpServerConfig {
             allow_stored_credentials: false,
@@ -211,7 +215,10 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let client = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -231,11 +238,7 @@ mod stored {
                 .count(),
             1
         );
-        let saved = fixture
-            .store()
-            .load("remote", &fixture.server.url, None, None)
-            .unwrap()
-            .unwrap();
+        let saved = fixture.store().load(&fixture.lookup()).unwrap().unwrap();
         assert_eq!(saved.access_token.as_str(), "renewed-token");
         assert_eq!(
             saved.refresh_token.as_deref().map(String::as_str),
@@ -249,7 +252,7 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, None))
+            .save(&fixture.lookup(), &fixture.credentials(1, None))
             .unwrap();
         let failure = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -268,7 +271,10 @@ mod stored {
         let fixture = Fixture::start(r#"{"access_token":""}"#).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let failure = McpClient::connect(&fixture.config(), &fixture.options())
             .await
@@ -359,7 +365,10 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let auth = resolved(&fixture).await;
         let http = oauth_client();
@@ -381,7 +390,10 @@ mod stored {
         let fixture = Fixture::start(RENEWED).await;
         fixture
             .store()
-            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
             .unwrap();
         let auth = resolved(&fixture).await;
         let closing = auth.apply_current(oauth_client().delete(&fixture.server.url));
@@ -423,7 +435,7 @@ mod stored {
         fixture
             .store()
             .save(
-                "remote",
+                &fixture.lookup(),
                 &fixture.credentials(expires_at_ms, Some("stored-refresh")),
             )
             .unwrap();
@@ -597,7 +609,10 @@ mod authenticating {
             revocation_endpoint: None,
         };
         CredentialStore::new(&data_path)
-            .save("remote", &previous)
+            .save(
+                &GrantLookup::for_server(&remote(&server.url)).unwrap(),
+                &previous,
+            )
             .unwrap();
         let (result, urls) = attempt(&remote(&server.url), &options(&data_path), &|_| None).await;
         assert_eq!(result, Err(McpError::McpAuthorizationBrowserOpenFailed));

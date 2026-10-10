@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 use crate::error::McpError;
 use crate::mcp_auth::{Credentials, issuers_match, parse_json, resource_covers_endpoint};
+use crate::mcp_contract::McpServerConfig;
 use crate::oauth_uri::canonical_resource;
 
 const SCHEMA_VERSION: i64 = 1;
@@ -35,6 +36,53 @@ struct Store {
     rejected_entries: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GrantLookup {
+    identity: String,
+    endpoint: String,
+    resource: Option<String>,
+    issuer: Option<String>,
+}
+
+impl GrantLookup {
+    pub(crate) fn new(
+        identity: &str,
+        endpoint: &str,
+        resource: Option<&str>,
+        issuer: Option<&str>,
+    ) -> Result<Self, McpError> {
+        Ok(Self {
+            identity: identity.to_owned(),
+            endpoint: canonical_resource(endpoint)?,
+            resource: resource.map(canonical_resource).transpose()?,
+            issuer: issuer.map(str::to_owned),
+        })
+    }
+
+    pub(crate) fn for_server(config: &McpServerConfig) -> Result<Self, McpError> {
+        let auth = config.auth.as_ref();
+        Self::new(
+            &config.name,
+            config.remote_url()?,
+            auth.and_then(|auth| auth.resource.as_deref()),
+            auth.and_then(|auth| auth.issuer.as_deref()),
+        )
+    }
+
+    fn matches(&self, identity: &str, credentials: &Credentials) -> bool {
+        identity == self.identity
+            && credentials.endpoint == self.endpoint
+            && self
+                .resource
+                .as_deref()
+                .is_none_or(|resource| resource_covers_endpoint(&credentials.resource, resource))
+            && self
+                .issuer
+                .as_deref()
+                .is_none_or(|issuer| issuers_match(&credentials.issuer, issuer))
+    }
+}
+
 struct LockedDir {
     directory: PrivateDir,
     _lock: AdvisoryLock,
@@ -47,29 +95,14 @@ impl CredentialStore {
         }
     }
 
-    pub(crate) fn load(
-        &self,
-        server_identity: &str,
-        endpoint: &str,
-        configured_resource: Option<&str>,
-        configured_issuer: Option<&str>,
-    ) -> Result<Option<Credentials>, McpError> {
+    pub(crate) fn load(&self, lookup: &GrantLookup) -> Result<Option<Credentials>, McpError> {
         let Some(locked) = self.open_existing()? else {
             return Ok(None);
         };
         let store = load_store(&locked.directory)?;
-        let endpoint = canonical_resource(endpoint)?;
-        let resource = configured_resource.map(canonical_resource).transpose()?;
         let mut matched = None;
         for (identity, credentials) in &store.credentials {
-            if identity != server_identity
-                || credentials.endpoint != endpoint
-                || resource.as_deref().is_some_and(|resource| {
-                    !resource_covers_endpoint(&credentials.resource, resource)
-                })
-                || configured_issuer
-                    .is_some_and(|issuer| !issuers_match(&credentials.issuer, issuer))
-            {
+            if !lookup.matches(identity, credentials) {
                 continue;
             }
             if matched.is_some() {
@@ -82,21 +115,33 @@ impl CredentialStore {
 
     pub(crate) fn save(
         &self,
-        server_identity: &str,
+        lookup: &GrantLookup,
         credentials: &Credentials,
     ) -> Result<SaveResult, McpError> {
         let locked = self.open_or_create()?;
         let mut store = load_store(&locked.directory)?;
-        let replacement = (server_identity.to_owned(), credentials.clone());
-        match store.credentials.iter_mut().find(|(identity, entry)| {
-            identity == server_identity
-                && entry.endpoint == credentials.endpoint
-                && entry.resource == credentials.resource
-                && entry.issuer == credentials.issuer
-        }) {
-            Some(entry) => *entry = replacement,
-            None => store.credentials.push(replacement),
+        let superseded = |identity: &str, entry: &Credentials| {
+            lookup.matches(identity, entry)
+                || (identity == lookup.identity
+                    && entry.endpoint == credentials.endpoint
+                    && entry.resource == credentials.resource
+                    && entry.issuer == credentials.issuer)
+        };
+        let mut slot = None;
+        let mut kept = Vec::with_capacity(store.credentials.len() + 1);
+        for (identity, entry) in store.credentials.drain(..) {
+            if superseded(&identity, &entry) {
+                slot.get_or_insert(kept.len());
+            } else {
+                kept.push((identity, entry));
+            }
         }
+        let replacement = (lookup.identity.clone(), credentials.clone());
+        match slot {
+            Some(index) => kept.insert(index, replacement),
+            None => kept.push(replacement),
+        }
+        store.credentials = kept;
         let bytes = serialize_store(&store)?;
         locked.directory.replace(FILE_NAME, bytes.as_bytes())?;
         Ok(SaveResult {

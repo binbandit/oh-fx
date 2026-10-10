@@ -30,6 +30,31 @@ fn credentials(endpoint: &str, access_token: &str) -> Credentials {
     }
 }
 
+fn lookup(
+    identity: &str,
+    endpoint: &str,
+    resource: Option<&str>,
+    issuer: Option<&str>,
+) -> GrantLookup {
+    GrantLookup::new(identity, endpoint, resource, issuer).unwrap()
+}
+
+fn save_for(
+    store: &CredentialStore,
+    identity: &str,
+    credentials: &Credentials,
+) -> Result<SaveResult, McpError> {
+    store.save(
+        &lookup(
+            identity,
+            &credentials.endpoint,
+            Some(&credentials.resource),
+            Some(&credentials.issuer),
+        ),
+        credentials,
+    )
+}
+
 struct Home {
     root: tempfile::TempDir,
 }
@@ -158,21 +183,30 @@ fn the_top_level_schema_version_is_strict() {
 fn the_store_is_private_and_atomic_and_loads_after_a_restart() {
     let home = Home::new();
     assert_eq!(
-        home.store()
-            .load("server-one", "https://mcp.example/service", None, None),
+        home.store().load(&lookup(
+            "server-one",
+            "https://mcp.example/service",
+            None,
+            None
+        )),
         Ok(None)
     );
     assert!(!home.data().exists());
     let saved = credentials("https://mcp.example/service", "access-secret");
     assert_eq!(
-        home.store().save("server-one", &saved),
+        save_for(&home.store(), "server-one", &saved),
         Ok(SaveResult {
             repaired_entries: 0
         })
     );
     let loaded = home
         .store()
-        .load("server-one", "https://mcp.example/service", None, None)
+        .load(&lookup(
+            "server-one",
+            "https://mcp.example/service",
+            None,
+            None,
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(loaded, saved);
@@ -191,18 +225,27 @@ fn the_store_is_private_and_atomic_and_loads_after_a_restart() {
 fn a_save_replaces_the_same_identity_and_keeps_the_others() {
     let home = Home::new();
     let store = home.store();
-    store
-        .save("one", &credentials("https://mcp.example/a", "first"))
-        .unwrap();
-    store
-        .save("two", &credentials("https://mcp.example/a", "second"))
-        .unwrap();
+    save_for(
+        &store,
+        "one",
+        &credentials("https://mcp.example/a", "first"),
+    )
+    .unwrap();
+    save_for(
+        &store,
+        "two",
+        &credentials("https://mcp.example/a", "second"),
+    )
+    .unwrap();
     let mut other_issuer = credentials("https://mcp.example/a", "third");
     other_issuer.issuer = "https://other.example".to_owned();
-    store.save("one", &other_issuer).unwrap();
-    store
-        .save("one", &credentials("https://mcp.example/a", "renewed"))
-        .unwrap();
+    save_for(&store, "one", &other_issuer).unwrap();
+    save_for(
+        &store,
+        "one",
+        &credentials("https://mcp.example/a", "renewed"),
+    )
+    .unwrap();
     let saved = parse_store(&fs::read(home.file()).unwrap()).unwrap();
     let tokens: Vec<_> = saved
         .credentials
@@ -214,37 +257,37 @@ fn a_save_replaces_the_same_identity_and_keeps_the_others() {
         [("one", "renewed"), ("two", "second"), ("one", "third")]
     );
     assert_eq!(
-        store.load("one", "https://mcp.example/a", None, None),
+        store.load(&lookup("one", "https://mcp.example/a", None, None)),
         Ok(None),
         "two issuers for one server are ambiguous"
     );
     let issued = store
-        .load(
+        .load(&lookup(
             "one",
             "https://mcp.example/a",
             None,
             Some("https://other.example"),
-        )
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(issued.access_token.as_str(), "third");
     let by_resource = store
-        .load(
+        .load(&lookup(
             "two",
             "HTTPS://MCP.EXAMPLE:443/a?x",
             Some("https://mcp.example/a"),
             None,
-        )
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(by_resource.access_token.as_str(), "second");
     assert_eq!(
-        store.load(
+        store.load(&lookup(
             "two",
             "https://mcp.example/a",
             Some("https://mcp.example/b"),
             None
-        ),
+        )),
         Ok(None)
     );
 }
@@ -256,10 +299,15 @@ fn a_grant_is_found_under_the_identity_discovery_accepted() {
     let mut enclosing = credentials("https://mcp.example/team/mcp", "enclosing");
     enclosing.resource = "https://mcp.example/team".to_owned();
     enclosing.issuer = "https://issuer.example".to_owned();
-    store.save("one", &enclosing).unwrap();
+    save_for(&store, "one", &enclosing).unwrap();
     let found = |resource: Option<&str>, issuer: Option<&str>| {
         store
-            .load("one", "https://mcp.example/team/mcp", resource, issuer)
+            .load(&lookup(
+                "one",
+                "https://mcp.example/team/mcp",
+                resource,
+                issuer,
+            ))
             .unwrap()
             .map(|credentials| credentials.access_token.as_str().to_owned())
     };
@@ -289,17 +337,92 @@ fn a_grant_is_found_under_the_identity_discovery_accepted() {
     }
 }
 
+fn tokens(home: &Home) -> Vec<(String, String)> {
+    parse_store(&fs::read(home.file()).unwrap())
+        .unwrap()
+        .credentials
+        .iter()
+        .map(|(identity, entry)| (identity.clone(), entry.access_token.as_str().to_owned()))
+        .collect()
+}
+
+#[test]
+fn a_save_supersedes_every_grant_its_lookup_would_find() {
+    let home = Home::new();
+    let store = home.store();
+    let endpoint = "https://mcp.example/team/mcp";
+    let mut slashed = credentials(endpoint, "slashed");
+    slashed.issuer = "https://issuer.example/".to_owned();
+    let mut enclosing = credentials(endpoint, "enclosing");
+    enclosing.resource = "https://mcp.example/team".to_owned();
+    let mut elsewhere = credentials(endpoint, "elsewhere");
+    elsewhere.issuer = "https://other.example".to_owned();
+    for entry in [&slashed, &enclosing, &elsewhere] {
+        save_for(&store, "one", entry).unwrap();
+    }
+    save_for(&store, "two", &credentials(endpoint, "other server")).unwrap();
+    let configured = lookup(
+        "one",
+        endpoint,
+        Some(endpoint),
+        Some("https://issuer.example"),
+    );
+    assert_eq!(store.load(&configured), Ok(None));
+    store
+        .save(&configured, &credentials(endpoint, "renewed"))
+        .unwrap();
+    let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(identity, token)| ((*identity).to_owned(), (*token).to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        tokens(&home),
+        owned(&[
+            ("one", "renewed"),
+            ("one", "elsewhere"),
+            ("two", "other server")
+        ])
+    );
+    assert_eq!(
+        store
+            .load(&configured)
+            .unwrap()
+            .unwrap()
+            .access_token
+            .as_str(),
+        "renewed"
+    );
+    let unconfigured = lookup("one", endpoint, None, None);
+    store
+        .save(&unconfigured, &credentials(endpoint, "only"))
+        .unwrap();
+    assert_eq!(
+        tokens(&home),
+        owned(&[("one", "only"), ("two", "other server")])
+    );
+    assert_eq!(
+        store
+            .load(&unconfigured)
+            .unwrap()
+            .unwrap()
+            .access_token
+            .as_str(),
+        "only"
+    );
+}
+
 #[test]
 fn a_save_drops_rejected_entries_and_reports_the_repair() {
     let home = Home::new();
     home.write(r#"{"version":1,"credentials":[{}]}"#);
-    let result = home
-        .store()
-        .save(
-            "fixture",
-            &credentials("https://mcp.example/service", "replacement"),
-        )
-        .unwrap();
+    let result = save_for(
+        &home.store(),
+        "fixture",
+        &credentials("https://mcp.example/service", "replacement"),
+    )
+    .unwrap();
     assert_eq!(result.repaired_entries, 1);
     let saved = parse_store(&fs::read(home.file()).unwrap()).unwrap();
     assert_eq!(saved.rejected_entries, 0);
@@ -312,7 +435,7 @@ fn an_unsafe_or_invalid_file_is_refused() {
     let home = Home::new();
     let load = || {
         home.store()
-            .load("one", "https://mcp.example/a", None, None)
+            .load(&lookup("one", "https://mcp.example/a", None, None))
     };
     home.write(&store_json(&[ONE]));
     for mode in [0o644, 0o400, 0o700] {
@@ -340,20 +463,23 @@ fn an_unsafe_or_invalid_file_is_refused() {
 fn a_held_lock_makes_the_store_busy() {
     let home = Home::new();
     let store = home.store();
-    store
-        .save("one", &credentials("https://mcp.example/a", "first"))
-        .unwrap();
+    save_for(
+        &store,
+        "one",
+        &credentials("https://mcp.example/a", "first"),
+    )
+    .unwrap();
     let held = store.open_existing().unwrap().unwrap();
     let started = Instant::now();
     assert_eq!(
-        store.load("one", "https://mcp.example/a", None, None),
+        store.load(&lookup("one", "https://mcp.example/a", None, None)),
         Err(McpError::LockBusy)
     );
     assert!(started.elapsed() >= LOCK_DEADLINE);
     drop(held);
     assert!(
         store
-            .load("one", "https://mcp.example/a", None, None)
+            .load(&lookup("one", "https://mcp.example/a", None, None))
             .unwrap()
             .is_some()
     );
@@ -367,12 +493,12 @@ fn concurrent_writers_keep_every_identity() {
         .map(|index| {
             let store = Arc::clone(&store);
             thread::spawn(move || {
-                store
-                    .save(
-                        &format!("server-{index}"),
-                        &credentials("https://mcp.example/a", &format!("token-{index}")),
-                    )
-                    .unwrap();
+                save_for(
+                    &store,
+                    &format!("server-{index}"),
+                    &credentials("https://mcp.example/a", &format!("token-{index}")),
+                )
+                .unwrap();
             })
         })
         .collect();
@@ -381,12 +507,12 @@ fn concurrent_writers_keep_every_identity() {
     }
     for index in 0..8 {
         let loaded = store
-            .load(
+            .load(&lookup(
                 &format!("server-{index}"),
                 "https://mcp.example/a",
                 None,
                 None,
-            )
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(loaded.access_token.as_str(), format!("token-{index}"));

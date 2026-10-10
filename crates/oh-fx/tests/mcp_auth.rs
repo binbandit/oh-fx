@@ -36,6 +36,7 @@ const PLAIN: Shape = Shape {
 struct Authority {
     origin: String,
     seen: Arc<Mutex<Vec<Seen>>>,
+    shape: Arc<Mutex<Shape>>,
 }
 
 impl Authority {
@@ -51,13 +52,24 @@ impl Authority {
         );
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&seen);
+        let shape = Arc::new(Mutex::new(shape));
+        let current = Arc::clone(&shape);
         let served = origin.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                let shape = *current.lock().expect("authority shape");
                 answer(stream, &served, shape, &recorded);
             }
         });
-        Self { origin, seen }
+        Self {
+            origin,
+            seen,
+            shape,
+        }
+    }
+
+    fn reshape(&self, shape: Shape) {
+        *self.shape.lock().expect("authority shape") = shape;
     }
 
     fn paths(&self) -> Vec<String> {
@@ -539,4 +551,57 @@ fn mcp_auth_refuses_a_project_server_whose_grant_would_never_be_used() {
     assert!(output.stdout.is_empty());
     assert!(authority.paths().is_empty());
     assert!(!home.store().exists());
+}
+
+#[test]
+fn authorizing_again_after_discovery_changes_keeps_one_grant_that_connects() {
+    let slashed = Shape {
+        protected_resource: "/mcp",
+        issuer_suffix: "/",
+    };
+    let enclosing = Shape {
+        protected_resource: "/",
+        issuer_suffix: "",
+    };
+    for (first, second) in [(slashed, PLAIN), (PLAIN, enclosing)] {
+        let authority = Authority::shaped(first);
+        let home = Home::new(&authority.origin);
+        home.servers(&json!({"fixture": {
+            "type": "http",
+            "url": format!("{}/mcp", authority.origin),
+            "required": true,
+        }}));
+        for shape in [first, second] {
+            authority.reshape(shape);
+            let (granted, _, tail) = authorize(&home, "fixture");
+            assert!(
+                granted.status.success(),
+                "{shape:?}: {}",
+                String::from_utf8_lossy(&granted.stderr)
+            );
+            assert_eq!(tail, "Authenticated MCP server 'fixture'.\n", "{shape:?}");
+        }
+        let stored: Value =
+            serde_json::from_str(&fs::read_to_string(home.store()).expect("test step"))
+                .expect("test step");
+        assert_eq!(
+            stored["credentials"].as_array().map(Vec::len),
+            Some(1),
+            "{first:?} then {second:?}"
+        );
+        let model = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+        let asked = home.ask(&model);
+        assert!(
+            asked.status.success(),
+            "{first:?} then {second:?}: {}",
+            String::from_utf8_lossy(&asked.stderr)
+        );
+        let sent = authority.mcp_authorizations();
+        assert!(!sent.is_empty());
+        assert!(
+            sent.iter()
+                .all(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str())),
+            "{sent:?}"
+        );
+    }
 }

@@ -12,7 +12,7 @@ use crate::mcp_auth::{
     AuthorizationResult, ClientConfig, Credentials, authorize_interactive, now_ms,
     refresh_credentials,
 };
-use crate::mcp_auth_store::CredentialStore;
+use crate::mcp_auth_store::{CredentialStore, GrantLookup};
 use crate::mcp_contract::{
     ConfigSource, HttpHeader, McpServerConfig, TransportType, WorkspaceAdmission,
 };
@@ -30,6 +30,7 @@ pub(crate) struct HttpAuth {
 
 struct StoredAuth {
     server: String,
+    lookup: GrantLookup,
     store: CredentialStore,
     http: reqwest::Client,
     credentials: Arc<Mutex<Credentials>>,
@@ -45,20 +46,25 @@ impl HttpAuth {
         environment: &(dyn Fn(&str) -> Option<String> + Sync),
     ) -> Result<Self, StartupFailure> {
         let loaded = match store {
-            Some(store) if config.allow_stored_credentials => load_stored(config, &store)
-                .await
-                .map_err(|error| unreadable_store(&config.name, error))?
-                .map(|credentials| (store, credentials)),
+            Some(store) if config.allow_stored_credentials => {
+                let lookup = GrantLookup::for_server(config)
+                    .map_err(|error| unreadable_store(&config.name, error))?;
+                load_stored(lookup.clone(), &store)
+                    .await
+                    .map_err(|error| unreadable_store(&config.name, error))?
+                    .map(|credentials| (store, lookup, credentials))
+            }
             _ => None,
         };
         let headers = resolve_headers(
             config,
             environment,
-            loaded.as_ref().map(|(_, credentials)| credentials),
+            loaded.as_ref().map(|(_, _, credentials)| credentials),
         )?;
         let stored = match loaded {
-            Some((store, credentials)) => Some(StoredAuth {
+            Some((store, lookup, credentials)) => Some(StoredAuth {
                 server: config.name.clone(),
+                lookup,
                 store,
                 http: oauth_client()?,
                 bearer: Arc::new(StateMutex::new(bearer_header(&credentials)?)),
@@ -109,23 +115,13 @@ fn unreadable_store(server: &str, error: McpError) -> StartupFailure {
 }
 
 async fn load_stored(
-    config: &McpServerConfig,
+    lookup: GrantLookup,
     store: &CredentialStore,
 ) -> Result<Option<Credentials>, McpError> {
-    let identity = config.name.clone();
-    let endpoint = config.remote_url()?.to_owned();
-    let auth = config.auth.clone().unwrap_or_default();
     let store = store.clone();
-    tokio::task::spawn_blocking(move || {
-        store.load(
-            &identity,
-            &endpoint,
-            auth.resource.as_deref(),
-            auth.issuer.as_deref(),
-        )
-    })
-    .await
-    .map_err(|_| McpError::Cancelled)?
+    tokio::task::spawn_blocking(move || store.load(&lookup))
+        .await
+        .map_err(|_| McpError::Cancelled)?
 }
 
 impl StoredAuth {
@@ -148,6 +144,7 @@ impl StoredAuth {
         let installing = Installing {
             store: self.store.clone(),
             server: self.server.clone(),
+            lookup: self.lookup.clone(),
             bearer: Arc::clone(&self.bearer),
             failure: Arc::clone(&self.failure),
         };
@@ -179,6 +176,7 @@ impl StoredAuth {
 struct Installing {
     store: CredentialStore,
     server: String,
+    lookup: GrantLookup,
     bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
 }
@@ -192,7 +190,7 @@ impl Installing {
         let saved = refreshed.clone();
         let store = self.store;
         let (server, result) = tokio::task::spawn_blocking(move || {
-            let result = store.save(&self.server, &saved);
+            let result = store.save(&self.lookup, &saved);
             (self.server, result)
         })
         .await
@@ -286,7 +284,8 @@ pub(crate) async fn authenticate(
         .as_deref()
         .map(CredentialStore::new)
         .ok_or(McpError::HomeNotSet)?;
-    let previous = load_stored(config, &store).await?;
+    let lookup = GrantLookup::for_server(config)?;
+    let previous = load_stored(lookup.clone(), &store).await?;
     let auth = config.auth.clone().unwrap_or_default();
     let client_secret = auth
         .client_secret_env
@@ -328,8 +327,7 @@ pub(crate) async fn authenticate(
         AuthorizationResult::Credentials(credentials) => credentials,
         AuthorizationResult::IssuerMismatch => return Ok(AuthenticationOutcome::IssuerMismatch),
     };
-    let name = config.name.clone();
-    let saved = tokio::task::spawn_blocking(move || store.save(&name, &credentials))
+    let saved = tokio::task::spawn_blocking(move || store.save(&lookup, &credentials))
         .await
         .map_err(|_| McpError::Cancelled)??;
     Ok(AuthenticationOutcome::Authenticated {
