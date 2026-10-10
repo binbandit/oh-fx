@@ -213,17 +213,16 @@ fn result_event(result: SavedResult, results: &mut Vec<StoredResult>) -> ToolRes
     let preview = result
         .preview
         .unwrap_or_else(|| preview(&result.output).to_owned());
-    let (artifact_ref, stored_bytes, truncated) = match result.output_handle {
-        Some(handle) => (handle, result.stored_output_bytes, result.truncated),
-        None => {
-            let handle = make_handle(&result.call_id, &result.tool_name, &result.output);
-            let stored_bytes = u64::try_from(result.output.len()).unwrap_or(u64::MAX);
-            results.push(StoredResult {
-                handle: handle.clone(),
-                text: result.output,
-            });
-            (handle, stored_bytes, true)
-        }
+    let (artifact_ref, stored_bytes, truncated) = if let Some(handle) = result.output_handle {
+        (handle, result.stored_output_bytes, result.truncated)
+    } else {
+        let handle = make_handle(&result.call_id, &result.tool_name, &result.output);
+        let stored_bytes = u64::try_from(result.output.len()).unwrap_or(u64::MAX);
+        results.push(StoredResult {
+            handle: handle.clone(),
+            text: result.output,
+        });
+        (handle, stored_bytes, true)
     };
     let completeness = if truncated {
         ArtifactCompleteness::Partial

@@ -7,14 +7,14 @@ use ofx_text::lowercase_hex;
 
 use crate::json_fields::{Fields, Json, parse_json};
 use crate::session_authority::{
-    Identifier, MAX_CONTROL_FILE_BYTES, parse_identifier, require_schema_v3,
+    Identifier, MAX_CONTROL_FILE_BYTES, holds_authority_marker, parse_identifier, require_schema_v3,
 };
 use crate::session_children::has_owner_marker;
 use crate::session_codec::SessionPreferences;
 use crate::session_display_metadata::read_sidecar_title;
 use crate::session_error::SessionError;
-use crate::session_log::EVENTS_FILE;
 use crate::session_log::managed_file::{Access, open_managed_file, read_managed_file};
+use crate::session_log::{EVENTS_FILE, read_metadata};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::SessionSummary;
 
@@ -37,9 +37,9 @@ pub(crate) struct LegacySession {
 }
 
 struct Watermark {
-    through_seq: u64,
-    through_event_id: Identifier,
-    through_bytes: u64,
+    seq: u64,
+    event_id: Identifier,
+    bytes: u64,
 }
 
 struct Replay {
@@ -47,6 +47,10 @@ struct Replay {
     generation: Identifier,
     seq: u64,
     event_id: Identifier,
+}
+
+pub(crate) fn holds_schema_v3(dir: &PrivateDir, id: &str) -> Result<bool, SessionError> {
+    Ok(holds_authority_marker(dir)? && read_metadata(dir, id).is_err())
 }
 
 pub(crate) fn read_schema_v3(
@@ -81,15 +85,15 @@ fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<LegacySession, SessionEr
     };
     let mut replay = Replay::start(decode_frame(&first)?, id)?;
     let watermark = read_watermark(dir, id, &replay.generation)?;
-    while reader.offset() < watermark.through_bytes {
+    while reader.offset() < watermark.bytes {
         let LineRead::Line(line) = reader.next_line()? else {
             return Err(SessionError::InvalidSessionFormat);
         };
         replay.apply(decode_frame(&line)?)?;
     }
-    let committed = replay.seq == watermark.through_seq
-        && replay.event_id == watermark.through_event_id
-        && reader.offset() == watermark.through_bytes;
+    let committed = replay.seq == watermark.seq
+        && replay.event_id == watermark.event_id
+        && reader.offset() == watermark.bytes;
     if committed {
         Ok(replay.session)
     } else {
@@ -115,9 +119,9 @@ fn watermark(document: Json<'_>, id: &str, generation: &Identifier) -> Option<Wa
     (fields.string("session_id")? == id).then_some(())?;
     (parse_identifier(&fields.string("log_generation")?)? == *generation).then_some(())?;
     let watermark = Watermark {
-        through_seq: fields.unsigned("through_seq")?,
-        through_event_id: parse_identifier(&fields.string("through_event_id")?)?,
-        through_bytes: fields
+        seq: fields.unsigned("through_seq")?,
+        event_id: parse_identifier(&fields.string("through_event_id")?)?,
+        bytes: fields
             .unsigned("through_event_log_bytes")
             .filter(|bytes| *bytes > 0)?,
     };

@@ -4,6 +4,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::session_event::{
+    AssistantEvent, ConversationEvent, InterruptReason, InterruptedEvent, SteeringEvent,
+    ToolCallEvent, TurnCompletedEvent, UserEvent,
+};
+use crate::session_log::load_session;
+use ofx_contract::{ToolArgumentIntegrity, ToolResultStatus};
+
+type Edit = fn(String) -> String;
 
 pub(crate) const GENERATION: &str = "01010101010101010101010101010101";
 const AUTHORITY_ID: &str = "03030303030303030303030303030303";
@@ -195,6 +203,42 @@ impl Fixture {
     fn summary(&self, log: &LegacyLog) -> Result<Option<SessionSummary>, SessionError> {
         summarize_schema_v3(&self.dir(log), &log.id)
     }
+
+    fn converted(&self, log: &LegacyLog) -> Vec<Vec<ConversationEvent>> {
+        let converted = read_schema_v3(&self.dir(log), &log.id).unwrap().unwrap();
+        let copies = self.root.path().join("copies");
+        fs::create_dir_all(copies.join(&log.id)).unwrap();
+        for dir in [copies.clone(), copies.join(&log.id)] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let sessions = PrivateDir::open_existing(&copies).unwrap().unwrap();
+        converted
+            .write(&sessions.open_child(&log.id).unwrap().unwrap())
+            .unwrap();
+        load_session(&sessions, &log.id)
+            .unwrap()
+            .history
+            .turns
+            .into_iter()
+            .map(|turn| turn.events)
+            .collect()
+    }
+}
+
+fn user(text: &str) -> ConversationEvent {
+    ConversationEvent::User(UserEvent::new(text))
+}
+
+fn said(text: &str) -> ConversationEvent {
+    ConversationEvent::Assistant(AssistantEvent {
+        text: text.to_owned(),
+        provider_replay: None,
+        standalone_response: false,
+    })
+}
+
+fn completed() -> ConversationEvent {
+    ConversationEvent::TurnCompleted(TurnCompletedEvent::default())
 }
 
 #[test]
@@ -241,7 +285,7 @@ fn only_the_prefix_the_watermark_commits_is_read() {
 fn a_watermark_that_does_not_match_the_log_makes_the_session_unreadable() {
     let fixture = Fixture::new();
     let base = || LegacyLog::started("legacy-mark", "/work").turn(&reply("one", "two"));
-    let cases: [(&str, fn(String) -> String); 6] = [
+    let cases: [(&str, Edit); 6] = [
         ("session", |mark| {
             mark.replace("legacy-mark", "other-session")
         }),
@@ -406,4 +450,119 @@ fn preference_and_workspace_changes_replay_in_order() {
         "{\"connection_id\":\"other\",\"model_id\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":true}",
     );
     assert!(fixture.summary(&foreign).is_err());
+}
+
+#[test]
+fn an_interrupted_turn_keeps_its_running_call_as_upstream_imports_it() {
+    let fixture = Fixture::new();
+    let interrupted = "{\"kind\":\"interrupted\",\"user\":{\"text\":\"stop me\",\"images\":[]},\"assistant\":\"partial\",\"tool_call\":{\"id\":\"call_9\",\"name\":\"run_command\",\"arguments_json\":\"[1]\",\"provider_result\":null},\"completed_tool_names\":[\"read_file\"],\"terminal_reason\":\"failed\",\"execution\":{\"schema_version\":3,\"tool_steps\":[{\"assistant\":null,\"tool_calls\":[],\"tool_results\":[]}],\"files\":[]}}";
+    let log = LegacyLog::started("legacy-stopped", "/work").turn(interrupted);
+    let turns = fixture.converted(&log);
+    let mut call = ToolCallEvent::new("call_9", "run_command", "{}", ToolArgumentIntegrity::Valid);
+    call.provider_result = None;
+    assert_eq!(
+        turns,
+        [vec![
+            user("stop me"),
+            said(""),
+            ConversationEvent::ToolCall(call),
+            ConversationEvent::Interrupted(InterruptedEvent::new(
+                InterruptReason::Failed,
+                Some("partial".to_owned())
+            )),
+        ]]
+    );
+}
+
+#[test]
+fn a_background_command_turn_becomes_its_historical_record() {
+    let fixture = Fixture::new();
+    let background = "{\"kind\":\"background_command\",\"user\":{\"text\":\"serve it\",\"images\":[]},\"log_path\":\"/tmp/fx-bg.log\",\"expect_url\":true,\"url\":\"http://localhost:3000\",\"background_record_id\":\"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\"}";
+    let extended = "{\"kind\":\"background_command\",\"user\":{\"text\":\"watch it\",\"images\":[]},\"log_path\":\"\",\"expect_url\":false,\"url\":null,\"background_record_id\":null,\"assistant\":\"Started.\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}";
+    let log = LegacyLog::started("legacy-background", "/work")
+        .turn(background)
+        .turn(extended);
+    assert_eq!(
+        fixture.converted(&log),
+        [
+            vec![
+                user("serve it"),
+                said(
+                    "[Historical command record: fx no longer owns or controls this process; former log=/tmp/fx-bg.log; recorded url=http://localhost:3000]"
+                ),
+                completed(),
+            ],
+            vec![
+                user("watch it"),
+                said(
+                    "Started.\n[Historical command record: fx no longer owns or controls this process]"
+                ),
+                completed(),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn steering_lands_after_the_step_it_followed() {
+    let fixture = Fixture::new();
+    let steered = "{\"kind\":\"assistant\",\"user\":{\"text\":\"start\",\"images\":[],\"work_id\":\"work-1\"},\"assistant\":\"finished\",\"provider_replay\":null,\"execution\":{\"schema_version\":10,\"tool_steps\":[{\"assistant\":\"step one\",\"tool_calls\":[],\"tool_results\":[],\"provider_replay\":null}],\"files\":[],\"steering\":[{\"text\":\"first\",\"assistant_prefix\":\"so far\",\"after_tool_step_count\":0},{\"text\":\"second\",\"assistant_prefix\":null,\"after_tool_step_count\":1}],\"turn_summary\":null}}";
+    let log = LegacyLog::started("legacy-steered", "/work").frame(
+        "history_turn_committed",
+        &format!(
+            "{{\"conversation_language\":\"en\",\"total_input_tokens\":0,\"total_output_tokens\":0,\"turn\":{steered},\"work_id\":\"work-1\"}}"
+        ),
+    );
+    let conflicting = LegacyLog::started("legacy-conflict", "/work").turn(steered);
+    assert!(fixture.summary(&conflicting).is_err());
+    let standalone = ConversationEvent::Assistant(AssistantEvent {
+        text: "step one".to_owned(),
+        provider_replay: None,
+        standalone_response: true,
+    });
+    assert_eq!(
+        fixture.converted(&log),
+        [vec![
+            ConversationEvent::User(UserEvent::for_work("start", "work-1")),
+            said("so far"),
+            ConversationEvent::Steering(SteeringEvent {
+                text: "first".to_owned()
+            }),
+            standalone,
+            ConversationEvent::Steering(SteeringEvent {
+                text: "second".to_owned()
+            }),
+            said("finished"),
+            completed(),
+        ]]
+    );
+}
+
+#[test]
+fn unreadable_arguments_are_repaired_into_a_failed_result_as_upstream_repairs_them() {
+    let fixture = Fixture::new();
+    let turn = command_turn(
+        "list",
+        "call_1",
+        &command_result("call_1", "listing", "null"),
+        "done",
+    )
+    .replace("{\\\"command\\\":\\\"ls\\\"}", "{bad");
+    let log = LegacyLog::started("legacy-repaired", "/work").turn(&turn);
+    let turns = fixture.converted(&log);
+    let ConversationEvent::ToolCall(call) = &turns[0][2] else {
+        panic!("{turns:?}");
+    };
+    assert_eq!(call.arguments_json, "{}");
+    assert_eq!(call.argument_integrity, ToolArgumentIntegrity::Valid);
+    let ConversationEvent::ToolResult(result) = &turns[0][3] else {
+        panic!("{turns:?}");
+    };
+    assert_eq!(result.status, ToolResultStatus::Failure);
+    assert!(
+        result
+            .preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("Tool arguments were not valid JSON."))
+    );
 }

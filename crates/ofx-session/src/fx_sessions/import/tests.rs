@@ -10,10 +10,12 @@ use super::super::tests::{
     Home, Saved, ids, shell_turn, shell_turn_with_an_unknown_event, snapshot,
 };
 use super::Imported;
+use crate::result_store::make_handle;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
 use crate::session_log::WritableSession;
+use crate::session_migration::tests::{GENERATION, LegacyLog, command_result, command_turn, reply};
 use crate::session_store::{ListScope, SessionStore};
 
 type OwnWork = fn(&Home, WritableSession);
@@ -516,4 +518,157 @@ fn a_copy_published_without_its_import_baseline_is_never_refreshed() {
     drop(store.resume(ID).unwrap());
     assert_eq!(copy_of(&home, "events.jsonl"), kept);
     assert!(!home.own_sessions().join(ID).join("fx-import.json").exists());
+}
+
+const FX_HANDLE: &str = "result-run_command-0123456789abcdef-fedcba9876543210.txt";
+
+fn legacy() -> LegacyLog {
+    LegacyLog::started(ID, WORKSPACE)
+        .turn(&reply("first prompt here", "first answer"))
+        .turn(&command_turn(
+            "list files",
+            "call_1",
+            &command_result("call_1", "a b", "null"),
+            "done",
+        ))
+        .turn(&command_turn(
+            "show more",
+            "call_2",
+            &command_result("call_2", "head", &format!("\"{FX_HANDLE}\"")),
+            "shown",
+        ))
+}
+
+fn tool_result(event: &ConversationEvent) -> &crate::session_event::ToolResultEvent {
+    match event {
+        ConversationEvent::ToolResult(result) => result,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn resuming_a_session_fx_saved_before_0_0_8_converts_it_into_the_copy() {
+    let home = Home::new();
+    let source = legacy().titled("Old work").write(&home.fx_sessions());
+    add(
+        &source,
+        &format!("tool-results/{FX_HANDLE}"),
+        b"head and the rest",
+    );
+    let before = snapshot(&home.fx_profile());
+
+    let session = importing(&home).resume(ID).unwrap();
+    assert_eq!(session.id(), ID);
+    assert_eq!(session.title(), Some("first prompt here"));
+    drop(session);
+    assert_eq!(snapshot(&home.fx_profile()), before);
+    assert!(staging_left(&home).is_empty());
+
+    let copy = home.own_sessions().join(ID);
+    for left_out in [
+        "authority.json".to_owned(),
+        "commit.lock".to_owned(),
+        "display.json".to_owned(),
+        format!("commit.{GENERATION}.json"),
+    ] {
+        assert!(!copy.join(&left_out).exists(), "{left_out}");
+    }
+    assert_eq!(
+        copy_of(&home, &format!("tool-results/{FX_HANDLE}")),
+        b"head and the rest"
+    );
+    let saved = home.store(WORKSPACE).load(ID).unwrap();
+    let metadata = &saved.metadata;
+    assert_eq!(metadata.preferences.provider.id(), &ProviderId::Gateway);
+    assert_eq!(metadata.preferences.model, "openai/gpt-5");
+    assert_eq!(metadata.preferences.effort, ReasoningEffort::Auto);
+    assert_eq!(metadata.created_at_ms, 10);
+    assert_eq!(metadata.updated_at_ms, 70);
+    assert_eq!(metadata.workspace_root, WORKSPACE);
+    assert_eq!(metadata.title.as_deref(), Some("first prompt here"));
+    let turns: Vec<_> = saved
+        .history
+        .turns
+        .iter()
+        .map(|turn| &turn.events)
+        .collect();
+    assert_eq!(turns.len(), 3);
+    assert_eq!(
+        turns[0],
+        &[
+            ConversationEvent::User(UserEvent::new("first prompt here")),
+            ConversationEvent::Assistant(AssistantEvent {
+                text: "first answer".to_owned(),
+                provider_replay: None,
+                standalone_response: false,
+            }),
+            ConversationEvent::TurnCompleted(TurnCompletedEvent::default()),
+        ]
+    );
+    let inline = tool_result(&turns[1][3]);
+    let handle = make_handle("call_1", "run_command", "a b");
+    assert_eq!(inline.artifact_ref, handle);
+    assert_eq!(inline.stored_bytes, 3);
+    assert_eq!(inline.output_bytes, Some(3));
+    assert_eq!(
+        inline.completeness,
+        crate::session_event::ArtifactCompleteness::Partial
+    );
+    assert_eq!(inline.preview.as_deref(), Some("a b"));
+    assert_eq!(inline.created_at_ms, 15);
+    assert_eq!(copy_of(&home, &format!("tool-results/{handle}")), b"a b");
+    let ConversationEvent::TurnCompleted(closed) = &turns[1][5] else {
+        panic!("{:?}", turns[1]);
+    };
+    assert_eq!(closed.files.len(), 1);
+    assert_eq!(closed.files[0].path, "src/main.rs");
+    let spilled = tool_result(&turns[2][3]);
+    assert_eq!(spilled.artifact_ref, FX_HANDLE);
+    assert_eq!(spilled.stored_bytes, 4);
+    assert_eq!(
+        spilled.completeness,
+        crate::session_event::ArtifactCompleteness::Complete
+    );
+
+    drop(importing(&home).resume(ID).unwrap());
+    assert_eq!(home.store(WORKSPACE).load(ID).unwrap(), saved);
+    assert_eq!(snapshot(&home.fx_profile()), before);
+    let listed = home.listed(WORKSPACE, ListScope::AllWorkspaces);
+    assert_eq!(ids(&listed), [ID]);
+}
+
+#[test]
+fn a_schema_v3_session_without_its_manifest_imports_and_follows_fx_until_used() {
+    let home = Home::new();
+    let source = legacy().write(&home.fx_sessions());
+    fs::remove_file(source.join("session.json")).unwrap();
+
+    drop(importing(&home).resume(ID).unwrap());
+    let imported = copy_of(&home, "events.jsonl");
+    drop(importing(&home).resume(ID).unwrap());
+    assert_eq!(copy_of(&home, "events.jsonl"), imported);
+
+    let source = legacy()
+        .turn(&reply("asked later in fx", "answered"))
+        .write(&home.fx_sessions());
+    fs::remove_file(source.join("session.json")).unwrap();
+    drop(importing(&home).resume(ID).unwrap());
+    let refreshed = home.store(WORKSPACE).load(ID).unwrap();
+    assert_eq!(refreshed.history.turns.len(), 4);
+}
+
+#[test]
+fn a_schema_v3_session_oh_fx_cannot_convert_yet_is_refused() {
+    let home = Home::new();
+    legacy()
+        .frame("recovery_checkpoint_cleared", "{}")
+        .write(&home.fx_sessions());
+    let before = snapshot(&home.fx_profile());
+    assert_eq!(
+        importing(&home).resume(ID).err(),
+        Some(SessionError::FxSessionUnreadable)
+    );
+    assert!(!home.own_sessions().join(ID).exists());
+    assert!(staging_left(&home).is_empty());
+    assert_eq!(snapshot(&home.fx_profile()), before);
 }

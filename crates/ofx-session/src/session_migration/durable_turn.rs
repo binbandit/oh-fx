@@ -98,7 +98,7 @@ fn assistant(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     let (user, work_id) = user(fields.required("user")?)?;
     let reply = durable_text(fields.required("assistant")?)?;
     let execution = execution(fields.required("execution")?)?;
-    fields.or("provider_replay", (), absent)?;
+    fields.or("provider_replay", (), |value| absent(&value))?;
     Some(LegacyTurn {
         user,
         work_id,
@@ -110,7 +110,7 @@ fn assistant(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
 fn background_command(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     let (user, work_id) = user(fields.required("user")?)?;
     let log_path = durable_text(fields.required("log_path")?)?;
-    let url = optional_text(fields.required("url")?)?;
+    let url = fields.present_or_null("url", |value| durable_text(value).map(Some))?;
     fields.flag("expect_url")?;
     match fields.required("background_record_id")? {
         Json::Null => {}
@@ -119,10 +119,11 @@ fn background_command(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
         }
         _ => return None,
     }
-    let (reply, execution) = match (fields.required("assistant"), fields.required("execution")) {
-        (None, None) => (None, Execution::default()),
-        (Some(reply), Some(saved)) => (optional_text(reply)?, execution(saved)?),
-        _ => return None,
+    let (reply, execution) = if let Some(saved) = fields.required("execution") {
+        let reply = fields.present_or_null("assistant", |value| durable_text(value).map(Some))?;
+        (reply, execution(saved)?)
+    } else {
+        (None, Execution::default())
     };
     Some(LegacyTurn {
         user,
@@ -157,7 +158,7 @@ fn historical_command(reply: Option<&str>, log_path: &str, url: Option<&str>) ->
 
 fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     let (user, work_id) = user(fields.required("user")?)?;
-    let partial = optional_text(fields.required("assistant")?)?;
+    let partial = fields.present_or_null("assistant", |value| durable_text(value).map(Some))?;
     let pending = match fields.required("tool_call")? {
         Json::Null => None,
         call => Some(interrupted_call(call)?),
@@ -261,7 +262,7 @@ fn steering_entry(value: Json<'_>) -> Option<Steering> {
     let mut fields = Fields::new(value)?;
     let entry = Steering {
         text: durable_text(fields.required("text")?)?,
-        assistant_prefix: optional_text(fields.required("assistant_prefix")?)?.unwrap_or_default(),
+        assistant_prefix: fields.present_or_null("assistant_prefix", durable_text)?,
         after_tool_step_count: usize::try_from(fields.unsigned("after_tool_step_count")?).ok()?,
     };
     fields.finish(entry)
@@ -269,13 +270,13 @@ fn steering_entry(value: Json<'_>) -> Option<Steering> {
 
 fn tool_step(value: Json<'_>, version: u64) -> Option<Step> {
     let mut fields = Fields::new(value)?;
-    let assistant = optional_text(fields.required("assistant")?)?.unwrap_or_default();
+    let assistant = fields.present_or_null("assistant", durable_text)?;
     let mut calls = list(fields.required("tool_calls")?, tool_call)?;
     let mut results = list(fields.required("tool_results")?, |result| {
         tool_result(result, version)
     })?;
     if version >= PROVIDER_REPLAY_SCHEMA {
-        absent(fields.required("provider_replay")?)?;
+        absent(&fields.required("provider_replay")?)?;
     }
     repair_arguments(&mut calls, &mut results)?;
     fields.finish(Step {
@@ -297,7 +298,8 @@ fn tool_call(value: Json<'_>) -> Option<ToolCallEvent> {
         arguments
     };
     let mut call = ToolCallEvent::new(id, name, arguments, integrity);
-    call.provider_result = optional_text(fields.required("provider_result")?)?;
+    call.provider_result =
+        fields.present_or_null("provider_result", |value| durable_text(value).map(Some))?;
     fields.finish(call)
 }
 
@@ -372,8 +374,9 @@ fn tool_result(value: Json<'_>, version: u64) -> Option<SavedResult> {
         tool_name: durable_text(fields.required("tool_name")?)?,
         status: tag(&fields.required("status")?)?,
         output: durable_text(fields.required("output")?)?,
-        output_handle: optional_text(fields.required("output_handle")?)?,
-        preview: optional_text(fields.required("preview")?)?,
+        output_handle: fields
+            .present_or_null("output_handle", |value| durable_text(value).map(Some))?,
+        preview: fields.present_or_null("preview", |value| durable_text(value).map(Some))?,
         output_bytes: fields.unsigned("output_bytes")?,
         stored_output_bytes: fields.unsigned("stored_output_bytes")?,
         truncated: fields.flag("truncated")?,
@@ -394,18 +397,18 @@ fn tool_result(value: Json<'_>, version: u64) -> Option<SavedResult> {
     };
     let presentation = match version {
         1 => Some(()),
-        2 => fields.or("committed_file_presentation", (), absent),
-        _ => absent(fields.required("committed_file_presentation")?),
+        2 => fields.or("committed_file_presentation", (), |value| absent(&value)),
+        _ => absent(&fields.required("committed_file_presentation")?),
     };
     presentation?;
     if version >= PROCESS_SCHEMA {
-        absent(fields.required("command_output_replay")?)?;
+        absent(&fields.required("command_output_replay")?)?;
     }
     if version >= TERMINAL_ACTION_SCHEMA {
-        absent(fields.required("terminal_action_presentation")?)?;
+        absent(&fields.required("terminal_action_presentation")?)?;
     }
     if version >= TOOL_IMAGE_SCHEMA {
-        fields.or("tool_image_handle", (), absent)?;
+        fields.or("tool_image_handle", (), |value| absent(&value))?;
         if fields.required("tool_images").is_some() {
             return None;
         }
@@ -416,13 +419,6 @@ fn tool_result(value: Json<'_>, version: u64) -> Option<SavedResult> {
     fields.finish(result)
 }
 
-fn optional_text(value: Json<'_>) -> Option<Option<String>> {
-    match value {
-        Json::Null => Some(None),
-        value => durable_text(value).map(Some),
-    }
-}
-
-fn absent(value: Json<'_>) -> Option<()> {
+fn absent(value: &Json<'_>) -> Option<()> {
     value.is_null().then_some(())
 }

@@ -7,6 +7,7 @@ use crate::session_error::SessionError;
 use crate::session_event::{ConversationEvent, ConversationState, decode_conversation_frame};
 use crate::session_log::managed_file::{Access, open_managed_file};
 use crate::session_log::{EVENTS_FILE, read_checkpoint, read_metadata};
+use crate::session_migration::{holds_schema_v3, summarize_schema_v3};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 
@@ -27,6 +28,9 @@ pub(crate) fn classify_session(
     let dir = sessions
         .open_child(id)?
         .ok_or(SessionError::SessionNotFound)?;
+    if classification == Classification::Resume && holds_schema_v3(&dir, id)? {
+        return summarize_schema_v3(&dir, id);
+    }
     let metadata = read_metadata(&dir, id)?;
     if metadata.subagent_child || has_owner_marker(&dir)? {
         return Ok(None);

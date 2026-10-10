@@ -100,24 +100,21 @@ fn started(payload: Json<'_>) -> Option<Started> {
             value.as_bool()?.then_some(true)
         })?,
     };
-    fields.or("usage", (), usage)?;
+    fields.or("usage", (), |value| usage(&value))?;
     fields.finish(started)
 }
 
 fn preferences(value: Json<'_>) -> Option<SessionPreferences> {
     let mut fields = Fields::new(value)?;
-    let (provider, model) = match fields.required("connection_id") {
-        Some(connection) => {
-            (connection.as_str()? == LEGACY_CONNECTION).then_some(())?;
-            (gateway()?, fields.string("model_id")?)
-        }
-        None => {
-            let provider = match fields.required("provider") {
-                Some(provider) => parse_saved_provider(&provider)?,
-                None => gateway()?,
-            };
-            (provider, fields.string("model")?)
-        }
+    let (provider, model) = if let Some(connection) = fields.required("connection_id") {
+        (connection.as_str()? == LEGACY_CONNECTION).then_some(())?;
+        (gateway()?, fields.string("model_id")?)
+    } else {
+        let provider = match fields.required("provider") {
+            Some(provider) => parse_saved_provider(&provider)?,
+            None => gateway()?,
+        };
+        (provider, fields.string("model")?)
     };
     let preferences = SessionPreferences {
         provider,
@@ -190,23 +187,21 @@ fn associate_work(turn: &mut LegacyTurn, committed: Option<&str>) -> Option<()> 
         (None, Some(_)) => None,
         (Some(committed), saved) => {
             is_valid_work_id(committed).then_some(())?;
-            match saved {
-                Some(saved) => (saved == committed).then_some(()),
-                None => {
-                    turn.work_id = Some(committed.to_owned());
-                    Some(())
-                }
+            if let Some(saved) = saved {
+                return (saved == committed).then_some(());
             }
+            turn.work_id = Some(committed.to_owned());
+            Some(())
         }
     }
 }
 
 fn usage_checkpointed(payload: Json<'_>) -> Option<Event> {
     let mut fields = Fields::new(payload)?;
-    usage(fields.required("usage")?)?;
+    usage(&fields.required("usage")?)?;
     fields.finish(Event::UsageCheckpointed)
 }
 
-fn usage(value: Json<'_>) -> Option<()> {
+fn usage(value: &Json<'_>) -> Option<()> {
     matches!(value, Json::Object(_)).then_some(())
 }
