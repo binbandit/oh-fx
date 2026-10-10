@@ -1,4 +1,4 @@
-use ofx_text::LexicalDocument;
+use super::{Document, Domain, Request};
 
 const SECRET: [u64; 4] = [
     0xa076_1d64_78bd_642f,
@@ -7,36 +7,48 @@ const SECRET: [u64; 4] = [
     0x5899_65cc_7537_4cc3,
 ];
 
-pub(super) fn render(query: &str, documents: &[LexicalDocument<'_>], offset: usize) -> String {
+pub(super) fn render(domain: Domain, fingerprint: u64, request_hash: u64, offset: usize) -> String {
+    let domain = match domain {
+        Domain::Skill => 's',
+        Domain::Mcp => 'm',
+    };
+    format!("c1:{domain}:{fingerprint:x}:{request_hash:x}:{offset}")
+}
+
+pub(super) fn fingerprint(documents: &[Document<'_>]) -> u64 {
     let mut xor = 0;
     let mut sum = 0u64;
     for document in documents {
         let mut fields = Vec::new();
-        for field in [
-            document.stable_key,
-            document.identity,
-            "",
-            document.primary,
-            "",
-            "",
-            "",
-            document.secondary,
-            "",
-            "",
-        ] {
+        append(&mut fields, document.stable_key);
+        for field in document
+            .identities
+            .iter()
+            .copied()
+            .chain(document.primary_fields())
+            .chain(document.secondary.iter().copied())
+        {
             append(&mut fields, field);
         }
         let digest = hash(0x6361_7061_6269_6c69, &fields);
         xor ^= digest;
         sum = sum.wrapping_add(digest.wrapping_mul(0x9e37_79b9_7f4a_7c15));
     }
-    let fingerprint =
-        xor ^ sum.rotate_left(17) ^ u64::try_from(documents.len()).unwrap_or(u64::MAX);
-    let mut request = Vec::new();
-    append(&mut request, query);
-    request.extend([0, 1]);
-    let request = hash(0x7265_7175_6573_7421, &request);
-    format!("c1:s:{fingerprint:x}:{request:x}:{offset}")
+    xor ^ sum.rotate_left(17) ^ u64::try_from(documents.len()).unwrap_or(u64::MAX)
+}
+
+pub(super) fn request_hash(request: Request<'_>, domain: Domain) -> u64 {
+    let mut fields = Vec::new();
+    append(&mut fields, request.query.raw());
+    fields.push(match domain {
+        Domain::Skill => 0,
+        Domain::Mcp => 1,
+    });
+    fields.push(1);
+    if let Some(server) = request.server {
+        append(&mut fields, server);
+    }
+    hash(0x7265_7175_6573_7421, &fields)
 }
 
 fn append(output: &mut Vec<u8>, value: &str) {
@@ -119,6 +131,7 @@ fn hash(seed: u64, input: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PreparedQuery;
 
     #[test]
     fn private_cursor_matches_pinned_retrieval_for_seven_skills() {
@@ -127,15 +140,26 @@ mod tests {
         let documents: Vec<_> = names
             .iter()
             .zip(&paths)
-            .map(|(name, path)| LexicalDocument {
-                identity: name,
-                primary: name,
-                secondary: "description",
+            .map(|(name, path)| Document {
+                identities: [name, ""],
                 stable_key: path,
+                primary: [name, "", "", ""],
+                secondary: ["description", "", ""],
+                ..Document::default()
             })
             .collect();
+        let query = PreparedQuery::prepare(String::new()).unwrap();
+        let request = Request {
+            query: &query,
+            server: None,
+        };
         assert_eq!(
-            render("", &documents, 5),
+            render(
+                Domain::Skill,
+                fingerprint(&documents),
+                request_hash(request, Domain::Skill),
+                5
+            ),
             "c1:s:2e2e1cae8e5ca8b4:2b7dc6aa7abcd396:5"
         );
     }

@@ -1,3 +1,4 @@
+mod capability_retrieval;
 mod display_width;
 mod fmt;
 mod language_script;
@@ -29,4 +30,5 @@ pub use token_estimate::StreamingEstimator;
 pub use url_display::{clipped_label, redact_url_for_display};
 pub use utf8_validator::{InvalidUtf8, Utf8Validator};
 
-pub use lexical_relevance::{LexicalDocument, PreparedQuery, QueryTooLong, rank_intent};
+pub use capability_retrieval::{Document, Domain, Page, Request, retrieve};
+pub use lexical_relevance::{PreparedQuery, QueryTooLong};

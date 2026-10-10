@@ -1,8 +1,6 @@
-mod cursor;
-
 use crate::Skill;
 use ofx_contract::prepare_model_output;
-use ofx_text::{LexicalDocument, PreparedQuery, is_model_safe_text, rank_intent};
+use ofx_text::{Document, Domain, PreparedQuery, Request, is_model_safe_text, retrieve};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SkillSearchError {
@@ -35,18 +33,26 @@ pub fn search_skills(
         .collect();
     let documents: Vec<_> = visible
         .iter()
-        .map(|skill| LexicalDocument {
-            identity: &skill.name,
-            primary: &skill.name,
-            secondary: &skill.description,
+        .map(|skill| Document {
+            identities: [&skill.name, ""],
             stable_key: skill.path.to_str().unwrap_or_default(),
+            primary: [&skill.name, "", "", ""],
+            secondary: [&skill.description, "", ""],
+            ..Document::default()
         })
         .collect();
-    let matches = rank_intent(query, &documents);
-    let total_matches = matches.len();
-    let mut count = matches.len().min(5);
+    let page = retrieve(
+        Request {
+            query,
+            server: None,
+        },
+        Domain::Skill,
+        &documents,
+    );
+    let total_matches = page.total_matches;
+    let mut count = page.matches.len();
     loop {
-        let items_json = matches[..count]
+        let items_json = page.matches[..count]
             .iter()
             .map(|index| {
                 let skill = visible[*index];
@@ -62,11 +68,9 @@ pub fn search_skills(
             })
             .collect::<Vec<_>>()
             .join(",");
-        let next = if count < total_matches {
-            quote(&cursor::render(query.raw(), &documents, count))
-        } else {
-            "null".to_owned()
-        };
+        let next = page
+            .cursor_after(count)
+            .map_or_else(|| "null".to_owned(), |cursor| quote(&cursor));
         let standalone = format!(
             "{{\"skills\":[{items_json}],\"count\":{count},\"total_matches\":{total_matches},\"more_available\":{},\"next_cursor\":{next}}}",
             count < total_matches
