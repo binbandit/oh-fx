@@ -22,7 +22,7 @@ use crate::session_event::{FileEvidence, WireTag, are_valid_files, saved_replay}
 use crate::{process_presentation, turn_summary};
 
 pub(crate) use encode::{CheckpointSource, SavedOutput, encode_recovery_file};
-use route_credential::CREDENTIAL_IDENTITY_BYTES;
+pub(crate) use route_credential::CREDENTIAL_IDENTITY_BYTES;
 pub use route_credential::RouteCredential;
 
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;

@@ -2,7 +2,7 @@ use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
 const CREDENTIAL_AUTHORITY_DOMAIN: &[u8] = b"fx-credential-authority-v1\0";
-pub(super) const CREDENTIAL_IDENTITY_BYTES: usize = 32;
+pub(crate) const CREDENTIAL_IDENTITY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteCredential {

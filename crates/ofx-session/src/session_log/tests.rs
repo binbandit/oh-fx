@@ -187,7 +187,13 @@ fn conversation_storage_creates_only_private_metadata_and_event_log() {
     files.sort();
     assert_eq!(
         files,
-        ["events.jsonl", "owner.live", "session.json", "session.lock"]
+        [
+            "events.jsonl",
+            "owner.live",
+            "session.json",
+            "session.lock",
+            "usage-v2.json"
+        ]
     );
     assert_eq!(mode(&dir), 0o700);
     for file in &files {
@@ -1155,3 +1161,4 @@ fn a_turn_left_unsaved_keeps_its_prompt_language_for_the_next_commit() {
 
 mod history_cache;
 mod upstream_frames;
+mod usage;
