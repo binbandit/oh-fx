@@ -391,4 +391,74 @@ mod stored {
         );
         assert_eq!(token_requests(&fixture), 0);
     }
+
+    #[tokio::test]
+    async fn closing_during_a_blocked_refresh_still_sends_the_last_bearer() {
+        let server = FakeServer::start(|request| {
+            if request.path == "/token" {
+                return Reply::sse(&[]).held_open();
+            }
+            if request.method == "DELETE" {
+                return Reply::status(204);
+            }
+            match request.method_name().as_deref() {
+                Some("initialize") => Reply::json(&format!(
+                    r#"{{"jsonrpc":"2.0","id":{},"result":{{"protocolVersion":"2025-11-25","capabilities":{{}},"serverInfo":{{"name":"remote","version":"2"}}}}}}"#,
+                    request.request_id().unwrap()
+                ))
+                .header("Mcp-Session-Id", "session-1"),
+                Some("tools/list") => Reply::json(&format!(
+                    r#"{{"jsonrpc":"2.0","id":{},"result":{{"tools":[]}}}}"#,
+                    request.request_id().unwrap()
+                )),
+                _ => Reply::status(202),
+            }
+        })
+        .await;
+        let fixture = Fixture {
+            server,
+            data: tempfile::tempdir().unwrap(),
+        };
+        let expires_at_ms = now_ms() + 61_000;
+        fixture
+            .store()
+            .save(
+                "remote",
+                &fixture.credentials(expires_at_ms, Some("stored-refresh")),
+            )
+            .unwrap();
+        let client = Arc::new(
+            McpClient::connect(&fixture.config(), &fixture.options())
+                .await
+                .unwrap(),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        let calling = Arc::clone(&client);
+        let call = tokio::spawn(async move {
+            calling
+                .call_tool(
+                    "echo",
+                    "{}",
+                    crate::tool_operations::CallOptions::default(),
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+                )
+                .await
+        });
+        assert!(
+            fixture
+                .server
+                .wait_for(|request| request.path == "/token")
+                .await
+        );
+        client.shutdown(ShutdownMode::Graceful).await;
+        assert!(
+            fixture
+                .server
+                .wait_for(|request| request.method == "DELETE"
+                    && request.header("authorization") == Some("Bearer stored-token")
+                    && request.header("mcp-session-id") == Some("session-1"))
+                .await
+        );
+        call.abort();
+    }
 }

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex as StateMutex, PoisonError};
 
 use reqwest::RequestBuilder;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::error::McpError;
 use crate::mcp_auth::{Credentials, now_ms, refresh_credentials};
@@ -25,6 +25,7 @@ struct StoredAuth {
     store: CredentialStore,
     http: reqwest::Client,
     credentials: Arc<Mutex<Credentials>>,
+    bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
 }
 
@@ -52,6 +53,7 @@ impl HttpAuth {
                 server: config.name.clone(),
                 store,
                 http: oauth_client()?,
+                bearer: Arc::new(StateMutex::new(bearer_header(&credentials)?)),
                 credentials: Arc::new(Mutex::new(credentials)),
                 failure: Arc::default(),
             }),
@@ -70,13 +72,8 @@ impl HttpAuth {
 
     pub(crate) fn apply_current(&self, builder: RequestBuilder) -> RequestBuilder {
         let builder = self.apply_static(builder);
-        let current = self
-            .stored
-            .as_ref()
-            .and_then(|stored| stored.credentials.try_lock().ok())
-            .and_then(|credentials| bearer_header(&credentials).ok());
-        match current {
-            Some(value) => builder.header(AUTHORIZATION, value),
+        match &self.stored {
+            Some(stored) => builder.header(AUTHORIZATION, stored.current_bearer()),
             None => builder,
         }
     }
@@ -140,12 +137,22 @@ impl StoredAuth {
                 return Err(error);
             }
         };
-        let store = self.store.clone();
-        let server = self.server.clone();
-        let failure = Arc::clone(&self.failure);
-        tokio::spawn(install(credentials, refreshed, store, server, failure))
+        let installing = Installing {
+            store: self.store.clone(),
+            server: self.server.clone(),
+            bearer: Arc::clone(&self.bearer),
+            failure: Arc::clone(&self.failure),
+        };
+        tokio::spawn(installing.install(credentials, refreshed))
             .await
             .map_err(|_| McpError::Cancelled)?
+    }
+
+    fn current_bearer(&self) -> HeaderValue {
+        self.bearer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn fail(&self, reason: &str) {
@@ -161,24 +168,34 @@ impl StoredAuth {
     }
 }
 
-async fn install(
-    mut credentials: tokio::sync::OwnedMutexGuard<Credentials>,
-    refreshed: Credentials,
+struct Installing {
     store: CredentialStore,
     server: String,
+    bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
-) -> Result<HeaderValue, McpError> {
-    let saved = refreshed.clone();
-    let (server, result) = tokio::task::spawn_blocking(move || {
-        let result = store.save(&server, &saved);
-        (server, result)
-    })
-    .await
-    .map_err(|_| McpError::Cancelled)?;
-    trace_store_repair("refresh", &server, result?.repaired_entries);
-    *credentials = refreshed;
-    *failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
-    bearer_header(&credentials)
+}
+
+impl Installing {
+    async fn install(
+        self,
+        mut credentials: OwnedMutexGuard<Credentials>,
+        refreshed: Credentials,
+    ) -> Result<HeaderValue, McpError> {
+        let saved = refreshed.clone();
+        let store = self.store;
+        let (server, result) = tokio::task::spawn_blocking(move || {
+            let result = store.save(&self.server, &saved);
+            (self.server, result)
+        })
+        .await
+        .map_err(|_| McpError::Cancelled)?;
+        trace_store_repair("refresh", &server, result?.repaired_entries);
+        let header = bearer_header(&refreshed)?;
+        *credentials = refreshed;
+        *self.bearer.lock().unwrap_or_else(PoisonError::into_inner) = header.clone();
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        Ok(header)
+    }
 }
 
 pub(crate) fn trace_store_repair(actor: &str, server: &str, repaired_entries: usize) {
