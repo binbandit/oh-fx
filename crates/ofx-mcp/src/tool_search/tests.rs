@@ -469,6 +469,33 @@ async fn only_the_leading_bytes_of_descriptions_and_schemas_are_searched() {
     }
 }
 
+#[test]
+fn a_candidate_keeps_only_the_searched_schema_prefix_on_a_character_boundary() {
+    let schema = |text: String| Tool {
+        name: "probe".to_owned(),
+        title: None,
+        description: String::new(),
+        input_schema: json!({ "d": text }),
+        output_schema: None,
+        icons: None,
+        annotations: None,
+        meta: None,
+    };
+    let opening = r#"{"d":""#.len();
+    let straddling = schema(format!(
+        "{}{}",
+        "x".repeat(SCHEMA_SEARCH_BYTES - 1 - opening),
+        "\u{e9}".repeat(8)
+    ));
+    let full = straddling.input_schema.to_string();
+    assert!(!full.is_char_boundary(SCHEMA_SEARCH_BYTES));
+    let stored = searchable_schema(&straddling);
+    assert_eq!(stored, &full[..SCHEMA_SEARCH_BYTES - 1]);
+    assert!(stored.capacity() < SCHEMA_SEARCH_BYTES);
+    let short = schema("brief".to_owned());
+    assert_eq!(searchable_schema(&short), short.input_schema.to_string());
+}
+
 #[tokio::test]
 async fn dropping_or_abandoning_startup_discovery_ends_the_discovering_state() {
     let fixture = Fixture::new();

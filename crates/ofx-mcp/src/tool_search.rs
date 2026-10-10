@@ -99,7 +99,7 @@ pub(crate) fn search(
                 server: server_name,
                 instructions: published.instructions.as_deref(),
                 tool,
-                schema: tool.input_schema.to_string(),
+                schema: searchable_schema(tool),
                 tags: tags_for(server_name, &tool.name),
                 name,
             });
@@ -168,13 +168,17 @@ fn document<'a>(candidate: &'a Candidate<'a>) -> Document<'a> {
                 candidate.tool.catalog_description(),
                 DESCRIPTION_SEARCH_BYTES,
             ),
-            prefix(&candidate.schema, SCHEMA_SEARCH_BYTES),
+            &candidate.schema,
             prefix(
                 candidate.instructions.unwrap_or_default(),
                 INSTRUCTIONS_SEARCH_BYTES,
             ),
         ],
     }
+}
+
+fn searchable_schema(tool: &Tool) -> String {
+    prefix(&tool.input_schema.to_string(), SCHEMA_SEARCH_BYTES).to_owned()
 }
 
 fn prefix(text: &str, max_bytes: usize) -> &str {
