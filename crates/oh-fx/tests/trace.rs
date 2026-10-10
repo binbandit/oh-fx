@@ -852,3 +852,77 @@ fn a_shell_call_refused_by_validation_writes_its_validation_failure() {
     );
     assert!(!log.contains("event=execution_start"), "{log}");
 }
+
+#[test]
+fn a_steered_turn_keeps_the_turn_id_its_prompt_was_queued_with() {
+    let held = Reply::held_sse(&chat_text_events(&["Working on it.\nStill going.\n", "more"])[..3]);
+    let steered = Reply::sse(&chat_text_events(&["Steered answer."]));
+    let (_home, mut launched) = launch_with(0, vec![held, steered]);
+    launched.session.send(b"first prompt\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("Working on it."))
+        .expect("the reply streams");
+    launched.session.send(b"and also this\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("Steered answer."))
+        .expect("the steered request answers");
+    let log = launched.workspace.join("trace.log");
+    let written = launched
+        .session
+        .wait_for(WAIT, |_| {
+            fs::read_to_string(&log).is_ok_and(|text| text.contains("event=prompt_finish"))
+        })
+        .map(|_| fs::read_to_string(&log).expect("read the trace log"))
+        .expect("the turn finishes");
+    let lines = bodies(&written);
+    let enqueue = lines
+        .iter()
+        .find(|line| line.starts_with("[worker] event=prompt_enqueue "))
+        .unwrap_or_else(|| panic!("{written}"));
+    let turn_id: u64 = enqueue
+        .split_once("turn_id=")
+        .and_then(|(_, rest)| rest.split(' ').next())
+        .and_then(|id| id.parse().ok())
+        .unwrap_or_else(|| panic!("{enqueue}"));
+    let steer_id = turn_id + 1;
+    assert_in_order(
+        &written,
+        &[
+            "[worker] queued prompt bytes=12 queue_depth=1 fast_mode=false effort=auto",
+            &format!(
+                "[worker] event=prompt_enqueue turn_id={turn_id} prompt_bytes=12 queue_depth=1 fast_mode=false effort=auto"
+            ),
+            "[worker] begin prompt bytes=12 remaining_queue=0 fast_mode=false effort=auto",
+            &format!(
+                "[worker] event=worker_begin turn_id={turn_id} prompt_bytes=12 remaining_queue=0 cancel_reset=true fast_mode=false effort=auto"
+            ),
+            &format!("[agent] event=prompt_start turn_id={turn_id} prompt_bytes=12 model=model-a"),
+            &format!(
+                "[worker] event=prompt_enqueue turn_id={steer_id} prompt_bytes=13 queue_depth=1 fast_mode=false effort=auto"
+            ),
+            &format!(
+                "[worker] event=steering_admission turn_id={turn_id} queued_turn_id={steer_id} targeted=true plain=true tool_boundary=false compaction_active=false interrupt_model=true"
+            ),
+            &format!("[worker] event=prompt_steering_consumed turn_id={turn_id} count=1"),
+            &format!(
+                "[worker] event=steering_boundary_check turn_id={turn_id} kind=cancelled outcome=continue_turn"
+            ),
+            &format!("[agent] event=prompt_finish turn_id={turn_id} outcome_kind=assistant"),
+        ],
+    );
+    assert!(
+        !written.contains(&format!("event=prompt_start turn_id={steer_id} ")),
+        "{written}"
+    );
+    assert_eq!(launched.server.requests().len(), 2);
+    launched.session.send(b"/quit\r");
+    assert!(
+        launched
+            .session
+            .wait_exit(WAIT)
+            .expect("the shell exits")
+            .success()
+    );
+}

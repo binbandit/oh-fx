@@ -456,3 +456,34 @@ fn a_cleared_conversation_keeps_only_prompts_submitted_after_it() {
     runtime.discard_before(6);
     assert!(!runtime.has_waiting_prompts());
 }
+
+#[test]
+fn admitted_prompts_take_their_trace_turn_ids_in_the_order_they_are_queued() {
+    let runtime = WorkerRuntime::default();
+    runtime.admit(prompt(0, "first"));
+    runtime.admit(prompt(1, "second"));
+    let first = runtime.take_next().unwrap();
+    runtime.finish_processing();
+    let second = runtime.take_next().unwrap();
+    assert_ne!(first.turn_id(), 0);
+    assert!(second.turn_id() > first.turn_id());
+}
+
+#[test]
+fn queued_settings_name_the_effort_the_prompt_was_queued_with() {
+    let default = prompt(0, "plain");
+    assert_eq!(default.settings.effort, "auto");
+    let named = prompt(1, "deep").with_settings(true, &ReasoningEffort::Named("high".to_owned()));
+    assert!(named.settings.fast_mode);
+    assert_eq!(named.settings.effort, "high");
+}
+
+#[test]
+fn discarding_older_prompts_keeps_the_rest_in_order() {
+    let runtime = WorkerRuntime::default();
+    for (id, text) in [(1, "one"), (2, "two"), (3, "three")] {
+        runtime.admit(prompt(id, text));
+    }
+    runtime.discard_before(2);
+    assert_eq!(runtime.waiting_texts(), ["two", "three"]);
+}

@@ -590,6 +590,13 @@ impl Agent {
             .await
     }
 
+    pub fn trace_turn(&mut self, turn_id: u64) {
+        self.next_trace = Some(TraceContext {
+            turn_id,
+            ..TraceContext::default()
+        });
+    }
+
     pub(crate) fn trace_next_turn_as_subagent(&mut self) -> TraceContext {
         let trace = TraceContext {
             turn_id: ofx_trace::next_turn_id(),
