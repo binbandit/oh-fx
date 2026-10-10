@@ -5,6 +5,7 @@ use std::iter;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
@@ -48,6 +49,7 @@ use crate::prompt_context::Calibration;
 use crate::recovery_pause::RecoveryPause;
 use crate::skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 use crate::tool_admission::{ShellExecutionFailureRetry, ShellValidationRetry};
+use crate::tool_call_metrics::{TOOL_CALL_TRACE, ToolCallOutcome, ToolCallRecord, ToolCallRing};
 use crate::turn_reviews::TurnReviews;
 use crate::worker_runtime::WorkerRuntime;
 
@@ -62,6 +64,7 @@ mod response_language;
 mod steering;
 mod turn_ledger;
 mod turn_log;
+mod turn_trace;
 
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
@@ -77,6 +80,7 @@ use recovery::{Restart, RestoredReply, recovery_tool_choice, restarted, retried_
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
+use turn_trace::ToolTrail;
 
 const STEP_LIMIT_NOTICE: &str =
     "Agent step limit reached; continue with a follow-up prompt if needed.";
@@ -91,6 +95,9 @@ const SUMMARIZE_PROMPT: &str = "Summarize what you just did.";
 const EMPTY_RESPONSE_TEXT: &str = "Done.";
 const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority.\n</response_language_control>";
 const SILENT_STEPS_BEFORE_SUMMARY: u32 = 2;
+const TERMINAL_VALIDATION_RETRY: &str = "terminal_validation_retry";
+const RECOVERY_STALLED: &str = "recovery_stalled";
+
 const TOOL_CANCEL_GRACE: Duration = Duration::from_secs(2);
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const MAX_TOOL_ARGUMENTS_PREVIEW_BYTES: usize = 4 * 1024;
@@ -221,6 +228,7 @@ struct Turn {
     stop: StopState,
     trace: TraceContext,
     selected_tools: SelectedTools,
+    trail: ToolTrail,
 }
 
 #[derive(Default)]
@@ -312,6 +320,8 @@ pub struct Agent {
     recovery_pause: RecoveryPause,
     lifecycle: Option<LifecycleContext>,
     compaction_trace: &'static Ring<CompactionEvent>,
+    tool_call_trace: &'static ToolCallRing,
+    next_trace: Option<TraceContext>,
 }
 
 impl Agent {
@@ -363,6 +373,8 @@ impl Agent {
             recovery_pause: RecoveryPause::default(),
             lifecycle: None,
             compaction_trace: &COMPACTION_TRACE,
+            tool_call_trace: &TOOL_CALL_TRACE,
+            next_trace: None,
         }
     }
 
@@ -542,7 +554,17 @@ impl Agent {
             .await
     }
 
-    fn new_turn(&self, id: TurnId, prompt: &str) -> Turn {
+    pub(crate) fn trace_next_turn_as_subagent(&mut self) -> TraceContext {
+        let trace = TraceContext {
+            turn_id: ofx_trace::next_turn_id(),
+            subagent_id: ofx_trace::next_subagent_id(),
+            ..TraceContext::default()
+        };
+        self.next_trace = Some(trace);
+        trace
+    }
+
+    fn new_turn(&self, id: TurnId, prompt: &str, trace: TraceContext) -> Turn {
         Turn {
             id,
             start: self.history.len(),
@@ -567,11 +589,9 @@ impl Agent {
             restored: RestoredReply::default(),
             steps: 0,
             stop: StopState::default(),
-            trace: TraceContext {
-                turn_id: ofx_trace::next_turn_id(),
-                ..TraceContext::default()
-            },
+            trace,
             selected_tools: SelectedTools::default(),
+            trail: ToolTrail::default(),
         }
     }
 
@@ -609,7 +629,12 @@ impl Agent {
         self.recovery_pause.reset();
         let id = TurnId::new(self.turns);
         events(UiEvent::TurnStarted { turn_id: id });
+        let trace = self.next_trace.take().unwrap_or_else(|| TraceContext {
+            turn_id: ofx_trace::next_turn_id(),
+            ..TraceContext::default()
+        });
         if let Err(failure) = self.require_writable() {
+            turn_trace::prompt_failed_before_start(trace, prompt, &self.config.model);
             events(UiEvent::TurnFinished {
                 turn_id: id,
                 outcome: TurnOutcome::Failed,
@@ -623,17 +648,58 @@ impl Agent {
             };
         }
         self.close_interrupted_turns(self.continues_steering());
-        let mut turn = self.new_turn(id, prompt);
+        let mut turn = self.new_turn(id, prompt, trace);
         self.turn_starts.push(turn.start);
         self.history.push(self.turn_message(prompt));
         if let Some(recovered) = recovered {
             self.restore_recovered(&mut turn, recovered);
         }
+        turn_trace::prompt_start(turn.trace, prompt, &self.config.model);
         let result = self.drive(&mut turn, prompt, skills, events, cancel).await;
-        let (outcome, final_text, mut failure, ending) = match result {
+        let outcome_kind = turn_trace::outcome_kind(&result, &turn.trail, cancel.is_cancelled());
+        let (outcome, final_text, mut failure, ending) = self.settle_result(&turn, prompt, result);
+        if let Err(error) = self.save_turn(prompt, &turn, ending)
+            && failure.is_none()
+        {
+            failure = Some(TurnFailure::Persistence(error));
+        }
+        self.forget_summary_prompt(&turn);
+        self.forget_stop_continuation(&turn);
+        self.hold_interruption(ending, turn.start);
+        events(UiEvent::TurnFinished {
+            turn_id: id,
+            outcome,
+        });
+        if outcome_kind == turn_trace::CANCELLED {
+            turn_trace::cancelled_turn(turn.trace);
+        }
+        turn_trace::prompt_finish(turn.trace, outcome_kind);
+        if outcome == TurnOutcome::Completed {
+            self.last_reply = Some(LastReply {
+                turn: self.turn_starts.len().saturating_sub(1),
+                text: Arc::from(final_text.as_str()),
+            });
+        }
+        self.post_turn_end(id, presentation_outcome(outcome, ending));
+        TurnReport {
+            outcome,
+            final_text,
+            usage: turn.usage,
+            failure,
+        }
+    }
+
+    fn settle_result(
+        &mut self,
+        turn: &Turn,
+        prompt: &str,
+        result: Result<String, Stop>,
+    ) -> (TurnOutcome, String, Option<TurnFailure>, Ending) {
+        match result {
             Ok(text) => (TurnOutcome::Completed, text, None, Ending::Replied),
             Err(Stop::Interrupted { partial }) => {
                 self.keep_partial_turn(turn.start, &partial);
+                turn_trace::interrupted(turn.trace, prompt, &partial, &turn.trail);
                 (
                     TurnOutcome::Interrupted,
                     String::new(),
@@ -666,6 +732,7 @@ impl Agent {
                     Ending::Discarded
                 } else if spoke {
                     self.keep_partial_turn(turn.start, &partial);
+                    turn_trace::stream_failure_persisted(turn.trace, prompt, &partial);
                     Ending::Stopped(TurnStop::Failed)
                 } else {
                     self.keep_partial_turn(turn.start, "");
@@ -673,31 +740,6 @@ impl Agent {
                 };
                 (TurnOutcome::Failed, String::new(), Some(failure), ending)
             }
-        };
-        if let Err(error) = self.save_turn(prompt, &turn, ending)
-            && failure.is_none()
-        {
-            failure = Some(TurnFailure::Persistence(error));
-        }
-        self.forget_summary_prompt(&turn);
-        self.forget_stop_continuation(&turn);
-        self.hold_interruption(ending, turn.start);
-        events(UiEvent::TurnFinished {
-            turn_id: id,
-            outcome,
-        });
-        if outcome == TurnOutcome::Completed {
-            self.last_reply = Some(LastReply {
-                turn: self.turn_starts.len().saturating_sub(1),
-                text: Arc::from(final_text.as_str()),
-            });
-        }
-        self.post_turn_end(id, presentation_outcome(outcome, ending));
-        TurnReport {
-            outcome,
-            final_text,
-            usage: turn.usage,
-            failure,
         }
     }
 
@@ -806,9 +848,9 @@ impl Agent {
         let servers = self.mcp_servers_section(turn.id, events);
         let mut step = 0;
         loop {
-            self.stop_at_step_limit(turn.id, step, events)?;
+            self.stop_at_step_limit(turn, step, events)?;
+            let entered = enter_step(turn, step);
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
-            turn.trace.step_id = ofx_trace::next_step_id();
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
@@ -816,6 +858,8 @@ impl Agent {
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             let messages = self.request_messages(turn);
+            let gateway_messages = instructions.len() + messages.len();
+            self.trace_step(turn, (step + 1, entered), gateway_messages);
             let request = self.turn_request(turn, &instructions, &messages, events);
             let (measured, body) = self.measure(turn, &request).unzip();
             match self
@@ -879,14 +923,13 @@ impl Agent {
                     }
                     Reply::Rejected => continue,
                 };
-            if let Some(failure) = malformed_provider_calls(&completion.tool_calls) {
-                return Err(Stop::failed(failure));
-            }
+            let finish = settled_finish(turn, &completion)?;
+            turn_trace::step_completion(turn.trace, step + 1, &completion);
             step += 1;
             turn.steps = step;
             let more_steps = allows_step(self.config.step_limit, step);
             if let Some(text) = self
-                .settle_completion(turn, completion, more_steps, events, cancel)
+                .settle_completion(turn, (completion, finish), more_steps, events, cancel)
                 .await?
             {
                 return Ok(text);
@@ -897,32 +940,27 @@ impl Agent {
     async fn settle_completion(
         &mut self,
         turn: &mut Turn,
-        completion: Completion,
+        (completion, finish): (Completion, Finish),
         more_steps: bool,
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<Option<String>, Stop> {
-        match (completion.finish_reason, completion.tool_calls.is_empty()) {
-            (FinishReason::Stop, true) => {
+        match finish {
+            Finish::Reply => {
                 let reply = self.finish(turn, completion, more_steps, events)?;
                 self.stop_checkpoint(turn, reply, more_steps, events, cancel)
                     .await
             }
-            (FinishReason::Stop, false) if ends_with_provider_results(&completion) => {
+            Finish::ProviderResults => {
                 let reply =
                     self.finish_with_provider_results(turn, completion, more_steps, events)?;
                 self.stop_checkpoint(turn, reply, more_steps, events, cancel)
                     .await
             }
-            (FinishReason::Stop, false) if completion.tool_calls.iter().all(provider_executed) => {
+            Finish::Batch => {
                 self.run_batch(turn, completion, more_steps, events, cancel)
                     .await
             }
-            (FinishReason::ToolCalls, false) => {
-                self.run_batch(turn, completion, more_steps, events, cancel)
-                    .await
-            }
-            _ => Err(Stop::failed(TurnFailure::InvalidCompletion)),
         }
     }
 
@@ -1060,6 +1098,25 @@ impl Agent {
     }
 
     fn provider_options(&self, turn: &mut Turn, events: EventSink<'_>) -> ProviderOptions<'_> {
+        let options = self.selected_provider_options(turn, events);
+        turn_trace::provider_options(
+            turn.trace,
+            &turn_trace::ProviderOptionsTrace {
+                model: &self.config.model,
+                fast_mode: turn.fast_mode,
+                effort: self.config.reasoning_effort.as_deref(),
+                reasoning_selected: options.reasoning_effort.is_some(),
+                fast_selected: options.fast,
+            },
+        );
+        options
+    }
+
+    fn selected_provider_options(
+        &self,
+        turn: &mut Turn,
+        events: EventSink<'_>,
+    ) -> ProviderOptions<'_> {
         let Some(known) = &self.capabilities else {
             return ProviderOptions::default();
         };
@@ -1138,6 +1195,7 @@ impl Agent {
                 restart.evidence(&mut turn.tool_evidence, observed, &turn.language.stage);
             let decision = recovery.decide(cause, &error, streamed_bytes, evidence);
             let Some(action) = decision.strategy.action() else {
+                turn.trail.finish = Some(RECOVERY_STALLED);
                 events(UiEvent::Recovery {
                     turn_id,
                     status: stalled_status(cause, consumed, &error, &decision),
@@ -1192,6 +1250,7 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Attempt {
         let turn_id = turn.id;
+        let trace = turn.trace;
         let mut streamed_text = StreamText::default();
         let mut streamed_bytes = 0;
         let mut admitted = false;
@@ -1199,6 +1258,7 @@ impl Agent {
         let mut sink = |event: StreamEvent| match event {
             StreamEvent::Admitted => {
                 admitted = true;
+                turn_trace::provider_admitted(trace, request.model);
                 if let Some(status) = pending.take() {
                     events(UiEvent::Recovery { turn_id, status });
                 }
@@ -1319,6 +1379,8 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<Option<String>, Stop> {
         self.enter_tool_phase();
+        turn.trail.ran_tools = true;
+        turn.trail.step_text_bytes = completion.content.as_deref().map_or(0, str::len);
         turn.shell_corrections.begin_batch();
         turn.shell_failures.begin_batch();
         turn.silent_tool_steps = if completion
@@ -1342,12 +1404,15 @@ impl Agent {
             })
             .collect();
         let all_malformed = !malformed.is_empty() && malformed.iter().all(Option::is_some);
-        let hooked = self
+        let Some(hooked) = self
             .pre_tool_use(turn, &completion.tool_calls, &malformed, cancel)
             .await
-            .ok_or_else(|| Stop::Interrupted {
-                partial: completion.content.clone().unwrap_or_default(),
-            })?;
+        else {
+            turn.trail.cancelled_in_tools = true;
+            return Err(Stop::Interrupted {
+                partial: completion.content.unwrap_or_default(),
+            });
+        };
         let (calls, mut rejected) = self.record_tool_step(completion, malformed, hooked);
         let mut feedback = Vec::new();
         let ran = self
@@ -1358,14 +1423,16 @@ impl Agent {
                 .into_iter()
                 .map(|(call_id, text)| ChatMessage::permission_feedback(call_id, text)),
         );
+        turn.trail.cancelled_in_tools = matches!(ran, Err(Stop::Interrupted { .. }));
         ran?;
-        self.settle_batch_retries(turn, all_malformed, more_steps, events)
+        self.settle_batch_retries(turn, all_malformed, calls.len(), more_steps, events)
     }
 
     fn settle_batch_retries(
         &mut self,
         turn: &mut Turn,
         all_malformed: bool,
+        calls: usize,
         more_steps: bool,
         events: EventSink<'_>,
     ) -> Result<Option<String>, Stop> {
@@ -1380,6 +1447,11 @@ impl Agent {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
             }
+            turn_trace::repeated_tool_failure(
+                turn.trace,
+                &TurnFailure::RepeatedMalformedArguments,
+                calls,
+            );
             return Err(self.stop_with_notice(
                 turn.id,
                 events,
@@ -1394,12 +1466,18 @@ impl Agent {
             events(UiEvent::SystemNotice {
                 text: REPEATED_SHELL_VALIDATION_NOTICE.to_owned(),
             });
+            turn.trail.finish = Some(TERMINAL_VALIDATION_RETRY);
             return Ok(Some(String::new()));
         }
         if failures_repeated {
             if self.steered_at_finalizing(turn.id, more_steps, events) {
                 return Ok(None);
             }
+            turn_trace::repeated_tool_failure(
+                turn.trace,
+                &TurnFailure::RepeatedShellExecutionFailure,
+                calls,
+            );
             return Err(self.stop_with_notice(
                 turn.id,
                 events,
@@ -1439,11 +1517,15 @@ impl Agent {
         let mut next = 0;
         let mut carried = Deferred(None);
         while next < calls.len() {
+            let call = &calls[next];
             if cancel.is_cancelled() {
+                turn_trace::tool_call(turn.trace, call);
+                turn.trail.called(call);
+                turn.trail.interrupted_at(call);
                 return Err(Stop::interrupted());
             }
-            if provider_executed(&calls[next]) {
-                self.publish_provider_result(turn, &calls[next], events);
+            if provider_executed(call) {
+                self.publish_provider_result(turn, call, events);
                 next += 1;
                 continue;
             }
@@ -1451,9 +1533,11 @@ impl Agent {
                 Some(gate) => match self.gated_group(gate, calls, next) {
                     GatedGroup::Run(group) => group,
                     GatedGroup::Unexecuted(description, output) => {
+                        turn_trace::tool_call(turn.trace, call);
+                        turn.trail.called(call);
                         turn.raw_outputs
-                            .push(partial_view(calls[next].id.clone(), output.len()));
-                        self.settle_unexecuted(turn.id, &calls[next], description, output, events);
+                            .push(partial_view(call.id.clone(), output.len()));
+                        self.settle_unexecuted(turn.id, call, description, output, events);
                         next += 1;
                         continue;
                     }
@@ -1461,27 +1545,8 @@ impl Agent {
                 None => self.lazy_group(calls, next, rejected, &mut carried),
             };
             next += group.len();
-            let gate = Gate {
-                permissions: &*self.permissions,
-                approvals: self.approvals.as_ref(),
-                reviews_fall_back_to_approval: self.reviews_fall_back_to_approval,
-            };
-            let mut reviewing = Reviewing {
-                model: &self.config.model,
-                history: &self.history,
-                turn_starts: &self.turn_starts,
-                compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
-                inherited_requests: self.inherited_requests.as_ref(),
-                turn_start: turn.start,
-                batch: calls,
-                reviews: &mut turn.reviews,
-                usage: &mut turn.usage,
-            };
-            let settled = run_group(turn.id, group, gate, &mut reviewing, events, cancel).await;
-            self.record_settled(turn, settled.outcomes, feedback);
-            if let Some(blocked) = settled.blocked {
-                return Err(Stop::failed(TurnFailure::PermissionRequired(blocked)));
-            }
+            self.settle_one_group(turn, calls, group, feedback, events, cancel)
+                .await?;
         }
         if cancel.is_cancelled() {
             return Err(Stop::interrupted());
@@ -1489,10 +1554,65 @@ impl Agent {
         Ok(())
     }
 
+    async fn settle_one_group(
+        &mut self,
+        turn: &mut Turn,
+        calls: &[ToolCall],
+        group: Vec<(&ToolCall, Prepared)>,
+        feedback: &mut Vec<(ToolCallId, String)>,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Stop> {
+        let parallel = (group.len() > 1)
+            .then(|| group[0].1.parallel_group())
+            .flatten();
+        let gate = Gate {
+            permissions: &*self.permissions,
+            approvals: self.approvals.as_ref(),
+            reviews_fall_back_to_approval: self.reviews_fall_back_to_approval,
+        };
+        let mut reviewing = Reviewing {
+            model: &self.config.model,
+            history: &self.history,
+            turn_starts: &self.turn_starts,
+            compacted_turns: self.compacted.as_ref().map(|payload| payload.turn_count),
+            inherited_requests: self.inherited_requests.as_ref(),
+            turn_start: turn.start,
+            batch: calls,
+            reviews: &mut turn.reviews,
+            usage: &mut turn.usage,
+        };
+        let traced = (turn.id, turn.trace, parallel);
+        let settled = run_group(traced, group, gate, &mut reviewing, events, cancel).await;
+        let executed = settled
+            .outcomes
+            .iter()
+            .filter(|outcome| outcome.ran.is_some())
+            .count();
+        self.record_settled(turn, settled.outcomes, parallel.is_some(), feedback);
+        if let Some(kind) = parallel {
+            turn_trace::parallel_group(
+                turn.trace,
+                "parallel_tool_group_finish",
+                kind.name(),
+                executed,
+            );
+        }
+        if let Some(call) = settled.stopped_at {
+            turn.trail.called(call);
+            turn.trail.interrupted_at(call);
+        }
+        match settled.blocked {
+            Some(blocked) => Err(Stop::failed(TurnFailure::PermissionRequired(blocked))),
+            None => Ok(()),
+        }
+    }
+
     fn record_settled(
         &mut self,
         turn: &mut Turn,
         outcomes: Vec<Settled<'_>>,
+        parallel: bool,
         feedback: &mut Vec<(ToolCallId, String)>,
     ) {
         for Settled {
@@ -1502,14 +1622,24 @@ impl Agent {
             executed,
             review_hold,
             feedback: given,
+            ran,
         } in outcomes
         {
             feedback.extend(given.map(|text| (call.id.clone(), text)));
+            turn.trail.called(call);
+            self.record_tool_call(turn.trace, call, output.as_ref(), ran);
+            let interrupted = ran.is_some_and(|ran| ran.cancelled);
+            if interrupted {
+                turn.trail.interrupted_at(call);
+            }
             let Some(output) = output else {
                 continue;
             };
             turn.selected_tools.record(&output);
             let status = output.status;
+            if executed && !interrupted && (status == ToolResultStatus::Success || !parallel) {
+                turn.trail.completed(call);
+            }
             if executed {
                 let saved = self.saved_arguments(call);
                 turn.shell_failures.observe(
@@ -1522,8 +1652,18 @@ impl Agent {
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
             let bytes = output.content.len();
+            let result_kind = turn_trace::result_kind(&output);
             let (model_output, truncated) =
                 bound_model_output(&call.name, output.content, DEFAULT_MAX_TOOL_RESULT_BYTES);
+            if let Some(ran) = ran.filter(|ran| !ran.cancelled) {
+                turn_trace::tool_execution_result(
+                    turn.trace,
+                    call,
+                    result_kind,
+                    ran.panicked,
+                    model_output.len(),
+                );
+            }
             turn.raw_outputs.push(RecordedOutput {
                 call_id: call.id.clone(),
                 bytes,
@@ -1545,6 +1685,34 @@ impl Agent {
                 status,
             });
         }
+    }
+
+    fn record_tool_call(
+        &self,
+        trace: TraceContext,
+        call: &ToolCall,
+        output: Option<&ToolOutput>,
+        ran: Option<Ran>,
+    ) {
+        let outcome = match (output, ran) {
+            (Some(output), Some(ran)) => ran_outcome(output, ran.panicked),
+            (None, Some(_)) => ToolCallOutcome::ToolFailed,
+            (Some(_), None) if trace.subagent_id == 0 => ToolCallOutcome::Rejected,
+            _ => return,
+        };
+        let shown = output
+            .filter(|_| !ran.is_some_and(|ran| ran.panicked))
+            .map_or("", |output| output.content.as_str());
+        let now = ofx_trace::timestamp_ms();
+        self.tool_call_trace.record(&ToolCallRecord {
+            name: &call.name,
+            arguments: &call.arguments,
+            output: shown,
+            outcome,
+            started_at_ms: ran.map_or(now, |ran| ran.started_at_ms),
+            finished_at_ms: ran.map_or(now, |ran| ran.finished_at_ms),
+            subagent_id: trace.subagent_id,
+        });
     }
 
     fn record_tool_step(
@@ -1642,15 +1810,24 @@ impl Agent {
             .find_map(|(tool, spec)| (spec.name == name).then_some(tool))
     }
 
+    fn trace_step(&self, turn: &mut Turn, (step_index, entered): (u64, bool), messages: usize) {
+        turn.trail.gateway_messages = messages;
+        if entered {
+            turn_trace::step_begin(turn.trace, step_index, self.config.step_limit, messages);
+        }
+        turn_trace::before_provider_preflight(turn.trace, &self.config.model, messages);
+    }
+
     fn stop_at_step_limit(
         &mut self,
-        turn_id: TurnId,
+        turn: &Turn,
         step: u64,
         events: EventSink<'_>,
     ) -> Result<(), Stop> {
         if !allows_step(self.config.step_limit, step) {
+            turn_trace::step_limit_reached(turn.trace, step, self.config.step_limit, &turn.trail);
             return Err(self.stop_with_notice(
-                turn_id,
+                turn.id,
                 events,
                 STEP_LIMIT_NOTICE,
                 TurnFailure::StepLimitReached,
@@ -1813,6 +1990,11 @@ impl Agent {
             && turn.silent_tool_steps >= SILENT_STEPS_BEFORE_SUMMARY
         {
             turn.summary_requested = true;
+            turn_trace::continuation_injected(
+                turn.silent_tool_steps,
+                completion.content.as_deref(),
+                completion.provider_replay.is_some(),
+            );
             if completion.provider_replay.is_some() {
                 self.history.push(ChatMessage::Assistant {
                     content: completion.content,
@@ -2166,6 +2348,15 @@ enum ParallelGroup {
     Subagent,
 }
 
+impl ParallelGroup {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Subagent => "subagent",
+        }
+    }
+}
+
 fn parallel_group(description: &CallDescription) -> Option<ParallelGroup> {
     match (description.concurrency, description.activity) {
         (Concurrency::Serial, _) => None,
@@ -2194,23 +2385,39 @@ enum Dispatched {
     Rejected(ToolOutput, ToolRejection),
     Held(ToolOutput, bool),
     Admitted(Box<dyn PreparedCall>, ToolContext),
-    Running(JoinHandle<ToolOutput>),
+    Running(JoinHandle<Finished>, i64),
     Unstarted,
 }
 
+type Finished = (ToolOutput, i64, u64);
+
 impl Dispatched {
-    fn start(self, cancel: &CancellationToken) -> Self {
+    fn start(self, cancel: &CancellationToken, finishes: &Arc<AtomicU64>) -> Self {
         match self {
             Self::Admitted(prepared, _) if cancel.is_cancelled() => {
                 discard(prepared);
                 Self::Unstarted
             }
             Self::Admitted(prepared, context) => {
-                Self::Running(tokio::spawn(async move { prepared.execute(context).await }))
+                let finishes = Arc::clone(finishes);
+                Self::Running(
+                    tokio::spawn(async move {
+                        let output = prepared.execute(context).await;
+                        let order = finishes.fetch_add(1, Ordering::SeqCst);
+                        (output, ofx_trace::timestamp_ms(), order)
+                    }),
+                    ofx_trace::timestamp_ms(),
+                )
             }
             other => other,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct Grace {
+    deadline: Instant,
+    cancelled_at: u64,
 }
 
 struct Settled<'c> {
@@ -2220,11 +2427,28 @@ struct Settled<'c> {
     executed: bool,
     review_hold: bool,
     feedback: Option<String>,
+    ran: Option<Ran>,
+}
+
+#[derive(Clone, Copy)]
+struct Ran {
+    started_at_ms: i64,
+    finished_at_ms: i64,
+    panicked: bool,
+    cancelled: bool,
+}
+
+struct Joined {
+    output: ToolOutput,
+    finished_at_ms: i64,
+    panicked: bool,
+    cancelled: bool,
 }
 
 struct SettledGroup<'c> {
     outcomes: Vec<Settled<'c>>,
     blocked: Option<BlockedCall>,
+    stopped_at: Option<&'c ToolCall>,
 }
 
 #[derive(Clone, Copy)]
@@ -2535,7 +2759,7 @@ fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -
 }
 
 async fn run_group<'c>(
-    turn_id: TurnId,
+    (turn_id, trace, parallel): (TurnId, TraceContext, Option<ParallelGroup>),
     group: Vec<(&'c ToolCall, Prepared)>,
     gate: Gate<'_>,
     reviewing: &mut Reviewing<'_>,
@@ -2545,10 +2769,13 @@ async fn run_group<'c>(
     let mut dispatched = Vec::with_capacity(group.len());
     let (statuses, mut reported) = unbounded_channel();
     let mut blocked = None;
+    let mut stopped_at = None;
     let mut group = group.into_iter();
     for (call, prepared) in group.by_ref() {
+        turn_trace::tool_call(trace, call);
         if cancel.is_cancelled() {
             discard(prepared);
+            stopped_at = Some(call);
             break;
         }
         match prepared {
@@ -2592,11 +2819,7 @@ async fn run_group<'c>(
                     description.relabel(label);
                 }
                 if verdict == Verdict::Blocked {
-                    blocked = Some(BlockedCall {
-                        tool_name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                        title: description.title.clone(),
-                    });
+                    blocked = Some(blocked_call(call, &description));
                 }
                 let silent = shown_while_reviewed
                     || verdict == Verdict::Interrupted
@@ -2618,6 +2841,7 @@ async fn run_group<'c>(
                         if shown_while_reviewed {
                             events(tool_finished(turn_id, call, None));
                         }
+                        stopped_at = (verdict == Verdict::Interrupted).then_some(call);
                         discard(prepared);
                         break;
                     }
@@ -2632,29 +2856,45 @@ async fn run_group<'c>(
         }
     }
     group.for_each(discard);
+    drop(statuses);
+    let traced = (turn_id, trace, parallel);
+    let outcomes = settle_group(traced, dispatched, &mut reported, events, cancel).await;
     SettledGroup {
-        outcomes: {
-            drop(statuses);
-            settle_group(turn_id, dispatched, &mut reported, events, cancel).await
-        },
+        outcomes,
         blocked,
+        stopped_at,
     }
 }
 
 async fn settle_group<'c>(
-    turn_id: TurnId,
+    (turn_id, trace, parallel): (TurnId, TraceContext, Option<ParallelGroup>),
     dispatched: Vec<(&'c ToolCall, Dispatched, Option<String>)>,
     reported: &mut UnboundedReceiver<ChildStatus>,
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> Vec<Settled<'c>> {
+    let finishes = Arc::new(AtomicU64::new(0));
     let dispatched: Vec<_> = dispatched
         .into_iter()
-        .map(|(call, dispatched, feedback)| (call, dispatched.start(cancel), feedback))
+        .map(|(call, dispatched, feedback)| {
+            let started = dispatched.start(cancel, &finishes);
+            if matches!(started, Dispatched::Running(..)) {
+                turn_trace::tool_execution_start(trace, call);
+            }
+            (call, started, feedback)
+        })
         .collect();
-    let mut grace_deadline = None;
+    let running = dispatched
+        .iter()
+        .filter(|(_, dispatched, _)| matches!(dispatched, Dispatched::Running(..)))
+        .count();
+    if let Some(kind) = parallel.filter(|_| running > 0) {
+        turn_trace::parallel_group(trace, "parallel_tool_group_start", kind.name(), running);
+    }
+    let mut grace = None;
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched, feedback) in dispatched {
+        let mut ran = None;
         let (output, escalates, executed, review_hold) = match dispatched {
             Dispatched::Rejected(output, reason) => {
                 report_context_notices(turn_id, &output, events);
@@ -2669,9 +2909,18 @@ async fn settle_group<'c>(
                 events(tool_finished(turn_id, call, Some(&output)));
                 (Some(output), true, false, review_hold)
             }
-            Dispatched::Running(mut task) => {
-                let settling = settle(call, &mut task, cancel, &mut grace_deadline);
-                let output = forward_child_statuses(turn_id, settling, reported, events).await;
+            Dispatched::Running(mut task, started_at_ms) => {
+                let settling = settle(call, &mut task, (cancel, &finishes), &mut grace);
+                let joined = forward_child_statuses(turn_id, settling, reported, events).await;
+                ran = Some(Ran {
+                    started_at_ms,
+                    finished_at_ms: joined
+                        .as_ref()
+                        .map_or_else(ofx_trace::timestamp_ms, |joined| joined.finished_at_ms),
+                    panicked: joined.as_ref().is_some_and(|joined| joined.panicked),
+                    cancelled: joined.as_ref().is_none_or(|joined| joined.cancelled),
+                });
+                let output = joined.map(|joined| joined.output);
                 if let Some(output) = &output {
                     report_context_notices(turn_id, output, events);
                 }
@@ -2701,9 +2950,67 @@ async fn settle_group<'c>(
             executed,
             review_hold,
             feedback,
+            ran,
         });
     }
     outcomes
+}
+
+fn blocked_call(call: &ToolCall, description: &CallDescription) -> BlockedCall {
+    BlockedCall {
+        tool_name: call.name.clone(),
+        arguments: call.arguments.clone(),
+        title: description.title.clone(),
+    }
+}
+
+fn enter_step(turn: &mut Turn, step: u64) -> bool {
+    let entered = turn.trail.enter_step(step);
+    if entered {
+        turn.trace.step_id = ofx_trace::next_step_id();
+    }
+    entered
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Finish {
+    Reply,
+    ProviderResults,
+    Batch,
+}
+
+fn settled_finish(turn: &Turn, completion: &Completion) -> Result<Finish, Stop> {
+    let finish = match (completion.finish_reason, completion.tool_calls.is_empty()) {
+        (FinishReason::Stop, true) => Some(Finish::Reply),
+        (FinishReason::Stop, false) if ends_with_provider_results(completion) => {
+            Some(Finish::ProviderResults)
+        }
+        (FinishReason::Stop, false) if completion.tool_calls.iter().all(provider_executed) => {
+            Some(Finish::Batch)
+        }
+        (FinishReason::ToolCalls, false) => Some(Finish::Batch),
+        _ => None,
+    };
+    let Some(finish) = finish else {
+        turn_trace::invalid_tool_finish(turn.trace, completion);
+        return Err(Stop::failed(TurnFailure::InvalidCompletion));
+    };
+    if let Some(failure) = malformed_provider_calls(&completion.tool_calls) {
+        turn_trace::malformed_provider_call(turn.trace, &failure);
+        return Err(Stop::failed(failure));
+    }
+    Ok(finish)
+}
+
+fn ran_outcome(output: &ToolOutput, panicked: bool) -> ToolCallOutcome {
+    match output.status {
+        ToolResultStatus::Success => ToolCallOutcome::Succeeded,
+        ToolResultStatus::Failure if panicked => ToolCallOutcome::RuntimeFailed,
+        ToolResultStatus::Failure if output.command_result.is_some() => {
+            ToolCallOutcome::CommandFailed
+        }
+        ToolResultStatus::Failure => ToolCallOutcome::ToolFailed,
+    }
 }
 
 fn tool_rejected(
@@ -2783,36 +3090,56 @@ async fn forward_child_statuses<T>(
 
 async fn settle(
     call: &ToolCall,
-    task: &mut JoinHandle<ToolOutput>,
-    cancel: &CancellationToken,
-    grace_deadline: &mut Option<Instant>,
-) -> Option<ToolOutput> {
-    let deadline = if let Some(deadline) = *grace_deadline {
-        deadline
+    task: &mut JoinHandle<Finished>,
+    (cancel, finishes): (&CancellationToken, &AtomicU64),
+    grace: &mut Option<Grace>,
+) -> Option<Joined> {
+    let current = if let Some(current) = *grace {
+        current
     } else {
         tokio::select! {
             biased;
             joined = &mut *task => {
-                return Some(settled_output(call, joined));
+                return Some(settled_output(call, joined, None));
             }
             () = cancel.cancelled() => {}
         }
-        *grace_deadline.insert(Instant::now() + TOOL_CANCEL_GRACE)
+        *grace.insert(Grace {
+            deadline: Instant::now() + TOOL_CANCEL_GRACE,
+            cancelled_at: finishes.fetch_add(1, Ordering::SeqCst),
+        })
     };
-    if let Ok(joined) = tokio::time::timeout_at(deadline, &mut *task).await {
-        return Some(settled_output(call, joined));
+    if let Ok(joined) = tokio::time::timeout_at(current.deadline, &mut *task).await {
+        return Some(settled_output(call, joined, Some(current.cancelled_at)));
     }
     task.abort();
     None
 }
 
-fn settled_output(call: &ToolCall, joined: Result<ToolOutput, JoinError>) -> ToolOutput {
-    joined.unwrap_or_else(|error| {
-        if let Ok(payload) = error.try_into_panic() {
-            release(payload);
+fn settled_output(
+    call: &ToolCall,
+    joined: Result<Finished, JoinError>,
+    cancelled_at: Option<u64>,
+) -> Joined {
+    match joined {
+        Ok((output, finished_at_ms, finished)) => Joined {
+            output,
+            finished_at_ms,
+            panicked: false,
+            cancelled: cancelled_at.is_some_and(|cancelled_at| finished > cancelled_at),
+        },
+        Err(error) => {
+            if let Ok(payload) = error.try_into_panic() {
+                release(payload);
+            }
+            Joined {
+                output: panicked(&call.name),
+                finished_at_ms: ofx_trace::timestamp_ms(),
+                panicked: true,
+                cancelled: cancelled_at.is_some(),
+            }
         }
-        panicked(&call.name)
-    })
+    }
 }
 
 fn contained<T>(hook: impl FnOnce() -> T) -> Option<T> {

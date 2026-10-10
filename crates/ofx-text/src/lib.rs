@@ -7,6 +7,7 @@ mod model_context_encoding;
 mod sorted_lines;
 mod text_utils;
 mod token_estimate;
+mod tool_result_display;
 mod unicode_display_data;
 mod url_display;
 mod utf8_validator;
@@ -27,6 +28,7 @@ pub use text_utils::{
     sanitize_model_text_owned, write_head_tail_bounded,
 };
 pub use token_estimate::StreamingEstimator;
+pub use tool_result_display::content_for_display;
 pub use url_display::{clipped_label, redact_url_for_display};
 pub use utf8_validator::{InvalidUtf8, Utf8Validator};
 

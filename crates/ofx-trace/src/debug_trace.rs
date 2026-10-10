@@ -22,6 +22,7 @@ const LOG_FILE: &str = "trace.log";
 static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
 static NEXT_TURN_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_STEP_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_SUBAGENT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TraceContext {
@@ -90,6 +91,10 @@ pub fn next_turn_id() -> u64 {
 
 pub fn next_step_id() -> u64 {
     NEXT_STEP_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+pub fn next_subagent_id() -> u64 {
+    NEXT_SUBAGENT_ID.fetch_add(1, Ordering::SeqCst)
 }
 
 pub fn timestamp_ms() -> i64 {

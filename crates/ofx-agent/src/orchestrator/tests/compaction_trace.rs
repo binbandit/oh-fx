@@ -170,7 +170,10 @@ async fn a_context_overflow_records_its_recovery_and_the_compaction_it_asks_for(
         events[0].event.context.turn_id,
         events[1].event.context.turn_id
     );
-    assert!(events[0].event.context.step_id < events[1].event.context.step_id);
+    assert_eq!(
+        events[0].event.context.step_id,
+        events[1].event.context.step_id
+    );
 }
 
 #[tokio::test]

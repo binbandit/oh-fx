@@ -953,6 +953,7 @@ impl Controller {
             Ok(switched) => {
                 self.forget_tracked_changes();
                 ofx_agent::reset_compaction_trace();
+                ofx_agent::reset_tool_call_trace();
                 self.state.setup.forget_children();
                 self.bind_children();
                 self.restore_preferences(switched.preferences);
@@ -1089,6 +1090,7 @@ impl Controller {
     fn clear(&mut self, first_kept_prompt: u64) {
         self.agent.clear_history();
         ofx_agent::reset_compaction_trace();
+        ofx_agent::reset_tool_call_trace();
         self.forget_tracked_changes();
         self.state.setup.forget_children();
         let started = self
@@ -1202,7 +1204,7 @@ impl Controller {
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {
-                                state.worker.request_cancel();
+                                state.worker.request_interactive_cancel();
                                 cancel.cancel();
                             }
                         }
@@ -1366,8 +1368,8 @@ fn drain_install_inputs(
             }
             InstallInput::Clear(first_kept) => {
                 state.pending_clear = Some(first_kept);
-                state.worker.clear();
                 state.worker.request_cancel();
+                state.worker.clear();
                 cancel.cancel();
             }
             InstallInput::Prompt(prompt) => state.worker.admit(prompt),
@@ -1431,8 +1433,8 @@ fn run_deferred(
             CommandEffect::Logout(target) => return state.sign_out_during_work(catalog, &target),
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
-                state.worker.clear();
                 state.worker.request_cancel();
+                state.worker.clear();
                 cancel.cancel();
                 return;
             }

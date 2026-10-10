@@ -5,6 +5,7 @@ use ofx_contract::{
 };
 
 use super::recovery::Restart;
+use super::turn_trace;
 use super::{Agent, EventSink, Stop, Turn, TurnFailure, failure_diagnostic, recovered_status};
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, ToolEvidence, failed_in_stream,
@@ -79,6 +80,7 @@ impl Agent {
     ) -> Result<Completion, Stop> {
         let called = observed != ToolEvidence::None || !completion.tool_calls.is_empty();
         if called && turn.recovery == Some(RecoveryStrategy::ReconcileTool) {
+            turn_trace::uncertain_provider_tool_rejected(turn.trace, completion.tool_calls.len());
             return Err(self.unexpected_tool_call(turn, attempt, restart, events));
         }
         if recovering {
