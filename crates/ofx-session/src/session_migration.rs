@@ -26,6 +26,7 @@ use crate::session_replay::{LineRead, LineReader};
 use crate::session_summary_codec::SessionSummary;
 
 pub(crate) use conversion::Converted;
+use conversion::Purpose;
 use durable_turn::LegacyTurn;
 use legacy_checkpoint::{Continuable, LegacyCheckpoint};
 use legacy_frame::decode_frame;
@@ -68,21 +69,29 @@ pub(crate) fn read_schema_v3(
     dir: &PrivateDir,
     id: &str,
 ) -> Result<Option<Converted>, SessionError> {
-    let session = load_schema_v3(dir, id)?;
-    if session.subagent_child || has_owner_marker(dir)? {
-        return Ok(None);
-    }
-    session.convert().map(Some)
+    converted(dir, id, Purpose::Import)
 }
 
 pub(crate) fn summarize_schema_v3(
     dir: &PrivateDir,
     id: &str,
 ) -> Result<Option<SessionSummary>, SessionError> {
-    let Some(converted) = read_schema_v3(dir, id)? else {
+    let Some(converted) = converted(dir, id, Purpose::Listing)? else {
         return Ok(None);
     };
     Ok(Some(converted.summary(read_sidecar_title(dir))))
+}
+
+fn converted(
+    dir: &PrivateDir,
+    id: &str,
+    purpose: Purpose,
+) -> Result<Option<Converted>, SessionError> {
+    let session = load_schema_v3(dir, id)?;
+    if session.subagent_child || has_owner_marker(dir)? {
+        return Ok(None);
+    }
+    session.convert(purpose).map(Some)
 }
 
 pub(crate) fn source_log(dir: &PrivateDir, id: &str) -> Result<&'static str, SessionError> {

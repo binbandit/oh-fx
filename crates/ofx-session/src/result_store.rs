@@ -20,6 +20,10 @@ const DIGEST_HEX_BYTES: usize = 8;
 const DIFF_HANDLE_PREFIX: &str = "diff-";
 const DIFF_HANDLE_SUFFIX: &str = ".json";
 const DIFF_CONTENT_MAX_BYTES: usize = 2 * STORED_TEXT_MAX_BYTES;
+const PACK_PREVIOUS: &[u8] = b"{\"previous_content\":";
+const PACK_AFTER: &[u8] = b",\"after_content\":";
+const PACK_NULL: &[u8] = b"null";
+const MAX_ESCAPED_BYTE_LEN: usize = 6;
 
 pub(crate) fn make_handle(tool_call_id: &str, tool_name: &str, text: &str) -> String {
     bytes_handle(tool_call_id, tool_name, text.as_bytes())
@@ -42,19 +46,68 @@ pub(crate) fn bytes_handle(tool_call_id: &str, tool_name: &str, bytes: &[u8]) ->
     handle
 }
 
+pub(crate) fn fits_diff_pack(
+    previous_content: Option<&[u8]>,
+    after_content: Option<&[u8]>,
+) -> bool {
+    let raw = [previous_content, after_content]
+        .into_iter()
+        .flatten()
+        .map(<[u8]>::len)
+        .fold(0_usize, usize::saturating_add);
+    let framing = PACK_PREVIOUS.len() + PACK_AFTER.len() + 1 + 2 * PACK_NULL.len();
+    if raw
+        .saturating_mul(MAX_ESCAPED_BYTE_LEN)
+        .saturating_add(framing)
+        <= DIFF_CONTENT_MAX_BYTES
+    {
+        return true;
+    }
+    let length = PACK_PREVIOUS.len()
+        + pack_content_len(previous_content)
+        + PACK_AFTER.len()
+        + pack_content_len(after_content)
+        + 1;
+    length <= DIFF_CONTENT_MAX_BYTES
+}
+
+fn pack_content_len(content: Option<&[u8]>) -> usize {
+    let Some(bytes) = content else {
+        return PACK_NULL.len();
+    };
+    if std::str::from_utf8(bytes).is_ok() {
+        return 2 + bytes.iter().map(|byte| escaped_len(*byte)).sum::<usize>();
+    }
+    let commas = bytes.len().saturating_sub(1);
+    2 + commas + bytes.iter().map(|byte| decimal_len(*byte)).sum::<usize>()
+}
+
+fn escaped_len(byte: u8) -> usize {
+    match byte {
+        b'"' | b'\\' | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' => 2,
+        0x00..=0x1f => 6,
+        _ => 1,
+    }
+}
+
+fn decimal_len(byte: u8) -> usize {
+    match byte {
+        0..=9 => 1,
+        10..=99 => 2,
+        _ => 3,
+    }
+}
+
 pub(crate) fn diff_content_pack(
     tool_call_id: &str,
     previous_content: Option<&[u8]>,
     after_content: Option<&[u8]>,
 ) -> Option<(String, Vec<u8>)> {
-    let mut pack = b"{\"previous_content\":".to_vec();
+    let mut pack = PACK_PREVIOUS.to_vec();
     push_pack_content(&mut pack, previous_content)?;
-    pack.extend_from_slice(b",\"after_content\":");
+    pack.extend_from_slice(PACK_AFTER);
     push_pack_content(&mut pack, after_content)?;
     pack.push(b'}');
-    if pack.len() > DIFF_CONTENT_MAX_BYTES {
-        return None;
-    }
     let mut handle = String::from(DIFF_HANDLE_PREFIX);
     push_digest_hex(&mut handle, tool_call_id.as_bytes());
     handle.push('-');
@@ -78,7 +131,7 @@ pub(crate) fn store_result(
 
 fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) -> Option<()> {
     let Some(bytes) = content else {
-        pack.extend_from_slice(b"null");
+        pack.extend_from_slice(PACK_NULL);
         return Some(());
     };
     if let Ok(text) = std::str::from_utf8(bytes) {
@@ -441,5 +494,54 @@ mod tests {
             format_stored_result_output("result-a-1-2.txt", "head", 99),
             "<tool_result_preview handle=\"result-a-1-2.txt\" stored_bytes=\"99\">\nhead\n</tool_result_preview>\n<tool_result_handle>result-a-1-2.txt</tool_result_handle>\nFull result is stored outside session JSON. Use read_tool_result with this handle to inspect a byte range or literal query."
         );
+    }
+
+    #[test]
+    fn a_diff_pack_fits_exactly_when_its_encoding_does() {
+        let text = "plain \"quoted\" back\\slash \u{1}\u{8}\u{c}\n\r\t\u{1f} caf\u{e9} \u{7f}";
+        let bytes: Vec<u8> = (0..=255).collect();
+        for (previous, unit) in [(text.as_bytes(), 1), (&bytes[..], 3)] {
+            let (_, base) =
+                diff_content_pack("call", Some(previous), Some(text.as_bytes())).unwrap();
+            let room = (DIFF_CONTENT_MAX_BYTES - base.len()) / unit;
+            let fits: Vec<bool> = [room, room + 1]
+                .into_iter()
+                .map(|extra| {
+                    let mut longer = previous.to_vec();
+                    longer.extend(std::iter::repeat_n(b'a', extra));
+                    let (_, pack) =
+                        diff_content_pack("call", Some(&longer), Some(text.as_bytes())).unwrap();
+                    let fits = fits_diff_pack(Some(&longer), Some(text.as_bytes()));
+                    assert_eq!(fits, pack.len() <= DIFF_CONTENT_MAX_BYTES);
+                    fits
+                })
+                .collect();
+            assert_eq!(fits, [true, false]);
+        }
+        let (_, pack) = diff_content_pack("call", None, Some(text.as_bytes())).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&pack).unwrap()["after_content"],
+            text
+        );
+        assert!(fits_diff_pack(None, None));
+    }
+
+    #[test]
+    fn a_diff_pack_escapes_text_as_json_does() {
+        let every_control: String = (0_u8..0x20).map(char::from).collect();
+        for text in [
+            String::new(),
+            "plain".to_owned(),
+            every_control,
+            "\"q\" \\ \u{7f} caf\u{e9} \u{2028} \u{1f600}".to_owned(),
+            "\n".repeat(3),
+        ] {
+            let (_, pack) = diff_content_pack("call", Some(text.as_bytes()), None).unwrap();
+            let expected = format!(
+                "{{\"previous_content\":{},\"after_content\":null}}",
+                serde_json::to_string(&text).unwrap()
+            );
+            assert_eq!(String::from_utf8(pack).unwrap(), expected);
+        }
     }
 }
