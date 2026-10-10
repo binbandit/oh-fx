@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::checkpoint::{
     ENTRY_KINDS, Entry, Highest, REPLACED_MARK, Used, UsedKind, highest_ids, is_entry_id,
 };
+use super::trace::Tracer;
 
 const TURN_LABEL: &str = "Turn";
 const IN_BETWEEN_LABEL: &str = "In between:";
@@ -16,6 +17,8 @@ const MAX_WORK_BYTES: usize = 1200;
 const MAX_TOOL_NOTE_BYTES: usize = 300;
 const MAX_ID_GAP: usize = 1000;
 const MAX_UNREAD_BYTES: usize = 8 * 1024;
+const MAX_EARLIER_BYTES: usize = 2400;
+const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Heading {
@@ -164,7 +167,11 @@ pub(crate) struct Candidate {
     pub(crate) in_progress: bool,
 }
 
-pub(crate) fn candidates(messages: &[Message<'_>], filed: &[Entry]) -> Vec<Candidate> {
+pub(crate) fn candidates(
+    messages: &[Message<'_>],
+    filed: &[Entry],
+    trace: Tracer,
+) -> Vec<Candidate> {
     let mut found: Vec<Candidate> = Vec::new();
     let mut bytes = 0;
     for message in messages {
@@ -206,6 +213,13 @@ pub(crate) fn candidates(messages: &[Message<'_>], filed: &[Entry]) -> Vec<Candi
                     continue;
                 }
                 if bytes + text.len() > MAX_CANDIDATE_BYTES {
+                    trace.log(
+                        false,
+                        format_args!(
+                            "rule candidates over their room; the newest are left out candidates={} bytes={bytes}",
+                            found.len()
+                        ),
+                    );
                     return found;
                 }
                 bytes += text.len();
@@ -364,6 +378,9 @@ pub(crate) struct Written {
     pub(crate) tools: Vec<Note>,
     pub(crate) entries: Vec<Entry>,
     pub(crate) noted: Vec<usize>,
+    pub(crate) earlier: String,
+    pub(crate) repeated: usize,
+    pub(crate) unknown: usize,
 }
 
 impl Written {
@@ -400,7 +417,7 @@ struct Reader {
     works: Vec<Building>,
     tool_notes: Vec<Building>,
     sections: String,
-    summarized: bool,
+    earlier: String,
     current: Option<Current>,
     turn: Option<usize>,
     in_sections: bool,
@@ -417,13 +434,17 @@ impl Reader {
             self.enter(Some(number), false, false);
         } else if let Some(rest) = earlier_rest(&plain) {
             self.enter(None, false, true);
-            self.summarized |= !rest.is_empty();
+            if !rest.is_empty() {
+                self.earlier.push_str(rest);
+                self.earlier.push('\n');
+            }
         } else if let Some(rest) = section_rest(&plain) {
             self.enter(None, true, false);
             self.sections.push_str(rest);
             self.sections.push('\n');
         } else if self.in_earlier {
-            self.summarized = true;
+            self.earlier.push_str(line);
+            self.earlier.push('\n');
         } else if self.in_sections {
             self.sections.push_str(raw);
             self.sections.push('\n');
@@ -507,12 +528,12 @@ impl Reader {
         self.works.is_empty()
             && self.tool_notes.is_empty()
             && self.sections.is_empty()
-            && !self.summarized
+            && self.earlier.is_empty()
             && self.unknown == 0
     }
 }
 
-pub(crate) fn read(reply: &str, known: &Known, earlier: &[Entry]) -> Written {
+pub(crate) fn read(reply: &str, known: &Known, earlier: &[Entry], trace: Tracer) -> Written {
     let mut reader = Reader::default();
     for raw in reply.split('\n') {
         reader.line(raw, known);
@@ -524,7 +545,7 @@ pub(crate) fn read(reply: &str, known: &Known, earlier: &[Entry]) -> Written {
             known.turns.last().copied()
         };
         if let Some(number) = newest {
-            let text = reply.trim_matches([' ', '\t', '\r', '\n']);
+            let text = reply.trim_matches(TRIMMED);
             if number > 0 && !text.is_empty() {
                 reader.noted.push(number);
             }
@@ -533,17 +554,35 @@ pub(crate) fn read(reply: &str, known: &Known, earlier: &[Entry]) -> Written {
                 text: text.to_owned(),
                 limit: MAX_UNREAD_BYTES,
             });
+        } else {
+            reader.earlier.push_str(reply);
         }
     }
+    let works = finished_notes(reader.works, trace);
+    let tools = finished_notes(reader.tool_notes, trace);
+    let earlier_summary = earlier_summary(&reader.earlier, trace);
+    let entries = new_entries(&reader.sections, earlier);
+    if entries.renumbered > 0 {
+        trace.log(
+            false,
+            format_args!(
+                "compaction entries renumbered because their IDs were taken or far above the highest count={}",
+                entries.renumbered
+            ),
+        );
+    }
     Written {
-        works: finished_notes(reader.works),
-        tools: finished_notes(reader.tool_notes),
-        entries: new_entries(&reader.sections, earlier),
+        works,
+        tools,
+        entries: entries.entries,
         noted: reader.noted,
+        earlier: earlier_summary,
+        repeated: entries.repeated,
+        unknown: reader.unknown,
     }
 }
 
-fn finished_notes(building: Vec<Building>) -> Vec<Note> {
+fn finished_notes(building: Vec<Building>, trace: Tracer) -> Vec<Note> {
     let mut notes: Vec<Note> = Vec::new();
     for note in building {
         let text = note.text.trim_matches(' ');
@@ -551,12 +590,40 @@ fn finished_notes(building: Vec<Building>) -> Vec<Note> {
             continue;
         }
         let cut = text.floor_char_boundary(text.len().min(note.limit));
+        if cut < text.len() {
+            trace.log(
+                false,
+                format_args!(
+                    "a compaction note was cut to {cut} bytes number={} bytes={}",
+                    note.number,
+                    text.len()
+                ),
+            );
+        }
         notes.push(Note {
             number: note.number,
             text: text[..cut].to_owned(),
         });
     }
     notes
+}
+
+fn earlier_summary(written: &str, trace: Tracer) -> String {
+    let summary = written.trim_matches(TRIMMED);
+    if is_none(summary) {
+        return String::new();
+    }
+    let cut = summary.floor_char_boundary(summary.len().min(MAX_EARLIER_BYTES));
+    if cut < summary.len() {
+        trace.log(
+            false,
+            format_args!(
+                "the summary of earlier compactions was cut to {cut} bytes bytes={}",
+                summary.len()
+            ),
+        );
+    }
+    summary[..cut].to_owned()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -566,8 +633,16 @@ enum Fate {
     Renumber,
 }
 
-fn new_entries(sections: &str, earlier: &[Entry]) -> Vec<Entry> {
+struct NewEntries {
+    entries: Vec<Entry>,
+    repeated: usize,
+    renumbered: usize,
+}
+
+fn new_entries(sections: &str, earlier: &[Entry]) -> NewEntries {
     let found = items(sections);
+    let mut repeated = 0;
+    let mut renumbered = 0;
     let mut fates = Vec::with_capacity(found.len());
     let before = highest_ids(earlier);
     let mut next = before;
@@ -578,6 +653,7 @@ fn new_entries(sections: &str, earlier: &[Entry]) -> Vec<Entry> {
             .any(|entry| entry.id == item.id && entry.text[entry.id.len()..] == *rest);
         if repeats || copies_replaced(rest) {
             fates.push(Fate::Repeat);
+            repeated += 1;
             continue;
         }
         let kind = entry_kind(item.id);
@@ -601,13 +677,18 @@ fn new_entries(sections: &str, earlier: &[Entry]) -> Vec<Entry> {
             Fate::Renumber => {
                 let kind = entry_kind(item.id);
                 next[kind] = next[kind].saturating_add(1);
+                renumbered += 1;
                 format!("{}{}", char::from(ENTRY_KINDS[kind]), next[kind])
             }
         };
         let text = format!("{id}{}", entry_rest(item));
         entries.push(Entry { id, text });
     }
-    entries
+    NewEntries {
+        entries,
+        repeated,
+        renumbered,
+    }
 }
 
 fn entry_kind(id: &str) -> usize {

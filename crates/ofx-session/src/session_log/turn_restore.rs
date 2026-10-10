@@ -208,8 +208,13 @@ pub(crate) fn restored_history(
         );
         push_ending(&mut messages, ending);
     }
+    let compaction_count = history
+        .compacted
+        .as_ref()
+        .map_or(0, |compacted| compacted.compaction_count);
     Ok(RestoredHistory {
         checkpoint: history.compacted.map(|compacted| compacted.summary),
+        compaction_count,
         messages,
         turn_starts,
     })

@@ -5,14 +5,14 @@ use ofx_contract::{
 use super::*;
 use crate::compactor::CompactionError;
 
-async fn chat(agent: &mut Agent, turns: usize) {
+pub(super) async fn chat(agent: &mut Agent, turns: usize) {
     for turn in 1..=turns {
         let (report, _) = run(agent, &format!("question {turn}")).await;
         assert_eq!(report.outcome, TurnOutcome::Completed);
     }
 }
 
-fn chat_replies(turns: usize) -> Vec<Script> {
+pub(super) fn chat_replies(turns: usize) -> Vec<Script> {
     (1..=turns)
         .map(|turn| text_reply(&format!("answer {turn}")))
         .collect()
@@ -400,7 +400,7 @@ pub(super) fn unmetered(script: Script) -> Script {
     metered(script, None)
 }
 
-fn metered(script: Script, input_tokens: Option<u64>) -> Script {
+pub(super) fn metered(script: Script, input_tokens: Option<u64>) -> Script {
     match script {
         Script::Reply(stream, mut completion) => {
             completion.usage.input_tokens = input_tokens;

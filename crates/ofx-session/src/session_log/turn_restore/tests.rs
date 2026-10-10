@@ -243,6 +243,7 @@ fn recorded_turns_restore_the_messages_the_model_saw() {
 
     let restored = fixture.resumed();
     assert_eq!(restored.checkpoint, None);
+    assert_eq!(restored.compaction_count, 0);
     assert_eq!(restored.turn_starts, [0]);
     assert_eq!(
         restored.messages,
@@ -553,6 +554,7 @@ fn a_checkpoint_at_a_turn_boundary_keeps_the_running_turn_after_it() {
     );
     let restored = fixture.resumed();
     assert_eq!(restored.checkpoint.as_deref(), Some("S2"));
+    assert_eq!(restored.compaction_count, 2);
     assert_eq!(
         restored.messages,
         [ChatMessage::user("second"), assistant(Some("two"), &[])]

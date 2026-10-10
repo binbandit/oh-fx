@@ -116,6 +116,7 @@ async fn restoring_history_replaces_the_pending_live_interruption() {
     agent.run_turn("first", &mut |_| {}, &cancel).await;
     agent.restore(ofx_contract::RestoredHistory {
         checkpoint: None,
+        compaction_count: 0,
         messages: vec![ChatMessage::user("restored"), assistant("done")],
         turn_starts: vec![0],
     });

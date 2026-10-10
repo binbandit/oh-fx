@@ -30,6 +30,17 @@ pub(crate) struct Record {
     pub(crate) failed: bool,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Counts {
+    pub(crate) marked: usize,
+    pub(crate) no_source: usize,
+    pub(crate) missing_ids: usize,
+    pub(crate) unfound_values: usize,
+    pub(crate) bad_replaces: usize,
+    pub(crate) unquoted: usize,
+    pub(crate) failed_as_success: usize,
+}
+
 pub(crate) struct Sources<'a> {
     pub(crate) turn_count: usize,
     pub(crate) tool_count: usize,
@@ -40,7 +51,12 @@ pub(crate) struct Sources<'a> {
     pub(crate) highest: Highest,
 }
 
-pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) -> Written {
+pub(crate) fn check(
+    written: Written,
+    earlier: &[Entry],
+    sources: &Sources<'_>,
+    counts: &mut Counts,
+) -> Written {
     let users: Vec<String> = sources.users.iter().map(|user| normalized(user)).collect();
     let all: Vec<&str> = sources
         .turns
@@ -56,11 +72,11 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
         .iter()
         .map(|note| {
             let mut problems = Problems::default();
-            check_citations(&mut problems, &note.text, sources);
-            check_values(&mut problems, &note.text, &all);
+            check_citations(&mut problems, &note.text, sources, counts);
+            check_values(&mut problems, &note.text, &all, counts);
             Note {
                 number: note.number,
-                text: problems.mark(&note.text),
+                text: problems.mark(&note.text, counts),
             }
         })
         .collect();
@@ -70,18 +86,24 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
         .iter()
         .map(|note| {
             let mut problems = Problems::default();
-            check_citations(&mut problems, &note.text, sources);
-            check_values(&mut problems, &note.text, &all);
+            check_citations(&mut problems, &note.text, sources, counts);
+            check_values(&mut problems, &note.text, &all, counts);
             let cited = citations(&note.text);
             let shared = cited
                 .first()
                 .is_some_and(|first| first.first == note.number && first.last > note.number);
             if !shared {
-                check_failed_call(&mut problems, &note.text, note.number, sources.tools);
+                check_failed_call(
+                    &mut problems,
+                    &note.text,
+                    note.number,
+                    sources.tools,
+                    counts,
+                );
             }
             Note {
                 number: note.number,
-                text: problems.mark(&note.text),
+                text: problems.mark(&note.text, counts),
             }
         })
         .collect();
@@ -97,30 +119,32 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
                 !cited.is_empty() || contains_ignore_case(&entry.text, "turn in progress");
             let kind = entry.id.as_bytes().first().copied();
             if !names_a_source {
+                counts.no_source += 1;
                 problems.add("no source");
             }
-            check_citations(&mut problems, &entry.text, sources);
+            check_citations(&mut problems, &entry.text, sources, counts);
             if kind != Some(b'R')
                 && let Some(number) = only_tool(&cited)
             {
-                check_failed_call(&mut problems, &entry.text, number, sources.tools);
+                check_failed_call(&mut problems, &entry.text, number, sources.tools, counts);
             }
             if kind == Some(b'R') {
-                check_quote(&mut problems, &entry.text, &users);
+                check_quote(&mut problems, &entry.text, &users, counts);
             } else if names_this_compaction(&cited, sources) {
-                check_values(&mut problems, &entry.text, &all);
+                check_values(&mut problems, &entry.text, &all, counts);
             }
             for id in replaced_ids(&entry.text) {
                 let exists = has_entry(earlier, id)
                     || has_entry(&written.entries[..index], id)
                     || was_used(id, &sources.highest);
                 if !exists {
+                    counts.bad_replaces += 1;
                     problems.add(&format!("replaces {id}, which does not exist"));
                 }
             }
             Entry {
                 id: entry.id.clone(),
-                text: problems.mark(&entry.text),
+                text: problems.mark(&entry.text, counts),
             }
         })
         .collect();
@@ -129,7 +153,7 @@ pub(crate) fn check(written: Written, earlier: &[Entry], sources: &Sources<'_>) 
         works,
         tools,
         entries,
-        noted: written.noted,
+        ..written
     }
 }
 
@@ -146,10 +170,11 @@ impl Problems {
         self.text.push_str(problem);
     }
 
-    fn mark(&self, text: &str) -> String {
+    fn mark(&self, text: &str, counts: &mut Counts) -> String {
         if self.text.is_empty() {
             text.to_owned()
         } else {
+            counts.marked += 1;
             format!("{text}{CHECK_MARK}{}]", self.text)
         }
     }
@@ -247,7 +272,12 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-fn check_citations(problems: &mut Problems, text: &str, sources: &Sources<'_>) {
+fn check_citations(
+    problems: &mut Problems,
+    text: &str,
+    sources: &Sources<'_>,
+    counts: &mut Counts,
+) {
     for citation in citations(text) {
         let count = if citation.kind == b'M' {
             sources.turn_count
@@ -255,6 +285,7 @@ fn check_citations(problems: &mut Problems, text: &str, sources: &Sources<'_>) {
             sources.tool_count
         };
         if citation.first == 0 || citation.last > count {
+            counts.missing_ids += 1;
             let shown = if citation.first == 0 {
                 0
             } else {
@@ -287,7 +318,7 @@ fn find_record(records: &[Record], wanted: usize) -> Option<&Record> {
         .map(|index| &records[index])
 }
 
-fn check_values(problems: &mut Problems, text: &str, all: &[&str]) {
+fn check_values(problems: &mut Problems, text: &str, all: &[&str], counts: &mut Counts) {
     let mut missing = String::new();
     for value in values(text) {
         if found_in(value, all) {
@@ -297,6 +328,7 @@ fn check_values(problems: &mut Problems, text: &str, all: &[&str]) {
         if code && names_found(value, all) {
             continue;
         }
+        counts.unfound_values += 1;
         if !missing.is_empty() {
             missing.push_str(", ");
         }
@@ -517,8 +549,15 @@ fn numeric_part(value: &str) -> Option<String> {
     Some(digits)
 }
 
-fn check_failed_call(problems: &mut Problems, text: &str, number: usize, tools: &[Record]) {
+fn check_failed_call(
+    problems: &mut Problems,
+    text: &str,
+    number: usize,
+    tools: &[Record],
+    counts: &mut Counts,
+) {
     if find_record(tools, number).is_some_and(|record| record.failed && calls_success(text)) {
+        counts.failed_as_success += 1;
         problems.add(&format!("T{number} failed"));
     }
 }
@@ -556,7 +595,7 @@ fn calls_success(note: &str) -> bool {
     saw_success
 }
 
-fn check_quote(problems: &mut Problems, rule: &str, users: &[String]) {
+fn check_quote(problems: &mut Problems, rule: &str, users: &[String], counts: &mut Counts) {
     let mut at = 0;
     let mut quotes = 0;
     while let Some((inner, end)) = quote(rule, at) {
@@ -567,11 +606,13 @@ fn check_quote(problems: &mut Problems, rule: &str, users: &[String]) {
         }
         quotes += 1;
         if !users.iter().any(|user| user.contains(&phrase)) {
+            counts.unquoted += 1;
             problems.add("not the user's exact words");
             return;
         }
     }
     if quotes == 0 {
+        counts.unquoted += 1;
         problems.add("no quote of the user's words");
     }
 }
