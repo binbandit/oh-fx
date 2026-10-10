@@ -213,15 +213,33 @@ fn parse_session_list_args_supports_bounded_canonical_pagination() {
     );
 }
 
+fn session(format: OutputFormat, action: SessionAction) -> SessionArgs {
+    SessionArgs { format, action }
+}
+
+fn detail(id: &str) -> SessionAction {
+    SessionAction::Detail(SessionTarget::Id(id.to_owned()))
+}
+
 #[test]
 fn parse_session_detail_args_owns_string_ids_and_frees_through_deinit() {
     assert_eq!(
         parse_session(os(&["last", "--json"])).unwrap(),
-        OutputFormat::Json
+        session(
+            OutputFormat::Json,
+            SessionAction::Detail(SessionTarget::Last)
+        )
     );
     assert_eq!(
         parse_session(os(&[" sess-1 "])).unwrap(),
-        OutputFormat::Text
+        session(OutputFormat::Text, detail("sess-1"))
+    );
+    assert_eq!(
+        parse_session(os(&["\tlast\n"])).unwrap(),
+        session(
+            OutputFormat::Text,
+            SessionAction::Detail(SessionTarget::Last)
+        )
     );
     for args in [&["a", "b"][..], &[""], &[]] {
         fails(parse_session(os(args)), usage(TopLevelKind::Session));
@@ -236,21 +254,27 @@ fn parse_session_detail_args_owns_string_ids_and_frees_through_deinit() {
 fn parse_session_detail_args_accepts_explicit_id_flag() {
     assert_eq!(
         parse_session(os(&["--id", "release.2026.06", "--json"])).unwrap(),
-        OutputFormat::Json
+        session(OutputFormat::Json, detail("release.2026.06"))
     );
-    assert!(parse_session(os(&["--id", "last"])).is_ok());
-    assert!(parse_session(vec![OsString::from_vec(b"\xff".to_vec())]).is_ok());
+    assert_eq!(
+        parse_session(os(&["--id", "last"])).unwrap(),
+        session(OutputFormat::Text, detail("last"))
+    );
+    assert_eq!(
+        parse_session(vec![OsString::from_vec(b"\xff".to_vec())]).unwrap(),
+        session(OutputFormat::Text, detail("\u{fffd}"))
+    );
 }
 
 #[test]
 fn parse_session_migration_args_accepts_positional_and_exact_ids() {
     assert_eq!(
         parse_session(os(&["migrate", "session.v2", "--allow-large", "--json"])).unwrap(),
-        OutputFormat::Json
+        session(OutputFormat::Json, SessionAction::Migrate)
     );
     assert_eq!(
         parse_session(os(&["migrate", "--id", "--allow-large", "--json"])).unwrap(),
-        OutputFormat::Json
+        session(OutputFormat::Json, SessionAction::Migrate)
     );
 }
 
@@ -275,9 +299,12 @@ fn parse_session_migration_args_rejects_missing_repeated_and_mixed_targets() {
 fn parse_session_recovery_args_accepts_exact_ids_and_rejects_ambiguity() {
     assert_eq!(
         parse_session(os(&["recover", "session.v3", "--json"])).unwrap(),
-        OutputFormat::Json
+        session(OutputFormat::Json, SessionAction::Recover)
     );
-    assert!(parse_session(os(&["recover", "--id", "last"])).is_ok());
+    assert_eq!(
+        parse_session(os(&["recover", "--id", "last"])).unwrap(),
+        session(OutputFormat::Text, SessionAction::Recover)
+    );
     for args in [
         &["recover", "--id"][..],
         &["recover", "first", "second"],

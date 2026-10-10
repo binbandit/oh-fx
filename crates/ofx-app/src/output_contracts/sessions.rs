@@ -126,26 +126,76 @@ impl SessionListSnapshot<'_> {
             .sessions
             .iter()
             .map(|session| {
-                let mut row = json!({
-                    "id": session.id,
-                    "title": session.title.as_deref().unwrap_or(FALLBACK_TITLE),
-                    "preview": Value::Null,
-                    "workspace_root": session.workspace_root,
-                    "origin_workspace_root": session.origin_workspace_root,
-                    "created_at_ms": session.created_at_ms,
-                    "updated_at_ms": session.updated_at_ms,
-                    "history_len": session.history_len,
-                    "conversation_language": session.conversation_language,
-                });
-                if let (Some(marker), Some(fields)) = (session.source.marker(), row.as_object_mut())
-                {
-                    fields.insert("source".to_owned(), json!(marker));
-                }
-                row
+                let mut row = Map::new();
+                insert_summary_fields(&mut row, session);
+                Value::Object(row)
             })
             .collect();
         object.insert("sessions".to_owned(), json!(sessions));
         object
+    }
+}
+
+pub struct SessionSummarySnapshot<'a> {
+    pub summary: &'a SessionSummary,
+}
+
+impl SessionSummarySnapshot<'_> {
+    pub fn render(&self, format: OutputFormat) -> String {
+        let summary = self.summary;
+        match format {
+            OutputFormat::Text => {
+                let mut out = format!(
+                    "[session] {}\ncreated_at_ms: {}\nupdated_at_ms: {}\nlanguage: {}\nhistory_len: {}\n",
+                    safe(&summary.id),
+                    summary.created_at_ms,
+                    summary.updated_at_ms,
+                    safe(&summary.conversation_language),
+                    summary.history_len
+                );
+                if let Some(marker) = summary.source.marker() {
+                    let _ = writeln!(out, "source: {marker}");
+                }
+                out
+            }
+            OutputFormat::Json => {
+                let mut object = Map::new();
+                object.insert("kind".to_owned(), json!("session_summary"));
+                insert_summary_fields(&mut object, summary);
+                let mut line = Value::Object(object).to_string();
+                line.push('\n');
+                line
+            }
+        }
+    }
+}
+
+fn insert_summary_fields(object: &mut Map<String, Value>, session: &SessionSummary) {
+    let fields = [
+        ("id", json!(session.id)),
+        (
+            "title",
+            json!(session.title.as_deref().unwrap_or(FALLBACK_TITLE)),
+        ),
+        ("preview", Value::Null),
+        ("workspace_root", json!(session.workspace_root)),
+        (
+            "origin_workspace_root",
+            json!(session.origin_workspace_root),
+        ),
+        ("created_at_ms", json!(session.created_at_ms)),
+        ("updated_at_ms", json!(session.updated_at_ms)),
+        ("history_len", json!(session.history_len)),
+        (
+            "conversation_language",
+            json!(session.conversation_language),
+        ),
+    ];
+    for (key, value) in fields {
+        object.insert(key.to_owned(), value);
+    }
+    if let Some(marker) = session.source.marker() {
+        object.insert("source".to_owned(), json!(marker));
     }
 }
 

@@ -130,3 +130,72 @@ fn languages_and_timestamps_follow_upstreams_labels() {
     );
     assert_eq!(utc_timestamp(MAX_TIMESTAMP_MS + 1), "unknown");
 }
+
+fn summary(title: Option<&str>) -> SessionSummary {
+    SessionSummary {
+        id: "abc".to_owned(),
+        workspace_root: "/tmp/workspace".to_owned(),
+        origin_workspace_root: "/tmp/origin".to_owned(),
+        title: title.map(str::to_owned),
+        created_at_ms: 1,
+        updated_at_ms: 2,
+        conversation_language: "es".to_owned(),
+        history_len: 3,
+        has_checkpoint: false,
+        source: SessionSource::OhFx,
+    }
+}
+
+#[test]
+fn core_session_summary_snapshot_text_and_json_stay_stable() {
+    let summary = summary(Some("Session title"));
+    let snapshot = SessionSummarySnapshot { summary: &summary };
+    assert_eq!(
+        snapshot.render(OutputFormat::Text),
+        "[session] abc\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: es\nhistory_len: 3\n"
+    );
+    assert_eq!(
+        snapshot.render(OutputFormat::Json),
+        "{\"kind\":\"session_summary\",\"id\":\"abc\",\"title\":\"Session title\",\"preview\":null,\"workspace_root\":\"/tmp/workspace\",\"origin_workspace_root\":\"/tmp/origin\",\"created_at_ms\":1,\"updated_at_ms\":2,\"history_len\":3,\"conversation_language\":\"es\"}\n"
+    );
+}
+
+#[test]
+fn core_session_json_uses_fallback_title_for_metadata_missing_summaries() {
+    let summary = summary(None);
+    assert_eq!(
+        SessionSummarySnapshot { summary: &summary }.render(OutputFormat::Json),
+        "{\"kind\":\"session_summary\",\"id\":\"abc\",\"title\":\"Untitled session\",\"preview\":null,\"workspace_root\":\"/tmp/workspace\",\"origin_workspace_root\":\"/tmp/origin\",\"created_at_ms\":1,\"updated_at_ms\":2,\"history_len\":3,\"conversation_language\":\"es\"}\n"
+    );
+}
+
+#[test]
+fn a_session_summary_fx_saved_carries_its_marker_last() {
+    let mut summary = summary(Some("From \u{1b}[2Jfx"));
+    summary.source = SessionSource::Fx;
+    let snapshot = SessionSummarySnapshot { summary: &summary };
+    assert_eq!(
+        snapshot.render(OutputFormat::Text),
+        "[session] abc\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: es\nhistory_len: 3\nsource: fx\n"
+    );
+    assert_eq!(
+        snapshot.render(OutputFormat::Json),
+        "{\"kind\":\"session_summary\",\"id\":\"abc\",\"title\":\"From \\u001b[2Jfx\",\"preview\":null,\"workspace_root\":\"/tmp/workspace\",\"origin_workspace_root\":\"/tmp/origin\",\"created_at_ms\":1,\"updated_at_ms\":2,\"history_len\":3,\"conversation_language\":\"es\",\"source\":\"fx\"}\n"
+    );
+}
+
+#[test]
+fn a_session_summary_encodes_stored_text_for_the_terminal_and_keeps_it_in_json() {
+    let mut summary = summary(None);
+    summary.conversation_language = "en\u{9b}2J\u{202e}\u{1b}[31m".to_owned();
+    let snapshot = SessionSummarySnapshot { summary: &summary };
+    assert_eq!(
+        snapshot.render(OutputFormat::Text),
+        "[session] abc\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: en\\u{009b}2J\\u{202e}\\x1b[31m\nhistory_len: 3\n"
+    );
+    assert!(
+        snapshot
+            .render(OutputFormat::Json)
+            .contains("\"conversation_language\":\"en\u{9b}2J\u{202e}\\u001b[31m\"")
+    );
+}

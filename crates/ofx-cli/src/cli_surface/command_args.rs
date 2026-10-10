@@ -282,14 +282,34 @@ pub(crate) fn parse_workspace(args: Vec<OsString>) -> Result<WorkspaceArgs, CliE
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionTarget {
+    Last,
+    Id(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionAction {
+    Detail(SessionTarget),
+    Migrate,
+    Recover,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub struct SessionArgs {
+    pub format: OutputFormat,
+    pub action: SessionAction,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionAction {
+enum SessionVerb {
     Detail,
     Migrate,
     Recover,
 }
 
-impl SessionAction {
+impl SessionVerb {
     fn error_code(self) -> ArgumentErrorCode {
         match self {
             Self::Detail => ArgumentErrorCode::SessionDetail,
@@ -297,44 +317,62 @@ impl SessionAction {
             Self::Recover => ArgumentErrorCode::SessionRecovery,
         }
     }
+
+    fn action(self, operand: SessionOperand) -> SessionAction {
+        match self {
+            Self::Detail if !operand.exact && operand.value == "last" => {
+                SessionAction::Detail(SessionTarget::Last)
+            }
+            Self::Detail => SessionAction::Detail(SessionTarget::Id(operand.value)),
+            Self::Migrate => SessionAction::Migrate,
+            Self::Recover => SessionAction::Recover,
+        }
+    }
 }
 
-pub(crate) fn parse_session(args: Vec<OsString>) -> Result<OutputFormat, CliError> {
-    let action = match args.first() {
-        Some(first) if first == "recover" => SessionAction::Recover,
-        Some(first) if first == "migrate" => SessionAction::Migrate,
-        _ => SessionAction::Detail,
+struct SessionOperand {
+    value: String,
+    exact: bool,
+}
+
+pub(crate) fn parse_session(args: Vec<OsString>) -> Result<SessionArgs, CliError> {
+    let verb = match args.first() {
+        Some(first) if first == "recover" => SessionVerb::Recover,
+        Some(first) if first == "migrate" => SessionVerb::Migrate,
+        _ => SessionVerb::Detail,
     };
-    let error = argument_error(TopLevelKind::Session, action.error_code(), &args);
+    let error = argument_error(TopLevelKind::Session, verb.error_code(), &args);
     let mut stream = ArgStream::new(args);
-    if action != SessionAction::Detail {
+    if verb != SessionVerb::Detail {
         stream.next();
     }
     let mut json = false;
-    let mut operand = false;
+    let mut operand = None;
     while stream.peek().is_some() {
         if stream.take_flag("--json") {
             json = true;
             continue;
         }
-        if action == SessionAction::Migrate && stream.take_flag("--allow-large") {
+        if verb == SessionVerb::Migrate && stream.take_flag("--allow-large") {
             continue;
         }
-        if operand || !take_session_operand(&mut stream) {
+        if operand.is_some() {
             return Err(error());
         }
-        operand = true;
+        operand = Some(take_session_operand(&mut stream).ok_or_else(&error)?);
     }
-    if operand {
-        Ok(format_for(json))
-    } else {
-        Err(error())
-    }
+    let operand = operand.ok_or_else(error)?;
+    Ok(SessionArgs {
+        format: format_for(json),
+        action: verb.action(operand),
+    })
 }
 
-fn take_session_operand(stream: &mut ArgStream) -> bool {
-    stream.take_flag("--id");
-    stream.next().is_some_and(|raw| non_blank(&raw).is_some())
+fn take_session_operand(stream: &mut ArgStream) -> Option<SessionOperand> {
+    let exact = stream.take_flag("--id");
+    let raw = stream.next()?;
+    let value = non_blank(&raw)?.to_string_lossy().into_owned();
+    Some(SessionOperand { value, exact })
 }
 
 pub(crate) fn validate_mcp(args: &[OsString]) -> Result<(), CliError> {

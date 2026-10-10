@@ -77,6 +77,12 @@ impl Home {
         text(&output.stdout)
     }
 
+    fn session(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
+        let mut full = vec!["session"];
+        full.extend_from_slice(args);
+        self.run("workspace", &full, environment)
+    }
+
     fn listed(&self, args: &[&str]) -> Value {
         let mut full = args.to_vec();
         full.push("--json");
@@ -457,4 +463,190 @@ fn listing_needs_home_and_refuses_the_v2_store() {
         text(&output.stderr),
         "oh-fx: sessions is not available yet\n"
     );
+}
+
+fn described(output: &Output) -> String {
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "");
+    text(&output.stdout)
+}
+
+fn refused(output: &Output) -> (String, String) {
+    assert_eq!(output.status.code(), Some(1));
+    (text(&output.stdout), text(&output.stderr))
+}
+
+#[test]
+fn session_last_describes_the_newest_listed_session_of_the_workspace() {
+    let server = FakeServer::start(replies(3));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "older");
+    home.ask("workspace", "newer");
+    home.ask("elsewhere", "newest elsewhere");
+    save_in_fx(&home, "fx-older", "workspace", "Older in fx", &["one"]);
+    let before = fx_tree(&home);
+    let listing = home.listed(&[]);
+    let newest = &listing["sessions"][0];
+    assert_eq!(newest["title"], "newer");
+
+    assert_eq!(
+        described(&home.session(&["last"], &[])),
+        format!(
+            "[session] {}\ncreated_at_ms: {}\nupdated_at_ms: {}\nlanguage: {}\nhistory_len: 1\n",
+            newest["id"].as_str().expect("an id"),
+            newest["created_at_ms"],
+            newest["updated_at_ms"],
+            newest["conversation_language"]
+                .as_str()
+                .expect("a language"),
+        )
+    );
+    let mut expected = serde_json::Map::new();
+    expected.insert("kind".to_owned(), json!("session_summary"));
+    expected.extend(newest.as_object().expect("a listed session").clone());
+    assert_eq!(
+        described(&home.session(&["last", "--json"], &[])),
+        format!("{}\n", Value::Object(expected))
+    );
+    assert_eq!(
+        described(&home.session(&["\tlast ", "--json"], &[])),
+        described(&home.session(&["last", "--json"], &[]))
+    );
+    assert_eq!(fx_tree(&home), before);
+}
+
+#[test]
+fn session_last_reaches_a_newer_session_fx_saved_and_marks_it() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("elsewhere", "not here");
+    save_in_fx(&home, "fx-here", "workspace", "From fx", &["one", "two"]);
+    let before = fx_tree(&home);
+    let workspace = home.root.join("workspace").display().to_string();
+
+    assert_eq!(
+        described(&home.session(&["last"], &[])),
+        "[session] fx-here\ncreated_at_ms: 1\nupdated_at_ms: 100000\nlanguage: en\nhistory_len: 2\nsource: fx\n"
+    );
+    assert_eq!(
+        described(&home.session(&["last", "--json"], &[])),
+        format!(
+            "{{\"kind\":\"session_summary\",\"id\":\"fx-here\",\"title\":\"From fx\",\"preview\":null,\"workspace_root\":\"{workspace}\",\"origin_workspace_root\":\"{workspace}\",\"created_at_ms\":1,\"updated_at_ms\":100000,\"history_len\":2,\"conversation_language\":\"en\",\"source\":\"fx\"}}\n"
+        )
+    );
+    assert_eq!(fx_tree(&home), before);
+}
+
+#[test]
+fn session_last_says_why_the_workspace_has_no_session_to_describe() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    let none = (
+        "{\"kind\":\"session\",\"error\":\"no saved sessions for this workspace\",\"code\":\"NoSavedSessions\"}\n",
+        "oh-fx session: no saved sessions for this workspace\n",
+    );
+    let check = |expected: (&str, &str)| {
+        assert_eq!(
+            refused(&home.session(&["last", "--json"], &[])),
+            (expected.0.to_owned(), String::new())
+        );
+        assert_eq!(
+            refused(&home.session(&["last"], &[])),
+            (String::new(), expected.1.to_owned())
+        );
+    };
+    check(none);
+    home.ask("elsewhere", "another workspace");
+    check(none);
+    break_session(&home.root.join("data/oh-fx/sessions"), "broken-session");
+    check((
+        "{\"kind\":\"session\",\"error\":\"saved sessions are unreadable; run `oh-fx doctor` for recovery guidance\",\"code\":\"NoReadableSessions\"}\n",
+        "oh-fx session: saved sessions are unreadable; run `oh-fx doctor` for recovery guidance\n",
+    ));
+}
+
+#[test]
+fn session_last_needs_home_and_refuses_the_v2_store() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    for (args, expected) in [
+        (
+            &["session", "last", "--json"][..],
+            (
+                "{\"kind\":\"session\",\"error\":\"HOME is not set\",\"code\":\"HomeNotSet\"}\n",
+                "",
+            ),
+        ),
+        (
+            &["session", "last"],
+            ("", "oh-fx session: HOME is not set\n"),
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(args)
+            .current_dir(home.root.join("workspace"))
+            .env_clear()
+            .env("XDG_CONFIG_HOME", home.root.join("config"))
+            .env("XDG_STATE_HOME", home.root.join("state"))
+            .env("XDG_DATA_HOME", home.root.join("data"))
+            .env("XDG_CACHE_HOME", home.root.join("cache"))
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx");
+        assert_eq!(
+            refused(&output),
+            (expected.0.to_owned(), expected.1.to_owned()),
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        refused(&home.session(&["last"], &[("OH_FX_SESSIONS_V2", "1")])),
+        (
+            String::new(),
+            "oh-fx: session is not available yet\n".to_owned()
+        )
+    );
+    let output = home.run(
+        "workspace",
+        &["--sessions-v2", "session", "last", "--json"],
+        &[],
+    );
+    assert_eq!(
+        refused(&output),
+        (
+            "{\"kind\":\"session\",\"error\":\"session is not available yet\",\"code\":\"NotAvailableYet\"}\n".to_owned(),
+            "oh-fx: session is not available yet\n".to_owned()
+        )
+    );
+}
+
+#[test]
+fn session_last_encodes_stored_text_for_the_terminal() {
+    let server = FakeServer::start(replies(1));
+    let home = Home::new(&server.base_url());
+    home.ask("workspace", "own");
+    let id = ids(&home.listed(&[]))[0].clone();
+    let manifest = home
+        .root
+        .join("data/oh-fx/sessions")
+        .join(&id)
+        .join("session.json");
+    let mut saved: Value =
+        serde_json::from_slice(&fs::read(&manifest).expect("read session.json")).expect("JSON");
+    saved["conversation_language"] = json!("en\u{9b}2J\u{202e}");
+    fs::write(&manifest, saved.to_string()).expect("rewrite session.json");
+
+    let text = described(&home.session(&["last"], &[]));
+    assert!(
+        text.contains("\nlanguage: en\\u{009b}2J\\u{202e}\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains('\u{9b}') && !text.contains('\u{202e}'),
+        "{text}"
+    );
+    let json: Value =
+        serde_json::from_str(&described(&home.session(&["last", "--json"], &[]))).expect("JSON");
+    assert_eq!(json["conversation_language"], "en\u{9b}2J\u{202e}");
 }
