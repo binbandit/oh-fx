@@ -234,10 +234,14 @@ impl Server {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
-        let refreshed = client.settled_tools(deadline).await?;
-        if refreshed.authentication_required {
+        if client.transport.stream_rejected_authentication() {
             self.authentication_failed(&client);
             return Err(McpError::McpAuthenticationRequired.into());
+        }
+        let refreshed = client.settled_tools(deadline).await?;
+        if let Some(error) = refreshed.lost_authentication {
+            self.authentication_failed(&client);
+            return Err(error.into());
         }
         if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
@@ -271,35 +275,32 @@ impl Server {
         let Some(auth) = client.transport.http_auth() else {
             return;
         };
-        let message = auth.authentication_message();
         let retired = {
             let mut state = lock(&self.state);
-            match &*state {
-                State::Ready(connection)
-                    if std::ptr::eq(Arc::as_ptr(&connection.client), client) =>
-                {
-                    let State::Ready(connection) =
-                        std::mem::replace(&mut *state, State::Failed(message))
-                    else {
-                        return;
-                    };
-                    Some(connection)
-                }
-                _ => None,
+            let State::Ready(connection) = &*state else {
+                return;
+            };
+            if !std::ptr::eq(Arc::as_ptr(&connection.client), client) {
+                return;
             }
+            let connection = connection.clone();
+            *state = State::Failed(auth.capture());
+            connection
         };
         self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-        if let Some(connection) = retired {
-            connection.stop.cancel();
-            spawn(async move {
-                connection.client.shutdown(ShutdownMode::Graceful).await;
-            });
-        }
+        retired.stop.cancel();
+        spawn(async move {
+            retired.client.shutdown(ShutdownMode::Graceful).await;
+        });
     }
 
     pub(crate) async fn refresh_tools(&self, client: &McpClient, deadline: Instant) {
+        if client.transport.stream_rejected_authentication() {
+            self.authentication_failed(client);
+            return;
+        }
         let refreshed = client.refresh_tools(deadline).await;
-        if refreshed.authentication_required {
+        if refreshed.lost_authentication.is_some() {
             self.authentication_failed(client);
         } else if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
@@ -308,7 +309,7 @@ impl Server {
 
     async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
         while let Ok(refreshed) = client.settled_tools(deadline).await {
-            if refreshed.authentication_required {
+            if refreshed.lost_authentication.is_some() {
                 self.authentication_failed(client);
                 return;
             }

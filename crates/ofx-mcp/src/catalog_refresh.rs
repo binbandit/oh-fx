@@ -17,7 +17,7 @@ pub(crate) struct Refreshed {
     pub(crate) catalog: Arc<ToolCatalog>,
     pub(crate) replaced: bool,
     pub(crate) in_flight: bool,
-    pub(crate) authentication_required: bool,
+    pub(crate) lost_authentication: Option<McpError>,
 }
 
 impl McpClient {
@@ -55,7 +55,7 @@ impl McpClient {
                     catalog: Arc::clone(&snapshot.catalog),
                     replaced: false,
                     in_flight: action == RefreshAction::AlreadyRefreshing,
-                    authentication_required: false,
+                    lost_authentication: None,
                 };
             }
             let source = snapshot.metadata;
@@ -73,7 +73,10 @@ impl McpClient {
                     catalog: self.tool_catalog(),
                     replaced: false,
                     in_flight: false,
-                    authentication_required: self.transport.lost_authentication(&error),
+                    lost_authentication: self
+                        .transport
+                        .lost_authentication(&error)
+                        .then_some(error),
                 };
             }
         };
@@ -89,7 +92,7 @@ impl McpClient {
             catalog: Arc::clone(&snapshot.catalog),
             replaced,
             in_flight: false,
-            authentication_required: false,
+            lost_authentication: None,
         }
     }
 }

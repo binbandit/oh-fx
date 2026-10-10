@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StateMutex, PoisonError};
 
 use ofx_http::ConnectionOptions;
@@ -31,6 +32,7 @@ pub(crate) struct HttpAuth {
     headers: Vec<HttpHeader>,
     stored: Option<StoredAuth>,
     challenge: StateMutex<Option<String>>,
+    stream_rejected: AtomicBool,
 }
 
 struct StoredAuth {
@@ -86,6 +88,7 @@ impl HttpAuth {
             headers,
             stored,
             challenge: StateMutex::new(None),
+            stream_rejected: AtomicBool::new(false),
         })
     }
 
@@ -107,7 +110,15 @@ impl HttpAuth {
         Ok(())
     }
 
-    pub(crate) fn authentication_message(&self) -> String {
+    pub(crate) fn reject_stream(&self) {
+        self.stream_rejected.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn stream_rejected(&self) -> bool {
+        self.stream_rejected.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn capture(&self) -> String {
         if let Some(failure) = self.failure() {
             return failure;
         }
@@ -132,7 +143,7 @@ impl HttpAuth {
             return failure;
         }
         let message = if failure.error == McpError::McpAuthenticationRequired {
-            Some(self.authentication_message())
+            Some(self.capture())
         } else {
             self.failure()
         };
@@ -213,6 +224,7 @@ impl StoredAuth {
             store: self.store.clone(),
             server: self.server.clone(),
             state: Arc::clone(&self.state),
+            generation,
             bearer: Arc::clone(&self.bearer),
             failure: Arc::clone(&self.failure),
         };
@@ -245,6 +257,7 @@ struct Installing {
     store: CredentialStore,
     server: String,
     state: Arc<AuthState>,
+    generation: u64,
     bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
 }
@@ -255,21 +268,31 @@ impl Installing {
         mut credentials: OwnedMutexGuard<Credentials>,
         refreshed: Credentials,
     ) -> Result<HeaderValue, McpError> {
+        if self.state.generation() != self.generation {
+            return Ok(self.current_bearer());
+        }
         let saved = refreshed.clone();
-        let store = self.store;
-        let (server, result) = tokio::task::spawn_blocking(move || {
-            let result = store.save_refreshed(&self.server, &saved);
-            (self.server, result)
-        })
-        .await
-        .map_err(|_| McpError::Cancelled)?;
-        trace_store_repair("refresh", &server, result?.repaired_entries);
+        let store = self.store.clone();
+        let server = self.server.clone();
+        let result = tokio::task::spawn_blocking(move || store.save_refreshed(&server, &saved))
+            .await
+            .map_err(|_| McpError::Cancelled)?;
+        trace_store_repair("refresh", &self.server, result?.repaired_entries);
         let header = bearer_header(&refreshed)?;
+        if !self.state.refreshed(self.generation) {
+            return Ok(self.current_bearer());
+        }
         *credentials = refreshed;
         *self.bearer.lock().unwrap_or_else(PoisonError::into_inner) = header.clone();
         *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        self.state.credentials_installed();
         Ok(header)
+    }
+
+    fn current_bearer(&self) -> HeaderValue {
+        self.bearer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 

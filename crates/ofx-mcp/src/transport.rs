@@ -108,10 +108,17 @@ impl Transport {
     }
 
     pub(crate) fn lost_authentication(&self, error: &McpError) -> bool {
-        *error == McpError::McpAuthenticationRequired
-            || self
+        match error {
+            McpError::McpAuthenticationRequired => true,
+            McpError::Cancelled | McpError::McpRequestTimedOut => false,
+            _ => self
                 .http_auth()
-                .is_some_and(|auth| auth.failure().is_some())
+                .is_some_and(|auth| auth.failure().is_some()),
+        }
+    }
+
+    pub(crate) fn stream_rejected_authentication(&self) -> bool {
+        self.http_auth().is_some_and(HttpAuth::stream_rejected)
     }
 
     pub(crate) fn listening(&self) -> bool {
