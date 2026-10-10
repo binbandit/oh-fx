@@ -234,7 +234,7 @@ fn described_files(files: &[FileEvidence]) -> Vec<String> {
         .collect()
 }
 
-fn logged_turn(user: &str, steps: &[&str], end: &str) -> Logged {
+pub(super) fn logged_turn(user: &str, steps: &[&str], end: &str) -> Logged {
     Logged::Turn {
         user: user.to_owned(),
         steps: steps.iter().map(|step| (*step).to_owned()).collect(),
@@ -249,7 +249,7 @@ pub(super) fn logged(mut agent: Agent, log: Box<dyn ConversationLog>) -> Agent {
     agent
 }
 
-fn logging_agent(provider: &Arc<FakeProvider>) -> (Agent, Arc<Mutex<Vec<Logged>>>) {
+pub(super) fn logging_agent(provider: &Arc<FakeProvider>) -> (Agent, Arc<Mutex<Vec<Logged>>>) {
     let (log, entries) = MemoryLog::shared();
     let shared: Arc<FakeProvider> = Arc::clone(provider);
     (logged(new_agent(shared, vec![echo_tool()]), log), entries)
