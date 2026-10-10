@@ -17,7 +17,6 @@ use ofx_contract::{
     ToolResultStatus, UiEvent, Usage, tool_permission_denied_json,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
-use ofx_mcp::McpFeatures;
 use ofx_permissions::PermissionPolicy;
 use ofx_tools::SubagentTool;
 use tempfile::TempDir;
@@ -897,8 +896,7 @@ fn subagent_and_mcp_features_take_their_places_in_upstreams_tool_order() {
         ToolHooks::default(),
     );
     let subagent: Arc<dyn Tool> = Arc::new(SubagentTool::new(Arc::new(NoChildren)));
-    let features: Arc<dyn Tool> = Arc::new(McpFeatures::new(None));
-    let tools = with_features(tools, &features);
+    let tools = with_features(tools, None);
     let names = |tools: &[Arc<dyn Tool>]| -> Vec<String> {
         tools.iter().map(|tool| tool.spec().name.clone()).collect()
     };

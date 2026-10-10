@@ -29,7 +29,7 @@ use ofx_gateway::{
     CodexReviewTransport,
 };
 use ofx_http::ClientError;
-use ofx_mcp::{ConnectOptions, McpFeatures, McpRuntime, ProfileStoreError, SchemaLimits};
+use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError, SchemaLimits};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_session::RouteCredential;
 use ofx_tools::WebFetchProgress;
@@ -60,7 +60,7 @@ mod provider_runtime;
 
 pub(crate) use provider_runtime::{Intent, Refusal, provider_label, provider_names};
 
-type McpTools = (Option<Arc<McpRuntime>>, Arc<dyn Tool>);
+type McpTools = (Option<Arc<McpRuntime>>, Vec<Arc<dyn Tool>>);
 
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
@@ -366,8 +366,7 @@ impl Profile {
         let permissions =
             self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
-        let (mcp, features) = self.mcp_runtime(&tools, &limits, interactive)?;
-        let tools = tool_set::with_features(tools, &features);
+        let (mcp, tools) = self.mcp_runtime(tools, &limits, interactive)?;
         let children = ChildFactory {
             route: Mutex::new(route.children()),
             executions: launch.executions.clone(),
@@ -377,7 +376,6 @@ impl Profile {
             project: project.clone(),
             skills: Arc::clone(&skills),
             mcp: mcp.clone(),
-            features,
             workspace_root: self.workspace_root.clone(),
             additional_roots: additional_roots.clone(),
             permission_mode: permission_mode.clone(),
@@ -629,13 +627,13 @@ impl Profile {
 
     fn mcp_runtime(
         &self,
-        tools: &[Arc<dyn Tool>],
+        tools: Vec<Arc<dyn Tool>>,
         limits: &ContextLimits,
         interactive: bool,
     ) -> Result<McpTools, ProfileStoreError> {
-        let runtime = self.load_mcp_runtime(tools, limits, interactive)?;
-        let features = Arc::new(McpFeatures::new(runtime.clone()));
-        Ok((runtime, features))
+        let runtime = self.load_mcp_runtime(&tools, limits, interactive)?;
+        let tools = tool_set::with_features(tools, runtime.clone());
+        Ok((runtime, tools))
     }
 
     fn load_mcp_runtime(

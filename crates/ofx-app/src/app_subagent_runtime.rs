@@ -43,7 +43,6 @@ pub(crate) struct ChildFactory {
     pub(crate) project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     pub(crate) skills: Arc<HostSkills>,
     pub(crate) mcp: Option<Arc<McpRuntime>>,
-    pub(crate) features: Arc<dyn Tool>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) additional_roots: LiveAdditionalRoots,
     pub(crate) permission_mode: LivePermissionMode,
@@ -204,7 +203,7 @@ impl ChildAgents for ChildFactory {
                     ..ToolHooks::default()
                 },
             ),
-            &self.features,
+            self.mcp.clone(),
         );
         WorkTools {
             tools,

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ofx_contract::{LiveAdditionalRoots, LivePermissionMode, QuestionAsker, Tool};
 use ofx_exec::ManagedExecutions;
+use ofx_mcp::{McpFeatures, McpRuntime};
 use ofx_tools::{
     AskUserQuestion, CapabilitySearch, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool,
     WebFetch, WebFetchProgress, WebSearch, WriteFile,
@@ -64,13 +65,13 @@ pub(crate) fn ask_tools(
 
 pub(crate) fn with_features(
     mut tools: Vec<Arc<dyn Tool>>,
-    features: &Arc<dyn Tool>,
+    runtime: Option<Arc<McpRuntime>>,
 ) -> Vec<Arc<dyn Tool>> {
     let skill = tools
         .iter()
         .position(|tool| tool.spec().name == "skill")
         .map_or(tools.len(), |index| index + 1);
-    tools.insert(skill, Arc::clone(features));
+    tools.insert(skill, Arc::new(McpFeatures::new(runtime)));
     tools
 }
 
