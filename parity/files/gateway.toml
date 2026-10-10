@@ -107,7 +107,7 @@ note = "The xai parallel tool calls flag exists; the fallback context windows an
 upstream = "src/gateway/vercel_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/vercel_protocol.rs"]
-note = "The agent request body (prompt lanes, grouped tool results with denial outputs, the flattened tool envelope, tool choice, output limit, reasoning with max sent as xhigh, Fast, caching and xai provider options, replayed parts and metadata, call id projection, and user images as file parts), its history validation and selectReplayParts exist; the tool-image follow-up message, the structured response format, the pending tool review body, provider routing and Ultrafast options and the request shape summary are absent, and parseGatewayCompletion has no upstream caller."
+note = "The agent request body (prompt lanes, grouped tool results with denial outputs, the flattened tool envelope, tool choice, output limit, reasoning with max sent as xhigh, Fast, caching and xai provider options, replayed parts and metadata, call id projection, and user images as file parts), its history validation and selectReplayParts exist, and the pending tool review body is the permission reviewer's own pending messages written by the same encoder; the tool-image follow-up message, the structured response format, provider routing and Ultrafast options and the request shape summary are absent, and parseGatewayCompletion has no upstream caller."
 
 [[file]]
 upstream = "src/gateway/web_search.zig"

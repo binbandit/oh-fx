@@ -7,10 +7,21 @@ use ofx_contract::{
 use tokio_util::sync::CancellationToken;
 
 const CODEX_REVIEWER_MODEL: &str = "gpt-5.6-luna";
+const GATEWAY_REVIEWER_MODEL: &str = "openai/gpt-5.6-luna";
 const MAX_REVIEW_OUTPUT_TOKENS: u32 = 2048;
 const OUTPUT_TRUNCATED: &str = "OutputTruncated";
 const CONTENT_FILTERED: &str = "ContentFiltered";
 const REQUIRED_TOOL_MISSING: &str = "RequiredToolMissing";
+const PROVIDER_ERROR: &str = "ProviderError";
+const REQUEST_FAILED: &str = "RequestFailed";
+const GATEWAY_COMPLETIONS: [&str; 6] = [
+    OUTPUT_TRUNCATED,
+    "StreamInterrupted",
+    "InvalidProviderCompletion",
+    "MalformedProviderResultIdentity",
+    "MalformedAuthoritativeToolIdentity",
+    "MalformedProviderToolArguments",
+];
 
 type OutputTokens = dyn Fn(&str) -> Option<u32> + Send + Sync;
 
@@ -95,6 +106,65 @@ impl ReviewTransport for ChatCompletionsReviewTransport {
             cancel,
             chat_completions_failure,
         )
+    }
+}
+
+pub struct GatewayReviewTransport {
+    provider: Arc<dyn ModelProvider>,
+    reviewer_model: Option<String>,
+}
+
+impl GatewayReviewTransport {
+    pub fn new(provider: Arc<dyn ModelProvider>, reviewer_model: Option<String>) -> Self {
+        Self {
+            provider,
+            reviewer_model,
+        }
+    }
+}
+
+impl ReviewTransport for GatewayReviewTransport {
+    fn model<'a>(&'a self, _source_model: &'a str) -> &'a str {
+        self.reviewer_model
+            .as_deref()
+            .unwrap_or(GATEWAY_REVIEWER_MODEL)
+    }
+
+    fn max_output_tokens(&self, _model: &str) -> u32 {
+        MAX_REVIEW_OUTPUT_TOKENS
+    }
+
+    fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        self.provider.request_body(request)
+    }
+
+    fn send<'a>(
+        &'a self,
+        request: &'a ModelRequest<'a>,
+        body: String,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, ReviewTransportOutcome> {
+        send(&*self.provider, request, body, cancel, gateway_failure)
+    }
+}
+
+fn gateway_failure(error: &ProviderError) -> ReviewTransportOutcome {
+    if let Some(status) = error.status {
+        return if matches!(status, 408 | 425 | 429) || status >= 500 {
+            ReviewTransportOutcome::TransientFailure
+        } else {
+            ReviewTransportOutcome::PermanentFailure
+        };
+    }
+    match (error.kind, error.code.as_str()) {
+        (ProviderErrorKind::Cancelled, _) => ReviewTransportOutcome::Cancelled,
+        (ProviderErrorKind::Timeout, _) => ReviewTransportOutcome::TimedOut,
+        (_, CONTENT_FILTERED) => ReviewTransportOutcome::PermanentFailure,
+        (_, PROVIDER_ERROR | REQUEST_FAILED) => ReviewTransportOutcome::TransientFailure,
+        (_, code) if GATEWAY_COMPLETIONS.contains(&code) => {
+            ReviewTransportOutcome::Completion(undecided())
+        }
+        _ => ReviewTransportOutcome::PermanentFailure,
     }
 }
 
