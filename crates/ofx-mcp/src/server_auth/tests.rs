@@ -276,6 +276,11 @@ mod stored {
                 AuthenticationState::Required,
             ),
             (
+                r#"{"error":"temporarily_unavailable"}"#,
+                Some("stored-refresh"),
+                AuthenticationState::Authenticated,
+            ),
+            (
                 RENEWED,
                 Some("stored-refresh"),
                 AuthenticationState::Authenticated,
