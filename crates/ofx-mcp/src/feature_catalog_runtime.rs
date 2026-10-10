@@ -5,7 +5,7 @@ use tokio::time::Instant;
 use crate::catalog_freshness::{RefreshAction, SnapshotMetadata, decide_refresh};
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, Snapshot};
-use crate::features::resources::{Catalog, CatalogBuilder, Limits, parse_page};
+use crate::features::common::{Catalog, CatalogBuilder, parse_page};
 use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::build_list_request;
@@ -53,15 +53,18 @@ impl Server {
             return match fetch::<T>(&client, deadline).await {
                 Ok(catalog) => {
                     let items: Arc<[T]> = catalog.items.into();
-                    if matches!(self.lifecycle(), Lifecycle::Ready(published) if Arc::ptr_eq(&published, &client))
-                    {
-                        self.features.publish(Snapshot {
-                            items: Arc::clone(&items),
-                            metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
-                        });
+                    let snapshot = Snapshot {
+                        items: Arc::clone(&items),
+                        metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
+                    };
+                    if self.publish_catalog(&client, snapshot) {
                         invalidation.clear_through(generation);
+                        return Ok(items);
                     }
-                    Ok(items)
+                    self.features
+                        .snapshot::<T>()
+                        .map(|latest| latest.items)
+                        .ok_or_else(T::unavailable)
                 }
                 Err(error) => self.keep_after_failure(current, error),
             };
@@ -84,7 +87,7 @@ async fn fetch<T: FeatureCatalog>(
     client: &McpClient,
     deadline: Instant,
 ) -> Result<Catalog<T>, McpError> {
-    let limits = Limits::default();
+    let limits = T::Limits::default();
     let mut builder = CatalogBuilder::default();
     let mut cursor = None;
     loop {
