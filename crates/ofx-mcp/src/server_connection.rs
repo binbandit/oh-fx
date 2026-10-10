@@ -41,6 +41,7 @@ pub(crate) struct McpClient {
     pub(crate) catalog: Mutex<Arc<ToolCatalog>>,
     pub(crate) tools_stale: AtomicBool,
     pub(crate) resources_invalidation: Invalidation,
+    pub(crate) prompts_invalidation: Invalidation,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
 }
 
@@ -79,6 +80,7 @@ impl McpClient {
             catalog: Mutex::new(Arc::new(connected.catalog)),
             tools_stale: AtomicBool::new(false),
             resources_invalidation: Invalidation::default(),
+            prompts_invalidation: Invalidation::default(),
             notifications: Mutex::new(connected.notifications),
         }
     }
@@ -140,10 +142,16 @@ impl McpClient {
                 self.resources_invalidation.invalidate();
                 Some(ServerNotification::ResourcesListChanged)
             }
-            "notifications/prompts/list_changed" => capabilities
-                .prompts
-                .is_some_and(|prompts| prompts.list_changed)
-                .then_some(ServerNotification::PromptsListChanged),
+            "notifications/prompts/list_changed" => {
+                if !capabilities
+                    .prompts
+                    .is_some_and(|prompts| prompts.list_changed)
+                {
+                    return None;
+                }
+                self.prompts_invalidation.invalidate();
+                Some(ServerNotification::PromptsListChanged)
+            }
             "notifications/resources/updated"
                 if capabilities
                     .resources
@@ -597,6 +605,14 @@ printf '%s\n' "$3" > "$STATE/cidfile"
             ),
             None
         );
+        assert_eq!(
+            client.classify_notification(
+                &json!({"jsonrpc":"2.0","method":"notifications/prompts/list_changed"})
+            ),
+            None
+        );
+        assert!(!client.resources_invalidation.pending());
+        assert!(!client.prompts_invalidation.pending());
         assert_eq!(
             client.classify_notification(
                 &json!({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}})

@@ -60,6 +60,12 @@ pub enum McpError {
     McpServerNotFound,
     #[error("McpResourcesUnsupported")]
     McpResourcesUnsupported,
+    #[error("McpResourceCatalogUnavailable")]
+    McpResourceCatalogUnavailable,
+    #[error("McpPromptsUnsupported")]
+    McpPromptsUnsupported,
+    #[error("McpPromptCatalogUnavailable")]
+    McpPromptCatalogUnavailable,
     #[error("McpHeaderEnvironmentMissing")]
     McpHeaderEnvironmentMissing,
     #[error("McpBearerEnvironmentMissing")]
@@ -128,6 +134,18 @@ pub enum McpError {
     ResourceLimitExceeded,
     #[error("TemplateLimitExceeded")]
     TemplateLimitExceeded,
+    #[error("InvalidPrompt")]
+    InvalidPrompt,
+    #[error("InvalidArgument")]
+    InvalidArgument,
+    #[error("DuplicatePrompt")]
+    DuplicatePrompt,
+    #[error("DuplicateArgument")]
+    DuplicateArgument,
+    #[error("PromptLimitExceeded")]
+    PromptLimitExceeded,
+    #[error("ArgumentLimitExceeded")]
+    ArgumentLimitExceeded,
     #[error("InvalidTool")]
     InvalidTool,
     #[error("DuplicateTool")]
