@@ -3033,7 +3033,7 @@ async fn a_selected_dynamic_tool_is_advertised_from_the_next_step_until_the_turn
             reason: ToolRejection::Invalid,
             description: Some(description),
             ..
-        } if description.title == "MCP: echo"
+        } if description.title == "Working: echo"
     )));
     assert_eq!(report.outcome, TurnOutcome::Completed);
     let requests = provider.requests();

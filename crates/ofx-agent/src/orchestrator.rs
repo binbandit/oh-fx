@@ -22,9 +22,9 @@ use ofx_contract::{
     SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
     ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
     ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome, TurnStop, UiEvent, Usage,
-    bound_model_output, continuation_message, join_visible_segments, malformed_tool_arguments_json,
-    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
-    tool_review_held_json,
+    bound_model_output, continuation_message, format_unknown_action, join_visible_segments,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
+    tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use ofx_trace::{Ring, TraceContext};
@@ -2095,7 +2095,7 @@ impl Rejection {
         Self {
             reason: ToolRejection::Invalid,
             description: Some(Box::new(CallDescription {
-                title: format!("MCP: {tool_name}"),
+                title: format_unknown_action(tool_name),
                 label: None,
                 activity: ToolActivity::Command,
                 effect: ToolEffect::None,
