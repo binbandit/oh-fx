@@ -13,6 +13,7 @@ use ofx_contract::{
     RootUserRequests, SubagentProvider, Tool, TurnId,
 };
 use ofx_exec::ManagedExecutions;
+use ofx_mcp::McpRuntime;
 use ofx_permissions::{
     DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer, canonical_root_user_context,
 };
@@ -21,6 +22,7 @@ use ofx_tools::SubagentTool;
 use crate::app_bootstrap_runtime::output_tokens;
 use crate::approval_queue::ApprovalQueue;
 use crate::context::{HostProjectContext, HostRuntimeContext};
+use crate::mcp_model_catalog::McpServers;
 use crate::skills::HostSkills;
 use crate::tool_set::{self, ToolHooks};
 
@@ -40,7 +42,7 @@ pub(crate) struct ChildFactory {
     pub(crate) approvals: Option<Arc<ApprovalQueue>>,
     pub(crate) project: Option<(Arc<HostProjectContext>, ProjectContext)>,
     pub(crate) skills: Arc<HostSkills>,
-    pub(crate) mcp: Option<Arc<dyn DynamicTools>>,
+    pub(crate) mcp: Option<Arc<McpRuntime>>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) additional_roots: LiveAdditionalRoots,
     pub(crate) permission_mode: LivePermissionMode,
@@ -162,12 +164,15 @@ impl ChildAgents for ChildFactory {
         )
         .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>)
         .with_capability_resolver(route.capabilities)
+        .with_mcp_servers(Arc::new(McpServers::new(self.mcp.clone(), false)))
         .with_lifecycle(
             self.hooks.get().cloned().unwrap_or_default(),
             HookScope::Subagent,
         );
-        if let Some(mcp) = &self.mcp {
-            agent = agent.with_dynamic_tools(Arc::clone(mcp));
+        if let Some(mcp) =
+            ParentCatalog::shared(self.mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>))
+        {
+            agent = agent.with_dynamic_tools(mcp);
         }
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.approvals().clone());

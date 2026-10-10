@@ -1,0 +1,2 @@
+MCP server availability changed since earlier in this session:
+The <mcp_servers> section above is current. Treat earlier claims in this conversation that a listed server required authentication or was unavailable as outdated; re-run capability_search before concluding a server cannot be used.

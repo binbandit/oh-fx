@@ -17,6 +17,7 @@ mod local_inspection;
 mod mcp_contract;
 mod mcp_json;
 mod mcp_runtime;
+mod model_catalog;
 mod native_config;
 mod operation_control;
 mod profile_store;
@@ -61,6 +62,10 @@ pub use mcp_contract::{
     WorkspaceAdmission,
 };
 pub use mcp_runtime::{McpRuntime, ReloadCancelled, ReloadOutcome, Settling};
+pub use model_catalog::{
+    Availability, BaselineEntry, CatalogSection, ServerSummary, render_change_notice,
+    render_model_catalog,
+};
 pub use native_config::{NativeConfigLoad, load_native_configs, preview_workspace_authority};
 pub use profile_store::{
     PROFILE_CONFIG_FILE_NAME, ProfileRemoveOutcome, ProfileStoreError, add_profile_server,

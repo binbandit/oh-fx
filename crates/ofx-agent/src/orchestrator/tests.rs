@@ -2900,6 +2900,7 @@ mod file_evidence;
 mod interrupted_closure;
 mod lifecycle;
 mod malformed_arguments;
+mod mcp_servers;
 mod modes;
 mod prefill_retry;
 mod project_context;

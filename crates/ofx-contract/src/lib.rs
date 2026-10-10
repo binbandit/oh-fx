@@ -6,6 +6,7 @@ mod file_evidence;
 mod history_turn;
 mod hooks;
 mod ids;
+mod mcp_servers;
 mod model_capabilities;
 mod modes;
 mod permission_gate;
@@ -41,6 +42,7 @@ pub use hooks::{
     HookScope, HookView, PostTurnEndInput,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
+pub use mcp_servers::{McpServersCatalog, McpServersSection};
 pub use model_capabilities::{
     CapabilityLookup, CapabilityResolver, ModelCapabilities, intrinsically_fast,
 };

@@ -18,8 +18,8 @@ use ofx_config::{
     request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, DynamicTools, HookView,
-    LiveAdditionalRoots, LivePermissionMode, ModelControls, ModelProvider, PermissionMode,
+    ActiveMode, ApprovalAnswer, CallDescription, CapabilityResolver, HookView, LiveAdditionalRoots,
+    LivePermissionMode, McpServersCatalog, ModelControls, ModelProvider, PermissionMode,
     QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles, Tool,
     is_provider_search_alias, parse_tool_args_object, provider_search_description,
 };
@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app_agent_runtime::Emit;
 use crate::app_mcp_runtime::{McpHost, McpSources};
 use crate::app_permission_runtime::PermissionRuntime;
-use crate::app_subagent_runtime::{ChildFactory, Delegation, ParentCatalog};
+use crate::app_subagent_runtime::{ChildFactory, Delegation};
 use crate::app_workspace_runtime::WorkspaceRuntime;
 use crate::approval_queue::ApprovalQueue;
 use crate::codex_provider::{
@@ -50,6 +50,7 @@ use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
 };
+use crate::mcp_model_catalog::McpServers;
 use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::output_contracts::StatusSnapshot;
 use crate::skills::HostSkills;
@@ -162,6 +163,7 @@ pub struct AgentSetup {
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
+    mcp_servers: Arc<dyn McpServersCatalog>,
     context: Arc<dyn RuntimeContext>,
     permission_mode: LivePermissionMode,
     workspace_root: PathBuf,
@@ -371,7 +373,7 @@ impl Profile {
             approvals: approvals.clone(),
             project: project.clone(),
             skills: Arc::clone(&skills),
-            mcp: ParentCatalog::shared(mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>)),
+            mcp: mcp.clone(),
             workspace_root: self.workspace_root.clone(),
             additional_roots: additional_roots.clone(),
             permission_mode: permission_mode.clone(),
@@ -393,6 +395,7 @@ impl Profile {
             codex_login,
             tools,
             delegation: Delegation::new(children),
+            mcp_servers: Arc::new(McpServers::new(mcp.clone(), interactive)),
             mcp,
             context: self.runtime_context(&permission_mode, interactive, additional_roots.clone()),
             permissions,
@@ -996,7 +999,8 @@ impl AgentSetup {
             self.config.clone(),
         )
         .with_skills(Arc::clone(&self.skills) as Arc<dyn SkillContextProvider>)
-        .with_capability_resolver(Arc::new(self.models.clone()) as Arc<dyn CapabilityResolver>);
+        .with_capability_resolver(Arc::new(self.models.clone()) as Arc<dyn CapabilityResolver>)
+        .with_mcp_servers(Arc::clone(&self.mcp_servers));
         if let Some(mcp) = &self.mcp {
             agent = agent.with_dynamic_tools(Arc::clone(mcp) as _);
         }
