@@ -87,7 +87,7 @@ note = "Environment-flag parsing exists; v1/v2 store routing, recovery, doctor a
 upstream = "src/core/session/session_authority.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_authority.rs"]
-note = "The authority marker of the schema-v3 layout fx 0.0.1 to 0.0.7 wrote classifies an fx session for listing and import, and a dir behind an upgrade fence is refused, as upstream refuses one without a session.legacy.json snapshot. Reading that pre-public snapshot is not ported, as for the v1 and v2 snapshots, and a marker-less creation orphan is never read as schema-v3, which is what upstream's creation-orphan check guards."
+note = "The authority marker of the schema-v3 layout fx 0.0.1 to 0.0.7 wrote classifies an fx session for listing and import, and a dir behind an upgrade fence is refused, as upstream refuses one without a session.legacy.json snapshot. Reading that pre-public snapshot is not ported, as for the v1 and v2 snapshots, and a marker-less creation orphan is refused, as upstream's creation-orphan check refuses it rather than read it as a legacy snapshot."
 
 [[file]]
 upstream = "src/core/session/session_catalog.zig"
