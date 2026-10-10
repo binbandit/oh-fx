@@ -32,6 +32,14 @@ enum State {
     Stopped,
 }
 
+struct StartAttempt<'a>(&'a Server);
+
+impl Drop for StartAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.abandon_start();
+    }
+}
+
 #[derive(Clone)]
 struct Connection {
     client: Arc<McpClient>,
@@ -133,20 +141,33 @@ impl Server {
         }
     }
 
-    pub(crate) async fn start(self: &Arc<Self>) {
+    pub(crate) async fn start(self: &Arc<Self>) -> Result<(), McpError> {
         {
             let mut state = lock(&self.state);
             if !matches!(*state, State::Waiting) {
-                return;
+                return Ok(());
             }
             *state = State::Starting;
         }
-        if let Err(failure) = self
-            .connect(McpClient::connect(&self.config, &self.options))
+        let _starting = StartAttempt(self);
+        self.connect(McpClient::connect(&self.config, &self.options))
             .await
-        {
-            let timeout_ms = self.config.startup_timeout_ms;
-            self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
+            .map_err(|failure| {
+                let timeout_ms = self.config.startup_timeout_ms;
+                self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
+                match failure.error {
+                    McpError::McpRequestTimedOut => McpError::McpConnectionTimedOut,
+                    error => error,
+                }
+            })
+    }
+
+    fn abandon_start(&self) {
+        let mut state = lock(&self.state);
+        if matches!(*state, State::Starting) {
+            *state = State::Failed(McpError::Cancelled.to_string());
+            drop(state);
+            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
     }
 

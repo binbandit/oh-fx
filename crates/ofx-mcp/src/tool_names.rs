@@ -64,6 +64,23 @@ fn push_tag(tags: &mut Vec<String>, raw: &str) {
     }
 }
 
+pub(crate) fn matches_server(name: &str, server: &str) -> bool {
+    let Some(segment) = name.as_bytes().strip_prefix(b"mcp_") else {
+        return false;
+    };
+    let source = if server.is_empty() { "server" } else { server }.as_bytes();
+    segment.len() > source.len()
+        && segment[source.len()] == b'_'
+        && source.iter().zip(segment).all(|(byte, named)| {
+            *named
+                == if is_identifier_byte(*byte) {
+                    *byte
+                } else {
+                    b'_'
+                }
+        })
+}
+
 pub(crate) fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
@@ -118,6 +135,18 @@ mod tests {
         assert_eq!(names.name(&[], "a_b", "c").unwrap(), collision);
         assert_eq!(first, "mcp_a_b_c");
         assert_eq!(collision, "mcp_a_b_c_2");
+    }
+
+    #[test]
+    fn a_tool_name_matches_the_server_whose_sanitized_name_prefixes_it() {
+        assert!(matches_server("mcp_a_b_c", "a/b"));
+        assert!(matches_server("mcp_a_b_c", "a_b"));
+        assert!(matches_server("mcp_server_x", ""));
+        assert!(!matches_server("mcp_a_b", "a_b"));
+        assert!(!matches_server("mcp_ab_c", "a"));
+        assert!(!matches_server("tool_a_b", "a"));
+        assert!(!matches_server("mcp_é_x", "é"));
+        assert!(matches_server("mcp____x", "é"));
     }
 
     #[test]
