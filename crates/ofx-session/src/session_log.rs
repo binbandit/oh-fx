@@ -43,7 +43,7 @@ use managed_file::{
 };
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
-pub(crate) use turn_recovery::read_checkpoint;
+pub(crate) use turn_recovery::{RECOVERY_FILE, read_checkpoint};
 use turn_recovery::{
     Recovery, clear_recovery, commit_checkpoint, mark_recovery_asked, open_unfinished_turn,
     recovery_was_asked, save_checkpoint,

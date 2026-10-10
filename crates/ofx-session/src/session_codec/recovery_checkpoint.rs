@@ -26,9 +26,9 @@ use route_credential::CREDENTIAL_IDENTITY_BYTES;
 pub use route_credential::RouteCredential;
 
 pub(crate) const MAX_RECOVERY_FILE_BYTES: usize = EMERGENCY_CEILING_BYTES + 128;
-const CHECKPOINT_VERSION: u64 = 2;
-const EXECUTION_SCHEMA_VERSION: u64 = 10;
-const CAUSES: [&str; 10] = [
+pub(crate) const CHECKPOINT_VERSION: u64 = 2;
+pub(crate) const EXECUTION_SCHEMA_VERSION: u64 = 10;
+pub(crate) const CAUSES: [&str; 10] = [
     "network_interrupted",
     "connectivity_lost",
     "response_interrupted",
@@ -40,7 +40,7 @@ const CAUSES: [&str; 10] = [
     "request_limit_reached",
     "compaction_prepared",
 ];
-const ACTIONS: [&str; 8] = [
+pub(crate) const ACTIONS: [&str; 8] = [
     "retrying_request",
     "continuing_response",
     "regenerating_tool",
@@ -56,7 +56,7 @@ const TOOL_STATES: [RecoveryToolState; 4] = [
     RecoveryToolState::Confirmed,
     RecoveryToolState::Uncertain,
 ];
-const CREDENTIAL_SOURCES: [&str; 8] = [
+pub(crate) const CREDENTIAL_SOURCES: [&str; 8] = [
     "vercel_oidc_token",
     "ai_gateway_api_key",
     "fx_login",
@@ -526,7 +526,7 @@ fn authority(value: Json<'_>) -> Option<(SavedProvider, String, Option<RouteCred
     fields.finish((provider, model, credential))
 }
 
-fn lowercase_digest(hex: &str) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
+pub(crate) fn lowercase_digest(hex: &str) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
     let lowercase = hex
         .bytes()
         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
@@ -571,12 +571,12 @@ fn fixed<T: FixedField>(fields: &mut Fields<'_>, key: &str) -> Option<()> {
     T::accepts(&fields.required(key)?).then_some(())
 }
 
-fn tool_state(value: &Json<'_>) -> Option<RecoveryToolState> {
+pub(crate) fn tool_state(value: &Json<'_>) -> Option<RecoveryToolState> {
     let text = value.as_str()?;
     TOOL_STATES.into_iter().find(|state| state.as_str() == text)
 }
 
-fn one_of(value: &Json<'_>, tags: &[&'static str]) -> Option<&'static str> {
+pub(crate) fn one_of(value: &Json<'_>, tags: &[&'static str]) -> Option<&'static str> {
     let text = value.as_str()?;
     tags.iter().copied().find(|tag| *tag == text)
 }

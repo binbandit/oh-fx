@@ -6,6 +6,7 @@ use super::LegacySession;
 use super::durable_turn::{
     ConversationTurn, Execution, LegacyTurn, SavedResult, Steering, TurnClose,
 };
+use super::recovery_file::recovery_file;
 use crate::result_store::{make_handle, preview, store_new_results};
 use crate::session_codec::{SessionMetadata, encode_session_metadata};
 use crate::session_display_metadata::history_title;
@@ -16,7 +17,9 @@ use crate::session_event::{
     TurnCompletedEvent, UserEvent, encode_conversation_frame,
 };
 use crate::session_log::managed_file::{create_managed_file, sync_dir};
-use crate::session_log::{ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint};
+use crate::session_log::{
+    ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint, RECOVERY_FILE,
+};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 
 pub(crate) struct Converted {
@@ -24,6 +27,7 @@ pub(crate) struct Converted {
     events: Vec<ConversationEvent>,
     history_len: usize,
     results: Vec<StoredResult>,
+    recovery: Option<Vec<u8>>,
 }
 
 struct LogBuilder {
@@ -82,11 +86,26 @@ impl LegacySession {
             };
             log.append(batch)?;
         }
+        let seq = u64::try_from(log.events.len())
+            .map_err(|_| SessionError::ConversationSequenceOverflow)?;
+        let file = match &self.recovery {
+            Some(checkpoint) => recovery_file(checkpoint, seq)?,
+            None => None,
+        };
+        let recovery = file.map(|file| {
+            results.extend(
+                file.spilled
+                    .into_iter()
+                    .map(|(handle, text)| StoredResult { handle, text }),
+            );
+            file.bytes
+        });
         Ok(Converted {
             metadata,
             events: log.events,
             history_len,
             results,
+            recovery,
         })
     }
 }
@@ -158,6 +177,9 @@ impl Converted {
         let mut events = create_managed_file(copy, EVENTS_FILE)?;
         events.write_all(&log)?;
         events.sync_all()?;
+        if let Some(recovery) = &self.recovery {
+            copy.replace(RECOVERY_FILE, recovery)?;
+        }
         copy.replace(MANIFEST_FILE, &encode_session_metadata(&self.metadata)?)?;
         sync_dir(copy)
     }

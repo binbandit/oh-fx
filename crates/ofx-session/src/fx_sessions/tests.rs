@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
-use crate::session_migration::tests::{LegacyLog, REQUEST_CHECKPOINT, reply};
+use crate::session_migration::tests::{LegacyLog, reply};
 use crate::session_store::{ListScope, SessionStore};
 use crate::session_summary_codec::ResumablePage;
 
@@ -611,7 +611,10 @@ fn sessions_fx_saved_before_its_conversation_layout_are_listed_and_marked() {
     fs::create_dir_all(child.join("subagent")).unwrap();
     fs::write(child.join("subagent/owner.json"), "{}").unwrap();
     LegacyLog::started("fx-legacy-later", "/work")
-        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
+        .turn(&reply("look", "seen").replace(
+            "\"images\":[]",
+            "\"images\":[{\"id\":1,\"path\":\"/tmp/a.png\",\"media_type\":\"image/png\",\"snapshot_path\":null,\"snapshot_sha256\":null}]",
+        ))
         .write(&home.fx_sessions());
     let before = snapshot(&home.fx_profile());
 

@@ -15,9 +15,7 @@ use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
 use crate::session_log::WritableSession;
-use crate::session_migration::tests::{
-    GENERATION, LegacyLog, REQUEST_CHECKPOINT, command_result, command_turn, reply,
-};
+use crate::session_migration::tests::{GENERATION, LegacyLog, command_result, command_turn, reply};
 use crate::session_store::{ListScope, SessionStore};
 
 type OwnWork = fn(&Home, WritableSession);
@@ -663,7 +661,10 @@ fn a_schema_v3_session_without_its_manifest_imports_and_follows_fx_until_used() 
 fn a_schema_v3_session_oh_fx_cannot_convert_yet_is_refused() {
     let home = Home::new();
     legacy()
-        .frame("recovery_checkpoint_set", REQUEST_CHECKPOINT)
+        .turn(&reply("look", "seen").replace(
+                "\"images\":[]",
+                "\"images\":[{\"id\":1,\"path\":\"/tmp/a.png\",\"media_type\":\"image/png\",\"snapshot_path\":null,\"snapshot_sha256\":null}]",
+            ))
         .write(&home.fx_sessions());
     let before = snapshot(&home.fx_profile());
     assert_eq!(
