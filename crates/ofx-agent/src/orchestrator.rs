@@ -27,6 +27,7 @@ use ofx_contract::{
     tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
+use ofx_trace::{Ring, TraceContext};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -35,7 +36,8 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_steps::allows_step;
 use crate::approvals::Approvals;
 use crate::assistant_stream::normalize_assistant_text_for_display;
-use crate::compactor::{CompactionError, Payload};
+use crate::compactor::trace::COMPACTION_TRACE;
+use crate::compactor::{CompactionError, CompactionEvent, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::lifecycle::{LifecycleContext, ToolPreparation};
 use crate::model_response_recovery::{
@@ -215,6 +217,7 @@ struct Turn {
     restored: RestoredReply,
     steps: u64,
     stop: StopState,
+    trace: TraceContext,
 }
 
 #[derive(Default)]
@@ -310,6 +313,7 @@ pub struct Agent {
     steering: Option<Arc<WorkerRuntime>>,
     recovery_pause: RecoveryPause,
     lifecycle: Option<LifecycleContext>,
+    compaction_trace: &'static Ring<CompactionEvent>,
 }
 
 impl Agent {
@@ -359,6 +363,7 @@ impl Agent {
             steering: None,
             recovery_pause: RecoveryPause::default(),
             lifecycle: None,
+            compaction_trace: &COMPACTION_TRACE,
         }
     }
 
@@ -565,6 +570,10 @@ impl Agent {
             restored: RestoredReply::default(),
             steps: 0,
             stop: StopState::default(),
+            trace: TraceContext {
+                turn_id: ofx_trace::next_turn_id(),
+                ..TraceContext::default()
+            },
         }
     }
 
@@ -801,6 +810,7 @@ impl Agent {
         loop {
             self.stop_at_step_limit(turn.id, step, events)?;
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
+            turn.trace.step_id = ofx_trace::next_step_id();
             if self.has_compactable_context(turn) {
                 self.resolve_capabilities(cancel).await?;
             }
@@ -839,7 +849,7 @@ impl Agent {
                 Err(Stop::Failed {
                     failure: TurnFailure::Provider(error),
                     partial,
-                }) if self.recovers_overflow(turn, &error, &partial, cancel) => {
+                }) if self.recovers_overflow(turn, &error, &partial, measured.as_ref(), cancel) => {
                     self.settle_measurement(measured, None);
                     continue;
                 }

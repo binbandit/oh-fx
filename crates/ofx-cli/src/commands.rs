@@ -642,6 +642,12 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
         SlashPresentationCategory::Product,
     ),
     SlashSpec::new(
+        SlashKind::Trace,
+        "/trace",
+        "copy a private diagnostic trace",
+        SlashPresentationCategory::Product,
+    ),
+    SlashSpec::new(
         SlashKind::Compact,
         "/compact",
         "summarize context into a fresh window",

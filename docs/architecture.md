@@ -22,6 +22,7 @@ The shipping target is the native terminal binary. Upstream WASM, Node-API addon
 |---|---|---|---|
 | 0 | `ofx-contract` | Ids, messages, model requests and stream events, tool traits and metadata, tool context targets, tool result errors, permission modes and decisions, modes and their tool policy, reasoning effort, subagent requests and results, lifecycle hooks, UI events and commands | `core/shared/types`, `agent/stream_provider`, `core/tooling` contracts, `core/modes`, `core/subagent` model contract, `core/workspace/context_contract` targets, `core/hooks`, UI contracts |
 | 0 | `ofx-text` | Display width, graphemes, terminal-safe text, token estimates, lexical relevance, language scripts | `core/shared/*` text utilities |
+| 0 | `ofx-trace` | The opt-in trace log, its trace ids, and the bounded ring the `/trace` diagnostics share | `core/shared/debug_trace`, the rings behind `core/workspace/diagnostics` |
 | 1 | `ofx-config` | XDG profile paths, private profile storage, settings layers, provider ids, context limits, custom provider connections | `core/config`, `shared/profile_paths`, durable paths in `shared/io` |
 | 1 | `ofx-http` | HTTP client, TLS trust, proxy, SSE decoding | `shared/http_pool`, `gateway/sse` |
 | 1 | `ofx-shell` | Shell command lexing, classification, effects, and risk notes | `core/shell_command`, `core/tooling/command_policy` |
@@ -47,7 +48,7 @@ The shipping target is the native terminal binary. Upstream WASM, Node-API addon
 | 6 | `oh-fx` | Binary entry point and fast paths | `src/main.zig` |
 | dev | `ofx-testkit` | Fake provider and MCP servers, PTY driver, TLS and proxy fixtures | test harnesses |
 
-Every crate may depend on `ofx-contract` and `ofx-text`. Otherwise a crate depends only on crates in lower layers. `ofx-agent` and `ofx-tui` depend on nothing but layer 0 crates and `ofx-markdown`/`ofx-vt` for the TUI.
+Every crate may depend on `ofx-contract`, `ofx-text`, and `ofx-trace`. Otherwise a crate depends only on crates in lower layers. `ofx-agent` and `ofx-tui` depend on nothing but layer 0 crates and `ofx-markdown`/`ofx-vt` for the TUI.
 
 ## Type ownership
 
@@ -120,6 +121,7 @@ Each file in [`differences/`](differences/) records the deliberate differences f
 - [Search tools](differences/tool-search.md): `glob_files` and `grep_files`.
 - [Shell tool](differences/tool-shell.md): the `shell` tool and its process supervisor.
 - [Web tools](differences/tool-web.md): `web_fetch` and `web_search`.
+- [Trace log](differences/trace.md): the trace log's variables and paths, and the `/trace` report.
 - [Upgrades and releases](differences/upgrade.md): self-upgrade and the release stream.
 
 ## Parity tracking

@@ -29,6 +29,10 @@ impl Doctor {
             .and_then(fs::canonicalize)
             .map_err(|_| "WorkspaceUnavailable")?;
         let paths = ProfilePaths::from_environment();
+        ofx_trace::configure_from_env(
+            &workspace_root,
+            paths.as_ref().map(|paths| paths.state.as_path()),
+        );
         let home = env::home_dir();
         let lookup = |name: &str| env::var(name).ok();
         let sources = StatusSources {

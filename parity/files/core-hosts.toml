@@ -55,7 +55,7 @@ note = "JavaScript host callback binding for the embedded runtime; excluded from
 upstream = "src/core/hosts/native.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/native.rs"]
-note = "Native text clipboard command execution exists; upstream file clipboard materialization and native secret-store provider wiring are missing."
+note = "Native text clipboard command execution exists, and /trace copies its report as text with it as docs/differences/trace.md records; upstream file clipboard materialization, the host trace lines and native secret-store provider wiring are missing."
 
 [[file]]
 upstream = "src/core/hosts/native_keychain.zig"
