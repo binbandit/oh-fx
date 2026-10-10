@@ -1,3 +1,5 @@
+mod import;
+
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -5,8 +7,11 @@ use ofx_config::PrivateDir;
 
 use crate::session_catalog_cache::{CatalogIndex, scan_catalog};
 use crate::session_discovery::Classification;
+use crate::session_error::SessionError;
 use crate::session_log::managed_file::{has_private_dir_mode, session_directory_names};
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
+
+pub(crate) use import::{ImportSource, Imported, seal, untouched_import};
 
 const PROFILE_DIR: &str = ".fx";
 const SESSIONS_DIR: &str = "sessions";
@@ -54,6 +59,24 @@ impl FxSessions {
             summary.source = SessionSource::Fx;
         }
         summaries
+    }
+}
+
+pub(crate) fn import_from_fx(
+    home: &Path,
+    sessions: &PrivateDir,
+    id: &str,
+) -> Result<Option<Imported>, SessionError> {
+    match sessions.open_child(id) {
+        Ok(None) => match open_sessions(home) {
+            Some(fx) => import::import(&fx, sessions, id),
+            None => Ok(None),
+        },
+        Ok(Some(copy)) => match (import::read_marker(&copy), open_sessions(home)) {
+            (Some(marker), Some(fx)) => import::refresh(&fx, sessions, &copy, id, &marker),
+            _ => Ok(None),
+        },
+        Err(_) => Ok(None),
     }
 }
 

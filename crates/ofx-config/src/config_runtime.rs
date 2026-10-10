@@ -694,6 +694,14 @@ impl Settings {
         limits
     }
 
+    pub fn routes(&self, provider: &ProviderId) -> bool {
+        match provider {
+            ProviderId::Codex => true,
+            ProviderId::Configured(id) => self.providers.get(id).is_some(),
+            ProviderId::Gateway | ProviderId::Grok => false,
+        }
+    }
+
     pub fn resume_selection(
         &mut self,
         provider: &ProviderId,

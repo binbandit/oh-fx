@@ -1237,3 +1237,150 @@ fn a_failed_command_saves_its_process_presentation_as_upstream_frames_it() {
         ]
     );
 }
+
+const FX_ID: &str = "fx0123456789";
+
+const GATEWAY: &str = "\"gateway\"";
+
+fn save_in_fx(home: &Home, provider: &str) -> PathBuf {
+    let fx = home.root.join(".fx");
+    let session = fx.join("sessions").join(FX_ID);
+    fs::create_dir_all(&session).expect("create an fx session");
+    for directory in [fx.clone(), fx.join("sessions"), session.clone()] {
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("make an fx folder private");
+    }
+    let manifest = format!(
+        "{{\"schema_version\":4,\"id\":\"{FX_ID}\",\"origin_workspace_root\":\"/elsewhere/fx-work\",\"workspace_root\":\"/elsewhere/fx-work\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":{provider},\"model\":\"openai/gpt-5\",\"effort\":\"high\",\"fast_mode\":false,\"title\":\"Started in fx\",\"subagent_child\":false}}"
+    );
+    let mut events = String::new();
+    for (seq, event) in (1_u64..).zip([
+        "{\"user\":{\"text\":\"asked in fx\",\"images\":[],\"work_id\":null}}",
+        "{\"assistant\":{\"text\":\"answered in fx\",\"provider_replay\":null,\"standalone_response\":false}}",
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}",
+    ]) {
+        let _ = writeln!(
+            events,
+            "{{\"schema_version\":3,\"seq\":{seq},\"timestamp_ms\":2,\"event\":{event}}}"
+        );
+    }
+    for (name, bytes) in [
+        ("session.json", manifest),
+        ("events.jsonl", events),
+        ("session.lock", String::new()),
+    ] {
+        fs::write(session.join(name), bytes).expect("write an fx session file");
+        fs::set_permissions(session.join(name), fs::Permissions::from_mode(0o600))
+            .expect("make an fx file private");
+    }
+    session
+}
+
+fn fx_files(session: &std::path::Path) -> Vec<Vec<u8>> {
+    ["session.json", "events.jsonl", "session.lock"]
+        .iter()
+        .map(|name| fs::read(session.join(name)).expect("read an fx file"))
+        .collect()
+}
+
+#[test]
+fn ask_resumes_an_fx_session_from_a_copy_on_the_current_provider() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["continued"])),
+        Reply::sse(&chat_text_events(&["again"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let source = save_in_fx(&home, GATEWAY);
+    let untouched = fx_files(&source);
+
+    let output = home.ask(&["ask", "--json", "--resume", FX_ID, "keep going"], &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "oh-fx ask: This session was saved with the gateway provider, which oh-fx cannot use yet; it continues with portkey.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["final_output"], "continued");
+    assert_eq!(session_id(&result), FX_ID);
+    assert_eq!(
+        texts(&conversation(&server.requests()[0])),
+        [
+            "user: asked in fx",
+            "assistant: answered in fx",
+            "user: keep going"
+        ]
+    );
+    let metadata = home.metadata(FX_ID);
+    assert_eq!(metadata["provider"]["name"], "portkey");
+    assert_eq!(metadata["model"], "@openai/gpt-4o");
+    assert_eq!(metadata["effort"], "high");
+    assert_eq!(metadata["title"], "Started in fx");
+    assert_eq!(
+        metadata["workspace_root"],
+        fs::canonicalize(home.root.join("workspace"))
+            .expect("canonical workspace")
+            .display()
+            .to_string()
+    );
+    assert_eq!(fx_files(&source), untouched);
+
+    let output = home.ask(&["ask", "--json", "--resume", FX_ID, "and again"], &[]);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    assert_eq!(home.frames(FX_ID).len(), 9);
+    assert_eq!(fx_files(&source), untouched);
+}
+
+#[test]
+fn ask_refuses_an_fx_session_that_fx_has_open() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let source = save_in_fx(&home, GATEWAY);
+    let lock = fs::File::open(source.join("session.lock")).expect("open fx's lock");
+    lock.lock().expect("hold fx's lock");
+
+    let output = home.ask(&["ask", "--resume", FX_ID, "hello"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx ask: fx has this session open; close it in fx, then resume it here\n"
+    );
+    assert!(home.session_ids().is_empty());
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn ask_continues_an_fx_session_saved_on_a_provider_oh_fx_does_not_define() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["continued"]))]);
+    let home = Home::new(&server.base_url());
+    let binding = "ab".repeat(32);
+    let source = save_in_fx(
+        &home,
+        &format!("{{\"name\":\"fx-only\",\"binding\":\"{binding}\"}}"),
+    );
+    let untouched = fx_files(&source);
+
+    let output = home.ask(&["ask", "--json", "--resume", FX_ID, "keep going"], &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr,
+        "oh-fx ask: This session was saved with the fx-only provider, which oh-fx cannot use yet; it continues with portkey.\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["final_output"], "continued");
+    assert_eq!(
+        texts(&conversation(&server.requests()[0])),
+        [
+            "user: asked in fx",
+            "assistant: answered in fx",
+            "user: keep going"
+        ]
+    );
+    let metadata = home.metadata(FX_ID);
+    assert_eq!(metadata["provider"]["name"], "portkey");
+    assert_eq!(metadata["model"], "@openai/gpt-4o");
+    assert_eq!(metadata["effort"], "high");
+    assert_eq!(fx_files(&source), untouched);
+}

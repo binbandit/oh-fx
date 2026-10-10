@@ -278,6 +278,10 @@ impl Profile {
         self.paths.as_ref().map(|paths| paths.data.as_path())
     }
 
+    pub(crate) fn home(&self) -> Option<&Path> {
+        self.home.as_deref().map(Path::new)
+    }
+
     pub(crate) fn cache_dir(&self) -> Option<&Path> {
         self.paths.as_ref().map(|paths| paths.cache.as_path())
     }

@@ -17,6 +17,7 @@ use ofx_contract::{
 };
 use ofx_text::lowercase_hex;
 
+use crate::fx_sessions::{ImportSource, seal, untouched_import};
 use crate::history_snapshot::{CacheWriter, HistoryCache};
 use crate::session::infer_conversation_language;
 use crate::session_children::CONTROL_DIR;
@@ -50,8 +51,8 @@ use turn_recovery::{
 use turn_restore::{complete_result_output, restored_history};
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
-const MANIFEST_FILE: &str = "session.json";
-const SESSION_LOCK_FILE: &str = "session.lock";
+pub(crate) const MANIFEST_FILE: &str = "session.json";
+pub(crate) const SESSION_LOCK_FILE: &str = "session.lock";
 const OWNER_LIVE_FILE: &str = "owner.live";
 const STAGING_PREFIX: &str = "creating+";
 const STAGING_RANDOM_BYTES: usize = 16;
@@ -80,6 +81,10 @@ impl OwnedSessionDir {
     fn acquire(dir: PrivateDir, lock_deadline: Duration) -> Result<Self, SessionError> {
         let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, lock_deadline)?
             .ok_or(SessionError::SessionBusy)?;
+        Ok(Self::holding(dir, lock))
+    }
+
+    fn holding(dir: PrivateDir, lock: AdvisoryLock) -> Self {
         let previous_owner_died = entry_exists(&dir, OWNER_LIVE_FILE).unwrap_or(false);
         let marker = format!(
             "{{\"pid\":{},\"opened_at_ms\":{}}}\n",
@@ -87,11 +92,11 @@ impl OwnedSessionDir {
             now_ms()
         );
         let _ = dir.replace(OWNER_LIVE_FILE, marker.as_bytes());
-        Ok(Self {
+        Self {
             dir,
             previous_owner_died,
             _lock: lock,
-        })
+        }
     }
 }
 
@@ -507,6 +512,23 @@ impl WritableSession {
         self.set_preferences(preferences, now_ms())
     }
 
+    pub(crate) fn seal_import(&self, source: ImportSource) -> Result<(), SessionError> {
+        seal(&self.owned.dir, &self.metadata.id, source)
+    }
+
+    pub fn rebind_provider(
+        &mut self,
+        provider: SavedProvider,
+        model: &str,
+    ) -> Result<(), SessionError> {
+        let imported = untouched_import(&self.owned.dir, &self.metadata.id);
+        self.select_provider(provider, model)?;
+        match imported {
+            Some(source) => seal(&self.owned.dir, &self.metadata.id, source),
+            None => Ok(()),
+        }
+    }
+
     pub(crate) fn rebind_workspace(&mut self, workspace_root: &str) -> Result<(), SessionError> {
         let mut proposed = self.metadata.clone();
         workspace_root.clone_into(&mut proposed.workspace_root);
@@ -600,7 +622,29 @@ pub(crate) fn resume_session(
     let dir = sessions
         .open_child_private(id)?
         .ok_or(SessionError::SessionNotFound)?;
-    let owned = OwnedSessionDir::acquire(dir, lock_deadline)?;
+    resume_owned(sessions, id, OwnedSessionDir::acquire(dir, lock_deadline)?)
+}
+
+pub(crate) fn resume_held_session(
+    sessions: &PrivateDir,
+    id: &str,
+    dir: PrivateDir,
+    lock: AdvisoryLock,
+) -> Result<WritableSession, SessionError> {
+    resume_owned(sessions, id, OwnedSessionDir::holding(dir, lock))
+}
+
+fn resume_owned(
+    sessions: &PrivateDir,
+    id: &str,
+    owned: OwnedSessionDir,
+) -> Result<WritableSession, SessionError> {
+    let still_named = sessions
+        .open_child(id)?
+        .is_some_and(|named| same_directory(&named, &owned.dir).unwrap_or(false));
+    if !still_named {
+        return Err(SessionError::SessionTargetChanged);
+    }
     let metadata = read_metadata(&owned.dir, id)?;
     let file = open_managed_file(&owned.dir, EVENTS_FILE, Access::Writable)?
         .ok_or(SessionError::InvalidSessionFormat)?;
@@ -767,7 +811,7 @@ pub(crate) fn now_ms() -> i64 {
         })
 }
 
-fn staging_name() -> Result<String, SessionError> {
+pub(crate) fn staging_name() -> Result<String, SessionError> {
     let mut random = [0_u8; STAGING_RANDOM_BYTES];
     getrandom::fill(&mut random).map_err(|_| SessionError::SessionStartFailed)?;
     Ok(format!("{STAGING_PREFIX}{}", lowercase_hex(&random)))

@@ -167,6 +167,13 @@ pub fn session_lookup_message(code: &str) -> Option<&'static str> {
         }
         "DurableLayoutFailed" | "SessionStoreUnavailable" => "durable session store is unavailable",
         "HomeNotSet" => "HOME is not set",
+        "FxSessionOpen" => "fx has this session open; close it in fx, then resume it here",
+        "FxCompactionUnfinished" => {
+            "fx has not finished compacting this session; open it in fx once, then resume it here"
+        }
+        "FxSessionUnreadable" => {
+            "this fx session holds data oh-fx cannot read yet; keep using it in fx"
+        }
         _ => return None,
     })
 }

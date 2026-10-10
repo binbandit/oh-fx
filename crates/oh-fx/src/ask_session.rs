@@ -18,8 +18,13 @@ impl SavedAsk {
         setup: &AgentSetup,
         agent: &mut Agent,
     ) -> Result<Self, SessionError> {
+        let rebound_from = resumed.rebound_from().map(str::to_owned);
         let live = LiveSession::resume(resumed, session_route(setup)?, agent);
         live.attach(agent);
+        if let Some(saved) = rebound_from {
+            let _ = live.rebind_provider(setup.configured_model());
+            crate::cli_ask::warn(&live.rebind_notice(&saved));
+        }
         setup.bind_children(live.children(&store));
         Ok(Self {
             store,

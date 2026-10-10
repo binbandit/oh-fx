@@ -70,24 +70,32 @@ impl Persistence {
             .map(str::to_owned)
     }
 
-    pub(crate) fn open(&mut self, agent: &mut Agent) -> (Option<Notice>, bool) {
+    pub(crate) fn open(&mut self, agent: &mut Agent) -> (Vec<Notice>, bool) {
         let Some(Resumption {
             mut session,
             remember,
         }) = self.resumption.take()
         else {
-            return (self.begin_fresh(agent), false);
+            return (self.begin_fresh(agent).into_iter().collect(), false);
         };
         let continues = session.take_continuation();
+        let rebound_from = session.rebound_from().map(str::to_owned);
         let live = LiveSession::resume(session, self.route.clone(), agent);
         live.attach(agent);
-        let notice = if remember {
-            self.remember(live.id())
-        } else {
-            None
-        };
+        let mut notices = Vec::new();
+        if let Some(saved) = rebound_from {
+            let _ = live.rebind_provider(&self.preferences.model);
+            notices.push(Notice::new(
+                NoticeTone::Warning,
+                SESSION_TOPIC,
+                live.rebind_notice(&saved),
+            ));
+        }
+        if remember {
+            notices.extend(self.remember(live.id()));
+        }
         self.live = Some(live);
-        (notice, continues)
+        (notices, continues)
     }
 
     pub(crate) fn continue_recovery(
