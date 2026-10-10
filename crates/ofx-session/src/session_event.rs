@@ -175,7 +175,7 @@ pub struct ToolResultEvent {
     #[serde(default)]
     pub preview: Option<String>,
     #[serde(default)]
-    provider_native: bool,
+    pub(crate) provider_native: bool,
     #[serde(default, skip_serializing)]
     review_feedback: False,
     #[serde(default)]
