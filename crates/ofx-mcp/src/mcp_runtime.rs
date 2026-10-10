@@ -577,7 +577,7 @@ fn starts_on_demand(server: &Server) -> bool {
 
 async fn start_on_demand(server: &Arc<Server>) {
     if starts_on_demand(server) {
-        server.start().await;
+        Box::pin(server.start()).await;
         await_startup(server).await;
     }
 }

@@ -578,12 +578,7 @@ async fn prepare_agent(
         .transpose()?;
     *mcp = setup.mcp().cloned();
     if let Some(mcp) = setup.mcp() {
-        start_mcp(
-            mcp,
-            output_mode(args.output) == OutputMode::Terminal,
-            cancel,
-        )
-        .await?;
+        start_mcp(mcp, args.output, cancel).await?;
     }
     let store = match &resumed {
         Some(_) => None,
@@ -629,7 +624,7 @@ async fn prepare_agent(
 
 async fn start_mcp(
     mcp: &McpRuntime,
-    terminal: bool,
+    output: AskOutput,
     cancel: &CancellationToken,
 ) -> Result<(), Failure> {
     let mut lines = String::new();
@@ -649,7 +644,7 @@ async fn start_mcp(
         lines.push_str(". Approve with oh-fx mcp trust approve <name> before retrying.\n");
     }
     write_stderr(&lines).map_err(|error| Failure::written(&error))?;
-    let mut connecting = mcp.connect_for_ask(terminal);
+    let mut connecting = mcp.connect_for_ask(output_mode(output) == OutputMode::Terminal);
     tokio::select! {
         () = &mut connecting => {}
         () = cancel.cancelled() => {
