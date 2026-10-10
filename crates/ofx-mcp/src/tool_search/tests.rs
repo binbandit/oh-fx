@@ -52,9 +52,13 @@ impl Fixture {
                 tool
             })
             .collect();
+        self.listing(name, &json!({ "tools": tools }))
+    }
+
+    fn listing(&self, name: &str, listing: &Value) -> McpServerConfig {
         std::fs::write(
             self.path().join(format!("{name}.tools")),
-            json!({ "tools": tools }).to_string(),
+            listing.to_string(),
         )
         .unwrap();
         let mut config =
@@ -417,4 +421,38 @@ async fn a_search_during_startup_discovery_with_no_ready_server_reports_discover
     std::fs::remove_file(fixture.path().join("hold")).unwrap();
     discovery.await;
     assert_eq!(search(&runtime, "datadog", None).model_output, LISTED);
+}
+
+#[tokio::test]
+async fn only_the_leading_bytes_of_descriptions_and_schemas_are_searched() {
+    let fixture = Fixture::new();
+    let description = format!(
+        "zearly123 {} zlate987",
+        "x".repeat(DESCRIPTION_SEARCH_BYTES)
+    );
+    let padding = format!("{} zlate654", "x".repeat(SCHEMA_SEARCH_BYTES));
+    let bounded = fixture.listing(
+        "bounded",
+        &json!({"tools": [{
+            "name": "probe",
+            "description": description,
+            "inputSchema": {"type": "object", "properties": {"zearly456": {"type": "string"}, "padding": {"description": padding}}}
+        }]}),
+    );
+    let other = fixture.server("other", &[("list", "List things")]);
+    let runtime = connected(vec![bounded, other], &[]).await;
+    for (query, found) in [
+        ("zearly123 zearly456", true),
+        ("zlate987 zearly456", false),
+        ("zearly123 zlate654", false),
+        ("zlate987 zlate654", false),
+    ] {
+        assert_eq!(
+            search(&runtime, query, None)
+                .model_output
+                .contains("mcp_bounded_probe"),
+            found,
+            "{query}"
+        );
+    }
 }

@@ -66,9 +66,9 @@ note = "The whole-text profile names a session's conversation language and the p
 
 [[file]]
 upstream = "src/core/shared/lexical_relevance.zig"
-status = "todo"
-modules = []
-note = "Bounded query token preparation, corpus relevance scoring and strong-primary/secondary evidence ordering are unimplemented."
+status = "ported"
+modules = ["crates/ofx-text/src/lexical_relevance.rs"]
+note = "Bounded query preparation with case-insensitive token deduplication and complete identity matching exist; score and order, which no upstream caller outside their tests uses, are not ported."
 
 [[file]]
 upstream = "src/core/shared/list_window.zig"

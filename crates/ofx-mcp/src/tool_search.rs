@@ -34,6 +34,12 @@ pub(crate) struct Search<'a> {
     pub(crate) server: Option<&'a str>,
 }
 
+struct Published<'a> {
+    server: &'a str,
+    catalog: Arc<ToolCatalog>,
+    instructions: Option<Arc<str>>,
+}
+
 struct Candidate<'a> {
     server: &'a str,
     instructions: Option<&'a str>,
@@ -68,18 +74,20 @@ pub(crate) fn search(
     if request.server.is_some() && scoped.is_empty() {
         return McpSearchResult::plain(SERVER_NOT_FOUND);
     }
-    let catalogs: Vec<(&Arc<Server>, Arc<ToolCatalog>, Option<Arc<str>>)> = scoped
+    let catalogs: Vec<Published<'_>> = scoped
         .into_iter()
         .filter_map(|server| {
-            server
-                .catalog()
-                .map(|(catalog, instructions)| (server, catalog, instructions))
+            server.catalog().map(|(catalog, instructions)| Published {
+                server: &server.config.name,
+                catalog,
+                instructions,
+            })
         })
         .collect();
     let mut candidates = Vec::new();
-    for (server, catalog, instructions) in &catalogs {
-        let server_name = server.config.name.as_str();
-        for tool in &catalog.tools {
+    for published in &catalogs {
+        let server_name = published.server;
+        for tool in &published.catalog.tools {
             let Ok(name) = names.name(reserved, server_name, &tool.name) else {
                 continue;
             };
@@ -88,7 +96,7 @@ pub(crate) fn search(
             }
             candidates.push(Candidate {
                 server: server_name,
-                instructions: instructions.as_deref(),
+                instructions: published.instructions.as_deref(),
                 tool,
                 schema: tool.input_schema.to_string(),
                 tags: tags_for(server_name, &tool.name),

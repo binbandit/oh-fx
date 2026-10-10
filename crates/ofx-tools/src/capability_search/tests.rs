@@ -358,9 +358,11 @@ fn saved_searches_describe_themselves_as_their_calls_did() {
     }
 }
 
+type Searched = (String, Option<String>, Option<usize>);
+
 struct FakeMcp {
     result: McpSearchResult,
-    requests: std::sync::Mutex<Vec<(String, Option<String>, Option<usize>)>>,
+    requests: std::sync::Mutex<Vec<Searched>>,
 }
 
 impl FakeMcp {
@@ -374,7 +376,7 @@ impl FakeMcp {
         })
     }
 
-    fn requests(&self) -> Vec<(String, Option<String>, Option<usize>)> {
+    fn requests(&self) -> Vec<Searched> {
         self.requests.lock().unwrap().clone()
     }
 }
