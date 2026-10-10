@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::{RecoveredTurn, SkillBinding};
+use ofx_contract::{ReasoningEffort, RecoveredTurn, SkillBinding};
 use ofx_trace::{TraceContext, trace_event, trace_log};
 use tokio_util::sync::CancellationToken;
+
+mod worker_trace;
 
 const WORKER: &str = "worker";
 const INTERRUPT: &str = "interrupt";
@@ -16,12 +18,29 @@ enum Delivery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct TurnSettings {
+    fast_mode: bool,
+    effort: String,
+}
+
+impl Default for TurnSettings {
+    fn default() -> Self {
+        Self {
+            fast_mode: false,
+            effort: ReasoningEffort::Auto.label().to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedPrompt {
     pub id: u64,
     pub text: String,
     pub skills: Vec<SkillBinding>,
     delivery: Delivery,
     recovered: Option<RecoveredTurn>,
+    turn_id: u64,
+    settings: TurnSettings,
 }
 
 impl QueuedPrompt {
@@ -32,7 +51,22 @@ impl QueuedPrompt {
             skills,
             delivery: Delivery::Ordinary,
             recovered: None,
+            turn_id: 0,
+            settings: TurnSettings::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_settings(mut self, fast_mode: bool, effort: &ReasoningEffort) -> Self {
+        self.settings = TurnSettings {
+            fast_mode,
+            effort: effort.label().to_owned(),
+        };
+        self
+    }
+
+    pub fn turn_id(&self) -> u64 {
+        self.turn_id
     }
 
     pub fn recovery(id: u64, recovered: RecoveredTurn) -> Self {
@@ -103,6 +137,7 @@ struct State {
     compacting: bool,
     interruption: Interruption,
     model_step: Option<CancellationToken>,
+    active_turn: u64,
 }
 
 impl State {
@@ -141,13 +176,22 @@ impl State {
             return Vec::new();
         }
         let reachable = self.reachable_steering();
-        self.queue
+        let steering: Vec<Steering> = self
+            .queue
             .drain(..reachable)
             .map(|prompt| Steering {
                 id: prompt.id,
                 text: prompt.text,
             })
-            .collect()
+            .collect();
+        if !steering.is_empty() {
+            worker_trace::steering_consumed(self.active_turn, steering.len());
+        }
+        steering
+    }
+
+    fn compaction_active(&self) -> bool {
+        self.compacting || self.work == Work::Compaction
     }
 }
 
@@ -171,8 +215,28 @@ impl WorkerRuntime {
         } else {
             Delivery::Ordinary
         };
+        if prompt.turn_id == 0 {
+            prompt.turn_id = ofx_trace::next_turn_id();
+        }
         let eligible = prompt.same_turn_eligible();
+        let admitted = worker_trace::Admitted {
+            turn_id: prompt.turn_id,
+            prompt_bytes: prompt.text.len(),
+            targeted: prompt.delivery == Delivery::ActiveTurn,
+            plain: eligible,
+            interrupt_model: interrupt,
+        };
+        let settings = prompt.settings.clone();
         state.queue.push_back(prompt);
+        worker_trace::enqueued(&admitted, state.queue.len(), &settings);
+        if state.processing() {
+            let active = (
+                state.active_turn,
+                state.tool_phase,
+                state.compaction_active(),
+            );
+            worker_trace::steering_admission(&admitted, active);
+        }
         if interrupt {
             state.interruption = if eligible {
                 Interruption::Steering
@@ -190,6 +254,8 @@ impl WorkerRuntime {
         let prompt = state.queue.pop_front()?;
         let continuation = prompt.is_continuation();
         state.begin(Work::Turn { continuation });
+        state.active_turn = prompt.turn_id;
+        worker_trace::began(&prompt, state.queue.len());
         if continuation {
             for queued in &mut state.queue {
                 if !queued.is_continuation() || !queued.same_turn_eligible() {
@@ -208,12 +274,15 @@ impl WorkerRuntime {
     pub fn finish_processing(&self) {
         let mut state = self.lock();
         trace_log!(WORKER, "finish processing queued={}", state.queue.len());
+        let finished = state.active_turn;
         for prompt in &mut state.queue {
             if prompt.delivery == Delivery::ActiveTurn {
                 prompt.delivery = Delivery::Continuation;
+                worker_trace::steering_deferred(finished, prompt);
             }
         }
         state.begin(Work::Idle);
+        state.active_turn = 0;
     }
 
     pub fn request_cancel(&self) {
@@ -280,7 +349,18 @@ impl WorkerRuntime {
     }
 
     pub fn discard_before(&self, first_kept: u64) {
-        self.lock().queue.retain(|prompt| prompt.id >= first_kept);
+        let mut state = self.lock();
+        let (kept, removed): (VecDeque<_>, VecDeque<_>) = state
+            .queue
+            .drain(..)
+            .partition(|prompt| prompt.id >= first_kept);
+        state.queue = kept;
+        for (index, prompt) in removed.iter().enumerate() {
+            worker_trace::removed(
+                prompt.turn_id,
+                removed.len() - index - 1 + state.queue.len(),
+            );
+        }
     }
 
     pub fn has_waiting_prompts(&self) -> bool {
@@ -306,46 +386,16 @@ impl WorkerRuntime {
         let newest = state.queue.iter().rposition(|prompt| {
             prompt.delivery == Delivery::ActiveTurn && prompt.same_turn_eligible()
         })?;
-        state.queue.remove(newest)
+        let retracted = state.queue.remove(newest)?;
+        worker_trace::retracted(retracted.turn_id, state.queue.len());
+        Some(retracted)
     }
 
     pub(crate) fn take_boundary(&self, kind: BoundaryKind) -> Boundary {
         let mut state = self.lock();
-        if !state.processing() {
-            return if kind == BoundaryKind::Cancelled && state.interruption != Interruption::None {
-                Boundary::Interrupt
-            } else {
-                Boundary::None
-            };
-        }
-        match kind {
-            BoundaryKind::Cancelled => match state.interruption {
-                Interruption::None => Boundary::None,
-                Interruption::Stop => Boundary::Interrupt,
-                Interruption::Steering => {
-                    let steering = state.take_steering();
-                    if steering.is_empty() {
-                        return Boundary::Interrupt;
-                    }
-                    state.interruption = Interruption::None;
-                    Boundary::Continue(steering)
-                }
-            },
-            BoundaryKind::Model | BoundaryKind::Finalizing => {
-                if state.interruption != Interruption::None {
-                    return Boundary::None;
-                }
-                if state.hands_off() {
-                    return Boundary::Handoff;
-                }
-                let steering = state.take_steering();
-                if steering.is_empty() {
-                    Boundary::None
-                } else {
-                    Boundary::Continue(steering)
-                }
-            }
-        }
+        let boundary = boundary(&mut state, kind);
+        worker_trace::boundary_checked(state.active_turn, kind, &boundary);
+        boundary
     }
 
     pub(crate) fn model_step(&self, turn: &CancellationToken) -> CancellationToken {
@@ -379,6 +429,44 @@ impl WorkerRuntime {
 
     pub(crate) fn steering_interrupt(&self) -> bool {
         self.lock().interruption == Interruption::Steering
+    }
+}
+
+fn boundary(state: &mut State, kind: BoundaryKind) -> Boundary {
+    if !state.processing() {
+        return if kind == BoundaryKind::Cancelled && state.interruption != Interruption::None {
+            Boundary::Interrupt
+        } else {
+            Boundary::None
+        };
+    }
+    match kind {
+        BoundaryKind::Cancelled => match state.interruption {
+            Interruption::None => Boundary::None,
+            Interruption::Stop => Boundary::Interrupt,
+            Interruption::Steering => {
+                let steering = state.take_steering();
+                if steering.is_empty() {
+                    return Boundary::Interrupt;
+                }
+                state.interruption = Interruption::None;
+                Boundary::Continue(steering)
+            }
+        },
+        BoundaryKind::Model | BoundaryKind::Finalizing => {
+            if state.interruption != Interruption::None {
+                return Boundary::None;
+            }
+            if state.hands_off() {
+                return Boundary::Handoff;
+            }
+            let steering = state.take_steering();
+            if steering.is_empty() {
+                Boundary::None
+            } else {
+                Boundary::Continue(steering)
+            }
+        }
     }
 }
 
