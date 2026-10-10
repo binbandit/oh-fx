@@ -52,14 +52,26 @@ fn standalone(text: &str, replay: bool) -> String {
     format!("{text:?} replay={replay} calls=[] results=[]")
 }
 
+fn presented(events: &[UiEvent]) -> Vec<Option<&str>> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent::AssistantText { text, .. } => Some(Some(text.as_str())),
+            UiEvent::AssistantBoundary { .. } => Some(None),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn an_allowed_answer_is_saved_as_a_standalone_step_with_an_empty_reply() {
     let provider = FakeProvider::new(vec![text_reply("candidate")]);
     let (mut agent, seen, entries) =
         stopped(new_agent(provider, Vec::new()), || Ok(StopAction::Allow));
-    let (report, _) = run(&mut agent, "go").await;
+    let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(report.final_text, "candidate");
+    assert_eq!(presented(&events), [Some("candidate")]);
     assert_eq!(*seen.lock().unwrap(), [("candidate".to_owned(), 1, true)]);
     assert_eq!(
         *entries.lock().unwrap(),
@@ -90,9 +102,10 @@ async fn a_continuation_runs_once_and_the_answers_join_while_the_history_keeps_b
     ]);
     let (mut agent, seen, entries) =
         stopped(new_agent(Arc::clone(&provider), Vec::new()), verify());
-    let (report, _) = run(&mut agent, "go").await;
+    let (report, events) = run(&mut agent, "go").await;
     assert_eq!(report.outcome, TurnOutcome::Completed);
     assert_eq!(report.final_text, "candidate\nfinal");
+    assert_eq!(presented(&events), [Some("candidate"), None, Some("final")]);
     assert_eq!(seen.lock().unwrap().len(), 1);
     let requests = provider.requests();
     assert_eq!(

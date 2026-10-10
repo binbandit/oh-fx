@@ -98,7 +98,7 @@ The `slack` command (`slack install`, `slack status`, and `slack refresh`) preda
 | Area | Status | oh-fx | Note |
 |---|---|---|---|
 | Streamed tool lifecycle in `ask` | `ported` | `ofx-gateway`, `ofx-agent`, `ofx-contract`, `ofx-tools`, `oh-fx` | Validated Responses tool identities publish provisional progress before arguments finish; read, rejected read, parallel calls and partial failures are covered. Rejected provisional calls count no executed step. Plain transcript and retry differences are recorded in [ask](differences/ask.md) and [recovery](differences/recovery.md). |
-| Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle and assistant-boundary events; provisional rows and their replacement remain deferred, as recorded in [the interactive transcript](differences/shell-transcript.md). |
+| Streamed tool lifecycle in the interactive session | `defer:interactive` | `ofx-tui` | The interactive session ignores provisional lifecycle events; provisional rows and their replacement remain deferred, as recorded in [the interactive transcript](differences/shell-transcript.md). |
 
 ## Capability search at the sync point
 

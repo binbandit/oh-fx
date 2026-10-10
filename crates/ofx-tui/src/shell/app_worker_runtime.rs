@@ -189,8 +189,8 @@ impl Shell<'_> {
                 prompt,
                 text,
             } => self.steering_applied(turn_id, prompt, text),
-            AssistantBoundary { .. }
-            | ToolProvisional { .. }
+            AssistantBoundary { turn_id } => self.assistant_boundary(turn_id),
+            ToolProvisional { .. }
             | ContextNotice { .. }
             | UiEvent::AssistantText { .. }
             | UiEvent::ReasoningText { .. } => {}
@@ -641,6 +641,28 @@ impl Shell<'_> {
         self.transcript.append_assistant(events, &self.theme);
     }
 
+    fn assistant_boundary(&mut self, turn_id: TurnId) {
+        let Some(turn) = self
+            .turn
+            .as_mut()
+            .filter(|turn| turn.turn_id == Some(turn_id))
+        else {
+            return;
+        };
+        turn.leading_whitespace = LeadingWhitespace::default();
+        let Some(missing) = turn.step_break else {
+            return;
+        };
+        let mut events = Vec::new();
+        turn.markdown.flush(&mut events);
+        if missing == 1 {
+            turn.markdown.push("\n", &mut events);
+        }
+        turn.markdown = MarkdownProcessor::with_completions(Completions::ALL);
+        turn.step_break = Some(missing.saturating_sub(1));
+        self.transcript.append_assistant(events, &self.theme);
+    }
+
     fn operational_text(&mut self, text: &str) {
         let Some(turn) = &mut self.turn else {
             return;
@@ -1026,6 +1048,34 @@ mod tests {
         assert!(viewer.contains("I will read it."), "{viewer}");
         assert!(viewer.contains("It describes a service."), "{viewer}");
         assert!(!viewer.contains("● Reading"), "{viewer}");
+    }
+
+    fn continued(candidate: &str, answer: &str) -> String {
+        let mut test = streaming();
+        test.deliver(text(1, candidate));
+        test.deliver(UiEvent::AssistantBoundary {
+            turn_id: TurnId::new(1),
+        });
+        test.deliver(text(1, answer));
+        test.deliver(finished(1, TurnOutcome::Completed));
+        test.screen()
+    }
+
+    #[test]
+    fn an_assistant_boundary_starts_the_next_answer_on_its_own_line() {
+        let screen = continued("Candidate answer.", "Final answer.");
+        assert!(
+            screen.contains("  Candidate answer.\n  Final answer."),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn markdown_does_not_run_across_an_assistant_boundary() {
+        let fenced = continued("```\nlet x = 1;", "Final answer.");
+        assert!(fenced.contains("──\n  Final answer."), "{fenced}");
+        let listed = continued("- item one", "Final answer.");
+        assert!(listed.contains("  • item one\n  Final answer."), "{listed}");
     }
 
     fn compaction(activity: CompactionActivity) -> UiEvent {

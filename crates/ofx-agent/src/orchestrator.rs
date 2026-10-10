@@ -710,6 +710,7 @@ impl Agent {
         turn: &mut Turn,
         reply: Option<String>,
         can_continue: bool,
+        events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<Option<String>, Stop> {
         let Some(text) = reply else {
@@ -746,6 +747,7 @@ impl Agent {
                     continuation: Some(continuation),
                     trailing: false,
                 };
+                events(UiEvent::AssistantBoundary { turn_id: turn.id });
                 Ok(None)
             }
         }
@@ -889,12 +891,14 @@ impl Agent {
         match (completion.finish_reason, completion.tool_calls.is_empty()) {
             (FinishReason::Stop, true) => {
                 let reply = self.finish(turn, completion, more_steps, events)?;
-                self.stop_checkpoint(turn, reply, more_steps, cancel).await
+                self.stop_checkpoint(turn, reply, more_steps, events, cancel)
+                    .await
             }
             (FinishReason::Stop, false) if ends_with_provider_results(&completion) => {
                 let reply =
                     self.finish_with_provider_results(turn, completion, more_steps, events)?;
-                self.stop_checkpoint(turn, reply, more_steps, cancel).await
+                self.stop_checkpoint(turn, reply, more_steps, events, cancel)
+                    .await
             }
             (FinishReason::Stop, false) if completion.tool_calls.iter().all(provider_executed) => {
                 self.run_batch(turn, completion, more_steps, events, cancel)
