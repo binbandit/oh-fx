@@ -84,12 +84,38 @@ fn provider_request_measurement_excludes_responses_protocol_tool_image_payloads(
 
 #[test]
 fn provider_request_measurement_degrades_to_text_estimate_on_unknown_envelopes() {
-    let body = r#"{"model":"fixture/model","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}"#;
+    let body = r#"{"model":"fixture/model","contents":[{"role":"user","parts":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}"#;
 
     let measured = RequestCost::measure(body, true);
 
     assert_eq!(measured.estimated_tokens, text_tokens(body));
     assert_eq!(measured.image_identity, None);
+}
+
+#[test]
+fn chat_completions_image_payloads_stay_out_of_the_text_estimate() {
+    let body = r#"{"model":"fixture/model","messages":[{"role":"system","content":"rules"},{"role":"user","content":[{"type":"text","text":"\"url\":\"data:image/png;base64,AAAA\""},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"url\":\"data:image/png;base64,BBBB\"}"},{"role":"user","content":[{"type":"text","text":"The tool \"read_file\" returned 1 image(s)."},{"type":"image_url","image_url":{"url":"data:image/png;base64,BBBB"}}]}]}"#;
+    let without_image_payloads = r#"{"model":"fixture/model","messages":[{"role":"system","content":"rules"},{"role":"user","content":[{"type":"text","text":"\"url\":\"data:image/png;base64,AAAA\""},{"type":"image_url","image_url":{"url":""}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"url\":\"data:image/png;base64,BBBB\"}"},{"role":"user","content":[{"type":"text","text":"The tool \"read_file\" returned 1 image(s)."},{"type":"image_url","image_url":{"url":""}}]}]}"#;
+
+    let measured = RequestCost::measure(body, true);
+
+    assert_eq!(measured.text_tokens, text_tokens(without_image_payloads));
+    assert!(measured.image_identity.is_some());
+    let other_image = body.replace("AAAA\"}}]}", "CCCC\"}}]}");
+    assert_ne!(
+        RequestCost::measure(&other_image, true).image_identity,
+        measured.image_identity
+    );
+}
+
+#[test]
+fn chat_completions_image_accounting_handles_a_large_payload() {
+    let payload = "A".repeat(4 * 1024 * 1024);
+    let body = format!(
+        r#"{{"messages":[{{"role":"user","content":[{{"type":"text","text":"what is this"}},{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{payload}"}}}}]}}]}}"#
+    );
+
+    assert!(RequestCost::measure(&body, true).text_tokens < 100);
 }
 
 #[test]

@@ -170,7 +170,7 @@ note = "Read-only and subagent leading groups execute separately in plain and pr
 upstream = "src/core/agent/runtime/prompt_context.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/prompt_context.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Prompt separation, request calibration, and request image accounting for Responses bodies (payloads left out of the estimate, the image identity that keys calibration, and no compaction correction from an image request) exist; the Vercel prompt envelope has no transport, and each-attempt measurement is absent, as docs/differences/compaction.md records."
+note = "Prompt separation, request calibration, and request image accounting for Responses bodies (payloads left out of the estimate, the image identity that keys calibration, and no compaction correction from an image request) exist, extended to Chat Completions image_url parts, which upstream estimates as text, as docs/differences/compaction.md records; the Vercel prompt envelope has no transport, and each-attempt measurement is absent, as docs/differences/compaction.md records."
 
 [[file]]
 upstream = "src/core/agent/runtime/response_language.zig"
