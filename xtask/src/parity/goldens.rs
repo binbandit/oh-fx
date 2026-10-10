@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-mod capability_search;
 mod compaction;
+mod internal_tool;
 mod mcp_features;
 mod mcp_servers;
 mod permission_tool;
@@ -153,9 +153,12 @@ fn mcp_features(sources: &Sources) -> Result<String, String> {
 
 fn capability_search(sources: &Sources) -> Result<String, String> {
     let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
-    capability_search::extract(
+    let max_query_bytes =
+        tool_schema::constant(source(sources, LEXICAL_SOURCE)?, "max_query_bytes")?;
+    internal_tool::extract(
         source(sources, TOOLS_SOURCE)?,
-        source(sources, LEXICAL_SOURCE)?,
+        "capability_search",
+        &[("lexical_relevance.max_query_bytes", max_query_bytes)],
         limit,
     )
 }

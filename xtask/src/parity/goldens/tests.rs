@@ -645,15 +645,24 @@ fn mcp_features_extraction_writes_inline_enums_and_objects_and_rejects_changed_g
     assert!(mcp_features::extract(TOOLS, 500).is_err());
 }
 
+fn capability_search(source: &str, lexical: &str, limit: usize) -> Result<String, String> {
+    let max_query_bytes = tool_schema::constant(lexical, "max_query_bytes")?;
+    internal_tool::extract(
+        source,
+        "capability_search",
+        &[("lexical_relevance.max_query_bytes", max_query_bytes)],
+        limit,
+    )
+}
+
 #[test]
 fn capability_search_extraction_writes_length_bounds_and_rejects_changed_grammar() {
     assert_eq!(
-        capability_search::extract(TOOLS, LEXICAL, 1024).unwrap(),
+        capability_search(TOOLS, LEXICAL, 1024).unwrap(),
         CAPABILITY_SEARCH_TOOL
     );
     assert_eq!(
-        capability_search::extract(TOOLS, "pub const max_query_bytes: usize = 77;\n", 1024)
-            .unwrap(),
+        capability_search(TOOLS, "pub const max_query_bytes: usize = 77;\n", 1024).unwrap(),
         CAPABILITY_SEARCH_TOOL.replace(r#""maxLength":4096"#, r#""maxLength":77"#)
     );
     for lexical in [
@@ -661,7 +670,7 @@ fn capability_search_extraction_writes_length_bounds_and_rejects_changed_grammar
         "pub const max_query_bytes: usize = 4 + 1024;\n",
         "pub const max_query_bytes: usize = 4 * 1024;\npub const max_query_bytes: usize = 1;\n",
     ] {
-        assert!(capability_search::extract(TOOLS, lexical, 1024).is_err());
+        assert!(capability_search(TOOLS, lexical, 1024).is_err());
     }
     for source in [
         String::new(),
@@ -670,24 +679,21 @@ fn capability_search_extraction_writes_length_bounds_and_rejects_changed_grammar
         TOOLS.replace(".min_length = 1 }", ".min_items = 1 }"),
         TOOLS.replace(".min_length = 1 }", ".min_length = 1, .min_length = 2 }"),
         TOOLS.replace("lexical_relevance.max_query_bytes", "other.max_query_bytes"),
-        TOOLS.replace(
-            ".min_length = 1, .max_length",
-            ".min_length = one, .max_length",
-        ),
+        TOOLS.replace(".min_length = 1, .max_length", ".min_length = one, .max_length"),
         TOOLS.replace(
             ".description = capability_search_description",
             ".description = unknown_description",
         ),
-        TOOLS.replacen(
-            r#".name = "capability_search","#,
-            r#".name = "capability","#,
-            1,
-        ),
+        TOOLS.replacen(r#".name = "capability_search","#, r#".name = "capability","#, 1),
         TOOLS.replace(r#".required = &.{"query"}"#, r#".required = &.{"task"}"#),
+        TOOLS.replace(
+            ".additional_properties = false,\n        },\n    },\n    .executor_kind = .capability_search",
+            ".additional_properties = true,\n        },\n    },\n    .executor_kind = .capability_search",
+        ),
     ] {
-        assert!(capability_search::extract(&source, LEXICAL, 1024).is_err());
+        assert!(capability_search(&source, LEXICAL, 1024).is_err());
     }
-    assert!(capability_search::extract(TOOLS, LEXICAL, 40).is_err());
+    assert!(capability_search(TOOLS, LEXICAL, 40).is_err());
 }
 
 #[test]
