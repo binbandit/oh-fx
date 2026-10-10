@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::provider_tools::{joins_parallel_groups, provider_executed};
 use super::{
-    Agent, EventSink, ParallelGroup, Prepared, Rejection, Stop, ToolOutput, TurnFailure, completed,
-    contained, discard, parallel_group,
+    Agent, EventSink, ParallelGroup, Prepared, Rejection, Stop, TurnFailure, completed, contained,
+    discard, parallel_group,
 };
 
 pub(super) struct ProjectGate {
@@ -73,19 +73,19 @@ impl Agent {
         &mut self,
         turn_id: TurnId,
         calls: &[ToolCall],
-        malformed: &mut [Option<ToolOutput>],
+        rejected: &mut [Option<Rejection>],
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<ProjectGate, Stop> {
         let mut gate = ProjectGate {
             calls: calls
                 .iter()
-                .zip(malformed)
-                .map(|(call, malformed)| {
+                .zip(rejected)
+                .map(|(call, rejected)| {
                     if provider_executed(call) {
                         GatedCall::Released
                     } else {
-                        self.gated_call(call, malformed.take())
+                        self.gated_call(call, rejected.take())
                     }
                 })
                 .collect(),
@@ -142,8 +142,8 @@ impl Agent {
         Ok(gate)
     }
 
-    fn gated_call(&self, call: &ToolCall, malformed: Option<ToolOutput>) -> GatedCall {
-        let (prepared, description, mutates) = match self.prepare_uncompleted(call, malformed) {
+    fn gated_call(&self, call: &ToolCall, rejected: Option<Rejection>) -> GatedCall {
+        let (prepared, description, mutates) = match self.prepare_uncompleted(call, rejected) {
             Prepared::Ready(prepared, description, mutation, _)
                 if description.effect != ToolEffect::None =>
             {
