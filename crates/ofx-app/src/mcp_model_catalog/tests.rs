@@ -16,7 +16,6 @@ fn summary(name: &str, availability: Availability, tool_count: Option<usize>) ->
         name: name.to_owned(),
         availability,
         tool_count,
-        always_loaded: true,
     }
 }
 

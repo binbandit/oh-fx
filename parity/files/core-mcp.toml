@@ -199,7 +199,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), the feature tool name among the reserved names, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, permission-filtered tool counts and the on-demand and authentication inputs of the model catalog, deferred ask connections and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), the feature tool name among the reserved names, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, permission-filtered tool counts and the on-demand and authentication inputs of the model catalog, deferred ask connections and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -215,7 +215,7 @@ modules = []
 upstream = "src/core/mcp/model_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/model_catalog.rs"]
-note = "The <mcp_servers> section with its 4 KiB budget, name order, encoding, truncation marker and notice, and the availability change notice with its eight-line bound exist. The authentication_required and available_on_demand states wait for OAuth and on-demand ask connections, as docs/differences/mcp.md records."
+note = "The <mcp_servers> section with its 4 KiB budget, name order, encoding, truncation marker and notice, and the availability change notice with its eight-line bound exist. The authentication_required and available_on_demand states wait for OAuth and on-demand ask connections, and the loaded marker for always-loaded servers waits for ACP, which alone supplies them, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/mrtr.zig"
@@ -253,9 +253,9 @@ note = "The opt-in 2026-07-28 protocol is omitted as recorded in docs/difference
 
 [[file]]
 upstream = "src/core/mcp/selected_schema.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Selected schemas are built for every advertised tool under mcp_selected_schema_bytes; schemas for tools chosen through mcp_select_tool are missing."
+note = "Selected schemas with the merged server instructions, the truncation marker and notice, and the context_limit_rejection output with its notice exist, shared by publication, search, mcp_select_tool and changed definitions."
 
 [[file]]
 upstream = "src/core/mcp/server_auth.zig"
@@ -295,7 +295,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource, template and prompt counts, the freshness and retry fields of the tool, resource, template and prompt catalogs, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, the freshness and retry fields of the tool, resource, template and prompt catalogs, and the model summary for the <mcp_servers> section, which marks no server always loaded, since only ACP clients supply such servers, as docs/differences/mcp.md records and counts every tool of the server's list, since oh-fx applies no permission rules that would hide tools."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"
@@ -347,7 +347,7 @@ note = "Image and audio items and binary resources are described rather than sen
 upstream = "src/core/mcp/tool_search.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/tool_search.rs"]
-note = "Ranked search over the tools of ready servers with their tags, titles, description, schema and server instruction prefixes, exact server scope with server_not_found and server_failed, bounded encoded descriptions and the result budget with their context_limit records and notices, schema selection within mcp_selected_schema_bytes with its notices, and authentication_required for a failed server whose bearer_token_env variable is missing exist. The selected schemas are not loaded because every tool is advertised, and OAuth challenges, catalog auth witnesses, scoped access views and permission rules are missing until OAuth, scoped access and selection land, as docs/differences/mcp.md records."
+note = "Ranked search over the tools of ready servers with their tags, titles, description, schema and server instruction prefixes, exact server scope with server_not_found and server_failed, bounded encoded descriptions and the result budget with their context_limit records and notices, schema selection within mcp_selected_schema_bytes with its notices, and authentication_required for a failed server whose bearer_token_env variable is missing exist. The tools selected within the budget are loaded for the next step. OAuth challenges, catalog auth witnesses, scoped access views and permission rules are missing until OAuth and scoped access land, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/tool_snapshot.zig"

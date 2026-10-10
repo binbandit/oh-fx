@@ -41,7 +41,7 @@ struct Connection {
 pub(crate) enum CallFailure {
     Mcp(McpError),
     RestartFailed(String),
-    DefinitionChanged { still_advertised: bool },
+    DefinitionChanged,
 }
 
 pub(crate) enum RestartFailure {
@@ -216,9 +216,7 @@ impl Server {
         let instructions = client.server_info().instructions.as_deref();
         if current != Some(&advertised.tool) || instructions != advertised.instructions.as_deref() {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-            return Err(CallFailure::DefinitionChanged {
-                still_advertised: current.is_some(),
-            });
+            return Err(CallFailure::DefinitionChanged);
         }
         if Instant::now() >= deadline {
             return Err(McpError::McpRequestTimedOut.into());

@@ -145,10 +145,11 @@ pub(crate) fn search(
         }
     };
     let mut notice = search_notice(&matches, retained, limits, observed);
-    select_schemas(&matches[..retained], limits.schema, &mut notice);
+    let selected = select_schemas(&matches[..retained], limits.schema, &mut notice);
     McpSearchResult {
         model_output: output,
         notice,
+        selected,
     }
 }
 
@@ -185,7 +186,12 @@ fn prefix(text: &str, max_bytes: usize) -> &str {
     &text[..text.floor_char_boundary(max_bytes.min(text.len()))]
 }
 
-fn select_schemas(matches: &[&Candidate<'_>], limits: SchemaLimits, notice: &mut Option<String>) {
+fn select_schemas(
+    matches: &[&Candidate<'_>],
+    limits: SchemaLimits,
+    notice: &mut Option<String>,
+) -> Vec<String> {
+    let mut selected = Vec::new();
     let mut remaining = limits.selected_schema.effective_bytes();
     for candidate in matches {
         match project(
@@ -194,7 +200,9 @@ fn select_schemas(matches: &[&Candidate<'_>], limits: SchemaLimits, notice: &mut
             candidate.instructions,
             limits,
         ) {
-            Projection::Rejected(message) => append_notice(notice, &message),
+            Projection::Rejected {
+                notice: message, ..
+            } => append_notice(notice, &message),
             Projection::Selected {
                 spec,
                 notice: truncated,
@@ -208,9 +216,11 @@ fn select_schemas(matches: &[&Candidate<'_>], limits: SchemaLimits, notice: &mut
                     break;
                 }
                 remaining -= schema.len();
+                selected.push(spec.name);
             }
         }
     }
+    selected
 }
 
 fn append_notice(notice: &mut Option<String>, message: &str) {

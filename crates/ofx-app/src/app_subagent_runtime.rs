@@ -51,28 +51,6 @@ pub(crate) struct ChildFactory {
     pub(crate) hooks: OnceLock<HookView>,
 }
 
-pub(crate) struct ParentCatalog(Arc<dyn DynamicTools>);
-
-impl ParentCatalog {
-    pub(crate) fn shared(source: Option<Arc<dyn DynamicTools>>) -> Option<Arc<dyn DynamicTools>> {
-        source.map(|source| Arc::new(Self(source)) as Arc<dyn DynamicTools>)
-    }
-}
-
-impl DynamicTools for ParentCatalog {
-    fn generation(&self) -> u64 {
-        self.0.generation()
-    }
-
-    fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.0.tools()
-    }
-
-    fn take_notices(&self) -> Vec<String> {
-        Vec::new()
-    }
-}
-
 pub(crate) struct Delegation {
     pub(crate) tool: Arc<dyn Tool>,
     pub(crate) host: Arc<SubagentHost>,
@@ -169,10 +147,8 @@ impl ChildAgents for ChildFactory {
             self.hooks.get().cloned().unwrap_or_default(),
             HookScope::Subagent,
         );
-        if let Some(mcp) =
-            ParentCatalog::shared(self.mcp.clone().map(|mcp| mcp as Arc<dyn DynamicTools>))
-        {
-            agent = agent.with_dynamic_tools(mcp);
+        if let Some(mcp) = &self.mcp {
+            agent = agent.with_dynamic_tools(Arc::clone(mcp) as Arc<dyn DynamicTools>);
         }
         if let Some(approvals) = &self.approvals {
             agent = agent.with_approvals(approvals.approvals().clone());
@@ -229,6 +205,3 @@ impl ChildAgents for ChildFactory {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

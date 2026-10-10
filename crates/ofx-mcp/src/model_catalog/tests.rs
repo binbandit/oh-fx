@@ -9,7 +9,6 @@ fn server(name: &str, availability: Availability, tool_count: Option<usize>) -> 
         name: name.to_owned(),
         availability,
         tool_count,
-        always_loaded: false,
     }
 }
 
@@ -59,29 +58,6 @@ fn servers_are_listed_in_name_order_without_tool_metadata() {
         .map(|name| bytes.find(name).unwrap())
         .collect();
     assert!(order.is_sorted(), "{bytes}");
-}
-
-#[test]
-fn ready_always_loaded_servers_with_tools_are_marked_loaded() {
-    let loaded = |name: &str, availability, tool_count| ServerSummary {
-        always_loaded: true,
-        ..server(name, availability, tool_count)
-    };
-    let text = render_model_catalog(&[
-        loaded("browser", Availability::Ready, Some(3)),
-        loaded("empty", Availability::Ready, Some(0)),
-        server("lazy", Availability::Ready, Some(1)),
-        loaded("down", Availability::Failed, None),
-    ])
-    .text;
-    for line in [
-        "<server name=\"browser\" state=\"ready\" tools=\"3\" loaded=\"true\" />",
-        "<server name=\"empty\" state=\"ready\" tools=\"0\" />",
-        "<server name=\"lazy\" state=\"ready\" tools=\"1\" />",
-        "<server name=\"down\" state=\"failed\" />",
-    ] {
-        assert!(text.contains(line), "{text}");
-    }
 }
 
 #[test]

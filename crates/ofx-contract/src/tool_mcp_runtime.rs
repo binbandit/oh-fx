@@ -21,6 +21,7 @@ pub struct McpSearchRequest {
 pub struct McpSearchResult {
     pub model_output: String,
     pub notice: Option<String>,
+    pub selected: Vec<String>,
 }
 
 impl McpSearchResult {
@@ -29,8 +30,15 @@ impl McpSearchResult {
         Self {
             model_output: model_output.into(),
             notice: None,
+            selected: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DynamicToolChange {
+    pub selected: Vec<String>,
+    pub retired: Vec<String>,
 }
 
 pub trait McpToolSearch: Send + Sync {

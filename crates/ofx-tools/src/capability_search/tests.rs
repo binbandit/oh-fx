@@ -263,7 +263,7 @@ fn presentation_uses_the_query_or_exact_server_without_execution() {
         assert_eq!(description.title, title);
         assert_eq!(description.effect, ToolEffect::ReadOnly);
         assert_eq!(description.activity, ToolActivity::Read);
-        assert_eq!(description.concurrency, Concurrency::Parallel);
+        assert_eq!(description.concurrency, Concurrency::Serial);
     }
 }
 
@@ -371,6 +371,7 @@ impl FakeMcp {
             result: McpSearchResult {
                 model_output: model_output.to_owned(),
                 notice: notice.map(str::to_owned),
+                selected: vec!["mcp_mail_send".to_owned()],
             },
             requests: std::sync::Mutex::new(Vec::new()),
         })
@@ -498,6 +499,7 @@ async fn ask_bounds_the_mcp_search_by_half_the_combined_budget_and_reports_its_n
         output.context_notices,
         ["[context] MCP description truncated"]
     );
+    assert_eq!(output.selected_tools(), ["mcp_mail_send"]);
     assert_eq!(
         mcp.requests(),
         [(

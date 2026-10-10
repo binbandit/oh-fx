@@ -912,6 +912,7 @@ fn subagent_and_mcp_features_take_their_places_in_upstreams_tool_order() {
             "subagent",
             "capability_search",
             "skill",
+            "mcp_select_tool",
             "mcp_features",
             "ask_user_question",
             "web_fetch",
