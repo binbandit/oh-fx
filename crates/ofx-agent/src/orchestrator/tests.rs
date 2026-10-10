@@ -2857,6 +2857,7 @@ async fn interrupted_tool_steps_drop_their_replay_when_a_call_is_dropped() {
 mod approvals;
 mod capabilities;
 mod compaction;
+mod compaction_trace;
 mod file_evidence;
 mod interrupted_closure;
 mod lifecycle;
