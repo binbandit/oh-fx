@@ -79,12 +79,12 @@ fn project_media_block(item: &mut Value) {
     };
     match object.get("type").and_then(Value::as_str) {
         Some("image" | "audio") => {
-            object.shift_remove("data");
+            object.swap_remove("data");
             object.insert("delivery".to_owned(), Value::from(UNSUPPORTED_MEDIA));
         }
         Some("resource") => {
             if let Some(resource) = object.get_mut("resource").and_then(Value::as_object_mut)
-                && resource.shift_remove("blob").is_some()
+                && resource.swap_remove("blob").is_some()
             {
                 resource.insert("delivery".to_owned(), Value::from(UNSENT_BINARY_RESOURCE));
             }
@@ -260,6 +260,29 @@ mod tests {
         assert!(!output.content.contains("aGk="));
         assert_eq!(output.content.matches(UNSUPPORTED_MEDIA).count(), 2);
         assert!(output.content.contains(UNSENT_BINARY_RESOURCE));
+    }
+
+    #[test]
+    fn media_fields_move_the_last_field_into_the_place_of_the_dropped_data() {
+        let output = model_output(
+            "s",
+            "t",
+            "mcp_s_t",
+            complete(
+                json!({"content":[
+                    {"type":"image","data":"aGk=","mimeType":"image/png","annotations":{"priority":1}},
+                    {"type":"resource","resource":{"blob":"aGk=","uri":"file:///a","mimeType":"application/pdf"}}
+                ]}),
+                false,
+            ),
+            4096,
+        );
+        assert_eq!(
+            output.content,
+            format!(
+                r#"{{"server":"s","tool":"t","result":{{"content":[{{"type":"image","annotations":{{"priority":1}},"mimeType":"image/png","delivery":"{UNSUPPORTED_MEDIA}"}},{{"type":"resource","resource":{{"mimeType":"application/pdf","uri":"file:///a","delivery":"{UNSENT_BINARY_RESOURCE}"}}}}]}}}}"#
+            )
+        );
     }
 
     #[test]
