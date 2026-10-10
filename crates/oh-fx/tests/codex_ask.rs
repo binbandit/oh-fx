@@ -210,13 +210,16 @@ fn non_utf8_codex_models_fail_as_invalid_models_before_an_expired_login_is_refre
 }
 
 fn codex_servers(modalities: &[&str]) -> (FakeServer, FakeServer) {
-    let model = json!({
+    codex_model_servers(&json!({
         "slug": "gpt-5.4",
         "visibility": "list",
         "supported_in_api": true,
         "supported_reasoning_levels": [{"effort": "low"}],
         "input_modalities": modalities,
-    });
+    }))
+}
+
+fn codex_model_servers(model: &Value) -> (FakeServer, FakeServer) {
     let events = [
         json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
         json!({"type":"response.output_text.delta","output_index":0,"delta":"a pixel"}),
@@ -231,11 +234,16 @@ fn codex_servers(modalities: &[&str]) -> (FakeServer, FakeServer) {
 }
 
 fn ask_codex_with_image(home: &Home, catalog: &FakeServer, codex: &FakeServer) -> Output {
-    fs::write(
-        home.root.join("workspace/shot.png"),
-        b"\x89PNG\r\n\x1a\nrest",
-    )
-    .expect("write the image");
+    ask_codex_with_image_bytes(home, catalog, codex, b"\x89PNG\r\n\x1a\nrest")
+}
+
+fn ask_codex_with_image_bytes(
+    home: &Home,
+    catalog: &FakeServer,
+    codex: &FakeServer,
+    bytes: &[u8],
+) -> Output {
+    fs::write(home.root.join("workspace/shot.png"), bytes).expect("write the image");
     let models = format!("{}/backend-api/codex/models", catalog.base_url());
     let version = format!("{}/@openai/codex/latest", catalog.base_url());
     let responses = format!("{}/backend-api/codex/responses", codex.base_url());
@@ -268,6 +276,38 @@ fn codex_asks_send_unsaved_images_as_input_images() {
             {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgpyZXN0"},
         ]}])
     );
+}
+
+#[test]
+fn codex_asks_send_a_large_image_to_a_model_whose_context_window_is_known() {
+    let home = Home::with_settings(Some(&codex_settings()));
+    home.write_credentials(0o600, i64::MAX);
+    let (catalog, codex) = codex_model_servers(&json!({
+        "slug": "gpt-5.4",
+        "visibility": "list",
+        "supported_in_api": true,
+        "supported_reasoning_levels": [{"effort": "low"}],
+        "input_modalities": ["text", "image"],
+        "context_window": 128_000,
+    }));
+    let mut image =
+        b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x03\xe8\0\0\x03\xe8\x08\x06\0\0\0\0\0\0\0".to_vec();
+    image.resize(3 * 1024 * 1024, 0);
+
+    let output = ask_codex_with_image_bytes(&home, &catalog, &codex, &image);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "a pixel");
+    let requests = codex.requests();
+    assert_eq!(requests.len(), 1);
+    let url = requests[0].json()["input"][0]["content"][1]["image_url"]
+        .as_str()
+        .expect("the image part")
+        .to_owned();
+    let encoded = url
+        .strip_prefix("data:image/png;base64,")
+        .expect("a PNG data URL");
+    assert_eq!(encoded.len(), image.len() / 3 * 4);
 }
 
 #[test]

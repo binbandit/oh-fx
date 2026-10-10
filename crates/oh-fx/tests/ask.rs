@@ -1367,6 +1367,58 @@ fn vision_settings(base_url: &str, metadata: Option<Value>) -> Value {
     settings
 }
 
+const LARGE_PNG_BYTES: usize = 3 * 1024 * 1024;
+
+fn large_png() -> Vec<u8> {
+    let mut bytes =
+        b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x03\xe8\0\0\x03\xe8\x08\x06\0\0\0\0\0\0\0".to_vec();
+    bytes.resize(LARGE_PNG_BYTES, 0);
+    bytes
+}
+
+#[test]
+fn a_large_image_reaches_a_vision_connection_whose_context_window_is_known() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["a picture"]))]);
+    let home = Home::with_settings(&vision_settings(
+        &server.base_url(),
+        Some(json!({"supports_vision": true, "context_window": 128_000})),
+    ));
+    fs::write(home.workspace.join("shot.png"), large_png()).unwrap();
+    let output = home.ask(
+        &[
+            "ask",
+            "--json",
+            "--no-save",
+            "--image",
+            "shot.png",
+            "what is this",
+        ],
+        &KEY,
+    );
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let body = requests[0].json();
+    let url = body["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .find_map(|part| part["image_url"]["url"].as_str())
+        .expect("the image part");
+    let encoded = url
+        .strip_prefix("data:image/png;base64,")
+        .expect("a PNG data URL");
+    assert_eq!(encoded.len(), LARGE_PNG_BYTES / 3 * 4);
+    assert!(encoded.starts_with("iVBORw0KGgoAAAANSUhEUgAAA+gAAAPo"));
+}
+
 #[test]
 fn unsaved_images_reach_a_vision_connection_as_upstream_content_parts() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["a pixel"]))]);
