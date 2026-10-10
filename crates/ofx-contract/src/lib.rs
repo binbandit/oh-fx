@@ -104,10 +104,10 @@ pub use tool_result_limits::{
 pub use tool_set::ToolSet;
 pub use types::{
     ArgumentShape, CODEX_ORIGINATOR, ChatMessage, CommandProcessPresentation, FULL_ACCESS_WARNING,
-    FileChangeStats, FinishReason, LivePermissionMode, ModelFailureDiagnostic, ModelRecoveryAction,
-    ModelRecoveryCause, ModelRecoveryRequiredAction, PermissionAction, PermissionMode,
-    PermissionRule, ProviderReplay, QuestionBatchEntry, QuestionOption, ReasoningEffort,
-    ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
+    FileChangeStats, FinishReason, ImageAttachment, LivePermissionMode, ModelFailureDiagnostic,
+    ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, PermissionAction,
+    PermissionMode, PermissionRule, ProviderReplay, QuestionBatchEntry, QuestionOption,
+    ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus, ToolArgumentDiagnostic,
     ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolResultStatus,
     ToolStatusDetail, TurnPresentationOutcome, TurnSummary, TurnTokenProgress, Usage,
     is_valid_reasoning_effort, valid_credential_account_id,
