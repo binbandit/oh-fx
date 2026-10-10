@@ -122,7 +122,7 @@ note = "Interrupted execution memory closes live cancelled and failed partial te
 upstream = "src/core/agent/runtime/finalization.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
-note = "Turn completion with its PostTurnEnd checkpoint, the Stop candidate kept as a standalone step on allow, cancellation, failure, interruption, a pause's checkpoint and the step limit, the joined presentation of a continued answer, failed partial text and logging exist; durable attention checkpoints and summary presentations are absent."
+note = "Turn completion with its PostTurnEnd checkpoint, the Stop candidate kept as a standalone step on allow, cancellation, failure, interruption, a pause's checkpoint and the step limit, the joined presentation of a continued answer, failed partial text and logging exist, with the prompt_finish trace line and its outcome kinds as docs/differences/trace.md records; durable attention checkpoints and summary presentations are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/gateway_step.zig"
@@ -140,7 +140,7 @@ note = "Shared image inspection requests and bounded streamed image-provider cap
 upstream = "src/core/agent/runtime/interruption.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
-note = "Cancelled partial turns, completed tool outputs and steering at its tool-step boundary are logged; interrupted command replay and image evidence are absent."
+note = "Cancelled partial turns, completed tool outputs and steering at its tool-step boundary are logged, and the interrupted persistence, aborted tool, finish event and stream failure trace lines are written; interrupted command replay and image evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/lifecycle.zig"
@@ -158,7 +158,7 @@ note = "The recovery policy retries without a turn budget, throttles past the 15
 upstream = "src/core/agent/runtime/orchestrator.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/response_language.rs", "crates/ofx-agent/src/orchestrator/dynamic_tools.rs"]
-note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the pause of a reconcile that starts a tool, the retry of a post-tool assistant prefill rejection with its continuation, the continue_response restart with its note, shell calls kept in their normalized form and projected into each request, and the <mcp_servers> section and its change notice placed after the project context and rendered once per turn, as appendStablePromptContext does, and the per-turn selected dynamic tools, which start empty because only ACP supplies initial ones, exist; vision and Gateway or compaction recovery checkpoints remain absent."
+note = "Sequential tools, separate read/subagent parallel groups, root-user review context, question requests, compaction, steering, the pending recovery status published at provider admission, the root-only response language control with its correction request, continuing a turn from a recovery checkpoint, checkpoint writes before retry waits and on a recovery pause, a paused turn kept out of history and the log behind its checkpoint, the pause of a reconcile that starts a tool, the retry of a post-tool assistant prefill rejection with its continuation, the continue_response restart with its note, shell calls kept in their normalized form and projected into each request, and the <mcp_servers> section and its change notice placed after the project context and rendered once per turn, as appendStablePromptContext does, and the per-turn selected dynamic tools, which start empty because only ACP supplies initial ones, exist, with the prompt, step, completion, provider admission, invalid finish, interrupt and executed tool trace lines and their turn, step and subagent ids; the permission, rejected tool, history projection, recovery and stream error trace lines, vision and Gateway or compaction recovery checkpoints remain absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/parallel_execution.zig"
@@ -182,7 +182,7 @@ note = "The decision leaves out upstream's cancelled input, which upstream's cal
 upstream = "src/core/agent/runtime/telemetry.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-contract/src/ui.rs"]
-note = "Usage events and turn totals exist; gateway diagnostic metrics, step traces and completed-tool summary telemetry are absent."
+note = "Usage events and turn totals exist, with the step limit, returned tool call, cancel observed and provider options trace lines and the compact completed-tool names; gateway diagnostic metrics, history and role summaries and the turn summary accumulator are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tests/finalization_flow.zig"
@@ -271,5 +271,5 @@ note = "Built-in call preparation, the argument validation of advertised MCP cal
 [[file]]
 upstream = "src/core/agent/worker_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/worker_runtime.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/app_steering_runtime.rs"]
-note = "Worker commands drive turn execution, cancellation and recovery pauses, and prompts typed during a turn queue as steering for its model, cancel and final-answer boundaries; subagent worker origin handling is absent."
+modules = ["crates/ofx-agent/src/worker_runtime.rs", "crates/ofx-agent/src/recovery_pause.rs", "crates/ofx-app/src/app_agent_runtime.rs", "crates/ofx-app/src/app_steering_runtime.rs"]
+note = "Worker commands drive turn execution, cancellation and recovery pauses, and prompts typed during a turn queue as steering for its model, cancel and final-answer boundaries; the cancel, pause, finish and cleared-queue trace lines are written, while the enqueue, begin and steering trace lines wait for turn ids taken when a prompt is queued; subagent worker origin handling is absent."

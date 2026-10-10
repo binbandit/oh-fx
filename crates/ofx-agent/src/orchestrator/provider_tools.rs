@@ -9,7 +9,7 @@ use ofx_contract::{
 
 use super::{
     Agent, EventSink, Stop, Turn, TurnFailure, escalate_repeated_failure, tool_finished,
-    tool_started,
+    tool_started, turn_trace,
 };
 use crate::execution_memory::partial_view;
 
@@ -59,6 +59,8 @@ impl Agent {
         call: &ToolCall,
         events: EventSink<'_>,
     ) {
+        turn_trace::tool_call(turn.trace, call);
+        turn.trail.called(call);
         let shown = is_provider_search_alias(&call.name);
         if shown {
             events(tool_started(
@@ -76,6 +78,10 @@ impl Agent {
         turn.raw_outputs
             .push(partial_view(call.id.clone(), result.len()));
         let model_output = prepare_model_output(&call.name, result, DEFAULT_MAX_TOOL_RESULT_BYTES);
+        turn_trace::provider_result(turn.trace, call, model_output.len());
+        if status == ToolResultStatus::Success {
+            turn.trail.completed(call);
+        }
         if shown {
             let output = ToolOutput {
                 status,

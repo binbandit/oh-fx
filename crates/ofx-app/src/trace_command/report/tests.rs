@@ -40,6 +40,7 @@ fn snapshot() -> Snapshot {
             cmux: false,
         },
         compaction: Vec::new(),
+        tool_calls: ToolCallTrace::default(),
         tail: None,
     }
 }
@@ -76,7 +77,7 @@ fn turn(turn_id: u64, step_id: u64) -> TraceContext {
 fn a_quiet_session_reports_its_summary_state_and_runtime_context() {
     let report = snapshot().render();
     let expected = format!(
-        "# oh-fx trace\n\nPrivate diagnostic report. It may include prompts, file paths, command output, and file snippets.\n\n## Summary\ngenerated: 2026-05-28T20:26:40Z\nversion: {}\nplatform: {}/{}\nbuild: {}\nmodel: model-a\nfast_mode: on\npermission_mode: auto\nworkspace: /work/space\n\n## Current State\nagent_step_limit: 25\neffort: high\nprocess: pid=42 open_fds=7\nprocess_memory:\n    PID  PPID   RSS\n     42     1  1024\nOH_FX_TRACE: off\n\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n\n## Context Compaction\n(none recorded)\n\n## Runtime Context\nTERM: xterm-256color\nTERM_PROGRAM: (unset)\nLANG: en_AU.UTF-8\nterminal_hosts: tmux=true cmux=false\n",
+        "# oh-fx trace\n\nPrivate diagnostic report. It may include prompts, file paths, command output, and file snippets.\n\n## Summary\ngenerated: 2026-05-28T20:26:40Z\nversion: {}\nplatform: {}/{}\nbuild: {}\nmodel: model-a\nfast_mode: on\npermission_mode: auto\nworkspace: /work/space\n\n## Current State\nagent_step_limit: 25\neffort: high\nprocess: pid=42 open_fds=7\nprocess_memory:\n    PID  PPID   RSS\n     42     1  1024\nOH_FX_TRACE: off\n\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n\n## Context Compaction\n(none recorded)\n\n## Tool Calls\n(none recorded)\n\n## Runtime Context\nTERM: xterm-256color\nTERM_PROGRAM: (unset)\nLANG: en_AU.UTF-8\nterminal_hosts: tmux=true cmux=false\n",
         ofx_upgrade::VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,

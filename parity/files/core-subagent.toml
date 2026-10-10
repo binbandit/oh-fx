@@ -2,7 +2,7 @@
 upstream = "src/core/subagent/agent_adapter.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/execution.rs", "crates/ofx-app/src/app_subagent_runtime.rs"]
-note = "Child turns run through Agent with inherited root-user review context, forwarded approval requests, restart notices in their live text, and the parent's MCP tools from the live catalog, each child logs its turns into its own saved session with the work id, and child turns dispatch PostTurnEnd hooks with the subagent scope; provider credential/capability routing, captured MCP authority views, child steering, and recovery checkpoints are absent; a resumed named child continues from its saved history and settings, and a replayed operation reads its reply from the child's history."
+note = "Child turns run through Agent with inherited root-user review context, forwarded approval requests, restart notices in their live text, and the parent's MCP tools from the live catalog, each child logs its turns into its own saved session with the work id, child turns dispatch PostTurnEnd hooks with the subagent scope, and each child run takes its own trace turn and subagent ids and writes its trace_identity line; the child turn routed and child_execution_failed trace lines, provider credential/capability routing, captured MCP authority views, child steering, and recovery checkpoints are absent; a resumed named child continues from its saved history and settings, and a replayed operation reads its reply from the child's history."
 
 [[file]]
 upstream = "src/core/subagent/approval_registry.zig"
@@ -43,7 +43,7 @@ note = "A child's input tokens are not tracked while it works, so its status lin
 upstream = "src/core/subagent/managed_owner.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/managed_owner.rs"]
-note = "Native owner starts and observes children, retains results, forwards approval requests, cancels abandoned waits and publishes the registry to the parent session after every change; feedback queues, approval route pinning and live metrics are absent."
+note = "Native owner starts and observes children, retains results, forwards approval requests, cancels abandoned waits and publishes the registry to the parent session after every change; feedback queues, approval route pinning, live metrics and the child admitted and state update trace lines are absent."
 
 [[file]]
 upstream = "src/core/subagent/model_contract.zig"
@@ -61,7 +61,7 @@ note = "Child sessions are left out of listings, of the visible session page tha
 upstream = "src/core/subagent/tool_host.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/subagent/tool_host.rs", "crates/ofx-agent/src/subagent/managed_owner.rs"]
-note = "Managed request admission, invocation identity, inherited defaults and terminal result projection exist; catalog override resolution, host authority snapshots and child feedback are absent, and the child's status is published once with its model and effort, without upstream's throttled input-token refresh."
+note = "Managed request admission with its admission requested and rejected trace lines, invocation identity, inherited defaults and terminal result projection exist; the child session and parent cancel trace lines, catalog override resolution, host authority snapshots and child feedback are absent, and the child's status is published once with its model and effort, without upstream's throttled input-token refresh."
 
 [[file]]
 upstream = "src/core/subagent/tool_provider.zig"

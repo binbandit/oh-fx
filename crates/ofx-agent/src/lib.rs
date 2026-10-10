@@ -17,6 +17,7 @@ mod skill_context;
 mod subagent;
 mod text_completion;
 mod tool_admission;
+mod tool_call_metrics;
 mod turn_reviews;
 mod worker_runtime;
 
@@ -35,5 +36,9 @@ pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider}
 pub use subagent::{
     ChildAgents, ChildDefaults, ChildRecord, ChildSettings, ChildStore, ResumedChild, SubagentHost,
     WorkTools,
+};
+pub use tool_call_metrics::{
+    ToolCallLifetime, ToolCallMetric, ToolCallOutcome, ToolCallTrace, reset_tool_call_trace,
+    tool_call_trace,
 };
 pub use worker_runtime::{QueuedPrompt, WorkerRuntime};
