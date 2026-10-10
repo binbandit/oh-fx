@@ -109,7 +109,17 @@ fn availability_follows_the_classified_connection() {
         (ConnectionState::Failed, Availability::Failed),
         (ConnectionState::Disconnected, Availability::Unavailable),
     ] {
-        assert_eq!(classify_availability(connection), expected);
+        assert_eq!(classify_availability(connection, false), expected);
+    }
+    for (connection, expected) in [
+        (
+            ConnectionState::Disconnected,
+            Availability::AvailableOnDemand,
+        ),
+        (ConnectionState::Disabled, Availability::Disabled),
+        (ConnectionState::Ready, Availability::Ready),
+    ] {
+        assert_eq!(classify_availability(connection, true), expected);
     }
 }
 
@@ -175,5 +185,14 @@ fn the_notice_lists_eight_changes_and_counts_the_rest() {
         render_change_notice(&previous[..9], &nine)
             .unwrap()
             .contains("  and 1 more change\n")
+    );
+}
+
+#[test]
+fn a_server_ask_starts_on_demand_is_listed_as_available_on_demand() {
+    let text = render_model_catalog(&[server("docs", Availability::AvailableOnDemand, None)]).text;
+    assert!(
+        text.contains("  <server name=\"docs\" state=\"available_on_demand\" />\n"),
+        "{text}"
     );
 }

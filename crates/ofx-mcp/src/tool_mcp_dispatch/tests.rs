@@ -303,3 +303,30 @@ async fn cancelling_the_turn_ends_a_selection_waiting_on_a_stalled_tool_list() {
         format_tool_execution_error_json(NAME, "Cancelled")
     );
 }
+
+#[tokio::test]
+async fn ask_starts_the_server_a_selected_name_belongs_to() {
+    let runtime = Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![McpServerConfig::stdio(
+                "fixture",
+                "/bin/sh",
+                vec!["-c".to_owned(), SERVER.to_owned()],
+            )],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ));
+    runtime.connect_for_ask(false).await;
+    let tool = McpSelectTool::new(Some(Arc::clone(&runtime)));
+    let output = run(&tool, r#"{"name":"mcp_fixture_echo"}"#).await;
+    assert_eq!(
+        output.status,
+        ToolResultStatus::Success,
+        "{}",
+        output.content
+    );
+    assert_eq!(output.selected_tools(), ["mcp_fixture_echo"]);
+}

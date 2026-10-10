@@ -181,10 +181,6 @@ async fn a_server_scope_names_an_unknown_or_failed_server() {
         search(&runtime, "monitors", Some("absent")).model_output,
         SERVER_NOT_FOUND
     );
-    assert_eq!(
-        search_within(&runtime, "monitors", Some("absent"), 16384).model_output,
-        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
-    );
     let Lifecycle::Failed(failure) = runtime_server(&runtime, "broken").lifecycle() else {
         panic!("the server failed");
     };
@@ -545,5 +541,116 @@ async fn a_search_lists_an_expired_tool_list_again_first() {
             .await
             .model_output,
         LISTED
+    );
+}
+
+async fn ask_search(runtime: &Arc<McpRuntime>, query: &str, server: Option<&str>) -> String {
+    McpToolSearch::search_tools(
+        Arc::clone(runtime),
+        McpSearchRequest {
+            query: Arc::new(PreparedQuery::prepare(query.to_owned()).unwrap()),
+            server: server.map(str::to_owned),
+            host: McpSearchHost::Ask {
+                result_bytes: 16384,
+            },
+        },
+    )
+    .await
+    .model_output
+}
+
+fn started(runtime: &McpRuntime, name: &str) -> bool {
+    !matches!(runtime_server(runtime, name).lifecycle(), Lifecycle::Idle)
+}
+
+fn availability(runtime: &McpRuntime) -> Vec<(String, crate::model_catalog::Availability)> {
+    runtime
+        .model_catalog()
+        .into_iter()
+        .map(|server| (server.name, server.availability))
+        .collect()
+}
+
+#[tokio::test]
+async fn ask_starts_optional_servers_only_when_a_search_needs_them() {
+    use crate::model_catalog::Availability::{AvailableOnDemand, Ready};
+    let fixture = Fixture::new();
+    let mut docs = fixture.server("docs", &[("read", "Read docs")]);
+    docs.required = true;
+    let runtime = Arc::new(runtime(
+        vec![
+            docs,
+            fixture.server("datadog", DATADOG),
+            fixture.server("other", &[("list", "List things")]),
+        ],
+        &[],
+    ));
+    runtime.connect_for_ask(false).await;
+    assert!(started(&runtime, "docs"));
+    assert!(!started(&runtime, "datadog") && !started(&runtime, "other"));
+    assert_eq!(
+        availability(&runtime),
+        [
+            ("docs".to_owned(), Ready),
+            ("datadog".to_owned(), AvailableOnDemand),
+            ("other".to_owned(), AvailableOnDemand),
+        ]
+    );
+    assert_eq!(
+        ask_search(&runtime, "monitors", Some("absent")).await,
+        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
+    );
+    assert_eq!(
+        ask_search(&runtime, "datadog monitor incidents", Some("datadog")).await,
+        LISTED
+    );
+    assert!(started(&runtime, "datadog"));
+    assert!(!started(&runtime, "other"));
+    let output: Value = serde_json::from_str(&ask_search(&runtime, "other", None).await).unwrap();
+    assert_eq!(output["tools"][0]["name"], "mcp_other_list");
+    assert!(started(&runtime, "other"));
+    assert_eq!(
+        availability(&runtime),
+        [
+            ("docs".to_owned(), Ready),
+            ("datadog".to_owned(), Ready),
+            ("other".to_owned(), Ready),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_terminal_ask_starts_every_server_before_the_turn() {
+    let fixture = Fixture::new();
+    let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));
+    runtime.connect_for_ask(true).await;
+    assert!(started(&runtime, "datadog"));
+    assert_eq!(
+        ask_search(&runtime, "monitors", Some("absent")).await,
+        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
+    );
+}
+
+#[tokio::test]
+async fn the_shell_never_starts_a_server_for_a_search() {
+    let fixture = Fixture::new();
+    let runtime = Arc::new(runtime(vec![fixture.server("datadog", DATADOG)], &[]));
+    let output = McpToolSearch::search_tools(
+        Arc::clone(&runtime),
+        McpSearchRequest {
+            query: Arc::new(PreparedQuery::prepare("datadog".to_owned()).unwrap()),
+            server: Some("absent".to_owned()),
+            host: McpSearchHost::Interactive,
+        },
+    )
+    .await;
+    assert_eq!(output.model_output, SERVER_NOT_FOUND);
+    assert!(!started(&runtime, "datadog"));
+    assert_eq!(
+        availability(&runtime),
+        [(
+            "datadog".to_owned(),
+            crate::model_catalog::Availability::Unavailable
+        )]
     );
 }

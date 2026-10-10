@@ -385,7 +385,7 @@ fn system_texts(request: &RecordedRequest) -> Vec<String> {
 }
 
 #[test]
-fn ask_lists_the_configured_servers_to_the_model() {
+fn ask_lists_optional_servers_as_available_on_demand_without_starting_them() {
     let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
     let home = Home::new(&server.base_url());
     let script = home.script("fixture.sh", FIXTURE_SERVER);
@@ -398,9 +398,26 @@ fn ask_lists_the_configured_servers_to_the_model() {
     assert_eq!(
         servers_section(&server.requests()[0]),
         listed_servers(
-            "  <server name=\"fixture\" state=\"ready\" tools=\"1\" />\n  <server name=\"zeta\" state=\"disabled\" />\n"
+            "  <server name=\"fixture\" state=\"available_on_demand\" />\n  <server name=\"zeta\" state=\"disabled\" />\n"
         )
     );
+    assert!(!home.state.join("pid").exists());
+}
+
+#[test]
+fn ask_starts_required_servers_before_the_turn() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&json!({
+        "fixture": {"command": "/bin/sh", "args": [home.script("fixture.sh", FIXTURE_SERVER)], "required": true},
+    }));
+    let output = home.ask(&["ask", "hi"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        servers_section(&server.requests()[0]),
+        listed_servers("  <server name=\"fixture\" state=\"ready\" tools=\"1\" />\n")
+    );
+    assert!(home.state.join("pid").exists());
 }
 
 fn servers_section(request: &RecordedRequest) -> String {
@@ -492,7 +509,7 @@ fn ask_uses_resources_prompts_and_completion_through_mcp_features() {
     );
     assert_eq!(
         servers_section(&requests[0]),
-        listed_servers("  <server name=\"fixture\" state=\"ready\" tools=\"0\" />\n")
+        listed_servers("  <server name=\"fixture\" state=\"available_on_demand\" />\n")
     );
     let envelope = r#"{"trust":"untrusted_external","authority":"none""#;
     let results: Vec<String> = requests[1..].iter().map(last_tool_result).collect();
@@ -861,8 +878,8 @@ fn a_signal_during_mcp_startup_stops_ready_and_starting_servers() {
     let ready = home.script("ready.sh", LINGERING_SERVER);
     let stalled = home.script("stalled.sh", STALLED_SERVER);
     home.profile_servers(&json!({
-        "ready": {"command": "/bin/sh", "args": [ready]},
-        "stalled": {"command": "/bin/sh", "args": [stalled]},
+        "ready": {"command": "/bin/sh", "args": [ready], "required": true},
+        "stalled": {"command": "/bin/sh", "args": [stalled], "required": true},
     }));
     let child = home
         .command(&["ask", "--full-access", "hi"])

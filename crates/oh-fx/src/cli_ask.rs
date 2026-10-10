@@ -30,7 +30,7 @@ use ofx_contract::{
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
-use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
+use ofx_mcp::{McpRuntime, ShutdownMode, render_workspace_diagnostic};
 use ofx_session::{
     SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, sessions_v2_variable_is_on,
 };
@@ -578,7 +578,12 @@ async fn prepare_agent(
         .transpose()?;
     *mcp = setup.mcp().cloned();
     if let Some(mcp) = setup.mcp() {
-        start_mcp(mcp, cancel).await?;
+        start_mcp(
+            mcp,
+            output_mode(args.output) == OutputMode::Terminal,
+            cancel,
+        )
+        .await?;
     }
     let store = match &resumed {
         Some(_) => None,
@@ -622,7 +627,11 @@ async fn prepare_agent(
     })
 }
 
-async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), Failure> {
+async fn start_mcp(
+    mcp: &McpRuntime,
+    terminal: bool,
+    cancel: &CancellationToken,
+) -> Result<(), Failure> {
     let mut lines = String::new();
     for diagnostic in &mcp.workspace_diagnostics() {
         lines.push_str("oh-fx ask: ");
@@ -640,7 +649,7 @@ async fn start_mcp(mcp: &McpRuntime, cancel: &CancellationToken) -> Result<(), F
         lines.push_str(". Approve with oh-fx mcp trust approve <name> before retrying.\n");
     }
     write_stderr(&lines).map_err(|error| Failure::written(&error))?;
-    let mut connecting = mcp.connect(StartupPhase::All);
+    let mut connecting = mcp.connect_for_ask(terminal);
     tokio::select! {
         () = &mut connecting => {}
         () = cancel.cancelled() => {

@@ -536,3 +536,23 @@ async fn output_past_the_tool_result_limit_fails_whole() {
     );
     runtime.shutdown(ShutdownMode::Immediate).await;
 }
+
+#[tokio::test]
+async fn ask_starts_the_named_server_before_a_feature_call() {
+    let state = tempfile::tempdir().unwrap();
+    let runtime = runtime(vec![config("fixture", state.path())]);
+    runtime.connect_for_ask(false).await;
+    let tool = McpFeatures::new(Some(Arc::clone(&runtime)));
+    let output = run(&tool, r#"{"action":"prompt_list","server":"fixture"}"#).await;
+    assert_eq!(
+        output.status,
+        ToolResultStatus::Success,
+        "{}",
+        output.content
+    );
+    assert_eq!(
+        run(&tool, r#"{"action":"prompt_list","server":"absent"}"#).await,
+        failure(&McpError::McpServerNotFound)
+    );
+    runtime.shutdown(ShutdownMode::Immediate).await;
+}
