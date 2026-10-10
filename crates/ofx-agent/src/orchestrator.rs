@@ -11,14 +11,15 @@ use ofx_contract::{
     AutoCompactPercent, BoxFuture, CallDescription, CapabilityLookup, CapabilityResolver,
     ChatMessage, CommandRequest, Completion, Concurrency, ConversationLog,
     DEFAULT_MAX_TOOL_RESULT_BYTES, DynamicTools, ExecutionFailure, FileChange, FileMutation,
-    FinishReason, GatedAction, LogFailure, ModelCapabilities, ModelFailureDiagnostic,
-    ModelProvider, ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction,
-    ModelRequest, PathAccess, PermissionGate, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure,
-    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
-    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
-    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
+    FinishReason, GatedAction, HookScope, HookView, LogFailure, ModelCapabilities,
+    ModelFailureDiagnostic, ModelProvider, ModelRecoveryAction, ModelRecoveryCause,
+    ModelRecoveryRequiredAction, ModelRequest, PathAccess, PermissionGate, PreparedCall,
+    ProviderError, ProviderErrorKind, ProviderOptions, RecordedOutput, RecoveredTurn,
+    RecoveryStrategy, RequestId, ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed,
+    RootUserRequests, RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StreamEvent,
+    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic,
+    ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput,
+    ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome,
     TurnStop, UiEvent, Usage, bound_model_output, malformed_tool_arguments_json,
     non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
     tool_review_held_json,
@@ -33,6 +34,7 @@ use crate::agent_steps::allows_step;
 use crate::approvals::Approvals;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
+use crate::lifecycle::LifecycleContext;
 use crate::model_response_recovery::{
     DEFAULT_MAX_PROVIDER_ATTEMPTS, Decision, Recovery, ToolEvidence, recovery_cause,
 };
@@ -293,6 +295,7 @@ pub struct Agent {
     last_reply: Option<LastReply>,
     steering: Option<Arc<WorkerRuntime>>,
     recovery_pause: RecoveryPause,
+    lifecycle: Option<LifecycleContext>,
 }
 
 impl Agent {
@@ -340,6 +343,7 @@ impl Agent {
             last_reply: None,
             steering: None,
             recovery_pause: RecoveryPause::default(),
+            lifecycle: None,
         }
     }
 
@@ -400,6 +404,12 @@ impl Agent {
     #[must_use]
     pub fn with_skills(mut self, skills: Arc<dyn SkillContextProvider>) -> Self {
         self.skills = Some(skills);
+        self
+    }
+
+    #[must_use]
+    pub fn with_lifecycle(mut self, hooks: HookView, scope: HookScope) -> Self {
+        self.lifecycle = Some(LifecycleContext::new(hooks, scope));
         self
     }
 
@@ -573,6 +583,8 @@ impl Agent {
                 turn_id: id,
                 outcome: TurnOutcome::Failed,
             });
+            self.post_turn_end(id, TurnPresentationOutcome::Failed)
+                .await;
             return TurnReport {
                 outcome: TurnOutcome::Failed,
                 final_text: String::new(),
@@ -645,11 +657,19 @@ impl Agent {
                 text: Arc::from(final_text.as_str()),
             });
         }
+        self.post_turn_end(id, presentation_outcome(outcome, ending))
+            .await;
         TurnReport {
             outcome,
             final_text,
             usage: turn.usage,
             failure,
+        }
+    }
+
+    async fn post_turn_end(&self, turn_id: TurnId, outcome: TurnPresentationOutcome) {
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.post_turn_end(turn_id, outcome).await;
         }
     }
 
@@ -1716,6 +1736,15 @@ impl Agent {
                 provider_replay: None,
             });
         }
+    }
+}
+
+fn presentation_outcome(outcome: TurnOutcome, ending: Ending) -> TurnPresentationOutcome {
+    match (outcome, ending) {
+        (_, Ending::Paused) => TurnPresentationOutcome::Paused,
+        (TurnOutcome::Completed, _) => TurnPresentationOutcome::Completed,
+        (TurnOutcome::Interrupted, _) => TurnPresentationOutcome::Interrupted,
+        (TurnOutcome::Failed, _) => TurnPresentationOutcome::Failed,
     }
 }
 

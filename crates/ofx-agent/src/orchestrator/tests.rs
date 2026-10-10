@@ -2898,6 +2898,7 @@ mod capabilities;
 mod compaction;
 mod file_evidence;
 mod interrupted_closure;
+mod lifecycle;
 mod malformed_arguments;
 mod modes;
 mod prefill_retry;
