@@ -41,6 +41,7 @@ const WAIT: Duration = Duration::from_secs(15);
 const LOCK_HELD: Duration = Duration::from_millis(1250);
 const REFRESH_DELAY: Duration = Duration::from_millis(14_250);
 const SAVED_WAIT: Duration = Duration::from_secs(30);
+const COPY_POLLS: u32 = 6000;
 const SAVED_TOKEN: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
 const FRESH_TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF90ZXN0In0sImV4cCI6NDEwMjQ0NDgwMCwibWFya2VyIjoiZnJlc2gifQ.c2lnbmF0dXJl";
 const REFRESH_TOKEN: &str = "rt-refresh-secret-0123456789";
@@ -348,8 +349,10 @@ fn leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight() {
     let stopped = directory.path().join("stopped");
     let finished = directory.path().join("finished");
     let script = format!(
-        "#!/bin/sh\ncat > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\ntouch '{}'\n",
+        "#!/bin/sh\ncat > '{}'\npolls=0\nwhile [ -d '{}' ] && [ ! -e '{}' ] && [ \"$polls\" -lt {COPY_POLLS} ]; do\npolls=$((polls + 1))\nsleep 0.01\ndone\n[ -e '{}' ] && touch '{}'\n",
         copied.display(),
+        directory.path().display(),
+        stopped.display(),
         stopped.display(),
         finished.display()
     );

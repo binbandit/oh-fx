@@ -731,19 +731,38 @@ fn a_theme_pinned_in_settings_skips_the_probe_unless_the_environment_names_anoth
 }
 
 const CURSOR_PROBE: &[u8] = b"\x1b[?2026h\x1b7\x1b[1G\x1b[6n\x1b[2G\x1b[6n\x1b8\x1b[?2026l";
+const CLEAR_POLLS: u32 = 3000;
+
+struct Hold(PathBuf);
+
+impl Hold {
+    fn new(path: PathBuf) -> Self {
+        fs::write(&path, "").expect("create the hold file");
+        Self(path)
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 #[test]
 fn a_screen_cleared_behind_the_shell_is_redrawn_on_the_next_key() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    let trigger = home.root.join("clear-now");
+    let held = home.root.join("clear-held");
+    let clear = Hold::new(held.clone());
     let command = home.command();
     let mut wrapper = Command::new("/bin/sh");
     wrapper
         .arg("-c")
-        .arg(r#"(while [ ! -f "$1" ]; do sleep 0.02; done; printf '\033[2J\033[H') & exec "$0""#)
+        .arg(format!(
+            r#"(polls=0; while [ -e "$1" ] && [ "$polls" -lt {CLEAR_POLLS} ]; do polls=$((polls + 1)); sleep 0.02; done; [ -e "$1" ] || printf '\033[2J\033[H') & exec "$0""#
+        ))
         .arg(command.get_program())
-        .arg(&trigger)
+        .arg(&held)
         .current_dir(&home.workspace)
         .env_clear()
         .envs(
@@ -757,7 +776,7 @@ fn a_screen_cleared_behind_the_shell_is_redrawn_on_the_next_key() {
     session.send(b"one");
     wait(&session, "┃ one");
     assert!(count(&session.output(), CURSOR_PROBE) > 0);
-    fs::write(&trigger, b"").expect("write the trigger");
+    drop(clear);
     session
         .wait_for(WAIT, |screen| screen.trim().is_empty())
         .unwrap_or_else(|screen| panic!("the screen was not cleared:\n{screen}"));

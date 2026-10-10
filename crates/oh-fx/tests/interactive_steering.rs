@@ -12,6 +12,7 @@ use ofx_testkit::{
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
+const HOLD_POLLS: u32 = 1200;
 const CANCELLATION: &str = "■ Cancelled";
 const UP: &[u8] = b"\x1b[A";
 const STEERING_OPEN: &str = "<user_steering>\nApply this live user update to the current task. Continue working unless the user asks you to stop, the task is complete, or a genuine blocker prevents progress.\n\n";
@@ -115,6 +116,27 @@ fn wait_for_file(path: &Path) {
     }
 }
 
+struct Hold(PathBuf);
+
+impl Hold {
+    fn new(path: PathBuf) -> Self {
+        fs::write(&path, "").expect("create the hold file");
+        Self(path)
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn held(hold: &str) -> String {
+    format!(
+        "polls=0\nwhile [ -e \"{hold}\" ]; do\n[ \"$polls\" -lt {HOLD_POLLS} ] || exit 124\npolls=$((polls + 1))\nsleep 0.05\ndone\n"
+    )
+}
+
 fn steered(text: &str) -> String {
     format!("{STEERING_OPEN}{text}{STEERING_CLOSE}")
 }
@@ -216,9 +238,13 @@ fn text_typed_while_a_shell_command_runs_waits_for_its_result_and_up_pulls_it_ba
         Reply::sse(&chat_text_events(&["STEERED_DONE"])),
     ]);
     let home = Home::new(&server.base_url(), "yolo");
+    let hold = Hold::new(home.workspace.join("hold"));
     fs::write(
         home.workspace.join("check.sh"),
-        "printf started > started\nwhile [ ! -f release ]; do sleep 0.05; done\nprintf done > finished\n",
+        format!(
+            "printf started > started\n{}printf done > finished\n",
+            held("hold")
+        ),
     )
     .expect("write the check script");
     let mut session = home.shell("full access · model-a");
@@ -235,7 +261,7 @@ fn text_typed_while_a_shell_command_runs_waits_for_its_result_and_up_pulls_it_ba
     session.send(b" and keep it short\r");
     wait(&session, "┋ change the header tone and keep it short");
     assert_eq!(server.requests().len(), 1);
-    fs::write(home.workspace.join("release"), "go").expect("release the command");
+    drop(hold);
     let screen = wait(&session, "STEERED_DONE");
     wait_for_file(&home.workspace.join("finished"));
     assert!(!screen.contains(CANCELLATION), "{screen}");
@@ -278,9 +304,11 @@ fn a_cancelled_turn_saves_the_steering_it_took_after_a_tool_result_once() {
         Reply::sse(&chat_tool_call_events("call-2", "shell", &hold("two"))),
     ]);
     let home = Home::new(&server.base_url(), "yolo");
+    let first = Hold::new(home.workspace.join("hold-one"));
+    let _second = Hold::new(home.workspace.join("hold-two"));
     fs::write(
         home.workspace.join("hold.sh"),
-        "printf started > \"started-$1\"\nwhile [ ! -f \"release-$1\" ]; do sleep 0.05; done\n",
+        format!("printf started > \"started-$1\"\n{}", held("hold-$1")),
     )
     .expect("write the hold script");
     let mut session = home.shell("full access · model-a");
@@ -288,7 +316,7 @@ fn a_cancelled_turn_saves_the_steering_it_took_after_a_tool_result_once() {
     wait_for_file(&home.workspace.join("started-one"));
     session.send(b"STEERING_FIRST\r");
     wait(&session, "┋ STEERING_FIRST");
-    fs::write(home.workspace.join("release-one"), "go").expect("release the first step");
+    drop(first);
     wait_for_file(&home.workspace.join("started-two"));
     session.send(b"\x03");
     wait(&session, CANCELLATION);
@@ -324,7 +352,6 @@ fn a_cancelled_turn_saves_the_steering_it_took_after_a_tool_result_once() {
             "interrupted"
         ]
     );
-    fs::write(home.workspace.join("release-two"), "go").expect("release the second step");
 }
 
 #[test]
