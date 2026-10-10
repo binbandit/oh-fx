@@ -282,7 +282,7 @@ pub(crate) struct Shell<'a> {
     signals: SignalPipe,
     clock: Instant,
     #[cfg(test)]
-    held_now: Instant,
+    held_now: Option<Instant>,
     pending_resize: Option<PendingResize>,
     output: String,
     footer_row: usize,
@@ -515,7 +515,7 @@ impl<'a> Shell<'a> {
             signals: setup.signals,
             clock: Instant::now(),
             #[cfg(test)]
-            held_now: Instant::now(),
+            held_now: Some(Instant::now()),
             pending_resize: None,
             output: String::new(),
             footer_row: 0,
@@ -535,7 +535,7 @@ impl<'a> Shell<'a> {
 
     fn now_ms(&self) -> i64 {
         #[cfg(test)]
-        let now = self.held_now;
+        let now = self.held_now.unwrap_or_else(Instant::now);
         #[cfg(not(test))]
         let now = Instant::now();
         i64::try_from(now.saturating_duration_since(self.clock).as_millis()).unwrap_or(i64::MAX)

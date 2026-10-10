@@ -183,6 +183,10 @@ impl TestShell {
         String::from_utf8_lossy(&output).into_owned()
     }
 
+    pub(super) fn follow_wall_clock(&mut self) {
+        self.shell.held_now = None;
+    }
+
     pub(super) fn advance(&mut self, millis: u64) {
         self.shell.clock = self
             .shell
