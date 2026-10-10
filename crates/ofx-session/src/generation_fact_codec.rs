@@ -1,4 +1,8 @@
+use std::fmt::Write as _;
+
 use ofx_contract::{GenerationFact, Json};
+
+use crate::json_fields::push_string;
 
 const FIELDS: usize = 9;
 const FIELDS_WITH_SEARCH_CALLS: usize = 10;
@@ -30,11 +34,34 @@ pub(crate) fn parse(value: &Json<'_>) -> Option<GenerationFact> {
     fact.is_valid().then_some(fact)
 }
 
+pub(crate) fn write(out: &mut String, fact: &GenerationFact) {
+    out.push_str("{\"id\":");
+    push_string(out, &fact.id);
+    let _ = write!(out, ",\"created_at_ms\":{},\"model\":", fact.created_at_ms);
+    push_string(out, &fact.model);
+    let _ = write!(
+        out,
+        ",\"input_tokens\":{},\"output_tokens\":{},\"cache_read_tokens\":{},\"cache_write_tokens\":{},\"reasoning_tokens\":",
+        fact.input_tokens, fact.output_tokens, fact.cache_read_tokens, fact.cache_write_tokens,
+    );
+    match fact.reasoning_tokens {
+        Some(reasoning) => {
+            let _ = write!(out, "{reasoning}");
+        }
+        None => out.push_str("null"),
+    }
+    let _ = write!(
+        out,
+        ",\"billable_web_search_calls\":{},\"total_cost\":{}}}",
+        fact.billable_web_search_calls, fact.total_cost
+    );
+}
+
 pub(crate) fn non_negative(value: &Json<'_>) -> Option<i64> {
     i64::try_from(value.as_u64()?).ok()
 }
 
-fn cost(value: &Json<'_>) -> Option<f64> {
+pub(crate) fn cost(value: &Json<'_>) -> Option<f64> {
     let Json::Number(number) = value else {
         return None;
     };
@@ -114,6 +141,27 @@ mod tests {
                 billable_web_search_calls: 0,
                 ..expected()
             })
+        );
+    }
+
+    #[test]
+    fn facts_write_the_bytes_fx_writes_and_read_back() {
+        let mut written = String::new();
+        write(&mut written, &expected());
+        assert_eq!(written, FX_FACT);
+        let mut reasoned = String::new();
+        let fact = GenerationFact {
+            reasoning_tokens: Some(2),
+            total_cost: 1e-7,
+            model: "a\"b".to_owned(),
+            ..expected()
+        };
+        write(&mut reasoned, &fact);
+        assert!(reasoned.contains("\"model\":\"a\\\"b\""), "{reasoned}");
+        assert!(reasoned.contains("\"reasoning_tokens\":2,"), "{reasoned}");
+        assert!(
+            reasoned.ends_with(",\"total_cost\":0.0000001}"),
+            "{reasoned}"
         );
     }
 

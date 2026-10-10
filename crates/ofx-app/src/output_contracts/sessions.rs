@@ -156,7 +156,9 @@ pub fn session_lookup_message(code: &str) -> Option<&'static str> {
             "saved sessions are unreadable; run `oh-fx doctor` for recovery guidance"
         }
         "SessionNotFound" => "record not found",
-        "InvalidSessionFormat" => "record is corrupt; run `oh-fx doctor` for recovery guidance",
+        "InvalidSessionFormat" | "InvalidUsageSidecar" => {
+            "record is corrupt; run `oh-fx doctor` for recovery guidance"
+        }
         "UnsupportedSessionSchema" => "record uses an unsupported session version",
         "InvalidSessionId" => "invalid session id",
         "SessionBusy" | "SessionLockUnsupported" => {

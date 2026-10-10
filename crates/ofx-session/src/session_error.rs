@@ -2,6 +2,8 @@ use std::io;
 
 use ofx_config::DurableError;
 
+use crate::session_usage::UsageSnapshotError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
     #[error("InvalidSessionId")]
@@ -88,6 +90,14 @@ pub enum SessionError {
     FxCompactionUnfinished,
     #[error("FxSessionUnreadable")]
     FxSessionUnreadable,
+    #[error("InvalidUsageSidecar")]
+    InvalidUsageSidecar,
+    #[error("UsageSidecarTooLarge")]
+    UsageSidecarTooLarge,
+    #[error("InvalidUsageSnapshot")]
+    InvalidUsageSnapshot,
+    #[error("UsageCapacityExceeded")]
+    UsageCapacityExceeded,
     #[error(transparent)]
     Storage(DurableError),
     #[error("{0:?}")]
@@ -101,6 +111,15 @@ impl From<DurableError> for SessionError {
             DurableError::PermissionsUnsupported => Self::PrivateStatePermissionsUnsupported,
             DurableError::LockUnsupported => Self::SessionLockUnsupported,
             other => Self::Storage(other),
+        }
+    }
+}
+
+impl From<UsageSnapshotError> for SessionError {
+    fn from(error: UsageSnapshotError) -> Self {
+        match error {
+            UsageSnapshotError::Invalid => Self::InvalidUsageSnapshot,
+            UsageSnapshotError::CapacityExceeded => Self::UsageCapacityExceeded,
         }
     }
 }
