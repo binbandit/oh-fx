@@ -43,6 +43,7 @@ pub(crate) fn text(content: &str) -> Completion {
         tool_calls: Vec::new(),
         finish_reason: FinishReason::Stop,
         usage: Usage::default(),
+        billing: None,
         provider_replay: None,
     }
 }
@@ -53,6 +54,7 @@ pub(crate) fn calling(call: ToolCall) -> Completion {
         tool_calls: vec![call],
         finish_reason: FinishReason::ToolCalls,
         usage: Usage::default(),
+        billing: None,
         provider_replay: None,
     }
 }

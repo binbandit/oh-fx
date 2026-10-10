@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_contract::{
-    ChatMessage, ModelFailureDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId,
-    ToolExecutionProvenance, ToolSpec, Usage,
+    ChatMessage, ModelFailureDiagnostic, ProviderBilling, ToolArgumentIntegrity, ToolCall,
+    ToolCallId, ToolExecutionProvenance, ToolSpec, Usage,
 };
 use ofx_contract::{DuplicateKeys, Json, Object, parse_strict_json, parse_strict_json_value};
 use ofx_images::{AttachmentError, VerifiedSnapshot, load_verified_snapshot};
@@ -511,7 +511,26 @@ pub(crate) struct ResponsesCompletion {
     pub(crate) provider_state: Option<String>,
     pub(crate) finish: ResponsesFinish,
     pub(crate) failure: Option<ProviderFailure>,
-    pub(crate) usage: Usage,
+    pub(crate) usage: UsageCounts,
+    pub(crate) generation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UsageCounts {
+    pub(crate) input: Option<u64>,
+    pub(crate) output: Option<u64>,
+    pub(crate) cache_read: Option<u64>,
+    pub(crate) cache_write: Option<u64>,
+    pub(crate) reasoning: Option<u64>,
+}
+
+impl UsageCounts {
+    pub(crate) fn usage(self) -> Usage {
+        Usage {
+            input_tokens: self.input,
+            output_tokens: self.output,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -793,7 +812,8 @@ pub(crate) struct Reducer {
     reasoning_bytes: usize,
     tools: Vec<ToolAccumulator>,
     finish: Option<ResponsesFinish>,
-    usage: Usage,
+    usage: UsageCounts,
+    generation_id: Option<String>,
     failure: Option<ProviderFailure>,
     terminal_seen: bool,
     text_parts: HashMap<TextKey, TextPart>,
@@ -814,7 +834,8 @@ impl Reducer {
             reasoning_bytes: 0,
             tools: Vec::new(),
             finish: None,
-            usage: Usage::default(),
+            usage: UsageCounts::default(),
+            generation_id: None,
             failure: None,
             terminal_seen: false,
             text_parts: HashMap::new(),
@@ -1087,6 +1108,9 @@ impl Reducer {
         self.terminal_seen = true;
         self.finish = Some(finish_reason(status, response, !self.tools.is_empty()));
         self.usage = parse_usage(response);
+        if let Some(id) = string_member(response, "id") {
+            self.generation_id = Some(id.to_owned());
+        }
         Ok(())
     }
 
@@ -1444,6 +1468,7 @@ impl Reducer {
             finish,
             failure: self.failure,
             usage: self.usage,
+            generation_id: self.generation_id,
         })
     }
 
@@ -1579,15 +1604,49 @@ fn finish_reason(
     }
 }
 
-fn parse_usage(response: &Object<'_>) -> Usage {
+fn parse_usage(response: &Object<'_>) -> UsageCounts {
     let Some(Json::Object(usage)) = response.get("usage") else {
-        return Usage::default();
+        return UsageCounts::default();
     };
     let counter = |key: &str| usage.get(key).and_then(Json::as_u64);
-    Usage {
-        input_tokens: counter("input_tokens"),
-        output_tokens: counter("output_tokens"),
+    let detail = |details: &str, key: &str| match usage.get(details) {
+        Some(Json::Object(details)) => details.get(key).and_then(Json::as_u64),
+        _ => None,
+    };
+    UsageCounts {
+        input: counter("input_tokens"),
+        output: counter("output_tokens"),
+        cache_read: detail("input_tokens_details", "cached_tokens"),
+        cache_write: detail("input_tokens_details", "cache_write_tokens"),
+        reasoning: detail("output_tokens_details", "reasoning_tokens"),
     }
+}
+
+pub(crate) fn subscription_billing(
+    generation_id: String,
+    owner: &str,
+    model: &str,
+    created_at_ms: i64,
+    usage: UsageCounts,
+) -> Option<ProviderBilling> {
+    let input_tokens = usage.input?;
+    let output_tokens = usage.output?;
+    if created_at_ms < 0 {
+        return None;
+    }
+    let within = |count: Option<u64>, total: u64| count.filter(|count| *count <= total);
+    Some(ProviderBilling {
+        generation_id,
+        created_at_ms,
+        model: format!("{owner}/{model}"),
+        total_cost: 0.0,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: within(usage.cache_read, input_tokens).unwrap_or(0),
+        cache_write_tokens: within(usage.cache_write, input_tokens).unwrap_or(0),
+        reasoning_tokens: within(usage.reasoning, output_tokens),
+        billable_web_search_calls: 0,
+    })
 }
 
 #[cfg(test)]

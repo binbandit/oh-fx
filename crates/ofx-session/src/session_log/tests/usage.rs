@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use ofx_contract::{
-    ConversationLog, DeliveryOutcome, FileChangeStats, UsageCompleteness, UsageIncident,
+    ConversationLog, DeliveryOutcome, FileChangeStats, ProviderBilling, UsageCompleteness,
+    UsageIncident,
 };
 
 use super::*;
@@ -198,4 +199,52 @@ fn a_subagent_log_accounts_its_requests_in_the_parent_session() {
     drop(parent);
     assert_eq!(log.begin_request().unwrap().sequence, 1);
     assert_eq!(saved(&fixture, "child").next_sequence, 2);
+}
+
+#[test]
+fn an_exact_request_is_saved_with_its_generation_waiting_for_publication() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("exact");
+    let ticket = session.begin_request().unwrap();
+    let billing = ProviderBilling {
+        generation_id: "resp_saved".to_owned(),
+        created_at_ms: 1_000,
+        model: "codex/gpt-test".to_owned(),
+        total_cost: 0.0,
+        input_tokens: 17,
+        output_tokens: 7,
+        cache_read_tokens: 5,
+        cache_write_tokens: 0,
+        reasoning_tokens: Some(3),
+        billable_web_search_calls: 0,
+    };
+    session
+        .finish_exact_request(
+            ticket,
+            &billing,
+            &SavedProvider::new(ProviderId::Codex, None).unwrap(),
+        )
+        .unwrap();
+    let saved = saved(&fixture, "exact");
+    assert_eq!(saved.billing, Availability::Pending);
+    assert_eq!(saved.settled_through_sequence, 1);
+    assert_eq!(saved.pending.len(), 1);
+    assert_eq!(saved.pending[0].origin, "exact/codex");
+    assert_eq!(saved.publication_backlog.len(), 1);
+    assert_eq!(saved.publication_backlog[0].id, saved.pending[0].id);
+    assert_eq!(
+        (
+            saved.publication_backlog[0].model.as_str(),
+            saved.publication_backlog[0].cache_read_tokens,
+        ),
+        ("codex/gpt-test", 5)
+    );
+    assert_eq!(saved.input_tokens, 0);
+
+    drop(session);
+    let mut resumed = fixture.resume("exact").unwrap();
+    let usage = current(&mut resumed);
+    assert_eq!(usage.billing, Availability::Pending);
+    assert_eq!(usage.pending, saved.pending);
+    assert_eq!(usage.publication_backlog, saved.publication_backlog);
 }

@@ -126,14 +126,14 @@ impl ReviewTransport for Scripted {
 }
 
 fn decision(arguments: &str) -> ReviewTransportOutcome {
-    ReviewTransportOutcome::Completion(completion(
+    ReviewTransportOutcome::Completion(Box::new(completion(
         Some("This prose cannot change the structured decision."),
         vec![decision_call(arguments)],
-    ))
+    )))
 }
 
 fn prose(text: &str) -> ReviewTransportOutcome {
-    ReviewTransportOutcome::Completion(completion(Some(text), Vec::new()))
+    ReviewTransportOutcome::Completion(Box::new(completion(Some(text), Vec::new())))
 }
 
 fn decision_call(arguments: &str) -> ToolCall {
@@ -149,6 +149,7 @@ fn completion(content: Option<&str>, tool_calls: Vec<ToolCall>) -> Completion {
             input_tokens: Some(11),
             output_tokens: Some(3),
         },
+        billing: None,
         provider_replay: None,
     }
 }

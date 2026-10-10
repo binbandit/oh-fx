@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use ofx_contract::{
     ConversationLog, DeliveryOutcome, FileChangeStats, HistoryCut, HistoryTurn, LogFailure,
-    RecoveryPoint, RequestTicket,
+    ProviderBilling, RecoveryPoint, RequestTicket,
 };
 
 use crate::session_codec::SavedProvider;
@@ -95,6 +95,15 @@ impl ConversationLog for SessionLog {
         outcome: DeliveryOutcome,
     ) -> Result<(), LogFailure> {
         self.with_usage(|session| session.finish_request(ticket, outcome))
+            .map_err(log_failure)
+    }
+
+    fn finish_exact_request(
+        &self,
+        ticket: RequestTicket,
+        billing: &ProviderBilling,
+    ) -> Result<(), LogFailure> {
+        self.with_usage(|session| session.finish_exact_request(ticket, billing, &self.provider))
             .map_err(log_failure)
     }
 
