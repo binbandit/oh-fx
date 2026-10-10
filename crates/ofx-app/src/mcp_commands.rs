@@ -1,10 +1,11 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
 use ofx_contract::NoticeTone;
 use ofx_mcp::{
-    AddIntentError, McpRuntime, ProfileConfigWarning, ProjectMcpAction, add_profile_server,
-    apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
+    AddIntentError, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction, ResourceSummary,
+    add_profile_server, apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
     remove_profile_server,
 };
 use ofx_text::encode_terminal_safe;
@@ -48,6 +49,10 @@ pub(crate) enum Outcome {
         body: String,
         action: ProjectMcpAction,
     },
+    ListResources {
+        server: String,
+        templates: bool,
+    },
 }
 
 pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRuntime) -> Outcome {
@@ -59,7 +64,7 @@ pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRunti
         return Outcome::Show(with_profile_warning(runtime.render_health(), config_path));
     }
     if let Some(rest) = command.strip_prefix("resource ") {
-        return Outcome::Show(resource(rest).to_owned());
+        return resource(rest);
     }
     if let Some(rest) = command.strip_prefix("prompt ") {
         return Outcome::Show(prompt(rest).to_owned());
@@ -112,7 +117,37 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
             state.notice(NoticeTone::Neutral, TOPIC, &body);
         }
         Outcome::Trust { body, action } => apply_project_action(state, host, &action, &body),
+        Outcome::ListResources { server, templates } => host.list_resources(server, templates),
     }
+}
+
+pub(crate) fn render_resource_listing(
+    server: &str,
+    templates: bool,
+    listing: Result<Vec<ResourceSummary>, McpError>,
+) -> String {
+    let items = match listing {
+        Ok(items) => items,
+        Err(error) => return format!("MCP resource listing failed: {error}."),
+    };
+    let mut out = format!(
+        "MCP {} from {server} ({}):\n",
+        if templates {
+            "resource templates"
+        } else {
+            "resources"
+        },
+        items.len()
+    );
+    for item in &items {
+        let _ = writeln!(
+            out,
+            "  {server} :: {} — {}",
+            item.identity,
+            item.title.as_deref().unwrap_or(&item.name)
+        );
+    }
+    out
 }
 
 fn apply_project_action(
@@ -286,22 +321,25 @@ fn add(config_path: &Path, rest: &str) -> Outcome {
     }
 }
 
-fn resource(rest: &str) -> &'static str {
+fn resource(rest: &str) -> Outcome {
     let mut tokens = rest.split(TRIMMED).filter(|token| !token.is_empty());
     match tokens.next() {
-        Some("list" | "templates") => match (tokens.next(), tokens.next()) {
-            (Some(_), None) => "MCP resources are not available yet.",
-            _ => RESOURCE_LIST_USAGE,
+        Some(action @ ("list" | "templates")) => match (tokens.next(), tokens.next()) {
+            (Some(server), None) => Outcome::ListResources {
+                server: server.to_owned(),
+                templates: action == "templates",
+            },
+            _ => show(RESOURCE_LIST_USAGE),
         },
-        Some("read") => match (tokens.next(), tokens.next()) {
+        Some("read") => show(match (tokens.next(), tokens.next()) {
             (Some(_), Some(_)) => "MCP resource reads are not available yet.",
             _ => RESOURCE_READ_USAGE,
-        },
-        Some("complete") => match (tokens.next(), tokens.next(), tokens.next()) {
+        }),
+        Some("complete") => show(match (tokens.next(), tokens.next(), tokens.next()) {
             (Some(_), Some(_), Some(_)) => "MCP resource completion is not available yet.",
             _ => RESOURCE_COMPLETE_USAGE,
-        },
-        _ => RESOURCE_USAGE,
+        }),
+        _ => show(RESOURCE_USAGE),
     }
 }
 
@@ -563,7 +601,6 @@ mod tests {
             ("resource wat", RESOURCE_USAGE),
             ("resource list", RESOURCE_LIST_USAGE),
             ("resource templates docs extra", RESOURCE_LIST_USAGE),
-            ("resource list docs", "MCP resources are not available yet."),
             ("resource read docs", RESOURCE_READ_USAGE),
             (
                 "resource read docs file:///a b",
@@ -592,6 +629,59 @@ mod tests {
         ] {
             assert_eq!(shown(command, path), expected, "{command}");
         }
+    }
+
+    #[test]
+    fn resource_listings_name_the_server_and_each_identity() {
+        let (_home, path) = profile();
+        for (command, templates) in [
+            ("resource list docs", false),
+            ("resource  templates \tdocs ", true),
+        ] {
+            assert_eq!(
+                respond(command, Some(&path), &runtime()),
+                Outcome::ListResources {
+                    server: "docs".to_owned(),
+                    templates
+                },
+                "{command}"
+            );
+        }
+        assert_eq!(
+            respond("resource list docs", None, &runtime()),
+            Outcome::ListResources {
+                server: "docs".to_owned(),
+                templates: false
+            }
+        );
+        let item = |identity: &str, name: &str, title: Option<&str>| ResourceSummary {
+            identity: identity.to_owned(),
+            name: name.to_owned(),
+            title: title.map(str::to_owned),
+        };
+        assert_eq!(
+            render_resource_listing(
+                "docs",
+                false,
+                Ok(vec![
+                    item("memory://a", "a", Some("Alpha")),
+                    item("memory://b", "b", None)
+                ])
+            ),
+            "MCP resources from docs (2):\n  docs :: memory://a — Alpha\n  docs :: memory://b — b\n"
+        );
+        assert_eq!(
+            render_resource_listing("docs", true, Ok(vec![item("memory://{id}", "row", None)])),
+            "MCP resource templates from docs (1):\n  docs :: memory://{id} — row\n"
+        );
+        assert_eq!(
+            render_resource_listing("docs", true, Ok(Vec::new())),
+            "MCP resource templates from docs (0):\n"
+        );
+        assert_eq!(
+            render_resource_listing("docs", false, Err(McpError::McpResourcesUnsupported)),
+            "MCP resource listing failed: McpResourcesUnsupported."
+        );
     }
 
     #[test]

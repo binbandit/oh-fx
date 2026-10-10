@@ -1,6 +1,10 @@
+mod catalog_freshness;
 mod command_provider;
 mod docker_run;
 mod error;
+mod feature_catalog;
+mod feature_catalog_runtime;
+mod feature_operations;
 mod features;
 mod health;
 mod json_number;
@@ -13,6 +17,7 @@ mod mcp_contract;
 mod mcp_json;
 mod mcp_runtime;
 mod native_config;
+mod operation_control;
 mod profile_store;
 mod project_config;
 mod protocol_messages;
@@ -39,6 +44,7 @@ mod workspace_config;
 
 pub use command_provider::{AddIntent, AddIntentError, is_valid_server_name, parse_add_intent};
 pub use error::McpError;
+pub use feature_operations::ResourceSummary;
 pub use local_inspection::{
     ConfiguredServer, LocalConfigInspection, ProfileConfigDiagnostic, inspect_local_config,
 };
