@@ -694,6 +694,10 @@ impl Settings {
         limits
     }
 
+    pub fn routes(provider: &ProviderId) -> bool {
+        matches!(provider, ProviderId::Codex | ProviderId::Configured(_))
+    }
+
     pub fn resume_selection(
         &mut self,
         provider: &ProviderId,

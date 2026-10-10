@@ -11,7 +11,7 @@ use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, ChildStore};
-use ofx_config::SelectionError;
+use ofx_config::{SelectionError, Settings};
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
 use ofx_session::{
     PendingRecovery, ResumeTarget, RouteCredential, SavedProvider, SessionDisposal, SessionError,
@@ -47,6 +47,7 @@ pub struct ResumedSession {
     title: String,
     title_present: bool,
     recovery: Option<ShellRecovery>,
+    rebound_from: Option<String>,
 }
 
 impl ResumedSession {
@@ -56,8 +57,11 @@ impl ResumedSession {
         target: &ResumeTarget,
     ) -> Result<Self, ResumeFailure> {
         let session = store.resume_target(target)?;
-        select(profile, &session)?;
-        Ok(Self::for_shell(session)?)
+        let rebound_from = select(profile, &session)?;
+        Ok(Self {
+            rebound_from,
+            ..Self::for_shell(session)?
+        })
     }
 
     fn for_shell(mut session: WritableSession) -> Result<Self, SessionError> {
@@ -90,8 +94,14 @@ impl ResumedSession {
             session.settle_open_recovery()?;
             None
         };
-        select(profile, &session)?;
-        Ok((Self::load(session)?, pending))
+        let rebound_from = select(profile, &session)?;
+        Ok((
+            Self {
+                rebound_from,
+                ..Self::load(session)?
+            },
+            pending,
+        ))
     }
 
     fn load(mut session: WritableSession) -> Result<Self, SessionError> {
@@ -106,11 +116,16 @@ impl ResumedSession {
             title,
             title_present,
             recovery: None,
+            rebound_from: None,
         })
     }
 
     pub fn preferences(&self) -> &SessionPreferences {
         &self.session.metadata().preferences
+    }
+
+    pub fn rebound_from(&self) -> Option<&str> {
+        self.rebound_from.as_deref()
     }
 
     pub(crate) fn transcript(&self, setup: &AgentSetup) -> Result<Vec<HistoryEntry>, SessionError> {
@@ -129,15 +144,19 @@ impl ResumedSession {
     }
 }
 
-fn select(profile: &mut Profile, session: &WritableSession) -> Result<(), ResumeFailure> {
+fn select(
+    profile: &mut Profile,
+    session: &WritableSession,
+) -> Result<Option<String>, ResumeFailure> {
     let preferences = &session.metadata().preferences;
+    let provider = preferences.provider.id();
+    if !Settings::routes(provider) {
+        return Ok(Some(provider.label().to_owned()));
+    }
     profile
-        .resume_selection(
-            preferences.provider.id(),
-            preferences.provider.binding(),
-            &preferences.model,
-        )
-        .map_err(ResumeFailure::Selection)
+        .resume_selection(provider, preferences.provider.binding(), &preferences.model)
+        .map_err(ResumeFailure::Selection)?;
+    Ok(None)
 }
 
 pub fn recovered_turn(
@@ -205,6 +224,18 @@ impl LiveSession {
 
     pub fn observe_prompt(&self, prompt: &str) {
         self.session().observe_prompt(prompt);
+    }
+
+    pub fn rebind_provider(&self, model: &str) -> Result<(), SessionError> {
+        self.session()
+            .select_provider(self.route.provider.clone(), model)
+    }
+
+    pub fn rebind_notice(&self, saved: &str) -> String {
+        format!(
+            "This session was saved with the {saved} provider, which oh-fx cannot use yet; it continues with {}.",
+            self.route.provider.id().label()
+        )
     }
 
     pub(crate) fn continue_recovery(
@@ -286,7 +317,11 @@ pub fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
         .workspace_root()
         .to_str()
         .ok_or(SessionError::InvalidWorkspaceRoot)?;
-    SessionStore::open(data, workspace)
+    let store = SessionStore::open(data, workspace)?;
+    Ok(match profile.home() {
+        Some(home) => store.with_fx_home(home.to_path_buf()),
+        None => store,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

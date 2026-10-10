@@ -50,8 +50,8 @@ use turn_recovery::{
 use turn_restore::{complete_result_output, restored_history};
 
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
-const MANIFEST_FILE: &str = "session.json";
-const SESSION_LOCK_FILE: &str = "session.lock";
+pub(crate) const MANIFEST_FILE: &str = "session.json";
+pub(crate) const SESSION_LOCK_FILE: &str = "session.lock";
 const OWNER_LIVE_FILE: &str = "owner.live";
 const STAGING_PREFIX: &str = "creating+";
 const STAGING_RANDOM_BYTES: usize = 16;
@@ -601,6 +601,12 @@ pub(crate) fn resume_session(
         .open_child_private(id)?
         .ok_or(SessionError::SessionNotFound)?;
     let owned = OwnedSessionDir::acquire(dir, lock_deadline)?;
+    let still_named = sessions
+        .open_child(id)?
+        .is_some_and(|named| same_directory(&named, &owned.dir).unwrap_or(false));
+    if !still_named {
+        return Err(SessionError::SessionTargetChanged);
+    }
     let metadata = read_metadata(&owned.dir, id)?;
     let file = open_managed_file(&owned.dir, EVENTS_FILE, Access::Writable)?
         .ok_or(SessionError::InvalidSessionFormat)?;
@@ -767,7 +773,7 @@ pub(crate) fn now_ms() -> i64 {
         })
 }
 
-fn staging_name() -> Result<String, SessionError> {
+pub(crate) fn staging_name() -> Result<String, SessionError> {
     let mut random = [0_u8; STAGING_RANDOM_BYTES];
     getrandom::fill(&mut random).map_err(|_| SessionError::SessionStartFailed)?;
     Ok(format!("{STAGING_PREFIX}{}", lowercase_hex(&random)))

@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::os::fd::AsFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ofx_config::PrivateDir;
@@ -9,7 +9,7 @@ use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
-use crate::fx_sessions::FxSessions;
+use crate::fx_sessions::{FxSessions, ImportSource, import_from_fx, seal};
 use crate::session_catalog_cache::{CatalogIndex, CatalogScan, catalog_file_exists, scan_catalog};
 use crate::session_children::{ChildSessions, has_owner_marker};
 use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, SessionMetadata, SessionPreferences};
@@ -100,6 +100,7 @@ pub struct SessionStore {
     workspace_root: String,
     writable: bool,
     lock_deadline: Duration,
+    fx_home: Option<PathBuf>,
 }
 
 impl SessionStore {
@@ -115,6 +116,7 @@ impl SessionStore {
             workspace_root,
             writable: true,
             lock_deadline: LOCK_DEADLINE,
+            fx_home: None,
         })
     }
 
@@ -131,6 +133,7 @@ impl SessionStore {
             workspace_root,
             writable: false,
             lock_deadline: LOCK_DEADLINE,
+            fx_home: None,
         })
     }
 
@@ -154,10 +157,31 @@ impl SessionStore {
         )
     }
 
+    #[must_use]
+    pub fn with_fx_home(mut self, home: PathBuf) -> Self {
+        self.fx_home = Some(home);
+        self
+    }
+
     pub fn resume(&self, id: &str) -> Result<WritableSession, SessionError> {
+        let imported = self.import_from_fx(id)?;
         let mut session = self.open_within(id, self.lock_deadline)?;
         self.move_here(&mut session)?;
+        if let (Some(source), Ok(sessions)) = (imported, self.writable_sessions())
+            && let Ok(Some(copy)) = sessions.open_child(id)
+        {
+            let _ = seal(&copy, id, source);
+        }
         Ok(session)
+    }
+
+    fn import_from_fx(&self, id: &str) -> Result<Option<ImportSource>, SessionError> {
+        match (&self.fx_home, self.writable_sessions()) {
+            (Some(home), Ok(sessions)) if is_valid_session_id(id) => {
+                import_from_fx(home, sessions, id)
+            }
+            _ => Ok(None),
+        }
     }
 
     pub fn open_without_waiting(&self, id: &str) -> Result<WritableSession, SessionError> {
@@ -268,6 +292,7 @@ impl SessionStore {
             workspace_root: self.workspace_root.clone(),
             writable: self.writable,
             lock_deadline: self.lock_deadline,
+            fx_home: self.fx_home.clone(),
         })
     }
 
