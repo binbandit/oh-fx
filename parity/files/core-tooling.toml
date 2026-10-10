@@ -84,9 +84,9 @@ note = "A string-encoded composite object is decoded where upstream normalizes o
 
 [[file]]
 upstream = "src/core/tooling/tool_content.zig"
-status = "todo"
-modules = []
-note = "Rich media result parsing and text-only media projection are unimplemented."
+status = "partial"
+modules = ["crates/ofx-mcp/src/tool_result.rs"]
+note = "The text-only media projection (projectMediaForText) exists in tool_result.rs, shared by MCP tool results and the prompts mcp_features returns, and drops data and blobs in upstream's field order; it describes every image as unsent, as docs/differences/mcp.md records. Rich media result parsing is missing until tool results can carry images."
 
 [[file]]
 upstream = "src/core/tooling/tool_dispatch.zig"
@@ -102,9 +102,9 @@ note = "Advertised MCP tool calls run through the permission gate; selected-tool
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_feature_dispatch.zig"
-status = "todo"
-modules = []
-note = "Server-qualified MCP resource/prompt tools and typed input-required results are unimplemented."
+status = "partial"
+modules = ["crates/ofx-mcp/src/tool_mcp_feature_dispatch.rs"]
+note = "The mcp_features tool exists with upstream's schema, its decoder and failure messages, its label and provisional status, the failure without a runtime, and callFeatureForModel's dispatch, unsupported envelope and output limit from mcp_runtime.zig. Argument failures are returned when the call runs, as upstream skips validation for it. The McpInputRequired result waits for elicitation, and the per-call MCP access check waits for scoped access, as docs/differences/subagent.md records."
 
 [[file]]
 upstream = "src/core/tooling/tool_mcp_registry.zig"

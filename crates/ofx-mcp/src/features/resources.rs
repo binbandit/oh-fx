@@ -51,14 +51,21 @@ impl Limits {
 pub(crate) struct Resource {
     pub(crate) uri: String,
     pub(crate) name: String,
-    pub(crate) title: Option<String>,
+    pub(crate) details: Details,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResourceTemplate {
     pub(crate) uri_template: String,
     pub(crate) name: String,
+    pub(crate) details: Details,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Details {
     pub(crate) title: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) mime_type: Option<String>,
 }
 
 impl Listed for Resource {
@@ -78,11 +85,11 @@ impl Listed for Resource {
             .map_err(|_| McpError::InvalidResource)?;
         let name = required_string(object, "name", limits.name_bytes)
             .map_err(|_| McpError::InvalidResource)?;
-        let title = parse_descriptor_fields(object, limits)?;
+        let details = parse_descriptor_fields(object, limits)?;
         Ok(Self {
             uri: uri.to_owned(),
             name: name.to_owned(),
-            title,
+            details,
         })
     }
 
@@ -122,12 +129,12 @@ impl Listed for ResourceTemplate {
             .ok_or(McpError::InvalidTemplate)?;
         let name = required_string(object, "name", limits.name_bytes)
             .map_err(|_| McpError::InvalidTemplate)?;
-        let title =
+        let details =
             parse_descriptor_fields(object, limits).map_err(|_| McpError::InvalidTemplate)?;
         Ok(Self {
             uri_template: uri_template.to_owned(),
             name: name.to_owned(),
-            title,
+            details,
         })
     }
 
@@ -231,10 +238,10 @@ fn transient_transport_failure(error: &(dyn Error + 'static)) -> bool {
 fn parse_descriptor_fields(
     object: &Map<String, Value>,
     limits: common::Limits,
-) -> Result<Option<String>, McpError> {
+) -> Result<Details, McpError> {
     let title = optional_string(object, "title", limits.title_bytes)?;
-    optional_string(object, "description", limits.description_bytes)?;
-    optional_string(object, "mimeType", limits.title_bytes)?;
+    let description = optional_string(object, "description", limits.description_bytes)?;
+    let mime_type = optional_string(object, "mimeType", limits.title_bytes)?;
     if let Some(icons) = object.get("icons") {
         validate_icons(icons, limits)?;
         validate_bounded_json(icons, limits.metadata_bytes, limits.json_depth)?;
@@ -253,7 +260,11 @@ fn parse_descriptor_fields(
     {
         return Err(McpError::InvalidContent);
     }
-    Ok(title.map(str::to_owned))
+    Ok(Details {
+        title: title.map(str::to_owned),
+        description: description.map(str::to_owned),
+        mime_type: mime_type.map(str::to_owned),
+    })
 }
 
 #[cfg(test)]
@@ -299,12 +310,15 @@ mod tests {
                 Resource {
                     uri: "custom://a".to_owned(),
                     name: "A".to_owned(),
-                    title: Some("Alpha".to_owned()),
+                    details: Details {
+                        title: Some("Alpha".to_owned()),
+                        ..Details::default()
+                    },
                 },
                 Resource {
                     uri: "git://b".to_owned(),
                     name: "B".to_owned(),
-                    title: None,
+                    details: Details::default(),
                 },
             ]
         );
