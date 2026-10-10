@@ -22,8 +22,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/catalog_state.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/feature_catalog.rs"]
+note = "The resource read cache entry exists in feature_catalog.rs; the tool and feature catalog snapshot structs, their digests and the capability record are missing."
 
 [[file]]
 upstream = "src/core/mcp/command_provider.zig"
@@ -61,7 +62,7 @@ modules = []
 upstream = "src/core/mcp/feature_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_catalog.rs"]
-note = "Resource, template and prompt catalog slots, the advertised capabilities of the last connection, and the per-connection resource and prompt list invalidations exist; auth-generation availability is missing."
+note = "Resource, template and prompt catalog slots, the resource read cache, the advertised capabilities of the last connection, and the per-connection resource and prompt list invalidations exist; auth-generation availability is missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog_runtime.zig"
@@ -73,7 +74,7 @@ note = "Resource, template and prompt catalogs are fetched page by page and refr
 upstream = "src/core/mcp/feature_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_operations.rs"]
-note = "Resource, template and prompt listing exists; resource reads, prompt invocation, completion, resource update subscriptions and input-required rounds are missing."
+note = "Resource, template and prompt listing and resource reads exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one until OAuth lands, as docs/differences/mcp.md records. Prompt invocation, completion, modern resource update subscriptions, URL elicitation and input-required rounds are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_result.zig"
@@ -82,8 +83,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/feature_snapshot.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/feature_snapshot.rs"]
+note = "Concrete and template resource identities under one shared match budget exist, with the currency check before a read is sent and before it is cached, both against the connection that will send or sent the read. Currency compares the listed resources or templates instead of upstream's digest of every descriptor field, so a refresh that changes only a description keeps a resolved identity current. The check before sending runs just before the request, where upstream's guard spans the send for HTTP servers, as docs/differences/mcp.md records. Prompt and template-only identities are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_transport.zig"
@@ -94,7 +96,7 @@ modules = []
 upstream = "src/core/mcp/features/common.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/features/common.rs"]
-note = "Envelope parsing with the depth limit, complete results, cache hints, annotations, icons and bounded metadata exist, with the list page parser and catalog builder that upstream repeats in each feature file shared by resources, templates and prompts; protocol errors, resource contents and prompt content validation are missing."
+note = "Envelope parsing with the depth limit, complete results, cache hints, annotations, icons and bounded metadata exist, with the list page parser and catalog builder that upstream repeats in each feature file shared by resources, templates and prompts, and protocol errors, resource contents and base64 checks exist; prompt content validation and the MRTR limits are missing."
 
 [[file]]
 upstream = "src/core/mcp/features/completion.zig"
@@ -110,8 +112,8 @@ note = "prompts/list pages, prompt and argument descriptor validation and the pr
 [[file]]
 upstream = "src/core/mcp/features/resources.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/features/resources.rs", "crates/ofx-mcp/src/features/common.rs"]
-note = "Resource and template list pages, the catalog builders and the RFC 6570 template syntax check exist; reads, the template matcher and stale-fallback eligibility are missing."
+modules = ["crates/ofx-mcp/src/features/resources.rs", "crates/ofx-mcp/src/features/resources/uri_template.rs", "crates/ofx-mcp/src/features/common.rs"]
+note = "Resource and template list pages, the catalog builders, resources/read results with their content limits, the RFC 6570 template syntax check, the bounded template matcher and stale-fallback eligibility exist; input-required reads and their continuation request fields are missing until the modern protocol is ported."
 
 [[file]]
 upstream = "src/core/mcp/features/tools.zig"
@@ -194,7 +196,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, model catalogs, deferred ask connections and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, model catalogs, deferred ask connections and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"

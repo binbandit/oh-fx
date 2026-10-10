@@ -2,10 +2,33 @@ use std::sync::Arc;
 
 use tokio::time::Instant;
 
+use crate::catalog_freshness::page_expiry;
 use crate::error::McpError;
+use crate::feature_catalog_runtime::FEATURE_RESPONSE_FRAME_CAP_BYTES;
+use crate::features::common::ResourceContent;
 use crate::features::prompts::{Prompt, PromptArgument};
-use crate::features::resources::{Resource, ResourceTemplate};
-use crate::server_lifecycle::Server;
+use crate::features::resources::{
+    Limits, ReadOutcome, Resource, ResourceTemplate, parse_read_outcome, stale_fallback_eligible,
+};
+use crate::mcp_contract::TransportType;
+use crate::operation_control::monotonic_millis;
+use crate::protocol_messages::build_resource_read_request;
+use crate::server_connection::McpClient;
+use crate::server_lifecycle::{Lifecycle, Server};
+use crate::tool_result::protocol_diagnostic;
+use crate::transport::{McpTransport, TransportRequest};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceReadFailure {
+    Error(McpError),
+    Diagnostic(String),
+}
+
+impl From<McpError> for ResourceReadFailure {
+    fn from(error: McpError) -> Self {
+        Self::Error(error)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceSummary {
@@ -71,4 +94,100 @@ impl Server {
             })
             .collect())
     }
+
+    pub(crate) async fn read_resource(
+        self: &Arc<Self>,
+        uri: &str,
+        deadline: Instant,
+    ) -> Result<Arc<[ResourceContent]>, ResourceReadFailure> {
+        if !self.features.advertises_resources() {
+            return Err(McpError::McpResourcesUnsupported.into());
+        }
+        loop {
+            let identity = self.resource_identity(uri, deadline).await?;
+            let client = match self.lifecycle() {
+                Lifecycle::Ready(client) => Some(client),
+                Lifecycle::Idle | Lifecycle::Starting | Lifecycle::Failed(_) => None,
+            };
+            if client
+                .as_ref()
+                .is_some_and(|client| client.resources_invalidation.pending())
+            {
+                self.features.clear_reads();
+            }
+            let now_ms = monotonic_millis();
+            if let Some(cached) = self.features.cached_read(uri, now_ms, false) {
+                return Ok(cached);
+            }
+            let stale = self.features.cached_read(uri, now_ms, true);
+            let fall_back = |error: McpError, eligible: bool| match &stale {
+                Some(stale) if eligible => Ok(Arc::clone(stale)),
+                _ => Err(ResourceReadFailure::Error(error)),
+            };
+            let Some(client) = client else {
+                return fall_back(McpError::McpConnectionClosed, true);
+            };
+            if self.config.transport == TransportType::Stdio && !client.is_running() {
+                match self.running_client(deadline).await {
+                    Ok(_) => continue,
+                    Err(failure) => {
+                        let error = failure.into_error();
+                        let eligible = stale_fallback_eligible(&error)
+                            || matches!(error, McpError::McpRestartLimitReached);
+                        return fall_back(error, eligible);
+                    }
+                }
+            }
+            let current = self
+                .while_current(&client, || identity.current(&self.features))
+                .unwrap_or(false);
+            if !current || client.resources_invalidation.pending() {
+                return Err(McpError::McpFeatureCatalogChanged.into());
+            }
+            let (outcome, received_at_ms) = match request_read(&client, uri, deadline).await {
+                Ok(received) => received,
+                Err(error) => {
+                    let eligible = stale_fallback_eligible(&error);
+                    return fall_back(error, eligible);
+                }
+            };
+            let result = match outcome {
+                ReadOutcome::Complete(result) => result,
+                ReadOutcome::ProtocolFailure(error) => {
+                    return Err(ResourceReadFailure::Diagnostic(protocol_diagnostic(&error)));
+                }
+            };
+            let contents: Arc<[ResourceContent]> = result.contents.into();
+            let expires_at_ms = page_expiry(received_at_ms, result.cache.ttl_ms);
+            self.while_current(&client, || {
+                if identity.current(&self.features) && !client.resources_invalidation.pending() {
+                    self.features
+                        .publish_read(uri, Arc::clone(&contents), expires_at_ms);
+                }
+            });
+            return Ok(contents);
+        }
+    }
+}
+
+async fn request_read(
+    client: &McpClient,
+    uri: &str,
+    deadline: Instant,
+) -> Result<(ReadOutcome, u64), McpError> {
+    let id = client.transport.next_request_id()?;
+    let response = client
+        .transport
+        .request(TransportRequest::new(
+            id,
+            build_resource_read_request(id, uri),
+            FEATURE_RESPONSE_FRAME_CAP_BYTES,
+            deadline,
+        ))
+        .await?;
+    let received_at_ms = monotonic_millis();
+    Ok((
+        parse_read_outcome(&response, Limits::default())?,
+        received_at_ms,
+    ))
 }

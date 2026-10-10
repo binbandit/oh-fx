@@ -1,14 +1,16 @@
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
 use ofx_contract::NoticeTone;
 use ofx_mcp::{
     AddIntentError, McpError, McpRuntime, ProfileConfigWarning, ProjectMcpAction, PromptSummary,
-    ResourceSummary, add_profile_server, apply_project_mcp_action_to_entry, load_profile_document,
-    parse_add_intent, remove_profile_server,
+    ResourceContent, ResourceData, ResourceReadFailure, ResourceSummary, add_profile_server,
+    apply_project_mcp_action_to_entry, load_profile_document, parse_add_intent,
+    remove_profile_server,
 };
-use ofx_text::encode_terminal_safe;
+use ofx_text::{encode_terminal_safe, mask_secrets};
 
 use crate::app_agent_runtime::ControllerState;
 use crate::app_mcp_runtime::{McpHost, RECONNECTING, TOPIC};
@@ -52,6 +54,10 @@ pub(crate) enum Outcome {
     ListResources {
         server: String,
         templates: bool,
+    },
+    ReadResource {
+        server: String,
+        uri: String,
     },
     ListPrompts {
         server: String,
@@ -121,6 +127,7 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
         }
         Outcome::Trust { body, action } => apply_project_action(state, host, &action, &body),
         Outcome::ListResources { server, templates } => host.list_resources(server, templates),
+        Outcome::ReadResource { server, uri } => host.read_resource(server, uri),
         Outcome::ListPrompts { server } => host.list_prompts(server),
     }
 }
@@ -150,6 +157,38 @@ pub(crate) fn render_resource_listing(
             item.identity,
             item.title.as_deref().unwrap_or(&item.name)
         );
+    }
+    out
+}
+
+pub(crate) fn render_resource_read(
+    server: &str,
+    uri: &str,
+    read: Result<Arc<[ResourceContent]>, ResourceReadFailure>,
+) -> String {
+    let contents = match read {
+        Ok(contents) => contents,
+        Err(ResourceReadFailure::Error(error)) => {
+            return format!("MCP resource read failed: {error}.");
+        }
+        Err(ResourceReadFailure::Diagnostic(diagnostic)) => {
+            return mask_secrets(&diagnostic).into_owned();
+        }
+    };
+    let mut out = format!("[untrusted MCP resource content] {server} :: {uri}\n");
+    for content in contents.iter() {
+        let _ = write!(out, "\n{}", content.uri);
+        if let Some(mime_type) = &content.mime_type {
+            let _ = write!(out, " ({mime_type})");
+        }
+        out.push('\n');
+        match &content.data {
+            ResourceData::Text(text) => out.push_str(text),
+            ResourceData::Blob(blob) => {
+                let _ = write!(out, "<base64 blob: {} bytes encoded>", blob.len());
+            }
+        }
+        out.push('\n');
     }
     out
 }
@@ -367,16 +406,40 @@ fn resource(rest: &str) -> Outcome {
             },
             _ => show(RESOURCE_LIST_USAGE),
         },
-        Some("read") => show(match (tokens.next(), tokens.next()) {
-            (Some(_), Some(_)) => "MCP resource reads are not available yet.",
-            _ => RESOURCE_READ_USAGE,
-        }),
+        Some("read") => read_resource(rest),
         Some("complete") => show(match (tokens.next(), tokens.next(), tokens.next()) {
             (Some(_), Some(_), Some(_)) => "MCP resource completion is not available yet.",
             _ => RESOURCE_COMPLETE_USAGE,
         }),
         _ => show(RESOURCE_USAGE),
     }
+}
+
+fn read_resource(rest: &str) -> Outcome {
+    let mut input = rest;
+    take_token(&mut input);
+    let Some(server) = take_token(&mut input) else {
+        return show(RESOURCE_READ_USAGE);
+    };
+    let uri = input.trim_matches(TRIMMED);
+    if uri.is_empty() {
+        return show(RESOURCE_READ_USAGE);
+    }
+    Outcome::ReadResource {
+        server: server.to_owned(),
+        uri: uri.to_owned(),
+    }
+}
+
+fn take_token<'a>(input: &mut &'a str) -> Option<&'a str> {
+    let trimmed = input.trim_start_matches(TRIMMED);
+    if trimmed.is_empty() {
+        *input = trimmed;
+        return None;
+    }
+    let end = trimmed.find(TRIMMED).unwrap_or(trimmed.len());
+    *input = &trimmed[end..];
+    Some(&trimmed[..end])
 }
 
 fn prompt(rest: &str) -> Outcome {
@@ -640,10 +703,8 @@ mod tests {
             ("resource list", RESOURCE_LIST_USAGE),
             ("resource templates docs extra", RESOURCE_LIST_USAGE),
             ("resource read docs", RESOURCE_READ_USAGE),
-            (
-                "resource read docs file:///a b",
-                "MCP resource reads are not available yet.",
-            ),
+            ("resource read", RESOURCE_READ_USAGE),
+            ("resource read docs \t ", RESOURCE_READ_USAGE),
             ("resource complete docs uri", RESOURCE_COMPLETE_USAGE),
             (
                 "resource complete docs uri name",
@@ -719,6 +780,72 @@ mod tests {
         assert_eq!(
             render_resource_listing("docs", false, Err(McpError::McpResourcesUnsupported)),
             "MCP resource listing failed: McpResourcesUnsupported."
+        );
+    }
+
+    #[test]
+    fn resource_reads_keep_the_rest_of_the_line_as_the_uri_and_show_each_content() {
+        let (_home, path) = profile();
+        for (command, uri) in [
+            ("resource read docs file:///a b", "file:///a b"),
+            ("resource \tread  docs   memory://x \t", "memory://x"),
+        ] {
+            assert_eq!(
+                respond(command, Some(&path), &runtime()),
+                Outcome::ReadResource {
+                    server: "docs".to_owned(),
+                    uri: uri.to_owned()
+                },
+                "{command}"
+            );
+        }
+        let content = |uri: &str, mime_type: Option<&str>, data: ResourceData| ResourceContent {
+            uri: uri.to_owned(),
+            mime_type: mime_type.map(str::to_owned),
+            annotations_json: None,
+            metadata_json: None,
+            data,
+        };
+        assert_eq!(
+            render_resource_read(
+                "docs",
+                "memory://notes",
+                Ok(Arc::from(vec![
+                    content(
+                        "memory://notes",
+                        Some("text/plain"),
+                        ResourceData::Text("hello".to_owned())
+                    ),
+                    content(
+                        "memory://image",
+                        None,
+                        ResourceData::Blob("aGVsbG8=".to_owned())
+                    ),
+                ]))
+            ),
+            "[untrusted MCP resource content] docs :: memory://notes\n\nmemory://notes (text/plain)\nhello\n\nmemory://image\n<base64 blob: 8 bytes encoded>\n"
+        );
+        assert_eq!(
+            render_resource_read("docs", "memory://x", Ok(Arc::from(Vec::new()))),
+            "[untrusted MCP resource content] docs :: memory://x\n"
+        );
+        assert_eq!(
+            render_resource_read(
+                "docs",
+                "memory://x",
+                Err(ResourceReadFailure::Error(McpError::McpResourceNotFound))
+            ),
+            "MCP resource read failed: McpResourceNotFound."
+        );
+        assert_eq!(
+            render_resource_read(
+                "docs",
+                "memory://x",
+                Err(ResourceReadFailure::Diagnostic(
+                    "MCP protocol error -32002: denied; data={\"token\":\"sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789\"}".to_owned()
+                ))
+            ),
+            "MCP protocol error -32002: denied; data={\"token\":\"[redacted]\"}"
         );
     }
 
