@@ -183,7 +183,7 @@ note = "Credentials, canonicalResource, the loopback and secure URL policy, refr
 upstream = "src/core/mcp/mcp_auth_store.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_auth_store.rs"]
-note = "load and save of the private file store with upstream's bytes, entry isolation, identity matching and the timed credentials.lock exist under $XDG_DATA_HOME/oh-fx; the macOS keychain backend is not used, as docs/differences/mcp.md records, and status and delete are missing."
+note = "load and save of the private file store with upstream's bytes, entry isolation, identity matching and the timed credentials.lock exist under $XDG_DATA_HOME/oh-fx; a configured resource or issuer matches a grant by the coverage and trailing-slash rules discovery accepted it under, and the macOS keychain backend is not used, as docs/differences/mcp.md records, and status and delete are missing."
 
 [[file]]
 upstream = "src/core/mcp/mcp_contract.zig"
@@ -263,7 +263,7 @@ note = "Selected schemas with the merged server instructions, the truncation mar
 upstream = "src/core/mcp/server_auth.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_auth.rs"]
-note = "Static headers, header_env and bearer_token_env resolve when a server connects; loadStoredCredentials and the stored bearer, refreshed and saved before a request as refreshSharedCredentials does, and authenticate behind oh-fx mcp auth exist; challenges, the failed state after a later refresh failure, automated authorization and logout are missing."
+note = "Static headers, header_env and bearer_token_env resolve when a server connects; loadStoredCredentials and the stored bearer, refreshed and saved before a request as refreshSharedCredentials does, and authenticate behind oh-fx mcp auth, which refuses a server that never reads stored grants as docs/differences/mcp.md records, exist; challenges, the failed state after a later refresh failure, automated authorization and logout are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_connection.zig"

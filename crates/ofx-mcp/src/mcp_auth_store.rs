@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::error::McpError;
-use crate::mcp_auth::{Credentials, parse_json};
+use crate::mcp_auth::{Credentials, issuers_match, parse_json, resource_covers_endpoint};
 use crate::oauth_uri::canonical_resource;
 
 const SCHEMA_VERSION: i64 = 1;
@@ -64,10 +64,11 @@ impl CredentialStore {
         for (identity, credentials) in &store.credentials {
             if identity != server_identity
                 || credentials.endpoint != endpoint
-                || resource
-                    .as_deref()
-                    .is_some_and(|resource| credentials.resource != resource)
-                || configured_issuer.is_some_and(|issuer| credentials.issuer != issuer)
+                || resource.as_deref().is_some_and(|resource| {
+                    !resource_covers_endpoint(&credentials.resource, resource)
+                })
+                || configured_issuer
+                    .is_some_and(|issuer| !issuers_match(&credentials.issuer, issuer))
             {
                 continue;
             }

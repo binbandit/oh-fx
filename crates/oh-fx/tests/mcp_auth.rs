@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use ofx_testkit::{FakeServer, Reply, chat_text_events};
 use serde_json::{Value, json};
 
 const ACCESS: &str = "granted-access-token";
@@ -18,7 +19,19 @@ struct Seen {
     method: String,
     path: String,
     body: String,
+    authorization: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct Shape {
+    protected_resource: &'static str,
+    issuer_suffix: &'static str,
+}
+
+const PLAIN: Shape = Shape {
+    protected_resource: "/mcp",
+    issuer_suffix: "",
+};
 
 struct Authority {
     origin: String,
@@ -27,6 +40,10 @@ struct Authority {
 
 impl Authority {
     fn start() -> Self {
+        Self::shaped(PLAIN)
+    }
+
+    fn shaped(shape: Shape) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind the authority");
         let origin = format!(
             "http://{}",
@@ -37,7 +54,7 @@ impl Authority {
         let served = origin.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                answer(stream, &served, &recorded);
+                answer(stream, &served, shape, &recorded);
             }
         });
         Self { origin, seen }
@@ -51,9 +68,43 @@ impl Authority {
             .map(|seen| format!("{} {}", seen.method, seen.path))
             .collect()
     }
+
+    fn mcp_authorizations(&self) -> Vec<Option<String>> {
+        self.seen
+            .lock()
+            .expect("recorded requests")
+            .iter()
+            .filter(|seen| seen.method == "POST" && seen.path == "/mcp")
+            .map(|seen| seen.authorization.clone())
+            .collect()
+    }
 }
 
-fn answer(mut stream: TcpStream, origin: &str, seen: &Mutex<Vec<Seen>>) {
+struct Answer {
+    status: &'static str,
+    headers: Vec<String>,
+    body: String,
+}
+
+impl Answer {
+    fn json(status: &'static str, body: &Value) -> Self {
+        Self {
+            status,
+            headers: vec!["Content-Type: application/json".to_owned()],
+            body: body.to_string(),
+        }
+    }
+
+    fn empty(status: &'static str) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body: String::new(),
+        }
+    }
+}
+
+fn answer(mut stream: TcpStream, origin: &str, shape: Shape, seen: &Mutex<Vec<Seen>>) {
     let mut reader = BufReader::new(stream.try_clone().expect("authority stream"));
     let mut line = String::new();
     if reader.read_line(&mut line).is_err() {
@@ -63,33 +114,38 @@ fn answer(mut stream: TcpStream, origin: &str, seen: &Mutex<Vec<Seen>>) {
     let method = parts.next().unwrap_or_default().to_owned();
     let path = parts.next().unwrap_or_default().to_owned();
     let mut length = 0;
+    let mut authorization = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).is_err() || header == "\r\n" || header.is_empty() {
             break;
         }
-        if let Some((name, value)) = header.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().unwrap_or(0);
+        if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap_or(0);
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_owned());
+            }
         }
     }
     let mut body = vec![0; length];
     let _ = reader.read_exact(&mut body);
+    let body = String::from_utf8_lossy(&body).into_owned();
     seen.lock().expect("recorded requests").push(Seen {
         method: method.clone(),
         path: path.clone(),
-        body: String::from_utf8_lossy(&body).into_owned(),
+        body: body.clone(),
+        authorization: authorization.clone(),
     });
-    let (status, reply) = match (method.as_str(), path.as_str()) {
-        ("GET", "/.well-known/oauth-protected-resource/mcp") => (
+    let reply = match (method.as_str(), path.as_str()) {
+        ("GET", "/.well-known/oauth-protected-resource/mcp") => Answer::json(
             "200 OK",
-            json!({"resource": format!("{origin}/mcp"), "authorization_servers": [origin]}),
+            &json!({"resource": format!("{origin}{}", shape.protected_resource), "authorization_servers": [origin]}),
         ),
-        ("GET", "/.well-known/oauth-authorization-server") => (
+        ("GET", "/.well-known/oauth-authorization-server") => Answer::json(
             "200 OK",
-            json!({
-                "issuer": origin,
+            &json!({
+                "issuer": format!("{origin}{}", shape.issuer_suffix),
                 "authorization_endpoint": format!("{origin}/authorize"),
                 "token_endpoint": format!("{origin}/token"),
                 "registration_endpoint": format!("{origin}/register"),
@@ -98,19 +154,56 @@ fn answer(mut stream: TcpStream, origin: &str, seen: &Mutex<Vec<Seen>>) {
                 "token_endpoint_auth_methods_supported": ["none"],
             }),
         ),
-        ("POST", "/register") => ("201 Created", json!({"client_id": "registered-client"})),
-        ("POST", "/token") => (
+        ("POST", "/register") => {
+            Answer::json("201 Created", &json!({"client_id": "registered-client"}))
+        }
+        ("POST", "/token") => Answer::json(
             "200 OK",
-            json!({"access_token": ACCESS, "refresh_token": REFRESH, "expires_in": 3600, "token_type": "Bearer"}),
+            &json!({"access_token": ACCESS, "refresh_token": REFRESH, "expires_in": 3600, "token_type": "Bearer"}),
         ),
-        _ => ("404 Not Found", json!({})),
+        ("POST", "/mcp") => mcp_answer(&body, authorization.as_deref(), origin),
+        ("DELETE", "/mcp") => Answer::empty("200 OK"),
+        ("GET", "/mcp") => Answer::empty("405 Method Not Allowed"),
+        _ => Answer::json("404 Not Found", &json!({})),
     };
-    let text = reply.to_string();
+    let mut head = format!("HTTP/1.1 {}\r\n", reply.status);
+    for header in &reply.headers {
+        head.push_str(header);
+        head.push_str("\r\n");
+    }
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-        text.len()
+        "{head}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+        reply.body.len(),
+        reply.body
     );
+}
+
+fn mcp_answer(body: &str, authorization: Option<&str>, origin: &str) -> Answer {
+    if authorization != Some(format!("Bearer {ACCESS}").as_str()) {
+        let mut rejected = Answer::empty("401 Unauthorized");
+        rejected.headers.push(format!(
+            "WWW-Authenticate: Bearer resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\""
+        ));
+        return rejected;
+    }
+    let message: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let Some(id) = message.get("id").cloned() else {
+        return Answer::empty("202 Accepted");
+    };
+    let result = match message["method"].as_str() {
+        Some("initialize") => json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "fixture", "version": "1.0"},
+        }),
+        Some("tools/list") => json!({"tools": []}),
+        _ => json!({}),
+    };
+    Answer::json(
+        "200 OK",
+        &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+    )
 }
 
 struct Home {
@@ -158,6 +251,43 @@ impl Home {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         command
+    }
+
+    fn servers(&self, servers: &Value) {
+        fs::write(
+            self.root.join("config/oh-fx/mcp.json"),
+            json!({ "mcp": servers }).to_string(),
+        )
+        .expect("profile servers");
+    }
+
+    fn workspace(&self) -> PathBuf {
+        self.root.join("workspace")
+    }
+
+    fn settings(&self, settings: &Value) {
+        fs::write(
+            self.root.join("config/oh-fx/settings.json"),
+            settings.to_string(),
+        )
+        .expect("profile settings");
+    }
+
+    fn ask(&self, model: &FakeServer) -> std::process::Output {
+        self.settings(&json!({
+            "permission_mode": "ask",
+            "provider": "local",
+            "model": "local-model",
+            "providers": {"local": {
+                "protocol": "openai-chat-completions",
+                "base_url": model.base_url(),
+                "auth": {"type": "none"},
+                "models": ["local-model"],
+            }},
+        }));
+        self.command(&["ask", "hi"])
+            .output()
+            .expect("run oh-fx ask")
     }
 
     fn store(&self) -> PathBuf {
@@ -218,6 +348,26 @@ fn visit(url: &str) -> String {
     response
 }
 
+fn authorize(home: &Home, name: &str) -> (std::process::Output, String, String) {
+    let mut child = home
+        .command(&["mcp", "auth", name])
+        .spawn()
+        .expect("test step");
+    let mut stdout = BufReader::new(child.stdout.take().expect("test step"));
+    let (url, shown) = authorization_url(&mut stdout);
+    let callback = format!(
+        "{}?code=browser-code&state={}",
+        query(&url, "redirect_uri"),
+        query(&url, "state")
+    );
+    let page = visit(&callback);
+    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+    let mut tail = String::new();
+    stdout.read_to_string(&mut tail).expect("test step");
+    let output = child.wait_with_output().expect("test step");
+    (output, shown, tail)
+}
+
 fn mode(path: &Path) -> u32 {
     fs::metadata(path).expect("test step").permissions().mode() & 0o777
 }
@@ -226,12 +376,8 @@ fn mode(path: &Path) -> u32 {
 fn mcp_auth_authorizes_in_the_browser_and_stores_the_grant_privately() {
     let authority = Authority::start();
     let home = Home::new(&authority.origin);
-    let mut child = home
-        .command(&["mcp", "auth", "fixture"])
-        .spawn()
-        .expect("test step");
-    let mut stdout = BufReader::new(child.stdout.take().expect("test step"));
-    let (url, shown) = authorization_url(&mut stdout);
+    let (output, shown, tail) = authorize(&home, "fixture");
+    let url = shown.lines().nth(1).expect("test step");
     assert!(
         shown.starts_with("Open this URL to authenticate the MCP server:\n"),
         "{shown}"
@@ -244,16 +390,6 @@ fn mcp_auth_authorizes_in_the_browser_and_stores_the_grant_privately() {
         url.starts_with(&format!("{}/authorize?", authority.origin)),
         "{url}"
     );
-    let callback = format!(
-        "{}?code=browser-code&state={}",
-        query(&url, "redirect_uri"),
-        query(&url, "state")
-    );
-    let page = visit(&callback);
-    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
-    let mut tail = String::new();
-    stdout.read_to_string(&mut tail).expect("test step");
-    let output = child.wait_with_output().expect("test step");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert_eq!(stderr, "");
@@ -314,6 +450,93 @@ fn mcp_auth_refuses_unknown_and_local_servers() {
         String::from_utf8_lossy(&usage.stderr),
         "usage: oh-fx mcp auth NAME\n"
     );
+    assert!(authority.paths().is_empty());
+    assert!(!home.store().exists());
+}
+
+#[test]
+fn a_granted_server_connects_with_its_bearer_whatever_identity_discovery_accepted() {
+    let enclosing = Shape {
+        protected_resource: "/",
+        issuer_suffix: "",
+    };
+    let slashed = Shape {
+        protected_resource: "/mcp",
+        issuer_suffix: "/",
+    };
+    for (shape, oauth) in [
+        (PLAIN, None),
+        (enclosing, Some("resource")),
+        (slashed, Some("issuer")),
+    ] {
+        let authority = Authority::shaped(shape);
+        let home = Home::new(&authority.origin);
+        let mut server = json!({
+            "type": "http",
+            "url": format!("{}/mcp", authority.origin),
+            "required": true,
+        });
+        match oauth {
+            Some("resource") => {
+                server["oauth"] = json!({"resource": format!("{}/mcp", authority.origin)});
+            }
+            Some(_) => {
+                server["oauth"] = json!({"issuer": authority.origin});
+            }
+            None => {}
+        }
+        home.servers(&json!({"fixture": server}));
+        let (granted, _, tail) = authorize(&home, "fixture");
+        assert!(
+            granted.status.success(),
+            "{shape:?}: {}",
+            String::from_utf8_lossy(&granted.stderr)
+        );
+        assert_eq!(tail, "Authenticated MCP server 'fixture'.\n", "{shape:?}");
+        let model = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+        let asked = home.ask(&model);
+        let stderr = String::from_utf8_lossy(&asked.stderr);
+        assert!(asked.status.success(), "{shape:?}: {stderr}");
+        let sent = authority.mcp_authorizations();
+        assert!(!sent.is_empty(), "{shape:?}");
+        assert!(
+            sent.iter()
+                .all(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str())),
+            "{shape:?}: {sent:?}"
+        );
+        for secret in [ACCESS, REFRESH] {
+            assert!(!stderr.contains(secret), "{stderr}");
+            assert!(
+                !String::from_utf8_lossy(&asked.stdout).contains(secret),
+                "{shape:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mcp_auth_refuses_a_project_server_whose_grant_would_never_be_used() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    fs::write(
+        home.workspace().join(".mcp.json"),
+        json!({"mcpServers": {"project": {"type": "http", "url": format!("{}/mcp", authority.origin)}}})
+            .to_string(),
+    )
+    .expect("project servers");
+    home.settings(&json!({
+        "workspaces": {home.workspace().display().to_string(): {"enabledMcpjsonServers": ["project"]}},
+    }));
+    let output = home
+        .command(&["mcp", "auth", "project"])
+        .output()
+        .expect("test step");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx mcp auth failed: McpStoredCredentialsNotAllowed.\n"
+    );
+    assert!(output.stdout.is_empty());
     assert!(authority.paths().is_empty());
     assert!(!home.store().exists());
 }

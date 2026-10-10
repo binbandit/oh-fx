@@ -123,7 +123,7 @@ pub(crate) fn parse_authorization_metadata(
         return Err(McpError::InvalidAuthorizationMetadata);
     };
     let issuer = required_string(&object, "issuer")?;
-    if without_trailing_slash(issuer) != without_trailing_slash(expected_issuer) {
+    if !issuers_match(issuer, expected_issuer) {
         return Ok(MetadataOutcome::IssuerMismatch);
     }
     Ok(MetadataOutcome::Metadata(Box::new(AuthorizationMetadata {
@@ -153,6 +153,10 @@ pub(crate) fn parse_authorization_metadata(
             .unwrap_or(false),
         issuer: issuer.to_owned(),
     })))
+}
+
+pub(crate) fn issuers_match(first: &str, second: &str) -> bool {
+    without_trailing_slash(first) == without_trailing_slash(second)
 }
 
 fn without_trailing_slash(issuer: &str) -> &str {
@@ -234,7 +238,7 @@ pub(crate) fn validate_oauth_url_for_resource(
     }
 }
 
-fn resource_covers_endpoint(resource: &str, endpoint: &str) -> bool {
+pub(crate) fn resource_covers_endpoint(resource: &str, endpoint: &str) -> bool {
     if resource == endpoint {
         return true;
     }

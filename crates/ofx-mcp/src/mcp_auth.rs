@@ -299,6 +299,7 @@ mod authorization;
 mod metadata;
 
 pub(crate) use authorization::{AuthorizationResult, ClientConfig, authorize_interactive};
+pub(crate) use metadata::{issuers_match, resource_covers_endpoint};
 
 #[cfg(test)]
 mod tests;

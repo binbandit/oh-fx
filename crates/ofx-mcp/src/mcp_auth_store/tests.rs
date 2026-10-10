@@ -250,6 +250,46 @@ fn a_save_replaces_the_same_identity_and_keeps_the_others() {
 }
 
 #[test]
+fn a_grant_is_found_under_the_identity_discovery_accepted() {
+    let home = Home::new();
+    let store = home.store();
+    let mut enclosing = credentials("https://mcp.example/team/mcp", "enclosing");
+    enclosing.resource = "https://mcp.example/team".to_owned();
+    enclosing.issuer = "https://issuer.example".to_owned();
+    store.save("one", &enclosing).unwrap();
+    let found = |resource: Option<&str>, issuer: Option<&str>| {
+        store
+            .load("one", "https://mcp.example/team/mcp", resource, issuer)
+            .unwrap()
+            .map(|credentials| credentials.access_token.as_str().to_owned())
+    };
+    for (resource, issuer) in [
+        (Some("https://mcp.example/team/mcp"), None),
+        (Some("https://mcp.example/team"), None),
+        (None, Some("https://issuer.example/")),
+        (
+            Some("https://MCP.example:443/team/mcp"),
+            Some("https://issuer.example"),
+        ),
+    ] {
+        assert_eq!(
+            found(resource, issuer).as_deref(),
+            Some("enclosing"),
+            "{resource:?} {issuer:?}"
+        );
+    }
+    for (resource, issuer) in [
+        (Some("https://mcp.example/teams"), None),
+        (Some("https://mcp.example/"), None),
+        (Some("https://other.example/team/mcp"), None),
+        (None, Some("https://issuer.example/other")),
+        (None, Some("https://issuer.example//")),
+    ] {
+        assert_eq!(found(resource, issuer), None, "{resource:?} {issuer:?}");
+    }
+}
+
+#[test]
 fn a_save_drops_rejected_entries_and_reports_the_repair() {
     let home = Home::new();
     home.write(r#"{"version":1,"credentials":[{}]}"#);
