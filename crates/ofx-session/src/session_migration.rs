@@ -55,7 +55,13 @@ struct Watermark {
 }
 
 pub(crate) fn holds_schema_v3(dir: &PrivateDir, id: &str) -> Result<bool, SessionError> {
-    Ok(holds_authority_marker(dir)? && read_metadata(dir, id).is_err())
+    if !holds_authority_marker(dir)? {
+        return Ok(false);
+    }
+    Ok(!matches!(
+        read_metadata(dir, id),
+        Ok(_) | Err(SessionError::InvalidSessionMetadata)
+    ))
 }
 
 pub(crate) fn read_schema_v3(
@@ -95,8 +101,11 @@ fn schema_v3_log(dir: &PrivateDir) -> Result<&'static str, SessionError> {
     })
 }
 
-pub(crate) fn schema_v3_watermark(dir: &PrivateDir) -> Result<Option<String>, SessionError> {
-    if !holds_authority_marker(dir)? {
+pub(crate) fn schema_v3_watermark(
+    dir: &PrivateDir,
+    id: &str,
+) -> Result<Option<String>, SessionError> {
+    if !holds_schema_v3(dir, id)? {
         return Ok(None);
     }
     let Some(events) = open_managed_file(dir, schema_v3_log(dir)?, Access::ReadOnly)? else {

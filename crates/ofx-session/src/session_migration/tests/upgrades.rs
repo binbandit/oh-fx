@@ -37,7 +37,7 @@ fn an_upgrade_fx_left_unfinished_is_read_from_the_log_it_set_aside() {
         let summary = summarize_schema_v3(&dir, id).unwrap().unwrap();
         assert_eq!(summary.history_len, 2);
         assert_eq!(
-            schema_v3_watermark(&dir).unwrap(),
+            schema_v3_watermark(&dir, id).unwrap(),
             Some(format!("commit.{GENERATION}.json"))
         );
         let converted = read_schema_v3(&dir, id).unwrap().unwrap();
@@ -83,6 +83,21 @@ fn an_upgrade_fx_finished_is_read_from_its_new_log() {
     )
     .unwrap();
     let opened = opened(&fixture, "legacy-upgraded");
+    assert!(!holds_schema_v3(&opened, "legacy-upgraded").unwrap());
+    assert_eq!(
+        source_log(&opened, "legacy-upgraded").unwrap(),
+        "events.jsonl"
+    );
+    assert_eq!(
+        schema_v3_watermark(&opened, "legacy-upgraded").unwrap(),
+        None
+    );
+    let saved = fs::read_to_string(dir.join("session.json")).unwrap();
+    fs::write(
+        dir.join("session.json"),
+        saved.replacen('{', "{\"from_a_later_fx\":1,", 1),
+    )
+    .unwrap();
     assert!(!holds_schema_v3(&opened, "legacy-upgraded").unwrap());
     assert_eq!(
         source_log(&opened, "legacy-upgraded").unwrap(),

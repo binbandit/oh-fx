@@ -295,7 +295,7 @@ fn source_stamp(source: &PrivateDir, id: &str) -> Result<ImportSource, SessionEr
     } else {
         None
     };
-    let watermark = match schema_v3_watermark(source)? {
+    let watermark = match schema_v3_watermark(source, id)? {
         Some(name) if present(source, &name)? => Some(file_stamp(source, &name)?),
         _ => None,
     };
