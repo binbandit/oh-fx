@@ -216,6 +216,7 @@ pub(crate) fn ended_turn(
                 content,
                 restored_steering,
                 feedback_for: None,
+                ..
             } => {
                 let steering = if *restored_steering {
                     Some(content.as_str())

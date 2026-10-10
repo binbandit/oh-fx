@@ -3,12 +3,15 @@ use std::collections::HashMap;
 use std::io;
 use std::mem;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ofx_config::{MAX_MODEL_BYTES, MaxTokensParameter, ToolChoiceMode, is_valid_model_id};
 use ofx_contract::{
-    ChatMessage, Completion, DuplicateKeys, FinishReason, Json, ModelRequest, Object,
-    ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolSpec, Usage,
+    ChatMessage, Completion, DuplicateKeys, FinishReason, ImageAttachment, Json, ModelRequest,
+    Object, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance, ToolSpec, Usage,
     parse_strict_json, parse_strict_json_value,
 };
+use ofx_images::load_verified_snapshot;
 use serde::Serialize;
 
 pub(crate) use crate::secret_mask::mask_configured_secrets;
@@ -32,6 +35,8 @@ const DETAIL_DECODE_NOTICE: &str = "Provider error details could not be decoded"
 pub(crate) enum ProtocolError {
     #[error("InvalidProviderPrompt")]
     InvalidProviderPrompt,
+    #[error("ImageUnavailable")]
+    ImageUnavailable,
     #[error("InvalidModel")]
     InvalidModel,
     #[error("UnsupportedToolProvenance")]
@@ -314,26 +319,35 @@ pub(crate) fn build_request(
     let functions = select_functions(request.tools, request.tool_choice)?;
     let selection = Selection::of(request.tool_choice, &functions);
     let projection = Projection::new(request.messages)?;
-    let messages: Vec<WireMessage<'_>> = request
-        .instructions
-        .iter()
-        .map(|instruction| WireMessage::System {
-            content: instruction,
-        })
-        .chain(
-            request
-                .messages
-                .iter()
-                .map(|message| encode_message(message, &projection)),
-        )
-        .collect();
     let mut body = Vec::with_capacity(INITIAL_BODY_BYTES);
     body.extend_from_slice(b"{\"model\":");
     write_json(&mut body, request.model)?;
     body.extend_from_slice(
-        b",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":",
+        b",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[",
     );
-    write_json(&mut body, &messages)?;
+    for (index, instruction) in request.instructions.iter().enumerate() {
+        if index != 0 {
+            body.push(b',');
+        }
+        write_json(
+            &mut body,
+            &WireMessage::System {
+                content: instruction,
+            },
+        )?;
+    }
+    for (index, message) in request.messages.iter().enumerate() {
+        if index != 0 || !request.instructions.is_empty() {
+            body.push(b',');
+        }
+        match message {
+            ChatMessage::User {
+                content, images, ..
+            } if !images.is_empty() => write_user_content_parts(&mut body, content, images)?,
+            _ => write_json(&mut body, &encode_message(message, &projection))?,
+        }
+    }
+    body.push(b']');
     if !functions.is_empty() {
         write_tools(&mut body, &functions)?;
         if options.tool_choice_mode == ToolChoiceMode::Send {
@@ -394,6 +408,46 @@ fn encode_message<'a>(message: &'a ChatMessage, projection: &'a Projection) -> W
             tool_call_id: projection.resolve(call_id.as_str()),
         },
     }
+}
+
+fn write_user_content_parts(
+    body: &mut Vec<u8>,
+    content: &str,
+    images: &[ImageAttachment],
+) -> ProtocolResult<()> {
+    body.extend_from_slice(b"{\"role\":\"user\",\"content\":[");
+    let mut wrote_part = false;
+    if !content.is_empty() {
+        body.extend_from_slice(b"{\"type\":\"text\",\"text\":");
+        write_json(body, content)?;
+        body.push(b'}');
+        wrote_part = true;
+    }
+    for image in images {
+        if wrote_part {
+            body.push(b',');
+        }
+        let snapshot = load_verified_snapshot(image, &|| Ok(()))
+            .map_err(|_| ProtocolError::ImageUnavailable)?;
+        body.extend_from_slice(b"{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+        body.extend_from_slice(snapshot.media_type.as_bytes());
+        body.extend_from_slice(b";base64,");
+        push_base64(body, &snapshot.bytes)?;
+        body.extend_from_slice(b"\"}}");
+        wrote_part = true;
+    }
+    body.extend_from_slice(b"]}");
+    Ok(())
+}
+
+fn push_base64(body: &mut Vec<u8>, bytes: &[u8]) -> ProtocolResult<()> {
+    let start = body.len();
+    let length = base64::encoded_len(bytes.len(), true).ok_or(ProtocolError::ImageUnavailable)?;
+    body.resize(start + length, 0);
+    STANDARD
+        .encode_slice(bytes, &mut body[start..])
+        .map_err(|_| ProtocolError::ImageUnavailable)?;
+    Ok(())
 }
 
 fn write_tools(body: &mut Vec<u8>, functions: &[&ToolSpec]) -> ProtocolResult<()> {

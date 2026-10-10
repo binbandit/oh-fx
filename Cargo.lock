@@ -787,9 +787,11 @@ dependencies = [
 name = "ofx-gateway"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "ofx-config",
  "ofx-contract",
  "ofx-http",
+ "ofx-images",
  "ofx-testkit",
  "ofx-text",
  "ofx-upgrade",

@@ -1873,6 +1873,7 @@ impl Agent {
                     content,
                     restored_steering: false,
                     feedback_for: None,
+                    ..
                 } if content == SUMMARIZE_PROMPT
             )
         });
@@ -1890,6 +1891,7 @@ impl Agent {
                     content,
                     restored_steering,
                     feedback_for,
+                    ..
                 } => {
                     *restored_steering || feedback_for.is_some() || steering_text(content).is_some()
                 }

@@ -2,7 +2,7 @@
 upstream = "src/core/images/image_attachments.zig"
 status = "partial"
 modules = ["crates/ofx-images/src/image_attachments.rs", "crates/oh-fx/src/ask_images.rs"]
-note = "Loading a typed image path exists: path normalization, workspace or external resolution, the size limit, and the header sniff that `ask --image` checks. Snapshots, request encoding and withholding, placeholders and badges, inline path promotion, and the clipboard image are absent."
+note = "Loading a typed image path exists (path normalization, workspace or external resolution, the size limit, and the header sniff that `ask --image` checks), as do snapshot capture into a private no-follow directory with rollback, verified snapshot loading for file and inline bytes, and temporary snapshot directories. Capture admission notices, bound and inline capture, snapshot cloning and unreferenced cleanup, request withholding, the Vercel file part, placeholders and badges, inline path promotion, the clipboard image, and the trace lines are absent."
 
 [[file]]
 upstream = "src/core/images/image_commands.zig"

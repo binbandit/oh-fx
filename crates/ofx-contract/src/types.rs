@@ -163,6 +163,7 @@ pub enum ChatMessage {
         content: String,
         restored_steering: bool,
         feedback_for: Option<ToolCallId>,
+        images: Vec<ImageAttachment>,
     },
     Assistant {
         content: Option<String>,
@@ -183,6 +184,7 @@ impl ChatMessage {
             content: content.into(),
             restored_steering: false,
             feedback_for: None,
+            images: Vec::new(),
         }
     }
 
@@ -191,6 +193,7 @@ impl ChatMessage {
             content: content.into(),
             restored_steering: true,
             feedback_for: None,
+            images: Vec::new(),
         }
     }
 
@@ -199,6 +202,7 @@ impl ChatMessage {
             content: content.into(),
             restored_steering: false,
             feedback_for: Some(call_id),
+            images: Vec::new(),
         }
     }
 }
