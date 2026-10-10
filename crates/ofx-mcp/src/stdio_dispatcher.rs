@@ -1080,6 +1080,24 @@ while :; do sleep 1; done"#;
     }
 
     #[tokio::test]
+    async fn mcp_stdio_rejects_a_frame_that_repeats_a_key_as_not_an_mcp_message() {
+        let frame = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","protocolVersion":"2025-06-18"}}"#;
+        let (dispatcher, _notifications) =
+            shell(&format!("printf '%s\\n' '{frame}'; cat >/dev/null"));
+        let call = request(&dispatcher, "initialize", Duration::from_secs(5));
+        assert_eq!(
+            dispatcher.request(call).await,
+            Err(McpError::McpInvalidJson)
+        );
+        let diagnostics = dispatcher.settled_diagnostics().await;
+        assert_eq!(
+            diagnostics.rejected_output.map(|output| output.bytes),
+            Some(frame.as_bytes().to_vec())
+        );
+        dispatcher.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
     async fn mcp_stdio_records_how_a_child_that_exits_before_replying_ended_and_what_it_printed() {
         let (dispatcher, _notifications) = shell("echo 'fatal: missing token' >&2; exit 3");
         let call = request(&dispatcher, "initialize", Duration::from_secs(5));

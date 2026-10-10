@@ -1449,6 +1449,10 @@ mod tests {
         };
         assert_eq!(causes(b"{"), vec![WorkspaceDiagnosticCause::InvalidJson]);
         assert_eq!(
+            causes(br#"{"mcpServers":{"a":{"command":"x"}},"mcpServers":{}}"#),
+            vec![WorkspaceDiagnosticCause::InvalidJson]
+        );
+        assert_eq!(
             causes(b"[]"),
             vec![WorkspaceDiagnosticCause::RootMustBeObject]
         );
@@ -1616,5 +1620,19 @@ mod tests {
             parse_profile_document(br#"{"mcp":{"a":{"command":"node","environment":{"A":1}}}}"#),
             Err(McpConfigError::McpConfigInvalidEnvironment)
         );
+    }
+
+    #[test]
+    fn a_profile_that_repeats_a_key_is_invalid_json() {
+        for document in [
+            br#"{"mcp":{"a":{"command":"node"}},"mcp":{}}"#.as_slice(),
+            br#"{"mcp":{"a":{"command":"node"},"a":{"command":"deno"}}}"#,
+            br#"{"mcp":{"a":{"command":"node","env":{"A":"1","A":"2"}}}}"#,
+        ] {
+            assert_eq!(
+                parse_profile_document(document),
+                Err(McpConfigError::McpConfigInvalidJson)
+            );
+        }
     }
 }

@@ -19,8 +19,8 @@ use crate::legacy_streamable_http::{
 use crate::mcp_contract::McpServerConfig;
 use crate::protocol_messages::{
     ElicitationCapabilities, STDIO_INITIALIZED_NOTIFICATION, ServerCapabilities,
-    build_legacy_initialize_request, build_tools_list_request, parse_server_capabilities,
-    parse_server_identity, parse_server_instructions,
+    build_legacy_initialize_request, build_tools_list_request, parse_json,
+    parse_server_capabilities, parse_server_identity, parse_server_instructions,
 };
 use crate::protocol_negotiation::{
     ElicitationWire, LegacyInitializeObservation, LegacyInitializeTransition, LegacyStdioVersion,
@@ -247,8 +247,8 @@ async fn negotiate_stdio(
                 );
             }
         };
-        let observation = serde_json::from_str::<Value>(&response)
-            .map_err(|_| McpError::McpInvalidJson)
+        let observation = parse_json(response.as_bytes())
+            .ok_or(McpError::McpInvalidJson)
             .and_then(|value| {
                 classify_legacy_initialize_response(&value, offered)
                     .map(|observation| (value, observation))
@@ -419,7 +419,7 @@ async fn initialize_sse(
             deadline,
         ))
         .await?;
-    let value: Value = serde_json::from_str(&response).map_err(|_| McpError::McpInvalidJson)?;
+    let value = parse_json(response.as_bytes()).ok_or(McpError::McpInvalidJson)?;
     validate_initialize_response(&value)?;
     server_info(&value, SSE_PROTOCOL_VERSION)
 }

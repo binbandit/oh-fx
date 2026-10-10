@@ -14,7 +14,7 @@ use crate::error::McpError;
 use crate::legacy_elicitation_runtime::ElicitationContext;
 use crate::legacy_sse::{Event, Parser};
 use crate::mcp_contract::HttpHeader;
-use crate::protocol_messages::build_cancellation_notification;
+use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::streamable_http::{MediaType, parse_media_type, validate_header_value};
 use crate::timing::{sleep, spawn, timeout, timeout_at};
@@ -186,7 +186,7 @@ impl LegacyHttpClient {
             ..PostOptions::new(request_id, max_response_bytes)
         };
         let FinalResponse { body, session_id } = bootstrap.post(body, &options).await?;
-        let value: Value = serde_json::from_str(&body).map_err(|_| McpError::McpInvalidJson)?;
+        let value = parse_json(body.as_bytes()).ok_or(McpError::McpInvalidJson)?;
         let version = initialized_version(&value)?;
         if let Some(session_id) = &session_id {
             validate_session_id(session_id)?;
@@ -583,7 +583,7 @@ impl HttpShared {
     }
 
     fn route_notification(&self, data: &str) -> Result<(), McpError> {
-        let value: Value = serde_json::from_str(data).map_err(|_| McpError::InvalidSseEvent)?;
+        let value = parse_json(data.as_bytes()).ok_or(McpError::InvalidSseEvent)?;
         let object = value.as_object().ok_or(McpError::InvalidSseEvent)?;
         if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return Err(McpError::InvalidSseEvent);
@@ -712,7 +712,7 @@ fn classify_event(
     if data.is_empty() {
         return Ok(EventOutcome::Empty);
     }
-    let value: Value = serde_json::from_str(data).map_err(|_| McpError::InvalidSseEvent)?;
+    let value = parse_json(data.as_bytes()).ok_or(McpError::InvalidSseEvent)?;
     let object = value.as_object().ok_or(McpError::InvalidSseEvent)?;
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err(McpError::InvalidSseEvent);
@@ -764,7 +764,7 @@ fn request_progress(params: Option<&Value>, request_id: u64) -> Option<ProgressN
 }
 
 fn validate_final_response(body: &str, request_id: u64) -> Result<(), McpError> {
-    let value: Value = serde_json::from_str(body).map_err(|_| McpError::McpInvalidJson)?;
+    let value = parse_json(body.as_bytes()).ok_or(McpError::McpInvalidJson)?;
     let object = value.as_object().ok_or(McpError::McpInvalidJson)?;
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err(McpError::McpInvalidJson);
@@ -1442,6 +1442,18 @@ mod tests {
         );
         assert_eq!(classify_event("", 7, None), Ok(EventOutcome::Empty));
         assert_eq!(classify_event("{", 7, None), Err(McpError::InvalidSseEvent));
+        assert_eq!(
+            classify_event(r#"{"jsonrpc":"2.0","id":7,"id":8,"result":{}}"#, 7, None),
+            Err(McpError::InvalidSseEvent)
+        );
+        assert_eq!(
+            validate_final_response(r#"{"jsonrpc":"2.0","id":7,"result":{"a":1,"a":2}}"#, 7),
+            Err(McpError::McpInvalidJson)
+        );
+        assert_eq!(
+            validate_final_response(r#"{"jsonrpc":"2.0","id":7,"result":{"a":1}}"#, 7),
+            Ok(())
+        );
     }
 
     #[test]
