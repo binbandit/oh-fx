@@ -174,6 +174,29 @@ impl PrivateDir {
         Ok(Some(bytes))
     }
 
+    pub fn read_exact_private(
+        &self,
+        name: &str,
+        max_bytes: usize,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, DurableError> {
+        let fd = match fs::openat(&self.fd, name, read_flags(), Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            Err(Errno::LOOP | Errno::ISDIR | Errno::NOTDIR | Errno::NXIO) => {
+                return Err(DurableError::PathUnsafe);
+            }
+            Err(_) => return Err(DurableError::Failed),
+        };
+        let stat = fs::fstat(&fd).map_err(|_| DurableError::Failed)?;
+        if file_type(&stat) != FileType::RegularFile || stat.st_nlink != 1 {
+            return Err(DurableError::PathUnsafe);
+        }
+        if permissions(&stat) != private_file_mode() {
+            return Err(DurableError::PermissionsUnsupported);
+        }
+        read_limited(fd, &stat, max_bytes).map(|bytes| Some(Zeroizing::new(bytes)))
+    }
+
     pub fn private_file_present(&self, name: &str, max_bytes: usize) -> Option<bool> {
         let fd = match fs::openat(&self.fd, name, read_flags(), Mode::empty()) {
             Ok(fd) => fd,
