@@ -524,6 +524,84 @@ fn a_compaction_during_ask_saves_a_checkpoint_that_resumed_sessions_start_from()
 }
 
 #[test]
+fn a_compaction_during_ask_writes_its_context_compaction_trace_lines() {
+    let big = format!("FIRST_SENTINEL {}", "word ".repeat(30_000));
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&[&big])),
+        Reply::sse(&chat_text_events(&["two"])),
+    ]);
+    let metadata = json!({"@openai/gpt-4o": {"context_window": 40000, "max_output_tokens": 1000}});
+    let home = Home::with_settings(&settings(&server.base_url(), Some(metadata)));
+    let log = home.root.join("trace.log");
+    let log_path = log.to_str().expect("a UTF-8 trace path");
+    let environment = [
+        ("OH_FX_TRACE_LOG", log_path),
+        ("OH_FX_TRACE_SCOPES", "context_compaction"),
+    ];
+    home.ask_json(&["first"], &environment);
+    let second = home.ask_json(&["--resume", "last", "second"], &environment);
+    assert_eq!(second["final_output"], "two", "{second}");
+    let written = fs::read_to_string(&log).expect("read the trace log");
+    let lines: Vec<&str> = written
+        .lines()
+        .map(|line| {
+            let (millis, rest) = line.split_once(' ').expect("a timestamped line");
+            assert!(millis.bytes().all(|byte| byte.is_ascii_digit()), "{line}");
+            rest.strip_prefix("[context_compaction] ")
+                .unwrap_or_else(|| panic!("{line}"))
+        })
+        .collect();
+    let heads: Vec<&str> = lines
+        .iter()
+        .map(|line| line.split(' ').next().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            "event=decision",
+            "room",
+            "event=provider_start",
+            "compacted",
+            "event=provider_completed",
+            "event=committed",
+            "event=installed",
+            "request",
+            "event=decision",
+            "request",
+        ],
+        "{written}"
+    );
+    assert!(
+        lines[0].starts_with("event=decision turn_id=1 step_id=1 decision=compact overflow=false "),
+        "{written}"
+    );
+    assert!(
+        lines[2].starts_with(
+            "event=provider_start turn_id=1 step_id=1 model=@openai/gpt-4o turns=1 earlier=false store=false"
+        ),
+        "{written}"
+    );
+    assert!(
+        lines[5].starts_with(
+            "event=committed turn_id=1 step_id=1 origin=automatic removed_turns=1 compaction_count=1 summary_bytes="
+        ),
+        "{written}"
+    );
+    assert!(
+        lines[7].starts_with("request after compaction estimated_tokens="),
+        "{written}"
+    );
+    assert!(
+        lines[8].starts_with("event=decision turn_id=1 step_id=2 decision=no_op "),
+        "{written}"
+    );
+    assert!(
+        lines[9].starts_with("request after compaction exact_input_tokens="),
+        "{written}"
+    );
+}
+
+#[test]
 fn a_turn_whose_tool_result_cannot_be_saved_after_a_checkpoint_resumes_closed() {
     let big = format!("FIRST_SENTINEL {}", "word ".repeat(30_000));
     let server = FakeServer::start([

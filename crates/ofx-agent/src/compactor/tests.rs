@@ -81,6 +81,8 @@ async fn a_running_turn_keeps_its_user_message_and_compacts_its_finished_steps()
             size: size(),
             model: "m",
             sends_after_conversation: false,
+            follows_checkpoint: false,
+            trace: Tracer::detached(),
         },
         &mut model,
         &mut |step| steps.push(step),
@@ -129,6 +131,8 @@ async fn the_request_after_the_conversation_is_offered_only_when_the_caller_can_
             size: size(),
             model: "m",
             sends_after_conversation: true,
+            follows_checkpoint: false,
+            trace: Tracer::detached(),
         },
         &mut model,
         &mut |_| {},
@@ -157,6 +161,8 @@ async fn nothing_is_compacted_while_the_conversation_fits() {
         size: roomy,
         model: "m",
         sends_after_conversation: false,
+        follows_checkpoint: false,
+        trace: Tracer::detached(),
     };
     let mut steps = Vec::new();
     assert_eq!(
@@ -187,6 +193,8 @@ async fn a_cancelled_compaction_sends_nothing() {
         size: size(),
         model: "m",
         sends_after_conversation: false,
+        follows_checkpoint: false,
+        trace: Tracer::detached(),
     };
     let mut steps = Vec::new();
     assert_eq!(
@@ -299,6 +307,8 @@ async fn messages_oh_fx_added_to_a_turn_reach_the_notes_request_as_notes() {
             size: size(),
             model: "m",
             sends_after_conversation: false,
+            follows_checkpoint: false,
+            trace: Tracer::detached(),
         },
         &mut model,
         &mut |_| {},
@@ -344,6 +354,8 @@ async fn permission_feedback_reaches_the_notes_request_as_a_note_after_its_resul
             size: size(),
             model: "m",
             sends_after_conversation: false,
+            follows_checkpoint: false,
+            trace: Tracer::detached(),
         },
         &mut model,
         &mut |_| {},
@@ -391,6 +403,8 @@ async fn steering_reaches_the_notes_request_as_a_user_message_added_while_the_tu
             size: size(),
             model: "m",
             sends_after_conversation: false,
+            follows_checkpoint: false,
+            trace: Tracer::detached(),
         },
         &mut model,
         &mut |_| {},

@@ -20,7 +20,7 @@ note = "Summary request and index generation exists; persisted M/T/L records, sa
 upstream = "src/core/compactor/lint.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/lint.rs"]
-note = "Citation existence, exact-value grounding, replacement IDs, verbatim user-rule quotes and failed-tool-success checks exist; upstream diagnostic Counts and Record.first_tool/last_tool source metadata are absent."
+note = "Citation existence, exact-value grounding, replacement IDs, verbatim user-rule quotes, failed-tool-success checks and the diagnostic Counts the notes trace line reports exist; Record.first_tool/last_tool source metadata is absent."
 
 [[file]]
 upstream = "src/core/compactor/model.zig"
@@ -50,7 +50,7 @@ note = "Summary generation and checkpoint validation exist; saved-record referen
 upstream = "src/core/compactor/trace.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/trace.rs", "crates/ofx-trace/src/ring.rs"]
-note = "The 64-event ring with 512-byte details, its info, failure and infoIf recording with the context_compaction trace lines, snapshot and reset are ported with the decision, no_compactable_context, overflow_recovery_incomplete and provider_overflow_recovery kinds the turn loop writes; the remaining kinds and the free-form log arrive with the compactor's own trace lines."
+note = "The 64-event ring with 512-byte details, its info, failure, infoIf and free-form log recording with the context_compaction trace lines, snapshot and reset are ported. The source_checkpointed kind arrives with the compaction_prepared checkpoint, credential_unauthorized is omitted with the credential check docs/upstream-parity.md omits, and overflow_without_compaction is left out because no request can reach it, upstream's or oh-fx's: an overflow being recovered always asks for a compaction."
 
 [[file]]
 upstream = "src/core/compactor/window.zig"

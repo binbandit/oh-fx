@@ -304,6 +304,7 @@ pub struct Agent {
     inherited_requests: Option<Arc<RootUserRequests>>,
     ledger: TurnLedger,
     compacted: Option<Payload>,
+    compactions: usize,
     calibration: Option<Calibration>,
     session_id: Option<String>,
     log: Option<Box<dyn ConversationLog>>,
@@ -354,6 +355,7 @@ impl Agent {
             inherited_requests: None,
             ledger: TurnLedger::default(),
             compacted: None,
+            compactions: 0,
             calibration: None,
             session_id: None,
             log: None,
@@ -496,6 +498,7 @@ impl Agent {
         self.turn_starts.clear();
         self.ledger.reset(0);
         self.compacted = None;
+        self.compactions = 0;
         self.calibration = None;
         self.last_reply = None;
         self.permissions.forget_approvals();
@@ -840,6 +843,11 @@ impl Agent {
                 .extend(turn.continuation.take().map(ChatMessage::user));
             let completion = match outcome {
                 Ok(completion) => {
+                    self.trace_request_after_compaction(
+                        turn,
+                        measured.as_ref(),
+                        completion.usage.input_tokens,
+                    );
                     self.settle_measurement(measured, completion.usage.input_tokens);
                     turn.recovery = None;
                     turn.recovery_cause = None;

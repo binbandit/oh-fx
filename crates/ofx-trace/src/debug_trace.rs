@@ -74,6 +74,12 @@ pub fn event(scope: &str, name: &str, context: TraceContext, message: Option<fmt
     }
 }
 
+pub fn log(scope: &str, message: fmt::Arguments<'_>) {
+    if let Some(trace) = active() {
+        trace.line(scope, message);
+    }
+}
+
 pub fn active_log_path() -> Option<&'static Path> {
     active()?.file_path.as_deref()
 }

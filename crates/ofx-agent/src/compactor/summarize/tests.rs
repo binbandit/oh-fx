@@ -1,4 +1,22 @@
+use ofx_trace::{Ring, TraceContext};
+
 use super::*;
+use crate::compactor::trace::{CompactionEvent, CompactionTraceKind};
+
+fn traced() -> (Tracer, &'static Ring<CompactionEvent>) {
+    let ring: &'static Ring<CompactionEvent> = Box::leak(Box::new(Ring::new(64)));
+    (Tracer::new(ring, TraceContext::default()), ring)
+}
+
+fn logged(ring: &Ring<CompactionEvent>) -> Vec<(bool, String)> {
+    ring.snapshot()
+        .into_iter()
+        .map(|event| {
+            assert_eq!(event.event.kind, CompactionTraceKind::Log);
+            (event.event.failed, event.event.detail)
+        })
+        .collect()
+}
 
 const SAMPLE_NOTES: &str = "Turn 1
 In between: Ran the build and found the missing semicolon.
@@ -82,6 +100,7 @@ fn request<'a>(turns: &'a [Turn<'a>]) -> Request<'a> {
         max_prompt_tokens: usize::MAX,
         conversation_room: None,
         max_text_tokens: usize::MAX,
+        trace: Tracer::detached(),
     }
 }
 
@@ -314,14 +333,35 @@ fn a_request_after_the_conversation_that_fails_or_does_not_fit_writes_the_turns_
         fail_after_conversation: true,
         ..FakeModel::default()
     };
+    let (trace, ring) = traced();
     let summary = run(
         Request {
             conversation_room: Some(100_000),
+            trace,
             ..request(&turns)
         },
         &mut failing,
     )
     .unwrap();
+    let logs = logged(ring);
+    assert_eq!(
+        logs[0],
+        (
+            true,
+            "compaction notes after the conversation failed err=ModelFailed; writing the turns out"
+                .to_owned()
+        )
+    );
+    assert_eq!(
+        logs[1],
+        (
+            false,
+            format!(
+                "compaction notes: turns_noted=1/2 tool_notes=1 tools=1 entries=1 earlier_bytes=0 reply_bytes={} after_conversation=false",
+                SAMPLE_NOTES.len()
+            )
+        )
+    );
     assert_eq!(failing.calls, 2);
     assert_eq!(failing.after_conversation_calls, 1);
     assert_eq!(failing.seen_system, SYSTEM_PROMPT);
@@ -329,14 +369,26 @@ fn a_request_after_the_conversation_that_fails_or_does_not_fit_writes_the_turns_
     assert!(summary.text.contains(SAMPLE_FACT));
 
     let mut cramped = FakeModel::default();
+    let (trace, ring) = traced();
     run(
         Request {
             conversation_room: Some(50),
+            trace,
             ..request(&turns)
         },
         &mut cramped,
     )
     .unwrap();
+    let (failed, cramped_log) = &logged(ring)[0];
+    assert!(!failed);
+    assert!(
+        cramped_log.starts_with("compaction notes after the conversation do not fit tokens="),
+        "{cramped_log}"
+    );
+    assert!(
+        cramped_log.ends_with(" room=50; writing the turns out"),
+        "{cramped_log}"
+    );
     assert_eq!(cramped.calls, 1);
     assert_eq!(cramped.after_conversation_calls, 0);
     assert!(cramped.seen_user.starts_with("[Turn 1]\n"));
@@ -348,18 +400,38 @@ fn a_follow_up_after_the_conversation_lists_only_the_skipped_turns_findable() {
         worked_turn("first", "call-1", "one"),
         worked_turn("second", "call-2", "two"),
     ];
-    let mut model = FakeModel::scripted(&[
-        "Turn 2 (T2)\nIn between: Ran make again.\nT2: second build",
-        "Turn 1 (T1)\nIn between: Ran make.\nT1: first build",
-    ]);
+    let first = "Turn 2 (T2)\nIn between: Ran make again.\nT2: second build";
+    let second = "Turn 1 (T1)\nIn between: Ran make.\nT1: first build";
+    let mut model = FakeModel::scripted(&[first, second]);
+    let (trace, ring) = traced();
     let summary = run(
         Request {
             conversation_room: Some(100_000),
+            trace,
             ..request(&turns)
         },
         &mut model,
     )
     .unwrap();
+    assert_eq!(
+        logged(ring),
+        [
+            (
+                false,
+                format!(
+                    "compaction notes follow-up: missing_turns=1 summary_missing=false noted=1 reply_bytes={}",
+                    second.len()
+                )
+            ),
+            (
+                false,
+                format!(
+                    "compaction notes: turns_noted=2/2 tool_notes=2 tools=2 entries=0 earlier_bytes=0 reply_bytes={} after_conversation=true",
+                    first.len()
+                )
+            ),
+        ]
+    );
     assert_eq!(model.after_conversation_calls, 2);
     let follow_up = &model.seen_user;
     assert!(follow_up.starts_with(&format!(
@@ -417,7 +489,22 @@ fn the_models_notes_are_checked_against_the_turns_and_tool_calls_they_name() {
     let mut model = FakeModel::replying(
         "Turn 1\nIn between: Ran the suite.\nT1: ran the tests; all 120 pass\n\nFacts:\nF1 (T1): 3 of 120 tests fail in src/lexer.zig\nF2 (T1): the failures are in src/parser.zig\nF3 (T7): the build is slow",
     );
-    let summary = run(request(&turns), &mut model).unwrap();
+    let (trace, ring) = traced();
+    let summary = run(
+        Request {
+            trace,
+            ..request(&turns)
+        },
+        &mut model,
+    )
+    .unwrap();
+    assert_eq!(
+        logged(ring)[1],
+        (
+            false,
+            "compaction notes checked: unknown_notes=0 repeated_entries=0 marked=3 no_source=0 missing_ids=1 unfound_values=1 bad_replaces=0 unquoted_rules=0 failed_as_success=1".to_owned()
+        )
+    );
     assert_eq!(
         summary.compacted.turns[0].tools[0].why,
         "ran the tests; all 120 pass [check: T1 failed]"
@@ -941,6 +1028,7 @@ fn the_request_overhead_estimate_covers_the_longest_request() {
         turns: &turns,
         complete_end: 2,
         candidates: Vec::new(),
+        trace: Tracer::detached(),
     };
     let mut text = String::new();
     write_request(&mut text, &plan, false);

@@ -102,7 +102,7 @@ fn the_trace_compaction_summary_renders_recorded_events_without_file_tracing() {
         ),
         compaction(
             2,
-            CompactionTraceKind::NoCompactableContext,
+            CompactionTraceKind::RetentionExhausted,
             true,
             turn(10, 0),
             "estimated_tokens=59000",
@@ -116,10 +116,10 @@ fn the_trace_compaction_summary_renders_recorded_events_without_file_tracing() {
         "[2026-05-28T20:26:40.123Z] event=decision turn_id=10 step_id=176 decision=compact estimated_tokens=279466\n"
     ));
     assert!(report.contains(
-        "[2026-05-28T20:26:40.123Z] event=no_compactable_context turn_id=10 failed estimated_tokens=59000\n"
+        "[2026-05-28T20:26:40.123Z] event=retention_exhausted turn_id=10 failed estimated_tokens=59000\n"
     ));
     assert!(report.contains(
-        "\n## Problems\n- context compaction no_compactable_context turn_id=10 detail=estimated_tokens=59000\n\n"
+        "\n## Problems\n- context compaction retention_exhausted turn_id=10 detail=estimated_tokens=59000\n\n"
     ));
 
     recorded.compaction = (4..=67)

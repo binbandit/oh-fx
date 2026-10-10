@@ -1,5 +1,6 @@
 use ofx_contract::{AutoCompactPercent, ProviderReplay};
 
+use super::trace::{CompactionTraceKind, Tracer};
 use super::{CompactionError, text_tokens};
 use crate::execution_memory::{Cut, HistoryTurn, Steering, ToolStep};
 
@@ -75,7 +76,7 @@ impl Size {
         Some(self.estimate(usable - conversation))
     }
 
-    fn after_tokens(self) -> usize {
+    pub(crate) fn after_tokens(self) -> usize {
         let Some(point) = self.compact_at_tokens.or(self.request_tokens) else {
             return usize::MAX;
         };
@@ -260,6 +261,7 @@ fn step_tokens(step: &ToolStep<'_>, model: &str) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Window {
     pub(crate) cut: Cut,
+    pub(crate) kept_tokens: usize,
     pub(crate) kept_used: usize,
 }
 
@@ -278,8 +280,10 @@ pub(crate) fn choose(
     active: bool,
     size: Size,
     model: &str,
+    trace: Tracer,
 ) -> Result<Option<Window>, CompactionError> {
     let mut kept = percent_of(size.conversation_tokens(), KEPT_PERCENT);
+    let request_tokens = size.request_tokens.unwrap_or(0);
     loop {
         let window = split(turns, active, kept, size.usable_tokens, model);
         if window.has_older() {
@@ -289,8 +293,16 @@ pub(crate) fn choose(
             return Ok(None);
         }
         if kept == 0 {
+            trace.failure(
+                CompactionTraceKind::RetentionExhausted,
+                format_args!("estimated_tokens={request_tokens}"),
+            );
             return Err(CompactionError::ContextCapacityExceeded);
         }
+        trace.failure(
+            CompactionTraceKind::RetentionForcedZero,
+            format_args!("estimated_tokens={request_tokens} kept_tokens={kept}"),
+        );
         kept = 0;
     }
 }
@@ -326,6 +338,7 @@ fn split(
     }
     Window {
         cut,
+        kept_tokens,
         kept_used: recent.tokens,
     }
 }

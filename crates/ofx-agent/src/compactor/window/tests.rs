@@ -1,9 +1,27 @@
 use ofx_contract::{ChatMessage, ReplaySource, ToolCall, ToolCallId, ToolResultStatus};
+use ofx_trace::{Ring, TraceContext};
 
 use super::*;
+use crate::compactor::trace::CompactionEvent;
 use crate::execution_memory::{history_turns, steering_message};
 
 const MODEL: &str = "fixture/model";
+
+fn traced() -> (Tracer, &'static Ring<CompactionEvent>) {
+    let ring: &'static Ring<CompactionEvent> = Box::leak(Box::new(Ring::new(64)));
+    (Tracer::new(ring, TraceContext::default()), ring)
+}
+
+fn untraced() -> Tracer {
+    traced().0
+}
+
+fn retention(ring: &Ring<CompactionEvent>) -> Vec<(CompactionTraceKind, bool, String)> {
+    ring.snapshot()
+        .into_iter()
+        .map(|event| (event.event.kind, event.event.failed, event.event.detail))
+        .collect()
+}
 
 fn replay(model: &str) -> ProviderReplay {
     ProviderReplay {
@@ -279,7 +297,7 @@ fn the_kept_turns_get_a_share_of_a_fifth_of_the_usable_input_less_the_fixed_part
     assert_eq!(counted_more.summary_request_tokens(), 750_000);
 
     let conversation = Conversation::new().chat(6);
-    let window = choose(&conversation.turns(), false, large, MODEL)
+    let window = choose(&conversation.turns(), false, large, MODEL, untraced())
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -414,7 +432,9 @@ fn nothing_is_compacted_unless_it_is_due_or_required() {
         usable_tokens: Some(120_000),
         ..Size::default()
     };
-    assert_eq!(choose(&turns, false, size, MODEL), Ok(None));
+    let (trace, ring) = traced();
+    assert_eq!(choose(&turns, false, size, MODEL, trace), Ok(None));
+    assert!(ring.snapshot().is_empty());
     let forced = choose(
         &turns,
         false,
@@ -423,6 +443,7 @@ fn nothing_is_compacted_unless_it_is_due_or_required() {
             ..size
         },
         MODEL,
+        trace,
     )
     .unwrap()
     .unwrap();
@@ -435,6 +456,16 @@ fn nothing_is_compacted_unless_it_is_due_or_required() {
         }
     );
     assert_eq!(forced.kept_used, 0);
+    assert_eq!(forced.kept_tokens, 0);
+    assert_eq!(
+        retention(ring),
+        [(
+            CompactionTraceKind::RetentionForcedZero,
+            true,
+            "estimated_tokens=130000 kept_tokens=4800".to_owned()
+        )]
+    );
+    let (trace, ring) = traced();
     assert_eq!(
         choose(
             &[],
@@ -444,9 +475,25 @@ fn nothing_is_compacted_unless_it_is_due_or_required() {
                 request_tokens: Some(130_000),
                 ..size
             },
-            MODEL
+            MODEL,
+            trace,
         ),
         Err(CompactionError::ContextCapacityExceeded)
+    );
+    assert_eq!(
+        retention(ring),
+        [
+            (
+                CompactionTraceKind::RetentionForcedZero,
+                true,
+                "estimated_tokens=130000 kept_tokens=4800".to_owned()
+            ),
+            (
+                CompactionTraceKind::RetentionExhausted,
+                true,
+                "estimated_tokens=130000".to_owned()
+            ),
+        ]
     );
     let fresh = Conversation::new().turn("only the prompt", Vec::new());
     assert_eq!(
@@ -457,7 +504,8 @@ fn nothing_is_compacted_unless_it_is_due_or_required() {
                 request_tokens: Some(130_000),
                 ..size
             },
-            MODEL
+            MODEL,
+            untraced(),
         ),
         Err(CompactionError::ContextCapacityExceeded)
     );

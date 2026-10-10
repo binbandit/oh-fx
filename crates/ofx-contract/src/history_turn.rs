@@ -146,6 +146,7 @@ pub struct HistoryCut {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RestoredHistory {
     pub checkpoint: Option<String>,
+    pub compaction_count: usize,
     pub messages: Vec<ChatMessage>,
     pub turn_starts: Vec<usize>,
 }
