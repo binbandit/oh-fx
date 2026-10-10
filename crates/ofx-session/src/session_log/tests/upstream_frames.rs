@@ -1,4 +1,4 @@
-use ofx_contract::{ChatMessage, ToolCallId};
+use ofx_contract::{ChatMessage, FileChangeStats, SavedFileChange, ToolCallId};
 
 use super::*;
 use crate::history_snapshot::{HISTORY_CACHE_FILE, HistoryCache};
@@ -129,4 +129,98 @@ fn a_session_holding_upstream_command_replays_resumes_and_keeps_them() {
             (ToolCallId::new("call-test"), "aborted by user"),
         ]
     );
+}
+
+const DIFF_PACK: &str = "diff-0011223344556677-8899aabbccddeeff.json";
+
+fn file_call(id: &str, tool: &str) -> String {
+    format!(
+        "{{\"tool_call\":{{\"call_id\":\"{id}\",\"tool_name\":\"{tool}\",\"arguments_json\":\"{{\\\"path\\\":\\\"src/lib.rs\\\"}}\",\"argument_integrity\":\"valid\",\"provisional_id\":null,\"provider_result\":null,\"final_identity\":\"valid\",\"provenance\":\"fx_local\"}}}}"
+    )
+}
+
+fn file_result(id: &str, tool: &str, presentation: &str) -> String {
+    format!(
+        "{{\"tool_result\":{{\"call_id\":\"{id}\",\"tool_name\":\"{tool}\",\"status\":\"success\",\"artifact_ref\":\"result-{id}.txt\",\"tool_image_handle\":null,\"output_bytes\":4,\"stored_bytes\":4,\"completeness\":\"complete\",\"preview\":\"done\",\"provider_native\":false,\"created_at_ms\":5,\"permission_feedback\":[],\"committed_file_presentation\":{presentation},\"command_replay_ref\":null,\"command_replay_bytes\":null,\"command_process_presentation\":null,\"terminal_action_presentation\":null}}}}"
+    )
+}
+
+fn file_presentation_turn() -> Vec<String> {
+    let edited = format!(
+        "{{\"path\":\"src/lib.rs\",\"kind\":\"edited\",\"lines\":[{{\"kind\":\"deletion\",\"old_line\":2,\"new_line\":null,\"text\":\"    old();\"}},{{\"kind\":\"addition\",\"old_line\":null,\"new_line\":2,\"text\":\"    new();\"}},{{\"kind\":\"addition\",\"old_line\":null,\"new_line\":3,\"text\":\"    more();\"}}],\"additions\":2,\"deletions\":1,\"truncated\":false,\"previous_content\":null,\"after_content\":null,\"lifecycle_id\":{{\"turn_id\":1,\"call_id\":\"call-edit\"}},\"content_handle\":\"{DIFF_PACK}\"}}"
+    );
+    let added = "{\"path\":\"notes.md\",\"kind\":\"added\",\"lines\":[{\"kind\":\"addition\",\"old_line\":null,\"new_line\":1,\"text\":\"# Notes\"}],\"additions\":1,\"deletions\":0,\"truncated\":false,\"previous_content\":null,\"after_content\":\"# Notes\\n\",\"lifecycle_id\":{\"turn_id\":1,\"call_id\":\"call-write\"},\"content_handle\":null}";
+    vec![
+        "{\"user\":{\"text\":\"edit the code\",\"images\":[],\"work_id\":null}}".to_owned(),
+        "{\"assistant\":{\"text\":\"\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        file_call("call-edit", "edit_file"),
+        file_call("call-write", "write_file"),
+        file_result("call-edit", "edit_file", &edited),
+        file_result("call-write", "write_file", added),
+        "{\"assistant\":{\"text\":\"Edited.\",\"provider_replay\":null,\"standalone_response\":false}}".to_owned(),
+        "{\"turn_completed\":{\"files\":[],\"turn_summary\":null}}".to_owned(),
+    ]
+}
+
+#[test]
+fn a_session_holding_upstream_file_presentations_resumes_and_keeps_them() {
+    let fixture = Fixture::new();
+    let id = "fx-file-presentations";
+    let log = upstream_session(&fixture, id, &file_presentation_turn());
+    let results = fixture.dir(id).join("tool-results");
+    fs::create_dir_all(&results).unwrap();
+    let pack = "{\"previous_content\":\"old\\n\",\"after_content\":\"new\\n\"}";
+    fs::write(results.join(DIFF_PACK), pack).unwrap();
+
+    let mut session = fixture.resume(id).unwrap();
+    let history = session.take_history();
+    drop(session);
+    assert_eq!(reencoded(&history), log);
+    assert_eq!(fs::read_to_string(fixture.events(id)).unwrap(), log);
+    let changes: Vec<_> = history.turns[0]
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ConversationEvent::ToolResult(result) => Some(result.file_change()),
+            _ => None,
+        })
+        .collect();
+    let saved = |path: &str, additions, deletions| SavedFileChange {
+        path: path.to_owned(),
+        stats: FileChangeStats::from_lines(additions, deletions),
+    };
+    assert_eq!(
+        changes,
+        [
+            Some(saved("src/lib.rs", 2, 1)),
+            Some(saved("notes.md", 1, 0))
+        ]
+    );
+
+    let edited = log.replacen(
+        "\"text\":\"edit the code\"",
+        "\"text\":\"Edit the code\"",
+        1,
+    );
+    fs::write(fixture.events(id), &edited).unwrap();
+    let mut cached = fixture.resume(id).unwrap();
+    assert_eq!(cached.take_history(), history);
+    drop(cached);
+    fs::write(fixture.events(id), &log).unwrap();
+    assert_eq!(
+        fs::read_to_string(results.join(DIFF_PACK)).unwrap(),
+        pack,
+        "oh-fx leaves the diff pack as fx wrote it"
+    );
+
+    let restored = fixture.resume(id).unwrap().restored_history().unwrap();
+    let contents: Vec<_> = restored
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            ChatMessage::Tool { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(contents, ["done", "done"]);
 }
