@@ -17,7 +17,7 @@ const PORTKEY_KEY: &str = "pk-test-0123456789";
 const UPSTREAM_READ_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}}"#;
 const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
-const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nrest";
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01";
 const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"glob_files","description":"Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match, such as src/**/*.zig or *.md."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"mode":{"type":"string","enum":["matches","count"],"description":"Use matches to return sample paths, or count to return an exact matching path count without listing entries."}},"required":["pattern"]}}}"#;
 const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
 const UPSTREAM_EDIT_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"edit_file","description":"Edit an existing file by replacing one exact old_string occurrence with new_string. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: make a focused patch after reading the file. When NOT to use: broad rewrites, ambiguous repeated text, generated formatting, missing files, or cross-file refactors.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"old_string":{"type":"string","description":"Exact text to find in the file. Must match exactly once."},"new_string":{"type":"string","description":"Text to replace old_string with."}},"required":["path","old_string","new_string"]}}}"#;
@@ -1428,7 +1428,11 @@ fn unsaved_images_reach_a_vision_connection_as_upstream_content_parts() {
     ));
     fs::create_dir(home.workspace.join("photos")).unwrap();
     fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
-    fs::write(home.workspace.join("photos/b.gif"), b"GIF89arest").unwrap();
+    fs::write(
+        home.workspace.join("photos/b.gif"),
+        b"GIF89a\x02\x00\x03\x00",
+    )
+    .unwrap();
     let output = home.ask(
         &[
             "ask",
@@ -1449,12 +1453,50 @@ fn unsaved_images_reach_a_vision_connection_as_upstream_content_parts() {
     assert!(
         body.contains(concat!(
             r#"{"role":"user","content":[{"type":"text","text":"what is this"},"#,
-            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgpyZXN0"}},"#,
-            r#"{"type":"image_url","image_url":{"url":"data:image/gif;base64,R0lGODlhcmVzdA=="}}]}]"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}},"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/gif;base64,R0lGODlhAgADAA=="}}]}]"#,
         )),
         "{body}"
     );
     assert!(!home.root.join("data").exists());
+}
+
+#[test]
+fn unsaved_images_over_the_pixel_limit_are_left_out_with_upstreams_notice() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["noted"]))]);
+    let home = Home::with_settings(&vision_settings(
+        &server.base_url(),
+        Some(json!({"supports_vision": true})),
+    ));
+    fs::write(
+        home.workspace.join("wide.jpg"),
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x0a\x23\x28\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01\xff\xd9",
+    )
+    .unwrap();
+    let output = home.ask(
+        &["ask", "--no-save", "--image", "wide.jpg", "what is this"],
+        &KEY,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let body = server.requests()[0].json();
+    let messages = body["messages"].as_array().unwrap();
+    let content = messages[messages.len() - 1]["content"].as_str().unwrap();
+    let (notice, rest) = content.split_once("The original is saved at ").unwrap();
+    assert_eq!(
+        notice,
+        "[Image #1 not sent: image/jpeg is 9000x10 pixels. This request permits at most 8000 per side and 5 MiB encoded per image. "
+    );
+    let (snapshot, rest) = rest.split_once(". Use").unwrap();
+    assert!(snapshot.contains("/oh-fx-image-snapshots-"), "{snapshot}");
+    assert_eq!(
+        Path::new(snapshot).extension().and_then(OsStr::to_str),
+        Some("bin")
+    );
+    assert!(!Path::new(snapshot).exists());
+    assert_eq!(
+        rest,
+        " an available image tool to save a smaller copy to a new file ending in .jpg, then read_file the copy. If no image tool is available, ask the user before installing one.]\nwhat is this"
+    );
 }
 
 #[test]

@@ -234,7 +234,12 @@ fn codex_model_servers(model: &Value) -> (FakeServer, FakeServer) {
 }
 
 fn ask_codex_with_image(home: &Home, catalog: &FakeServer, codex: &FakeServer) -> Output {
-    ask_codex_with_image_bytes(home, catalog, codex, b"\x89PNG\r\n\x1a\nrest")
+    ask_codex_with_image_bytes(
+        home,
+        catalog,
+        codex,
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01",
+    )
 }
 
 fn ask_codex_with_image_bytes(
@@ -273,7 +278,7 @@ fn codex_asks_send_unsaved_images_as_input_images() {
         requests[0].json()["input"],
         json!([{"role": "user", "content": [
             {"type": "input_text", "text": "look"},
-            {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgpyZXN0"},
+            {"type": "input_image", "detail": "auto", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"},
         ]}])
     );
 }

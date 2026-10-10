@@ -8,6 +8,9 @@ use rustix::io::Errno;
 use crate::image_data::detect_media_type;
 
 mod snapshots;
+mod withholding;
+
+pub use withholding::AttachmentDimensionCache;
 
 pub use snapshots::{
     CaptureBudget, TempSnapshotDir, VerifiedSnapshot, capture_image_snapshots,
