@@ -1203,6 +1203,8 @@ while IFS= read -r line; do
       echo resources >> "$STATE/requests"
       if [ -f "$STATE/broken" ]; then
         reply "$id" '{"resources":[{"uri":"memory://bad"}]}'
+      elif [ -f "$STATE/ttl" ]; then
+        reply "$id" '{"resources":[{"uri":"memory://t","name":"t"}],"ttlMs":1}'
       elif [ -f "$STATE/changed" ]; then
         reply "$id" '{"resources":[{"uri":"memory://c","name":"c"}]}'
       else
@@ -1210,10 +1212,14 @@ while IFS= read -r line; do
       fi ;;
     *'"method":"resources/templates/list"'*)
       echo templates >> "$STATE/requests"
+      if [ -f "$STATE/no-templates" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+        continue
+      fi
       reply "$id" '{"resourceTemplates":[{"uriTemplate":"memory://{id}","name":"by id"}]}'
+      printf '{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}\n'
       if [ -f "$STATE/exit" ]; then exit 0; fi
-      touch "$STATE/broken"
-      printf '{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}\n' ;;
+      touch "$STATE/broken" ;;
   esac
 done
 "#;
@@ -1329,36 +1335,114 @@ done
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 
-    #[tokio::test]
-    async fn a_stopped_stdio_server_restarts_when_its_resource_catalog_needs_a_refresh() {
-        let state = tempfile::tempdir().unwrap();
-        std::fs::write(state.path().join("exit"), "").unwrap();
-        let runtime = runtime(vec![config("fixture", RESOURCE_SERVER, state.path())]);
-        runtime.connect(StartupPhase::All).await;
+    async fn stopped_after_a_list_change(runtime: &McpRuntime) -> Arc<Server> {
         runtime.list_resources("fixture", true).await.unwrap();
         let server = Arc::clone(&runtime.current()[0]);
         let Lifecycle::Ready(client) = server.lifecycle() else {
             panic!("the server is not ready");
         };
         for _ in 0..500 {
-            if !client.is_running() {
-                break;
+            if !client.is_running() && client.resources_invalidation.pending() {
+                return server;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(!client.is_running());
+        panic!("the server never stopped after its list change");
+    }
+
+    fn exiting(state: &Path, restart_limit: u8) -> Arc<McpRuntime> {
+        std::fs::write(state.join("exit"), "").unwrap();
+        runtime(vec![McpServerConfig {
+            restart_limit,
+            ..config("fixture", RESOURCE_SERVER, state)
+        }])
+    }
+
+    #[tokio::test]
+    async fn a_restart_drops_the_resource_catalogs_of_the_stopped_process() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = exiting(state.path(), 1);
+        runtime.connect(StartupPhase::All).await;
+        let server = stopped_after_a_list_change(&runtime).await;
+        std::fs::write(state.path().join("changed"), "").unwrap();
         assert_eq!(
             summaries(&runtime.list_resources("fixture", false).await.unwrap()),
-            [("memory://a", "Alpha"), ("memory://b", "b")]
+            [("memory://c", "c")]
         );
-        assert_eq!(server.restarts(), 0);
-        server.features.request_refresh();
-        runtime.list_resources("fixture", false).await.unwrap();
         assert_eq!(server.restarts(), 1);
         assert_eq!(
-            requests(state.path()),
-            "resources\npage-2\ntemplates\nresources\npage-2\n"
+            summaries(&runtime.list_resources("fixture", true).await.unwrap()),
+            [("memory://{id}", "by id")]
         );
+        assert_eq!(
+            requests(state.path()),
+            "resources\npage-2\ntemplates\nresources\ntemplates\n"
+        );
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_listings_restart_a_stopped_server_once() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = exiting(state.path(), 1);
+        runtime.connect(StartupPhase::All).await;
+        let server = stopped_after_a_list_change(&runtime).await;
+        let (resources, templates) = tokio::join!(
+            runtime.list_resources("fixture", false),
+            runtime.list_resources("fixture", true)
+        );
+        assert_eq!(
+            summaries(&resources.unwrap()),
+            [("memory://a", "Alpha"), ("memory://b", "b")]
+        );
+        assert_eq!(summaries(&templates.unwrap()), [("memory://{id}", "by id")]);
+        assert_eq!(server.restarts(), 1);
+        assert!(matches!(server.lifecycle(), Lifecycle::Ready(_)));
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_server_past_its_restart_limit_keeps_serving_its_last_resource_catalogs() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = exiting(state.path(), 0);
+        runtime.connect(StartupPhase::All).await;
+        let server = stopped_after_a_list_change(&runtime).await;
+        let cached = [("memory://a", "Alpha"), ("memory://b", "b")];
+        assert_eq!(
+            summaries(&runtime.list_resources("fixture", false).await.unwrap()),
+            cached
+        );
+        assert!(matches!(server.lifecycle(), Lifecycle::Failed(_)));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            summaries(&runtime.list_resources("fixture", false).await.unwrap()),
+            cached
+        );
+        assert_eq!(
+            summaries(&runtime.list_resources("fixture", true).await.unwrap()),
+            [("memory://{id}", "by id")]
+        );
+        assert_eq!(requests(state.path()), "resources\npage-2\ntemplates\n");
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn expired_catalogs_refetch_and_protocol_errors_name_the_failure() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("ttl"), "").unwrap();
+        std::fs::write(state.path().join("no-templates"), "").unwrap();
+        let runtime = runtime(vec![config("fixture", RESOURCE_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        assert_eq!(
+            runtime.list_resources("fixture", true).await,
+            Err(McpError::ProtocolFailure)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            summaries(&runtime.list_resources("fixture", false).await.unwrap()),
+            [("memory://t", "t")]
+        );
+        assert_eq!(requests(state.path()), "resources\ntemplates\nresources\n");
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 

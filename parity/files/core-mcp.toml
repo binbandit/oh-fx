@@ -61,13 +61,13 @@ modules = []
 upstream = "src/core/mcp/feature_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_catalog.rs"]
-note = "Resource and template catalog slots and the per-connection resource list invalidation exist; the prompt catalog and auth-generation availability are missing."
+note = "Resource and template catalog slots, the advertised capabilities of the last connection, and the per-connection resource list invalidation exist; the prompt catalog and auth-generation availability are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_catalog_runtime.rs"]
-note = "Resource and template catalogs are fetched page by page, refreshed by freshness and list_changed invalidation, restart a stopped stdio server first, and keep their last snapshot after a failed refresh; the prompt catalog and auth identity checks during paging are missing."
+note = "Resource and template catalogs are fetched page by page and refreshed by freshness and list_changed invalidation. A stopped stdio server is restarted under the refresh lock first. A new connection starts with empty catalogs, while a failed server keeps its last catalogs and capabilities and serves them after a failed refresh. The prompt catalog and auth identity checks during paging are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_operations.zig"
@@ -266,7 +266,7 @@ note = "Connection state, request ids, cancellation and queued notifications exi
 upstream = "src/core/mcp/server_lifecycle.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_lifecycle.rs"]
-note = "Startup restarts up to restart_limit and the restart of a stopped stdio server before a feature catalog refresh exist; remote and legacy HTTP session recovery are missing."
+note = "Startup restarts up to restart_limit, serialized recovery that lets a waiting caller use the connection another caller restored, and the restart of a stopped stdio server before a feature catalog refresh exist; remote and legacy HTTP session recovery are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_lifetime.zig"

@@ -79,6 +79,7 @@ pub(crate) struct Server {
     pub(crate) features: FeatureCatalogs,
     options: ConnectOptions,
     state: Mutex<State>,
+    recovery: tokio::sync::Mutex<()>,
     restarts: Mutex<u8>,
     catalog_generation: Arc<AtomicU64>,
 }
@@ -94,6 +95,7 @@ impl Server {
             features: FeatureCatalogs::default(),
             options,
             state: Mutex::new(State::Waiting),
+            recovery: tokio::sync::Mutex::new(()),
             restarts: Mutex::new(0),
             catalog_generation,
         }
@@ -155,6 +157,8 @@ impl Server {
             if matches!(*state, State::Stopped) {
                 None
             } else {
+                self.features
+                    .reset(connection.client.server_info().capabilities);
                 Some(std::mem::replace(
                     &mut *state,
                     State::Ready(connection.clone()),
@@ -208,11 +212,16 @@ impl Server {
     }
 
     pub(crate) async fn running_client(self: &Arc<Self>) -> Result<Arc<McpClient>, RestartFailure> {
-        let current = match &*lock(&self.state) {
-            State::Ready(connection) => Some(connection.client.clone()),
-            _ => None,
-        };
-        let client = current.ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))?;
+        let client = self
+            .ready_client()
+            .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))?;
+        if client.is_running() {
+            return Ok(client);
+        }
+        let _recovering = self.recovery.lock().await;
+        let client = self
+            .ready_client()
+            .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))?;
         if client.is_running() {
             return Ok(client);
         }
@@ -235,9 +244,14 @@ impl Server {
                 message,
             });
         }
+        self.ready_client()
+            .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))
+    }
+
+    fn ready_client(&self) -> Option<Arc<McpClient>> {
         match &*lock(&self.state) {
-            State::Ready(connection) => Ok(connection.client.clone()),
-            _ => Err(RestartFailure::Unavailable(McpError::McpConnectionClosed)),
+            State::Ready(connection) => Some(connection.client.clone()),
+            _ => None,
         }
     }
 

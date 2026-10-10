@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::catalog_freshness::{SnapshotMetadata, failed_refresh, request_refresh};
 use crate::features::resources::{Listed, Resource, ResourceTemplate};
+use crate::protocol_messages::ServerCapabilities;
 use crate::server_connection::{McpClient, lock};
 
 #[derive(Debug, Clone)]
@@ -14,11 +15,22 @@ pub(crate) struct Snapshot<T> {
 #[derive(Default)]
 pub(crate) struct FeatureCatalogs {
     pub(crate) refresh: tokio::sync::Mutex<()>,
+    advertised: Mutex<ServerCapabilities>,
     resources: Mutex<Option<Snapshot<Resource>>>,
     templates: Mutex<Option<Snapshot<ResourceTemplate>>>,
 }
 
 impl FeatureCatalogs {
+    pub(crate) fn reset(&self, capabilities: ServerCapabilities) {
+        *lock(&self.advertised) = capabilities;
+        *lock(&self.resources) = None;
+        *lock(&self.templates) = None;
+    }
+
+    pub(crate) fn advertises_resources(&self) -> bool {
+        lock(&self.advertised).resources.is_some()
+    }
+
     pub(crate) fn snapshot<T: FeatureCatalog>(&self) -> Option<Snapshot<T>> {
         lock(T::slot(self)).clone()
     }

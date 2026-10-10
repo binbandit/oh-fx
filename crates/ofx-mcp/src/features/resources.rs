@@ -283,6 +283,7 @@ fn parse_descriptor_fields(
     optional_string(object, "mimeType", limits.title_bytes)?;
     if let Some(icons) = object.get("icons") {
         validate_icons(icons, limits)?;
+        validate_bounded_json(icons, limits.metadata_bytes, limits.json_depth)?;
     }
     if let Some(annotations) = object.get("annotations") {
         validate_annotations(annotations, limits)?;
@@ -592,6 +593,29 @@ mod tests {
         assert_eq!(
             page::<Resource>(&json!({"resources": [{"uri": "a://", "name": "a", "size": 1.0e3}]}))
                 .map(|page| page.items.len()),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn serialized_icons_stay_within_the_metadata_limit() {
+        let icon = json!({"src": format!("data:image/png;base64,{}", "A".repeat(60 * 1024))});
+        let icons = json!([icon, icon, icon]);
+        assert_eq!(
+            page::<Resource>(&json!({"resources": [{"uri": "a://", "name": "a", "icons": icons}]}))
+                .err(),
+            Some(McpError::MetadataLimitExceeded)
+        );
+        assert_eq!(
+            page::<ResourceTemplate>(&json!({"resourceTemplates": [{"uriTemplate": "a://{x}", "name": "a", "icons": icons}]}))
+                .err(),
+            Some(McpError::InvalidTemplate)
+        );
+        assert_eq!(
+            page::<Resource>(
+                &json!({"resources": [{"uri": "a://", "name": "a", "icons": [icon]}]})
+            )
+            .map(|page| page.items.len()),
             Ok(1)
         );
     }

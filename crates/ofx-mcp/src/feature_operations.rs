@@ -4,7 +4,7 @@ use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::features::resources::{Resource, ResourceTemplate};
-use crate::server_lifecycle::{Lifecycle, Server};
+use crate::server_lifecycle::Server;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceSummary {
@@ -19,11 +19,7 @@ impl Server {
         include_templates: bool,
         deadline: Instant,
     ) -> Result<Vec<ResourceSummary>, McpError> {
-        let advertised = match self.lifecycle() {
-            Lifecycle::Ready(client) => client.server_info().capabilities.resources.is_some(),
-            Lifecycle::Idle | Lifecycle::Starting | Lifecycle::Failed(_) => false,
-        };
-        if !advertised {
+        if !self.features.advertises_resources() {
             return Err(McpError::McpResourcesUnsupported);
         }
         let resources = self.feature_catalog::<Resource>(deadline).await?;

@@ -22,36 +22,45 @@ impl Server {
         deadline: Instant,
     ) -> Result<Arc<[T]>, McpError> {
         loop {
-            let Lifecycle::Ready(client) = self.lifecycle() else {
-                return Err(McpError::McpConnectionClosed);
-            };
-            let refreshing = timeout_at(deadline, self.features.refresh.lock())
+            let _refreshing = timeout_at(deadline, self.features.refresh.lock())
                 .await
                 .map_err(|_| McpError::McpRequestTimedOut)?;
+            let client = match self.lifecycle() {
+                Lifecycle::Ready(client) => Some(client),
+                Lifecycle::Idle | Lifecycle::Starting | Lifecycle::Failed(_) => None,
+            };
             let current = self.features.snapshot::<T>();
-            let invalidation = T::invalidation(&client);
+            let invalidated = client
+                .as_ref()
+                .is_some_and(|client| T::invalidation(client).pending());
             if let Some(current) = &current
-                && decide_refresh(current.metadata, monotonic_millis(), invalidation.pending())
+                && decide_refresh(current.metadata, monotonic_millis(), invalidated)
                     != RefreshAction::Refresh
             {
                 return Ok(Arc::clone(&current.items));
             }
+            let Some(client) = client else {
+                return self.keep_after_failure(current, McpError::McpConnectionClosed);
+            };
             if self.config.transport == TransportType::Stdio && !client.is_running() {
-                drop(refreshing);
                 match self.running_client().await {
                     Ok(_) => continue,
                     Err(failure) => return self.keep_after_failure(current, failure.into_error()),
                 }
             }
+            let invalidation = T::invalidation(&client);
             let generation = invalidation.generation();
             return match fetch::<T>(&client, deadline).await {
                 Ok(catalog) => {
                     let items: Arc<[T]> = catalog.items.into();
-                    self.features.publish(Snapshot {
-                        items: Arc::clone(&items),
-                        metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
-                    });
-                    invalidation.clear_through(generation);
+                    if matches!(self.lifecycle(), Lifecycle::Ready(published) if Arc::ptr_eq(&published, &client))
+                    {
+                        self.features.publish(Snapshot {
+                            items: Arc::clone(&items),
+                            metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
+                        });
+                        invalidation.clear_through(generation);
+                    }
                     Ok(items)
                 }
                 Err(error) => self.keep_after_failure(current, error),
