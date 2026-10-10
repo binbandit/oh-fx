@@ -1,5 +1,5 @@
 [[file]]
 upstream = "src/tools/capabilities/capability_search.zig"
-status = "todo"
-modules = []
-note = "Capability discovery source/cursor/search tool are unimplemented."
+status = "partial"
+modules = ["crates/ofx-tools/src/capability_search.rs"]
+note = "The decoder, presentation, skill and MCP halves with the shared budget, the ask-only MCP result clamp and McpServerNotFound for an unknown server, which upstream's deferred ask connection reports, and the combined envelope exist; matched MCP schemas are not loaded because every MCP tool is advertised, as docs/differences/mcp.md records."

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ofx_config::{ContextLimitName, ContextLimits};
+use ofx_config::ContextLimits;
 use ofx_contract::{PathAccess, ToolCallId, ToolResultStatus};
 use tokio_util::sync::CancellationToken;
 
@@ -9,7 +9,6 @@ use crate::mcp_contract::{EnvVar, McpServerConfig};
 use crate::native_config::NativeConfigLoad;
 use crate::server_transport::ConnectOptions;
 use crate::startup_admission::StartupPhase;
-use crate::tool_mcp_registry::SchemaLimits;
 use crate::transport::ShutdownMode;
 
 const ENVELOPE: &str = r#"{"trust":"untrusted_external","authority":"none""#;
@@ -63,10 +62,7 @@ fn runtime(configs: Vec<McpServerConfig>) -> Arc<McpRuntime> {
         },
         ConnectOptions::default(),
         Vec::new(),
-        SchemaLimits {
-            server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
-            selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
-        },
+        limits,
     ))
 }
 

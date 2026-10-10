@@ -1642,7 +1642,7 @@ mod tests {
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
         PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus,
         StatuslineItem, StatuslineToggles, StopAction, ToolResultStatus, TurnId, TurnOutcome,
-        TurnPresentationOutcome,
+        TurnPresentationOutcome, format_tool_execution_error_json,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -5380,7 +5380,7 @@ mod tests {
                 "skills": [], "mcp_tools": [],
                 "counts": {"skills": 0, "mcp_tools": 0},
                 "total_matches": {"skills": 0, "mcp_tools": 0},
-                "state": "no_match"
+                "mcp_state": "server_not_found"
             })
         );
     }
@@ -8489,5 +8489,86 @@ done
         let listing = docs_listing(&mut harness).await;
         assert!(!listing.contains("state=ready"), "{listing}");
         assert!(!listing.contains("admission=approved"), "{listing}");
+    }
+
+    const STALLING_MCP_SERVER: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"docs\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      if [ -f "$STATE/listed" ]; then touch "$STATE/stalled"; cat > /dev/null; exit 0; fi
+      touch "$STATE/listed"
+      reply "$id" '{"tools":[{"name":"search","inputSchema":{"type":"object"}}],"ttlMs":1}' ;;
+  esac
+done
+"#;
+
+    async fn appeared(path: &std::path::Path) {
+        timeout(Duration::from_secs(10), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_turn_ends_a_capability_search_waiting_on_a_stalled_tool_list() {
+        let server = FakeServer::start([Reply::sse(&chat_tool_call_events(
+            "search-1",
+            "capability_search",
+            r#"{"query":"docs search"}"#,
+        ))]);
+        let home = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(home.path()).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join(".mcp.json"),
+            json!({"mcpServers": {"docs": {
+                "command": "/bin/sh",
+                "args": ["-c", STALLING_MCP_SERVER],
+                "env": {"STATE": root}
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let mut harness = Harness::with_setup(home, setup);
+        harness.command("/mcp trust approve docs");
+        mcp_notices(&mut harness, 2).await;
+        appeared(&root.join("listed")).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        harness.submit("find a docs tool");
+        harness
+            .until(|event| matches!(event, UiEvent::ToolStarted { tool_name, .. } if tool_name == "capability_search"))
+            .await;
+        appeared(&root.join("stalled")).await;
+        let cancelled = std::time::Instant::now();
+        harness.send(UiCommand::Cancel {
+            turn_id: harness.running_turn(),
+        });
+        let events = timeout(
+            Duration::from_secs(10),
+            harness.until(finished(TurnOutcome::Interrupted)),
+        )
+        .await
+        .unwrap();
+        assert!(
+            cancelled.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            cancelled.elapsed()
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::ToolFinished { tool_name, content, .. }
+                if tool_name == "capability_search"
+                    && *content == format_tool_execution_error_json("capability_search", "Cancelled")
+        )), "{events:?}");
     }
 }

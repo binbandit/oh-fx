@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ofx_contract::{LiveAdditionalRoots, LivePermissionMode, QuestionAsker, Tool};
+use ofx_contract::{LiveAdditionalRoots, LivePermissionMode, McpToolSearch, QuestionAsker, Tool};
 use ofx_exec::ManagedExecutions;
 use ofx_mcp::{McpFeatures, McpRuntime};
 use ofx_tools::{
@@ -63,10 +63,18 @@ pub(crate) fn ask_tools(
     ]
 }
 
-pub(crate) fn with_features(
+pub(crate) fn with_mcp(
     mut tools: Vec<Arc<dyn Tool>>,
+    search: &CapabilitySearch,
     runtime: Option<Arc<McpRuntime>>,
 ) -> Vec<Arc<dyn Tool>> {
+    if let Some(runtime) = &runtime
+        && let Some(slot) = tools
+            .iter_mut()
+            .find(|tool| tool.spec().name == search.spec().name)
+    {
+        *slot = Arc::new(search.searching_mcp(Arc::clone(runtime) as Arc<dyn McpToolSearch>));
+    }
     let skill = tools
         .iter()
         .position(|tool| tool.spec().name == "skill")

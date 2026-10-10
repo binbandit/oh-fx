@@ -67,6 +67,16 @@ pub(crate) struct Tool {
     pub meta: Option<Value>,
 }
 
+impl Tool {
+    pub(crate) fn catalog_description(&self) -> &str {
+        if self.description.is_empty() {
+            "MCP tool"
+        } else {
+            &self.description
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ToolCatalog {
     pub tools: Vec<Tool>,
