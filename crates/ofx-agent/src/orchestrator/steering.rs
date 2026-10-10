@@ -8,6 +8,8 @@ use super::{Agent, EventSink, Stop, Turn};
 use crate::execution_memory::{steering_message, steering_text};
 use crate::worker_runtime::{Boundary, BoundaryKind, Steering, WorkerRuntime};
 
+const STEERING_HANDOFF: &str = "steering_handoff";
+
 impl Agent {
     pub(super) fn hold_interruption(&mut self, ending: Ending, start: usize) {
         if matches!(ending, Ending::Stopped(_)) {
@@ -106,6 +108,7 @@ impl Agent {
             return Err(Stop::interrupted());
         }
         if !self.steer_at_model_boundary(turn.id, events) {
+            turn.trail.finish = Some(STEERING_HANDOFF);
             return Err(Stop::interrupted());
         }
         self.follow_steered_language(turn);

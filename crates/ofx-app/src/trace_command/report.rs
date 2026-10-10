@@ -6,7 +6,7 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ofx_agent::CompactionEvent;
+use ofx_agent::{CompactionEvent, ToolCallTrace};
 use ofx_contract::{PermissionMode, ReasoningEffort, is_provider_search_alias};
 use ofx_text::mask_secrets;
 use ofx_trace::Sequenced;
@@ -44,6 +44,7 @@ pub(super) struct Snapshot {
     trace_log: Option<PathBuf>,
     terminal: Terminal,
     compaction: Vec<Sequenced<CompactionEvent>>,
+    tool_calls: ToolCallTrace,
     tail: Option<Tail>,
 }
 
@@ -96,6 +97,7 @@ impl Snapshot {
                 cmux: std::env::var_os("CMUX_WORKSPACE_ID").is_some(),
             },
             compaction: ofx_agent::compaction_trace(),
+            tool_calls: ofx_agent::tool_call_trace(),
             tail,
         }
     }
@@ -113,6 +115,7 @@ impl Snapshot {
         self.write_current_state(out)?;
         self.write_problems(out)?;
         self.write_compaction(out)?;
+        tool_calls::write_section(out, &self.tool_calls)?;
         self.write_runtime_context(out)?;
         if let Some(tail) = &self.tail {
             write_tail(out, tail)?;
@@ -187,6 +190,7 @@ impl Snapshot {
                 self.facts.processing, self.facts.stream_active, self.facts.queued
             )?;
         }
+        count += tool_calls::write_problems(out, &self.tool_calls)?;
         for event in self
             .compaction
             .iter()
@@ -450,6 +454,8 @@ fn process_memory(pid: u32) -> Option<String> {
     let trimmed = text.trim_matches([' ', '\t', '\r', '\n']);
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
+
+mod tool_calls;
 
 #[cfg(test)]
 mod tests;

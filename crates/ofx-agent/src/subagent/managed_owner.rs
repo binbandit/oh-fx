@@ -7,6 +7,7 @@ use ofx_contract::{
     LogFailure, ModelFailureDiagnostic, PermissionMode, RootUserRequests, SubagentPlan,
     SubagentRequest, SubagentStatus, TurnId,
 };
+use ofx_trace::trace_log;
 use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -17,6 +18,9 @@ use super::tool_host::{
 };
 
 type SharedRuntime = Arc<tokio::sync::Mutex<ChildRuntime>>;
+
+const SUBAGENT: &str = "subagent";
+const UNKNOWN: &str = "unknown";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Observation {
@@ -188,13 +192,32 @@ impl Owner {
     ) -> Admitted {
         let defaults = self.agents.defaults();
         let fingerprint = request.fingerprint();
+        trace_log!(
+            SUBAGENT,
+            "admission requested operation={operation_id} action={} agent={} override={}",
+            request.action().label(),
+            request.agent_name().unwrap_or("none"),
+            if request.overrides().is_present() {
+                "yes"
+            } else {
+                "no"
+            }
+        );
         let mut guard = self.lock();
         let state = &mut *guard;
         if state.unavailable {
             return Admitted::Rejected("host_unavailable");
         }
         if let Some(existing) = state.registry.find_by_operation(operation_id) {
-            if existing.operation_fingerprint(operation_id) != Some(fingerprint) {
+            let Some(observed) = existing.operation_fingerprint(operation_id) else {
+                return Admitted::Rejected("operation_conflict");
+            };
+            if observed != fingerprint {
+                trace_log!(
+                    SUBAGENT,
+                    "admission rejected operation={operation_id} child_id={} code=operation_conflict",
+                    existing.id
+                );
                 return Admitted::Rejected("operation_conflict");
             }
             if existing.last_work_id.as_deref() == Some(operation_id) {
@@ -352,6 +375,14 @@ impl Owner {
         };
         let waiter = slot.waiter();
         state.slots.insert(start.child_id.clone(), slot);
+        let parent_id = if ofx_trace::enabled(SUBAGENT) {
+            state
+                .store
+                .as_ref()
+                .map_or_else(|| UNKNOWN.to_owned(), |store| store.parent_id().to_owned())
+        } else {
+            String::new()
+        };
         let owner = Arc::clone(self);
         tokio::spawn(async move {
             let Start {
@@ -381,6 +412,8 @@ impl Owner {
                 let relay = ChildRelay {
                     approvals: &forward,
                     feedback: &feedback,
+                    child_id: &origin,
+                    parent_id: &parent_id,
                 };
                 let mut runtime = runtime.lock_owned().await;
                 let tools = agents.work_tools();
@@ -451,6 +484,11 @@ fn continue_persistent(
     work: ActiveWork,
 ) -> Result<Planned, Refusal> {
     if request.overrides().is_present() {
+        trace_log!(
+            SUBAGENT,
+            "admission rejected operation={} child_id={child_id} agent={agent} code=override_after_create",
+            work.id
+        );
         return Err("override_after_create".into());
     }
     match request.plan(Some(ChildSnapshot {
