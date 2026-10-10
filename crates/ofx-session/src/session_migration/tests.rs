@@ -393,18 +393,20 @@ fn logs_holding_what_oh_fx_cannot_convert_yet_stay_unreadable() {
         "\"images\":[]",
         "\"images\":[{\"id\":1,\"path\":\"/tmp/a.png\",\"media_type\":\"image/png\",\"snapshot_path\":null,\"snapshot_sha256\":null}]",
     );
-    let replay_turn = command_turn(
+    let result = command_result("call_1", "a", "null");
+    let terminal_turn = command_turn(
         "list",
         "call_1",
-        &command_result("call_1", "a", "null").replace(
-            "\"command_output_replay\":null",
-            "\"command_output_replay\":{\"handle\":\"fx-command-replay-1.bin\",\"framed_bytes\":8}",
+        &format!(
+            "{},\"terminal_action_presentation\":{{\"kind\":\"failed\",\"code\":\"session_not_found\"}}}}",
+            &result[..result.len() - 1]
         ),
         "done",
-    );
+    )
+    .replace("\"schema_version\":3", "\"schema_version\":4");
     for log in [
         LegacyLog::started("legacy-later", "/work").turn(&image_turn),
-        LegacyLog::started("legacy-later", "/work").turn(&replay_turn),
+        LegacyLog::started("legacy-later", "/work").turn(&terminal_turn),
         LegacyLog::started("legacy-later", "/work").frame(
             "state_replacement_started",
             &format!(
@@ -635,3 +637,4 @@ fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
 
 mod checkpoints;
 mod replacements;
+mod turn_fields;

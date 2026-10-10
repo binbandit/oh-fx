@@ -365,3 +365,37 @@ fn a_checkpoint_upstream_would_refuse_or_oh_fx_cannot_keep_hides_the_session() {
         assert!(fixture.summary(&log).is_err(), "{case}");
     }
 }
+
+#[test]
+fn a_checkpoint_holding_what_oh_fx_cannot_keep_yet_hides_the_session() {
+    let fixture = Fixture::new();
+    let base = checkpoint_007("ok");
+    let cases = [
+        (
+            "command replay",
+            base.replace(
+                "\"command_output_replay\":null",
+                "\"command_output_replay\":{\"kind\":\"unavailable\"}",
+            ),
+        ),
+        (
+            "file presentation",
+            base.replace(
+                "\"committed_file_presentation\":null",
+                "\"committed_file_presentation\":{\"path\":\"a.rs\",\"kind\":\"added\",\"lines\":[],\"additions\":0,\"deletions\":0,\"truncated\":false,\"previous_content\":null,\"after_content\":\"x\",\"lifecycle_id\":null}",
+            ),
+        ),
+        (
+            "output that is not UTF-8",
+            base.replace(
+                "\"output\":\"ok\"",
+                "\"output\":{\"encoding\":\"base64\",\"data\":\"b2v/\"}",
+            ),
+        ),
+    ];
+    for (case, checkpoint) in cases {
+        let log = LegacyLog::started_007("legacy-kept-out")
+            .frame("recovery_checkpoint_set", &set(&checkpoint));
+        assert!(fixture.summary(&log).is_err(), "{case}");
+    }
+}

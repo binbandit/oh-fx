@@ -15,7 +15,7 @@ use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
-use file_presentation::CommittedFilePresentation;
+pub(crate) use file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
 pub(crate) use history_codec::{decode_history_envelope, encode_history_envelope};
@@ -183,11 +183,11 @@ pub struct ToolResultEvent {
     #[serde(default)]
     pub permission_feedback: Vec<String>,
     #[serde(default)]
-    committed_file_presentation: Option<Box<CommittedFilePresentation>>,
+    pub(crate) committed_file_presentation: Option<Box<CommittedFilePresentation>>,
     #[serde(default)]
-    command_replay_ref: Option<String>,
+    pub(crate) command_replay_ref: Option<String>,
     #[serde(default)]
-    command_replay_bytes: Option<u64>,
+    pub(crate) command_replay_bytes: Option<u64>,
     #[serde(default, with = "crate::process_presentation::frame")]
     pub command_process_presentation: Option<CommandProcessPresentation>,
     #[serde(default)]
@@ -320,11 +320,11 @@ pub struct InterruptedEvent {
     #[serde(default)]
     pub partial_text: Option<String>,
     #[serde(default)]
-    command_replay_ref: Option<String>,
+    pub(crate) command_replay_ref: Option<String>,
     #[serde(default)]
-    command_replay_bytes: Option<u64>,
+    pub(crate) command_replay_bytes: Option<u64>,
     #[serde(default)]
-    command_artifact_ref: Option<String>,
+    pub(crate) command_artifact_ref: Option<String>,
     #[serde(default)]
     pub(crate) files: Vec<FileEvidence>,
     #[serde(default, with = "crate::turn_summary")]

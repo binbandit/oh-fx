@@ -733,3 +733,58 @@ fn resuming_a_compacted_schema_v3_session_restores_its_summary() {
     assert_eq!(prompts, ["three"]);
     assert_eq!(snapshot(&home.fx_profile()), before);
 }
+
+#[test]
+fn resuming_a_schema_v3_edit_keeps_its_diff_and_command_replay() {
+    let home = Home::new();
+    let previous = "a\n".repeat(3_000);
+    let presentation = format!(
+        "{{\"path\":\"src/main.rs\",\"kind\":\"edited\",\"lines\":[{{\"kind\":\"addition\",\"old_line\":null,\"new_line\":3001,\"text\":\"b\"}}],\"additions\":1,\"deletions\":0,\"truncated\":false,\"previous_content\":{},\"after_content\":{},\"lifecycle_id\":null}}",
+        serde_json::to_string(&previous).unwrap(),
+        serde_json::to_string(&format!("{previous}b\n")).unwrap()
+    );
+    let edit = command_result("call_1", "edited", "null")
+        .replace("\"run_command\"", "\"edit_file\"")
+        .replace(
+            "\"committed_file_presentation\":null",
+            &format!("\"committed_file_presentation\":{presentation}"),
+        )
+        .replace(
+            "\"command_output_replay\":null",
+            "\"command_output_replay\":{\"kind\":\"available\",\"handle\":\"fx-command-replay-00112233.bin\",\"framed_bytes\":8}",
+        );
+    LegacyLog::started(ID, WORKSPACE)
+        .turn(
+            &command_turn("edit it", "call_1", &edit, "done")
+                .replace("\"name\":\"run_command\"", "\"name\":\"edit_file\""),
+        )
+        .write(&home.fx_sessions());
+    add(
+        &home.fx_sessions().join(ID),
+        "logs/commands/fx-command-replay-00112233.bin",
+        b"FXRPLY01",
+    );
+    let before = snapshot(&home.fx_profile());
+
+    drop(importing(&home).resume(ID).unwrap());
+    let history = home.store(WORKSPACE).load(ID).unwrap().history;
+    let result = tool_result(&history.turns[0].events[3]);
+    let change = result.file_change().unwrap();
+    assert_eq!(change.path, "src/main.rs");
+    let pack_handle = result
+        .committed_file_presentation
+        .as_ref()
+        .and_then(|presentation| presentation.content_handle.clone())
+        .unwrap();
+    let pack = copy_of(&home, &format!("tool-results/{pack_handle}"));
+    assert!(pack.starts_with(b"{\"previous_content\":\"a\\na\\n"));
+    assert_eq!(
+        result.command_replay_ref.as_deref(),
+        Some("fx-command-replay-00112233.bin")
+    );
+    assert_eq!(
+        copy_of(&home, "logs/commands/fx-command-replay-00112233.bin"),
+        b"FXRPLY01"
+    );
+    assert_eq!(snapshot(&home.fx_profile()), before);
+}

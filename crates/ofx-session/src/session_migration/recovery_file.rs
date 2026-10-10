@@ -207,31 +207,32 @@ fn result_wire<'a>(
     result: &'a SavedResult,
     spilled: &mut Vec<(String, String)>,
 ) -> Option<ResultWire<'a>> {
-    if result.provider_native {
+    if result.provider_native || result.presentation.is_some() || result.replay.is_some() {
         return None;
     }
+    let output = std::str::from_utf8(&result.output).ok()?;
     let mut output_handle = result.output_handle.clone();
     let mut stored_output_bytes = result.stored_output_bytes;
     let spills = output_handle.is_none()
-        && result.output.len() > PREVIEW_BYTES
-        && result.output.len() <= STORED_TEXT_MAX_BYTES;
+        && output.len() > PREVIEW_BYTES
+        && output.len() <= STORED_TEXT_MAX_BYTES;
     if spills {
-        let handle = make_handle(&result.call_id, &result.tool_name, &result.output);
-        spilled.push((handle.clone(), result.output.clone()));
+        let handle = make_handle(&result.call_id, &result.tool_name, output);
+        spilled.push((handle.clone(), output.to_owned()));
         output_handle = Some(handle);
-        stored_output_bytes = u64::try_from(result.output.len()).ok()?;
+        stored_output_bytes = u64::try_from(output.len()).ok()?;
     }
-    let moved = output_handle.is_some() && !result.output.is_empty();
+    let moved = output_handle.is_some() && !output.is_empty();
     let preview = match (&result.preview, moved) {
         (Some(preview), _) => Some(preview.as_str()),
-        (None, true) => Some(preview(&result.output)),
+        (None, true) => Some(preview(output)),
         (None, false) => None,
     };
     Some(ResultWire {
         tool_call_id: &result.call_id,
         tool_name: &result.tool_name,
         status: result.status.tag(),
-        output: if moved { "" } else { &result.output },
+        output: if moved { "" } else { output },
         output_handle,
         preview,
         output_bytes: result.output_bytes,

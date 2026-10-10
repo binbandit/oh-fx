@@ -2,15 +2,20 @@ use std::fmt::Write as _;
 
 use ofx_contract::{
     CommandProcessPresentation, ExecutionFailure, ToolArgumentIntegrity, ToolExecutionProvenance,
-    ToolResultStatus, TurnSummary, tool_execution_failure_json,
+    ToolResultStatus, TurnSummary, is_captured_command, tool_execution_failure_json,
 };
 
+use super::legacy_presentation::{
+    CancelledCommand, CommandReplay, cancelled_command, command_replay, file_presentation,
+};
 use crate::json_fields::{Fields, Json};
 use crate::session_authority::parse_identifier;
 use crate::session_codec::recovery_checkpoint::{
     durable_bytes, durable_text, file_evidence, list, tag,
 };
-use crate::session_event::{FileEvidence, InterruptReason, ToolCallEvent};
+use crate::session_event::{
+    CommittedFilePresentation, FileEvidence, InterruptReason, ToolCallEvent,
+};
 use crate::{process_presentation, turn_summary};
 
 const NEWEST_EXECUTION_SCHEMA: u64 = 10;
@@ -64,7 +69,7 @@ pub(super) struct SavedResult {
     pub(super) call_id: String,
     pub(super) tool_name: String,
     pub(super) status: ToolResultStatus,
-    pub(super) output: String,
+    pub(super) output: Vec<u8>,
     pub(super) output_handle: Option<String>,
     pub(super) preview: Option<String>,
     pub(super) output_bytes: u64,
@@ -74,6 +79,8 @@ pub(super) struct SavedResult {
     pub(super) created_at_ms: i64,
     pub(super) permission_feedback: Vec<String>,
     pub(super) process: Option<CommandProcessPresentation>,
+    pub(super) presentation: Option<Box<CommittedFilePresentation>>,
+    pub(super) replay: Option<CommandReplay>,
 }
 
 pub(super) struct Steering {
@@ -88,6 +95,7 @@ pub(super) enum TurnClose {
         reason: InterruptReason,
         partial: Option<String>,
         pending: Option<ToolCallEvent>,
+        cancelled: Option<CancelledCommand>,
     },
 }
 
@@ -221,7 +229,13 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
         (value.as_str()? == "turn").then_some(())
     })?;
     let execution = fields.or("execution", Execution::default(), execution)?;
-    if fields.required("cancelled_command").is_some() {
+    let cancelled = fields.or("cancelled_command", None, |value| {
+        cancelled_command(value).map(Some)
+    })?;
+    let captured = pending
+        .as_ref()
+        .is_some_and(|call| is_captured_command(&call.tool_name, &call.arguments_json));
+    if cancelled.is_some() && (reason != InterruptReason::Cancelled || !captured) {
         return None;
     }
     Some(LegacyTurn::Conversation(Box::new(ConversationTurn {
@@ -232,6 +246,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
             reason,
             partial,
             pending,
+            cancelled,
         },
     })))
 }
@@ -402,7 +417,7 @@ fn refuse_unreadable_arguments(result: &mut SavedResult) {
     });
     let bytes = u64::try_from(output.len()).unwrap_or(u64::MAX);
     result.status = ToolResultStatus::Failure;
-    result.output = output;
+    result.output = output.into_bytes();
     result.output_handle = None;
     result.preview = None;
     result.output_bytes = bytes;
@@ -413,11 +428,11 @@ fn refuse_unreadable_arguments(result: &mut SavedResult) {
 
 fn tool_result(value: Json<'_>, version: u64) -> Option<SavedResult> {
     let mut fields = Fields::new(value)?;
-    let result = SavedResult {
+    let mut result = SavedResult {
         call_id: durable_text(fields.required("tool_call_id")?)?,
         tool_name: durable_text(fields.required("tool_name")?)?,
         status: tag(&fields.required("status")?)?,
-        output: durable_text(fields.required("output")?)?,
+        output: durable_bytes(fields.required("output")?)?,
         output_handle: fields
             .present_or_null("output_handle", |value| durable_text(value).map(Some))?,
         preview: fields.present_or_null("preview", |value| durable_text(value).map(Some))?,
@@ -438,15 +453,19 @@ fn tool_result(value: Json<'_>, version: u64) -> Option<SavedResult> {
         } else {
             None
         },
+        presentation: None,
+        replay: None,
     };
-    let presentation = match version {
-        1 => Some(()),
-        2 => fields.or("committed_file_presentation", (), |value| absent(&value)),
-        _ => absent(&fields.required("committed_file_presentation")?),
+    let presentation = |value| file_presentation(value).map(|shown| Some(Box::new(shown)));
+    result.presentation = match version {
+        1 => None,
+        2 => fields.nullable("committed_file_presentation", presentation)?,
+        _ => fields.present_or_null("committed_file_presentation", presentation)?,
     };
-    presentation?;
     if version >= PROCESS_SCHEMA {
-        absent(&fields.required("command_output_replay")?)?;
+        result.replay = fields.present_or_null("command_output_replay", |value| {
+            command_replay(value).map(Some)
+        })?;
     }
     if version >= TERMINAL_ACTION_SCHEMA {
         absent(&fields.required("terminal_action_presentation")?)?;
