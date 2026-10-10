@@ -84,11 +84,15 @@ fn client_capabilities(
 }
 
 pub(crate) fn build_tools_list_request(request_id: u64, cursor: Option<&str>) -> String {
+    build_list_request(request_id, "tools/list", cursor)
+}
+
+pub(crate) fn build_list_request(request_id: u64, method: &str, cursor: Option<&str>) -> String {
     let params = match cursor {
         Some(cursor) => json!({"cursor": cursor}),
         None => json!({}),
     };
-    request_frame(request_id, "tools/list", &params)
+    request_frame(request_id, method, &params)
 }
 
 pub(crate) fn build_tool_call_request(
@@ -294,6 +298,10 @@ mod tests {
         assert_eq!(
             build_tools_list_request(1, None),
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}"
+        );
+        assert_eq!(
+            build_list_request(2, "resources/templates/list", Some("")),
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/templates/list\",\"params\":{\"cursor\":\"\"}}"
         );
     }
 

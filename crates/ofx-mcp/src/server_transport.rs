@@ -128,9 +128,9 @@ pub(crate) fn startup_deadline(config: &McpServerConfig) -> Instant {
 pub(crate) async fn connect_stdio(
     config: &McpServerConfig,
     options: &ConnectOptions,
+    deadline: Instant,
 ) -> Result<Connected, StartupFailure> {
     let launch = stdio_launch(config)?;
-    let deadline = startup_deadline(config);
     let mut restart_attempts = 0_u8;
     loop {
         let failure = match connect_stdio_once(&launch, options, deadline).await {
@@ -323,12 +323,12 @@ async fn fail_launch(
 pub(crate) async fn connect_http(
     config: &McpServerConfig,
     options: &ConnectOptions,
+    deadline: Instant,
 ) -> Result<Connected, StartupFailure> {
     validate_startup_mode(
         &config.env,
         env::var(PROTOCOL_VERSION_ENVIRONMENT).ok().as_deref(),
     )?;
-    let deadline = startup_deadline(config);
     let (endpoint, notifications) = http_endpoint(config, options)?;
     let preferred = HttpVersion::PREFERRED;
     let body = build_legacy_initialize_request(
@@ -383,8 +383,8 @@ fn http_endpoint(
 pub(crate) async fn connect_sse(
     config: &McpServerConfig,
     options: &ConnectOptions,
+    deadline: Instant,
 ) -> Result<Connected, StartupFailure> {
-    let deadline = startup_deadline(config);
     let (endpoint, notifications) = http_endpoint(config, options)?;
     let client =
         LegacySseClient::connect(endpoint, DISCOVERY_RESPONSE_FRAME_CAP_BYTES, deadline).await?;
@@ -542,7 +542,11 @@ pub(crate) async fn discover_tools(
 const STDERR_DISPLAY_BYTES: usize = 400;
 const WORD_SEPARATORS: [char; 4] = [' ', '\t', '\r', '\n'];
 
-pub(crate) fn startup_failure_message(failure: &StartupFailure, startup_timeout_ms: u32) -> String {
+pub(crate) fn startup_failure_message(
+    failure: &StartupFailure,
+    span_ms: u32,
+    startup_timeout_ms: u32,
+) -> String {
     let diagnostics = failure.diagnostics.as_ref();
     if let Some(diagnostics) = diagnostics
         && let Some(rejected) = &diagnostics.rejected_output
@@ -576,9 +580,10 @@ pub(crate) fn startup_failure_message(failure: &StartupFailure, startup_timeout_
             message
         }
         McpError::McpRequestTimedOut => {
-            let mut message = format!(
-                "MCP server did not complete startup within {startup_timeout_ms} ms (startup_timeout_ms)"
-            );
+            let mut message = format!("MCP server did not complete startup within {span_ms} ms");
+            if span_ms == startup_timeout_ms {
+                message.push_str(" (startup_timeout_ms)");
+            }
             match diagnostics {
                 Some(earlier) if earlier.status.is_some() => {
                     message.push_str("; an earlier launch ");

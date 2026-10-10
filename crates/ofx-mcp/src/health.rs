@@ -84,11 +84,12 @@ pub(crate) fn classify(connection: ConnectionState) -> Status {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CacheFreshness {
     Unavailable,
     Fresh,
     Stale,
+    FailedRefresh,
 }
 
 impl CacheFreshness {
@@ -97,8 +98,13 @@ impl CacheFreshness {
             Self::Unavailable => "unavailable",
             Self::Fresh => "fresh",
             Self::Stale => "stale",
+            Self::FailedRefresh => "failed_refresh",
         }
     }
+}
+
+pub(crate) fn retry_delay(retry_at_ms: Option<u64>, captured_at_ms: u64) -> Option<u64> {
+    retry_at_ms.map(|retry_at| retry_at.saturating_sub(captured_at_ms))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +156,7 @@ pub(crate) struct ServerSnapshot {
     pub cache_freshness: CacheFreshness,
     pub subscription: SubscriptionState,
     pub retry_attempt: u8,
+    pub retry_in_ms: Option<u64>,
     pub discovered: bool,
     pub failure: Option<String>,
 }
@@ -247,8 +254,11 @@ pub(crate) fn render(snapshot: &Snapshot) -> String {
         );
         let _ = writeln!(
             out,
-            "    retry_attempt={} retry_in_ms=none discovery={}",
+            "    retry_attempt={} retry_in_ms={} discovery={}",
             server.retry_attempt,
+            server
+                .retry_in_ms
+                .map_or_else(|| "none".to_owned(), |delay| delay.to_string()),
             if server.discovered {
                 "completed"
             } else {
@@ -394,6 +404,7 @@ mod tests {
             cache_freshness: CacheFreshness::Unavailable,
             subscription: SubscriptionState::Unavailable,
             retry_attempt: 0,
+            retry_in_ms: None,
             discovered: false,
             failure: None,
         }
@@ -447,6 +458,9 @@ mod tests {
             observed_connection(ConnectionState::Ready, None),
             ConnectionState::Ready
         );
+        assert_eq!(retry_delay(Some(1_250), 1_000), Some(250));
+        assert_eq!(retry_delay(Some(900), 1_000), Some(0));
+        assert_eq!(retry_delay(None, 1_000), None);
     }
 
     #[test]
@@ -470,11 +484,16 @@ mod tests {
         entry.retry_attempt = 2;
         entry.discovered = true;
         entry.failure = Some("Connection or discovery failed.".to_owned());
-        let output = render(&snapshot(vec![entry]));
+        let output = render(&snapshot(vec![entry.clone()]));
         assert_eq!(
             output,
             "MCP health (1 server):\n  server\\u001b[31m source=profile scope=profile policy=required transport=http state=failed auth=configured status=failed\n    negotiated_name=fixture negotiated_version=1.2.3 protocol=2025-11-25\n    tools=2 resources=3 templates=4 prompts=unknown cache=stale subscription=stopped\n    retry_attempt=2 retry_in_ms=none discovery=completed\n    failure=Connection or discovery failed.\n"
         );
+        entry.cache_freshness = CacheFreshness::FailedRefresh;
+        entry.retry_in_ms = Some(123);
+        let output = render(&snapshot(vec![entry]));
+        assert!(output.contains(" cache=failed_refresh subscription=stopped\n"));
+        assert!(output.contains("retry_attempt=2 retry_in_ms=123 discovery=completed"));
     }
 
     #[test]

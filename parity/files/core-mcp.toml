@@ -11,8 +11,9 @@ note = "A wasm32 shim for 64-bit atomics; oh-fx builds no wasm32 target, and its
 
 [[file]]
 upstream = "src/core/mcp/catalog_freshness.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/catalog_freshness.rs"]
+note = "Page expiry, refresh decisions, failed-refresh retention with retry backoff and explicit refresh requests exist for resource and template catalogs; auth partitions, content digests, generation checks and the refreshing state are missing until OAuth and tool catalog freshness land."
 
 [[file]]
 upstream = "src/core/mcp/catalog_refresh.zig"
@@ -58,18 +59,21 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/feature_catalog.rs"]
+note = "Resource and template catalog slots, the advertised capabilities of the last connection, and the per-connection resource list invalidation exist; the prompt catalog and auth-generation availability are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog_runtime.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/feature_catalog_runtime.rs"]
+note = "Resource and template catalogs are fetched page by page and refreshed by freshness and list_changed invalidation. A stopped stdio server is restarted under the refresh lock first. A new connection starts with empty catalogs, while a failed server keeps its last catalogs and capabilities and serves them after a failed refresh. The prompt catalog and auth identity checks during paging are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_operations.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/feature_operations.rs"]
+note = "Resource and template listing exists; resource reads, prompts, completion, resource update subscriptions and input-required rounds are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_result.zig"
@@ -88,8 +92,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/features/common.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/features/common.rs"]
+note = "Envelope parsing with the depth limit, complete results, cache hints, annotations, icons and bounded metadata exist; protocol errors, resource contents and prompt content validation are missing."
 
 [[file]]
 upstream = "src/core/mcp/features/completion.zig"
@@ -103,8 +108,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/features/resources.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/features/resources.rs"]
+note = "Resource and template list pages, the catalog builders and the RFC 6570 template syntax check exist; reads, the template matcher and stale-fallback eligibility are missing."
 
 [[file]]
 upstream = "src/core/mcp/features/tools.zig"
@@ -116,7 +122,7 @@ note = "tools/list paging under the tool cap, tool validation and tools/call res
 upstream = "src/core/mcp/health.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/health.rs", "crates/ofx-mcp/src/local_inspection.rs"]
-note = "Health rendering, the /mcp summary, the startup notice and the local configuration inspection used by status exist; OAuth states, retry scheduling and resource and prompt counts report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
+note = "Health rendering, the /mcp summary, the startup notice, the local configuration inspection used by status, failed-refresh freshness and the retry delay exist; OAuth states, tool catalog expiry and prompt counts report only what oh-fx tracks, as recorded in docs/differences/mcp.md."
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
@@ -187,7 +193,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, and shutdown exist; ACP host channels, feature and model catalogs, deferred ask connections and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource and template listing, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, prompt and model catalogs, deferred ask connections and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -216,8 +222,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/operation_control.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/operation_control.rs"]
+note = "The monotonic millisecond clock exists; the cancellation sources and the pausable deadline gate are missing."
 
 [[file]]
 upstream = "src/core/mcp/project_config.zig"
@@ -259,7 +266,7 @@ note = "Connection state, request ids, cancellation and queued notifications exi
 upstream = "src/core/mcp/server_lifecycle.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_lifecycle.rs"]
-note = "Startup restarts up to restart_limit exist; feature-server recovery and remote and legacy HTTP session recovery are missing."
+note = "Startup restarts up to restart_limit, serialized recovery that lets a waiting caller use the connection another caller restored, and the restart of a stopped stdio server before a feature catalog refresh exist. A restart for a tool call or a feature catalog refresh waits for the recovery lock and reconnects within that operation's deadline instead of a fresh startup timeout, and a restart that runs out of time names the time it had, as upstream's recoverServer and Control.startAt do. Remote and legacy HTTP session recovery are missing."
 
 [[file]]
 upstream = "src/core/mcp/server_lifetime.zig"
@@ -281,7 +288,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist; menu rows and feature views for resources and prompts are missing."
+note = "Server health views for the listing and summary exist, with resource and template counts, aggregated catalog freshness and retry fields; menu rows and prompt feature views are missing."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"
