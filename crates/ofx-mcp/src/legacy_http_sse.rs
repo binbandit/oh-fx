@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ofx_jsonrpc::{Correlator, RegisterError, RequestId, WaitError};
-use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE, WWW_AUTHENTICATE};
+use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Response, StatusCode, Url};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
@@ -254,7 +254,7 @@ impl SseShared {
             committed.store(true, Ordering::Release);
         }
         let response = builder.body(body.to_owned()).send().await?;
-        reject_redirect_or_authentication(&response)?;
+        self.auth.reject(&response)?;
         if response.status() == StatusCode::ACCEPTED {
             Ok(())
         } else {
@@ -282,7 +282,7 @@ impl SseShared {
             .await?
             .send()
             .await?;
-        reject_redirect_or_authentication(&response)?;
+        self.auth.reject(&response)?;
         if response.status() != StatusCode::OK {
             return Err(McpError::UnexpectedHttpStatus);
         }
@@ -393,18 +393,6 @@ fn same_origin(left: &Url, right: &Url) -> bool {
             .zip(right.host_str())
             .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
         && left.port_or_known_default() == right.port_or_known_default()
-}
-
-fn reject_redirect_or_authentication(response: &Response) -> Result<(), McpError> {
-    let status = response.status();
-    if status.is_redirection() {
-        return Err(McpError::RedirectNotAllowed);
-    }
-    let challenged = response.headers().contains_key(WWW_AUTHENTICATE);
-    if status == StatusCode::UNAUTHORIZED || (status == StatusCode::FORBIDDEN && challenged) {
-        return Err(McpError::McpAuthenticationRequired);
-    }
-    Ok(())
 }
 
 fn header_text(response: &Response, name: &str) -> Option<String> {

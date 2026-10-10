@@ -101,25 +101,87 @@ fn names_are_encoded_and_omissions_stay_within_the_budget_without_naming_them() 
 }
 
 #[test]
-fn availability_follows_the_classified_connection() {
-    for (connection, expected) in [
-        (ConnectionState::Ready, Availability::Ready),
-        (ConnectionState::Connecting, Availability::Discovering),
-        (ConnectionState::Disabled, Availability::Disabled),
-        (ConnectionState::Failed, Availability::Failed),
-        (ConnectionState::Disconnected, Availability::Unavailable),
-    ] {
-        assert_eq!(classify_availability(connection, false), expected);
-    }
-    for (connection, expected) in [
+fn availability_follows_the_connection_authentication_and_deferred_state() {
+    use crate::health::AuthenticationState as Auth;
+    for (connection, authentication, deferred, expected) in [
+        (
+            ConnectionState::Ready,
+            Auth::None,
+            false,
+            Availability::Ready,
+        ),
+        (
+            ConnectionState::Connecting,
+            Auth::None,
+            false,
+            Availability::Discovering,
+        ),
         (
             ConnectionState::Disconnected,
+            Auth::None,
+            true,
             Availability::AvailableOnDemand,
         ),
-        (ConnectionState::Disabled, Availability::Disabled),
-        (ConnectionState::Ready, Availability::Ready),
+        (
+            ConnectionState::Failed,
+            Auth::Required,
+            false,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Disconnected,
+            Auth::Required,
+            false,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Disconnected,
+            Auth::Required,
+            true,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Disabled,
+            Auth::None,
+            false,
+            Availability::Disabled,
+        ),
+        (
+            ConnectionState::Disabled,
+            Auth::Required,
+            false,
+            Availability::Disabled,
+        ),
+        (
+            ConnectionState::Disabled,
+            Auth::None,
+            true,
+            Availability::Disabled,
+        ),
+        (
+            ConnectionState::Failed,
+            Auth::None,
+            false,
+            Availability::Failed,
+        ),
+        (
+            ConnectionState::Ready,
+            Auth::None,
+            true,
+            Availability::Ready,
+        ),
+        (
+            ConnectionState::Disconnected,
+            Auth::None,
+            false,
+            Availability::Unavailable,
+        ),
     ] {
-        assert_eq!(classify_availability(connection, true), expected);
+        assert_eq!(
+            classify_availability(connection, authentication, deferred),
+            expected,
+            "{connection:?} {authentication:?} {deferred}"
+        );
     }
 }
 
