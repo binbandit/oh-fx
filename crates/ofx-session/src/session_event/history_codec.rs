@@ -4,6 +4,7 @@ use ofx_contract::{
     TurnSummary, TurnTokenProgress,
 };
 
+use super::file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
 use super::{
     ArtifactCompleteness, AssistantEvent, CONVERSATION_SCHEMA_VERSION, ContextCheckpointEvent,
     ConversationEnvelope, ConversationEvent, FileEvidence, FileEvidenceAction, InterruptedEvent,
@@ -217,12 +218,42 @@ impl Encoder<'_> {
         self.flag(false);
         self.signed(result.created_at_ms);
         self.texts(&result.permission_feedback)?;
-        self.absent();
+        self.file_presentation(result.committed_file_presentation.as_deref())?;
         self.optional_text(result.command_replay_ref.as_deref())?;
         self.optional_int(result.command_replay_bytes);
         self.process(result.command_process_presentation);
         self.absent();
         Some(())
+    }
+
+    fn file_presentation(
+        &mut self,
+        presentation: Option<&CommittedFilePresentation>,
+    ) -> Option<()> {
+        self.flag(presentation.is_some());
+        let Some(presentation) = presentation else {
+            return Some(());
+        };
+        self.text(&presentation.path)?;
+        self.tag(presentation.kind)?;
+        self.int(u64::from(u32::try_from(presentation.lines.len()).ok()?));
+        for line in &presentation.lines {
+            self.tag(line.kind)?;
+            self.optional_int(line.old_line.map(u64::from));
+            self.optional_int(line.new_line.map(u64::from));
+            self.text(&line.text)?;
+        }
+        self.int(presentation.additions);
+        self.int(presentation.deletions);
+        self.flag(presentation.truncated);
+        self.optional_text(presentation.previous_content.as_deref())?;
+        self.optional_text(presentation.after_content.as_deref())?;
+        self.flag(presentation.lifecycle_id.is_some());
+        if let Some(id) = &presentation.lifecycle_id {
+            self.int(id.turn_id);
+            self.text(&id.call_id)?;
+        }
+        self.optional_text(presentation.content_handle.as_deref())
     }
 
     fn process(&mut self, presentation: Option<CommandProcessPresentation>) {
@@ -456,11 +487,53 @@ impl<'a> Decoder<'a> {
             review_feedback: self.fixed::<False>()?,
             created_at_ms: self.signed()?,
             permission_feedback: self.texts()?,
-            committed_file_presentation: self.fixed::<Null>()?,
+            committed_file_presentation: self
+                .optional(|decoder| decoder.file_presentation().map(Box::new))
+                .ok()?,
             command_replay_ref: self.optional_text().ok()?,
             command_replay_bytes: self.optional(Self::int).ok()?,
             command_process_presentation: self.optional(Self::process).ok()?,
             terminal_action_presentation: self.fixed::<Null>()?,
+        })
+    }
+
+    fn file_presentation(&mut self) -> Option<CommittedFilePresentation> {
+        Some(CommittedFilePresentation {
+            path: self.text()?,
+            kind: self.tag()?,
+            lines: self.presentation_lines()?,
+            additions: self.int()?,
+            deletions: self.int()?,
+            truncated: self.flag()?,
+            previous_content: self.optional_text().ok()?,
+            after_content: self.optional_text().ok()?,
+            lifecycle_id: self.optional(Self::lifecycle_id).ok()?,
+            content_handle: self.optional_text().ok()?,
+        })
+    }
+
+    fn presentation_lines(&mut self) -> Option<Vec<PresentationLine>> {
+        let count = self.length()?;
+        let mut lines = Vec::with_capacity(count.min(self.bytes.len()));
+        for _ in 0..count {
+            lines.push(PresentationLine {
+                kind: self.tag()?,
+                old_line: self.optional(Self::line_number).ok()?,
+                new_line: self.optional(Self::line_number).ok()?,
+                text: self.text()?,
+            });
+        }
+        Some(lines)
+    }
+
+    fn line_number(&mut self) -> Option<u32> {
+        u32::try_from(self.int()?).ok()
+    }
+
+    fn lifecycle_id(&mut self) -> Option<LifecycleId> {
+        Some(LifecycleId {
+            turn_id: self.int()?,
+            call_id: self.text()?,
         })
     }
 

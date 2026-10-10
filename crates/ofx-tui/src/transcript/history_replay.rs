@@ -65,6 +65,7 @@ mod tests {
             status: ToolResultStatus::Success,
             output: String::new(),
             process: None,
+            file_change: None,
         })
     }
 

@@ -129,7 +129,13 @@ impl ToolActivityRow {
             }
             None => row
                 .saved_subagent_status(&call.arguments, &call.output, outcome, label)
-                .unwrap_or_else(|| row.settled(outcome, label, None, None)),
+                .unwrap_or_else(|| {
+                    let stats = call
+                        .file_change
+                        .filter(|_| outcome == ToolOutcome::Completed && row.is_file_mutation())
+                        .and_then(stats_suffix);
+                    row.settled(outcome, label, stats.as_deref(), None)
+                }),
         };
         row
     }
@@ -1271,8 +1277,59 @@ mod tests {
             status,
             output: output.to_owned(),
             process: None,
+            file_change: None,
         })
         .status
+    }
+
+    #[test]
+    fn saved_file_changes_count_the_lines_their_presentation_saved() {
+        let saved_change = |tool: &str, status: ToolResultStatus, additions: u32| {
+            ToolActivityRow::saved(SavedToolCall {
+                call_id: ToolCallId::new("call"),
+                tool_name: tool.to_owned(),
+                arguments: "{}".to_owned(),
+                description: Some(description(
+                    ToolActivity::Edit,
+                    Some(("Editing", "Edited", "src/lib.rs")),
+                    "Editing src/lib.rs",
+                )),
+                status,
+                output: "edited".to_owned(),
+                process: None,
+                file_change: Some(FileChangeStats {
+                    additions,
+                    deletions: 1,
+                }),
+            })
+            .status
+        };
+        let cases = [
+            (
+                saved_change("edit_file", ToolResultStatus::Success, 2),
+                "Edited src/lib.rs +2 / -1",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved_change("write_file", ToolResultStatus::Success, 0),
+                "Edited src/lib.rs -1",
+                ToolOutcome::Completed,
+            ),
+            (
+                saved_change("edit_file", ToolResultStatus::Failure, 2),
+                "Failed src/lib.rs",
+                ToolOutcome::Failed,
+            ),
+            (
+                saved_change("read_file", ToolResultStatus::Success, 2),
+                "Edited src/lib.rs",
+                ToolOutcome::Completed,
+            ),
+        ];
+        for (status, phrase, outcome) in cases {
+            assert_eq!(status.phrase, phrase);
+            assert_eq!(status.outcome, Some(outcome));
+        }
     }
 
     #[test]
@@ -1383,6 +1440,7 @@ mod tests {
             status,
             output: output.to_owned(),
             process,
+            file_change: None,
         })
         .status
     }
@@ -1484,6 +1542,7 @@ mod tests {
                 status,
                 output: output.to_owned(),
                 process: None,
+                file_change: None,
             })
             .status
         };
