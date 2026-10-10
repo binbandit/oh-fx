@@ -5,13 +5,14 @@ use ofx_config::{ContextLimitName, ContextLimits};
 use ofx_contract::{
     ActionLabel, BoxFuture, CallDescription, Concurrency, McpSearchHost, McpSearchRequest,
     McpSearchResult, McpToolSearch, PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect,
-    ToolOutput, ToolSpec, format_plain_action,
+    ToolOutput, ToolSpec, format_plain_action, format_tool_execution_error_json,
 };
 use ofx_skills::{
     RootPolicy, SkillDiscoveryContext, SkillSearchResult, diagnostic_summary, search_skills,
 };
 use ofx_text::PreparedQuery;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::tool_args::{optional_string, parse_arguments};
 use crate::tool_runtime::run_blocking;
@@ -158,13 +159,17 @@ impl PreparedCall for SearchCall {
     fn refusal(&self) -> Option<&ToolOutput> {
         self.checked.as_ref().err()
     }
-    fn execute(self: Box<Self>, _tool_context: ToolContext) -> BoxFuture<'static, ToolOutput> {
+    fn execute(self: Box<Self>, tool_context: ToolContext) -> BoxFuture<'static, ToolOutput> {
         let SearchCall {
             context, checked, ..
         } = *self;
         Box::pin(async move {
             match checked {
-                Ok(input) => context.search(Arc::new(input)).await,
+                Ok(input) => {
+                    context
+                        .search(Arc::new(input), &tool_context.cancellation)
+                        .await
+                }
                 Err(output) => output,
             }
         })
@@ -172,7 +177,11 @@ impl PreparedCall for SearchCall {
 }
 
 impl SearchContext {
-    async fn search(self: Arc<Self>, input: Arc<Input>) -> ToolOutput {
+    async fn search(
+        self: Arc<Self>,
+        input: Arc<Input>,
+        cancellation: &CancellationToken,
+    ) -> ToolOutput {
         let output_cap = self.max_tool_result_bytes.min(LARGE_RESULT_THRESHOLD_BYTES);
         let searches_skills = input.server.is_none();
         let domain_cap = if searches_skills && output_cap > 512 {
@@ -199,7 +208,13 @@ impl SearchContext {
         } else {
             None
         };
-        let mcp = self.search_mcp(&input, domain_cap).await;
+        let Some(mcp) = cancellation
+            .run_until_cancelled(self.search_mcp(&input, domain_cap))
+            .await
+        else {
+            return ToolOutput::failure(format_tool_execution_error_json(NAME, "Cancelled"))
+                .with_context_notices(notices);
+        };
         notices.extend(mcp.notice);
         match combine(skills.as_ref(), &mcp.model_output, output_cap) {
             Ok(output) => ToolOutput::success(output),

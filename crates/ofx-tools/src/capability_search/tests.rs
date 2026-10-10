@@ -568,3 +568,42 @@ async fn skill_diagnostics_precede_the_mcp_notice() {
     assert!(output.context_notices[0].starts_with("skill discovery warning: "));
     assert_eq!(output.context_notices[1], "mcp notice");
 }
+
+struct StalledMcp;
+
+impl McpToolSearch for StalledMcp {
+    fn search_tools(
+        self: Arc<Self>,
+        _request: McpSearchRequest,
+    ) -> BoxFuture<'static, McpSearchResult> {
+        Box::pin(std::future::pending())
+    }
+}
+
+#[tokio::test]
+async fn cancelling_the_turn_ends_a_search_waiting_on_mcp() {
+    let search = tool(16384).searching_mcp(Arc::new(StalledMcp));
+    let cancellation = CancellationToken::new();
+    let running = tokio::spawn(
+        search
+            .prepare(r#"{"query":"anything"}"#)
+            .expect("prepare search")
+            .execute(ToolContext::new(
+                ToolCallId::new("search-1"),
+                cancellation.clone(),
+                PathAccess::WorkspaceOnly,
+            )),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(!running.is_finished());
+    cancellation.cancel();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(1), running)
+        .await
+        .expect("the search ends once cancelled")
+        .unwrap();
+    assert_eq!(output.status, ToolResultStatus::Failure);
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json("capability_search", "Cancelled")
+    );
+}
