@@ -10,6 +10,7 @@ use crate::json_fields::{Fields, Json, parse_json};
 use crate::session_authority::{Identifier, parse_hex, parse_identifier};
 use crate::session_codec::{SavedProvider, SessionPreferences, parse_saved_provider};
 use crate::session_error::SessionError;
+use crate::session_usage::UsageSnapshot;
 
 const ENVELOPE_SCHEMA_VERSION: u64 = 1;
 const LEGACY_CONNECTION: &str = "vercel";
@@ -35,6 +36,7 @@ pub(super) struct Started {
     pub(super) conversation_language: String,
     pub(super) preferences: SessionPreferences,
     pub(super) subagent_child: bool,
+    pub(super) usage: Option<Box<UsageSnapshot>>,
 }
 
 #[derive(Default)]
@@ -57,7 +59,7 @@ pub(super) enum Event {
         conversation_language: String,
         turn: LegacyTurn,
     },
-    UsageCheckpointed,
+    UsageCheckpointed(Box<UsageSnapshot>),
     RecoverySet(LegacyCheckpoint),
     RecoveryCleared,
     ReplacementStarted(Replacement),
@@ -135,8 +137,10 @@ fn started(payload: Json<'_>) -> Option<Started> {
         subagent_child: fields.or("subagent_child", false, |value| {
             value.as_bool()?.then_some(true)
         })?,
+        usage: fields.or("usage", None, |value| {
+            legacy_usage(&value).map(|usage| Some(Box::new(usage)))
+        })?,
     };
-    fields.or("usage", (), |value| usage(&value))?;
     fields.finish(started)
 }
 
@@ -239,8 +243,8 @@ fn associate_work(turn: &mut LegacyTurn, committed: Option<&str>) -> Option<()> 
 
 fn usage_checkpointed(payload: Json<'_>) -> Option<Event> {
     let mut fields = Fields::new(payload)?;
-    usage(&fields.required("usage")?)?;
-    fields.finish(Event::UsageCheckpointed)
+    let usage = legacy_usage(&fields.required("usage")?)?;
+    fields.finish(Event::UsageCheckpointed(Box::new(usage)))
 }
 
 fn recovery_set(payload: Json<'_>) -> Option<Event> {
@@ -307,6 +311,6 @@ fn replacement_chunk(payload: Json<'_>) -> Option<Chunk> {
     })
 }
 
-fn usage(value: &Json<'_>) -> Option<()> {
-    matches!(value, Json::Object(_)).then_some(())
+pub(super) fn legacy_usage(value: &Json<'_>) -> Option<UsageSnapshot> {
+    UsageSnapshot::parse_legacy(value).ok()
 }

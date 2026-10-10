@@ -315,3 +315,69 @@ fn credential_sources_authorize_only_their_own_providers() {
         );
     }
 }
+
+const LEGACY: &str = "{\"billing\":\"complete\",\"api_duration_complete\":true,\"wall_duration_complete\":true,\"code_complete\":true,\"next_sequence\":2,\"settled_through_sequence\":1,\"api_duration_ms\":10,\"wall_duration_ms\":20,\"total_cost\":1,\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":2,\"cache_write_tokens\":0,\"billable_web_search_calls\":0,\"lines_added\":0,\"lines_removed\":0,\"models\":[{\"model\":\"test/model\",\"first_sequence\":1,\"total_cost\":1,\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":2,\"cache_write_tokens\":0,\"billable_web_search_calls\":0}],\"pending\":[]}";
+
+fn legacy(text: &str) -> Result<UsageSnapshot, UsageSnapshotError> {
+    let value = parse_json(text.as_bytes()).map_err(|_| UsageSnapshotError::Invalid)?;
+    UsageSnapshot::parse_legacy(&value)
+}
+
+#[test]
+fn legacy_usage_keeps_valid_snapshots_and_strict_parsing() {
+    let strict = parsed(LEGACY).unwrap();
+    assert_eq!(legacy(LEGACY).unwrap(), strict);
+    assert_eq!(strict.reasoning_tokens, None);
+    assert_eq!(strict.request_count, None);
+    assert_eq!(strict.models[0].request_count, None);
+
+    for field in ["cache_read_tokens", "cache_write_tokens"] {
+        let separate = LEGACY.replace(
+            &format!(
+                "\"{field}\":{}",
+                if field == "cache_read_tokens" { 2 } else { 0 }
+            ),
+            &format!("\"{field}\":11"),
+        );
+        let unavailable = legacy(&separate).unwrap();
+        assert_eq!(unavailable, UsageSnapshot::empty(Availability::Legacy));
+        assert_eq!(unavailable.validate(), Ok(()));
+        assert_eq!(parsed(&separate), Err(UsageSnapshotError::Invalid));
+    }
+
+    let rewritten = written(&strict);
+    assert_eq!(legacy(&rewritten).unwrap(), strict);
+    let separate_rich = rewritten.replace("\"cache_read_tokens\":2", "\"cache_read_tokens\":11");
+    assert_eq!(legacy(&separate_rich), Err(UsageSnapshotError::Invalid));
+}
+
+#[test]
+fn legacy_usage_does_not_hide_malformed_accounting() {
+    let separate = LEGACY.replace("\"cache_read_tokens\":2", "\"cache_read_tokens\":11");
+    for (from, to) in [
+        (
+            "\"total_cost\":1,\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":11,\"cache_write_tokens\":0,\"billable",
+            "\"total_cost\":-1,\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":11,\"cache_write_tokens\":0,\"billable",
+        ),
+        (
+            "\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":11,\"cache_write_tokens\":0,\"billable",
+            "\"input_tokens\":9,\"output_tokens\":3,\"cache_read_tokens\":11,\"cache_write_tokens\":0,\"billable",
+        ),
+        ("\"next_sequence\":2", "\"next_sequence\":0"),
+        ("\"first_sequence\":1", "\"first_sequence\":0"),
+        (
+            "\"pending\":[]",
+            "\"pending\":[{\"id\":\"gen_01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"sequence\":0,\"origin\":\"https://ai-gateway.vercel.sh\",\"team\":null}]",
+        ),
+        ("\"pending\":[]", "\"pending\":[],\"unknown\":null"),
+    ] {
+        assert!(separate.contains(from), "{from}");
+        assert!(legacy(&separate.replacen(from, to, 1)).is_err(), "{to}");
+    }
+    let model = "{\"model\":\"test/model\",\"first_sequence\":1,\"total_cost\":1,\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":11,\"cache_write_tokens\":0,\"billable_web_search_calls\":0}";
+    let doubled = separate
+        .replace(&format!("[{model}]"), &format!("[{model},{model}]"))
+        .replace("\"total_cost\":1,\"input_tokens\":10,\"output_tokens\":3,\"cache_read_tokens\":11,\"cache_write_tokens\":0,\"billable", "\"total_cost\":2,\"input_tokens\":20,\"output_tokens\":6,\"cache_read_tokens\":22,\"cache_write_tokens\":0,\"billable");
+    assert_eq!(legacy(&doubled), Err(UsageSnapshotError::Invalid));
+    assert_eq!(legacy("null"), Err(UsageSnapshotError::Invalid));
+}
