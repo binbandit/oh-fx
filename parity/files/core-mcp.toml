@@ -211,8 +211,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/mcp/model_catalog.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/model_catalog.rs"]
+note = "The <mcp_servers> section with its 4 KiB budget, name order, encoding, truncation marker and notice, and the availability change notice with its eight-line bound exist. The authentication_required and available_on_demand states wait for OAuth and on-demand ask connections, as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/mrtr.zig"
@@ -292,7 +293,7 @@ note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder an
 upstream = "src/core/mcp/server_views.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_views.rs"]
-note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields; the model summary for the <mcp_servers> section is missing."
+note = "Server health views for the listing and summary exist, with resource, template and prompt counts, aggregated catalog freshness and retry fields, and the model summary for the <mcp_servers> section, which marks every server always loaded as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/slack_preset.zig"
