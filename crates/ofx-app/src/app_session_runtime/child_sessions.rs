@@ -54,6 +54,7 @@ impl ChildStore for SessionChildren {
             model: settings.model.clone(),
             effort: settings.effort.clone(),
             fast_mode: settings.fast_mode,
+            ultrafast_mode: false,
         };
         let session = self
             .sessions

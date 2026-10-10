@@ -62,6 +62,7 @@ fn checkpoint() -> RecoveryCheckpoint {
             )),
             requested_fast_mode: false,
             fast_mode: true,
+            requested_ultrafast_mode: false,
             may_have_sent: true,
         },
         compaction_prepared: false,
@@ -507,7 +508,7 @@ fn the_recovery_strategy_follows_the_saved_tool_state_and_cause() {
 #[test]
 fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
     let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
-    let continued = checkpoint().into_continuation(&codex, "gpt-5.4", false);
+    let continued = checkpoint().into_continuation(&codex, "gpt-5.4", false, false);
     assert!(continued.fast_mode);
     assert_eq!(continued.prompt, "fix the build");
     assert_eq!(continued.strategy, RecoveryStrategy::ContinueAfterTool);
@@ -522,18 +523,18 @@ fn a_continuation_keeps_the_saved_fast_mode_only_for_the_same_selection() {
     assert_eq!(continued.messages.len(), 3);
     assert!(
         !checkpoint()
-            .into_continuation(&codex, "gpt-5.5", false)
+            .into_continuation(&codex, "gpt-5.5", false, false)
             .fast_mode
     );
     assert!(
         checkpoint()
-            .into_continuation(&codex, "gpt-5.4", true)
+            .into_continuation(&codex, "gpt-5.4", true, false)
             .fast_mode
     );
     let gateway = SavedProvider::new(ProviderId::Gateway, None).unwrap();
     assert!(
         !checkpoint()
-            .into_continuation(&gateway, "gpt-5.4", false)
+            .into_continuation(&gateway, "gpt-5.4", false, false)
             .fast_mode
     );
 }
@@ -546,7 +547,9 @@ fn a_continuation_keeps_each_restored_results_raw_size_and_process() {
     result.output_bytes = 40;
     result.process = Some(CommandProcessPresentation::ExitCode(3));
     assert_eq!(
-        saved.into_continuation(&codex, "gpt-5.4", false).outputs,
+        saved
+            .into_continuation(&codex, "gpt-5.4", false, false)
+            .outputs,
         [RecordedOutput {
             call_id: ToolCallId::new("call_1"),
             bytes: 40,
@@ -598,6 +601,7 @@ fn recovery_point<'a>(calls: &'a [ToolCall], output: &'a str) -> RecoveryPoint<'
         model: "gpt-5.4",
         requested_fast_mode: false,
         fast_mode: true,
+        ultrafast_mode: false,
         attempt_limit: 10,
         consumed_attempts: 1,
     }
@@ -658,6 +662,7 @@ fn a_continuation_restarts_from_the_saved_partial_reply() {
         &SavedProvider::new(ProviderId::Codex, None).unwrap(),
         "gpt-5.4",
         false,
+        false,
     );
     assert_eq!(continued.source, "Looking at");
     assert_eq!(continued.strategy, RecoveryStrategy::ContinueResponse);
@@ -680,7 +685,7 @@ fn a_continuation_restarts_from_the_saved_partial_reply() {
         ("rate_limited", ModelRecoveryCause::RateLimited),
     ] {
         let continued = decoded(&upstream_checkpoint().replace("response_interrupted", tag))
-            .into_continuation(&codex, "gpt-5.4", false);
+            .into_continuation(&codex, "gpt-5.4", false, false);
         assert_eq!(continued.cause, Some(cause), "{tag}");
     }
 }
@@ -880,7 +885,9 @@ fn a_continuation_gives_approval_feedback_after_every_result_of_its_step() {
         status: ToolResultStatus::Success,
     };
     assert_eq!(
-        saved.into_continuation(&codex, "gpt-5.4", false).messages,
+        saved
+            .into_continuation(&codex, "gpt-5.4", false, false)
+            .messages,
         [
             ChatMessage::Assistant {
                 content: Some("Reading.".to_owned()),

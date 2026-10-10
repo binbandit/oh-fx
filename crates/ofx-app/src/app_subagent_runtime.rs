@@ -137,6 +137,7 @@ impl ChildAgents for ChildFactory {
             max_output_tokens: output_tokens(route.connection.as_ref(), &settings.model),
             reasoning_effort: settings.effort.clone().into_named(),
             fast_mode: settings.fast_mode,
+            ultrafast_mode: false,
             ..self.parent_config().clone()
         };
         let permissions =

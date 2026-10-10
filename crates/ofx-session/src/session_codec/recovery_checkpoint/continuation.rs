@@ -21,10 +21,12 @@ impl RecoveryCheckpoint {
         provider: &SavedProvider,
         model: &str,
         fast_mode: bool,
+        ultrafast_mode: bool,
     ) -> RecoveredTurn {
         let unchanged = self.route.provider == *provider
             && self.route.model == model
-            && self.route.requested_fast_mode == fast_mode;
+            && self.route.requested_fast_mode == fast_mode
+            && self.route.requested_ultrafast_mode == ultrafast_mode;
         let (messages, outputs) = messages(self.execution.tool_steps, self.execution.steering);
         RecoveredTurn {
             messages,

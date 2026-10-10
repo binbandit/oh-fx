@@ -480,15 +480,20 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
         let session = saved(id);
         session.write_files(&home.fx_sessions(), &session.manifest(), &log);
     }
-    let unknown_key = saved("fx-unknown-key");
-    unknown_key.write_files(
-        &home.fx_sessions(),
-        &unknown_key.manifest().replace(
-            "\"fast_mode\":false,",
-            "\"fast_mode\":false,\"unknown\":true,",
-        ),
-        &shell_turn("null", "null"),
-    );
+    for (id, preference) in [
+        ("fx-unknown-key", "\"unknown\":true,"),
+        ("fx-ultrafast", "\"ultrafast_mode\":true,"),
+    ] {
+        let session = saved(id);
+        session.write_files(
+            &home.fx_sessions(),
+            &session.manifest().replace(
+                "\"fast_mode\":false,",
+                &format!("\"fast_mode\":false,{preference}"),
+            ),
+            &shell_turn("null", "null"),
+        );
+    }
     let without_call = shell_turn_without_its_call();
     for (id, sessions) in [
         ("fx-orphan-result", home.fx_sessions()),
@@ -521,6 +526,7 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
         ids(&page),
         [
             "own-orphan-result",
+            "fx-ultrafast",
             "fx-replayed",
             "fx-plain",
             "fx-cancelled-command",
@@ -532,7 +538,7 @@ fn fx_sessions_oh_fx_could_not_resume_are_hidden_and_not_counted() {
         .iter()
         .map(|summary| summary.history_len)
         .collect();
-    assert_eq!(turns, [1, 1, 1, 1, 0]);
+    assert_eq!(turns, [1, 1, 1, 1, 1, 0]);
     assert_eq!(catalog.skipped_invalid(), 0);
 }
 

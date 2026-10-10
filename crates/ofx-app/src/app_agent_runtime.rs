@@ -159,6 +159,16 @@ impl ControllerState {
         }
     }
 
+    fn restore_speed(&mut self, fast_mode: bool, ultrafast_mode: bool) {
+        self.speed = if ultrafast_mode {
+            Speed::UltraRequested
+        } else if fast_mode {
+            Speed::Fast
+        } else {
+            Speed::Normal
+        };
+    }
+
     pub(crate) fn save_model_preference(&self, topic: &str, effort: Option<&ReasoningEffort>) {
         let provider = self.setup.provider();
         let saved = user_settings::save(self.setup.preferences(), |paths| {
@@ -593,6 +603,7 @@ impl Controller {
     pub(crate) fn requesting_ultrafast(mut self, requested: bool) -> Self {
         if requested {
             self.state.speed = Speed::UltraRequested;
+            self.reconfigure();
         }
         self
     }
@@ -786,6 +797,9 @@ impl Controller {
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => self.change_model(ModelChange::ToggleFast).await,
+            CommandEffect::WithdrawUltrafast => {
+                self.change_model(ModelChange::WithdrawUltrafast).await;
+            }
             CommandEffect::Compact => return self.compact(commands).await,
             CommandEffect::OpenSessions if self.state.holds_recovery() => {
                 refuse_resume_during_turn(&self.state);
@@ -948,6 +962,7 @@ impl Controller {
             &self.state.setup,
             &self.state.model,
             self.state.fast_mode(),
+            self.state.ultrafast_requested(),
         ) {
             Ok(recovered) => {
                 let recovered = RecoveredTurn {
@@ -978,7 +993,8 @@ impl Controller {
             .setup
             .restore_reasoning(restored.reasoning_effort, restored.fast_mode);
         self.state.effort = self.state.setup.reasoning_effort();
-        self.state.set_fast_mode(restored.fast_mode);
+        self.state
+            .restore_speed(restored.fast_mode, restored.ultrafast_mode);
         if restored.model != self.state.model {
             self.state.use_model(restored.model);
         }
@@ -1009,6 +1025,7 @@ impl Controller {
     fn reconfigure(&mut self) {
         let mut config = self.state.setup.config(&self.state.model);
         config.fast_mode = self.state.fast_mode();
+        config.ultrafast_mode = self.state.ultrafast_requested();
         config.reasoning_effort = self.state.effort.clone().into_named();
         self.state.setup.delegate_as(&config);
         self.agent.set_config(config);
@@ -1373,6 +1390,7 @@ fn run_deferred(
             }
             CommandEffect::SwitchModel(query) => ModelChange::Query(query),
             CommandEffect::ToggleFast => ModelChange::ToggleFast,
+            CommandEffect::WithdrawUltrafast => ModelChange::WithdrawUltrafast,
             CommandEffect::OpenSettings => return catalog.open_settings_menu(state),
             CommandEffect::Rename(title) => {
                 return rename_session(state, persistence.as_mut(), &title);
@@ -1435,11 +1453,20 @@ fn apply_change(
     models: &[ModelOption],
     work: Work,
 ) {
+    let saves_ultrafast = change.saves_ultrafast();
+    let (fast_before, ultrafast_before) = (state.fast_mode(), state.ultrafast_requested());
     let Outcome::Changed { effort } = change_model(state, change, models, work) else {
         return;
     };
     state.config_pending = true;
-    if let Some(notice) = save_session_preferences(state, persistence, effort.as_ref()) {
+    let ultrafast = state.ultrafast_requested();
+    if let Some(persistence) = persistence.as_mut()
+        && ((state.fast_mode() && !fast_before) || (ultrafast_before && !ultrafast))
+    {
+        persistence.withdraw_launch_ultrafast();
+    }
+    let ultrafast = saves_ultrafast.then_some(ultrafast);
+    if let Some(notice) = save_session_preferences(state, persistence, effort.as_ref(), ultrafast) {
         state.emit(UiEvent::Notice { notice });
     }
 }
@@ -1484,10 +1511,11 @@ fn save_session_preferences(
     state: &ControllerState,
     persistence: &mut Option<Persistence>,
     effort: Option<&ReasoningEffort>,
+    ultrafast_mode: Option<bool>,
 ) -> Option<Notice> {
-    persistence
-        .as_mut()
-        .and_then(|persistence| persistence.select_model(&state.model, effort, state.fast_mode()))
+    persistence.as_mut().and_then(|persistence| {
+        persistence.select_model(&state.model, effort, state.fast_mode(), ultrafast_mode)
+    })
 }
 
 fn turn_events(
@@ -1837,11 +1865,13 @@ mod tests {
                 model: setup.configured_model().to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             };
             let overrides = LaunchOverrides {
                 model: None,
                 effort: None,
                 fast_mode: None,
+                ultrafast_mode: None,
             };
             let persistence = Persistence::new(store, route, preferences, overrides, None);
             Self::spawn(home, setup, Some(persistence), upgrade, ultrafast)
@@ -1870,11 +1900,13 @@ mod tests {
                 model: setup.configured_model().to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             };
             let overrides = LaunchOverrides {
                 model: None,
                 effort: None,
                 fast_mode: None,
+                ultrafast_mode: None,
             };
             let resumption = Resumption {
                 session,

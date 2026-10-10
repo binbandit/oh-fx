@@ -472,6 +472,7 @@ impl Profile {
                     &route.model,
                 )
             }),
+            ultrafast_mode: false,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
         }
     }

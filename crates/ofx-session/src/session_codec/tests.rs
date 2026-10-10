@@ -15,6 +15,7 @@ fn metadata(id: &str) -> SessionMetadata {
             model: "openai/gpt-5".to_owned(),
             effort: ReasoningEffort::Auto,
             fast_mode: false,
+            ultrafast_mode: false,
         },
         title: None,
         subagent_child: false,
@@ -32,7 +33,7 @@ fn metadata_is_written_in_upstream_field_order() {
     let encoded = encode_session_metadata(&metadata("session")).unwrap();
     assert_eq!(
         String::from_utf8(encoded.clone()).unwrap(),
-        "{\"schema_version\":4,\"id\":\"session\",\"origin_workspace_root\":\"/tmp/origin\",\"workspace_root\":\"/tmp/current\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false,\"title\":null,\"subagent_child\":false}"
+        "{\"schema_version\":4,\"id\":\"session\",\"origin_workspace_root\":\"/tmp/origin\",\"workspace_root\":\"/tmp/current\",\"created_at_ms\":1,\"updated_at_ms\":2,\"conversation_language\":\"en\",\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"effort\":\"auto\",\"fast_mode\":false,\"subagent_child\":false}"
     );
     assert_eq!(
         decode_session_metadata(&encoded).unwrap(),
@@ -48,7 +49,7 @@ fn a_child_session_says_so_as_upstream_writes_it() {
     assert!(
         String::from_utf8(encoded.clone())
             .unwrap()
-            .ends_with(",\"title\":null,\"subagent_child\":true}")
+            .ends_with(",\"fast_mode\":false,\"subagent_child\":true}")
     );
     assert_eq!(decode_session_metadata(&encoded).unwrap(), child);
     assert!(
@@ -268,6 +269,8 @@ struct SerdeRecord {
     effort: String,
     fast_mode: bool,
     #[serde(default)]
+    ultrafast_mode: Option<bool>,
+    #[serde(default)]
     title: Option<String>,
     #[serde(default)]
     subagent_child: bool,
@@ -315,6 +318,7 @@ fn serde_decode_session_metadata(bytes: &[u8]) -> Result<SessionMetadata, Sessio
             model: record.model,
             effort,
             fast_mode: record.fast_mode,
+            ultrafast_mode: record.ultrafast_mode.unwrap_or(false),
         },
         title: record.title,
         subagent_child: record.subagent_child,
@@ -439,7 +443,7 @@ fn the_hand_metadata_decoder_matches_the_serde_decoder() {
 #[test]
 fn the_hand_metadata_decoder_is_stricter_only_on_shapes_the_writer_never_writes() {
     let as_array =
-        "[4,\"good\",\"/tmp/a\",\"/tmp/a\",1,1,\"en\",\"gateway\",\"m\",\"auto\",false,null,false]"
+        "[4,\"good\",\"/tmp/a\",\"/tmp/a\",1,1,\"en\",\"gateway\",\"m\",\"auto\",false,null,null,false]"
             .to_owned();
     let repeated_schema = document("").replace(
         "\"schema_version\":4",

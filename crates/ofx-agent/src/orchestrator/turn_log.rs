@@ -198,6 +198,7 @@ impl Agent {
             model: &self.config.model,
             requested_fast_mode: self.config.fast_mode,
             fast_mode: turn.fast_mode,
+            ultrafast_mode: self.config.ultrafast_mode,
             attempt_limit: DEFAULT_MAX_PROVIDER_ATTEMPTS,
             consumed_attempts,
         })

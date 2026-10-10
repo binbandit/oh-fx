@@ -76,6 +76,7 @@ fn metadata(id: &str) -> SessionMetadata {
             model: "openai/gpt-5".to_owned(),
             effort: ReasoningEffort::Auto,
             fast_mode: false,
+            ultrafast_mode: false,
         },
         title: None,
         subagent_child: false,
@@ -893,6 +894,7 @@ fn preference_changes_rewrite_metadata_durably() {
         model: "gpt-5.4".to_owned(),
         effort: ReasoningEffort::Named("high".to_owned()),
         fast_mode: true,
+        ultrafast_mode: false,
     };
     session.set_preferences(preferences.clone(), 50).unwrap();
     assert_eq!(session.metadata().preferences, preferences);
@@ -942,7 +944,7 @@ fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
     let fixture = Fixture::new();
     let mut session = fixture.start("chosen");
     session
-        .select_model("openai/gpt-5-mini", None, true)
+        .select_model("openai/gpt-5-mini", None, true, None)
         .unwrap();
     let loaded = load_session(&fixture.sessions, "chosen").unwrap();
     let mut expected = metadata("chosen").preferences;
@@ -951,7 +953,7 @@ fn a_model_choice_saves_its_fast_mode_and_keeps_the_other_preferences() {
     assert_eq!(loaded.metadata.preferences, expected);
     let picked = ReasoningEffort::Named("xhigh".to_owned());
     session
-        .select_model("openai/gpt-5", Some(&picked), false)
+        .select_model("openai/gpt-5", Some(&picked), false, None)
         .unwrap();
     drop(session);
     let loaded = load_session(&fixture.sessions, "chosen").unwrap();

@@ -131,6 +131,7 @@ pub struct RecoveryPoint<'a> {
     pub model: &'a str,
     pub requested_fast_mode: bool,
     pub fast_mode: bool,
+    pub ultrafast_mode: bool,
     pub attempt_limit: usize,
     pub consumed_attempts: usize,
 }

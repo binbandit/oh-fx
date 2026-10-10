@@ -103,11 +103,12 @@ impl Persistence {
         setup: &AgentSetup,
         model: &str,
         fast_mode: bool,
+        ultrafast_mode: bool,
     ) -> Result<RecoveredTurn, SessionError> {
         self.live
             .as_ref()
             .ok_or(SessionError::NoPendingRecovery)?
-            .continue_recovery(setup, model, fast_mode)
+            .continue_recovery(setup, model, fast_mode, ultrafast_mode)
     }
 
     pub(crate) fn begin_fresh(&mut self, agent: &mut Agent) -> Option<Notice> {
@@ -177,22 +178,30 @@ impl Persistence {
         model: &str,
         effort: Option<&ReasoningEffort>,
         fast_mode: bool,
+        ultrafast_mode: Option<bool>,
     ) -> Option<Notice> {
         model.clone_into(&mut self.preferences.model);
         if let Some(effort) = effort {
             effort.clone_into(&mut self.preferences.effort);
         }
         self.preferences.fast_mode = fast_mode;
+        if let Some(ultrafast_mode) = ultrafast_mode {
+            self.preferences.ultrafast_mode = ultrafast_mode;
+        }
         let error = self
             .live
             .as_ref()?
             .session()
-            .select_model(model, effort, fast_mode)
+            .select_model(model, effort, fast_mode, ultrafast_mode)
             .err()?;
         if std::mem::replace(&mut self.degraded, true) {
             return None;
         }
         Some(non_durable("session persistence degraded", error))
+    }
+
+    pub(crate) fn withdraw_launch_ultrafast(&mut self) {
+        self.overrides.ultrafast_mode = Some(false);
     }
 
     pub(super) fn adopt_preferences(&mut self, saved: &SessionPreferences) {
