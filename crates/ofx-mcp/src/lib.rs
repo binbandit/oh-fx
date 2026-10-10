@@ -47,6 +47,7 @@ pub use command_provider::{AddIntent, AddIntentError, is_valid_server_name, pars
 pub use error::McpError;
 pub use feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
 pub use features::common::{ResourceContent, ResourceData};
+pub use features::completion::{CompletionArgument, CompletionResult};
 pub use features::prompts::{
     PromptArgument, PromptContentKind, PromptGetResult, PromptMessage, PromptRole,
 };
