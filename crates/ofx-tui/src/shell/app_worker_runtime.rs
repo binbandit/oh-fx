@@ -1139,7 +1139,6 @@ mod tests {
     #[test]
     fn cancelling_a_turn_during_its_compaction_reports_the_compaction_cancelled() {
         let mut test = compacting_turn();
-        test.hold_clock();
         test.type_bytes(b"\x03");
         test.step();
         assert_eq!(
@@ -1179,7 +1178,7 @@ mod tests {
         let screen = test.screen();
         assert!(screen.contains("• Compacting (3s)"), "{screen}");
         assert!(!screen.contains("Wait for the active work"), "{screen}");
-        test.advance(1_500);
+        test.advance(2_000);
         test.step();
         let screen = test.screen();
         assert!(screen.contains("• Compacting (5s)"), "{screen}");

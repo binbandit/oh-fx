@@ -515,7 +515,7 @@ impl<'a> Shell<'a> {
             signals: setup.signals,
             clock: Instant::now(),
             #[cfg(test)]
-            held_now: None,
+            held_now: Some(Instant::now()),
             pending_resize: None,
             output: String::new(),
             footer_row: 0,
