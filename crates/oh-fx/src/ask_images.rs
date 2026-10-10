@@ -4,8 +4,8 @@ use std::{env, fmt, fs};
 
 use ofx_contract::ImageAttachment;
 use ofx_images::{
-    AttachmentError, IMAGE_TOO_LARGE_NOTICE, capture_image_snapshots, cleanup_snapshot_dir,
-    create_temp_snapshot_dir, load_resolved_image_attachment, normalize_path_input,
+    AttachmentError, IMAGE_TOO_LARGE_NOTICE, TempSnapshotDir, capture_image_snapshots,
+    load_resolved_image_attachment, normalize_path_input,
 };
 use ofx_workspace::{PATH_ENTRY_WHITESPACE, PathError, resolve_workspace_or_external_literal_path};
 use tokio_util::sync::CancellationToken;
@@ -87,7 +87,7 @@ fn load_user_image_attachment(
 #[derive(Debug, Default)]
 pub(crate) struct CapturedImages {
     images: Vec<ImageAttachment>,
-    directory: Option<String>,
+    _snapshots: Option<TempSnapshotDir>,
 }
 
 impl CapturedImages {
@@ -101,11 +101,7 @@ impl CapturedImages {
         for (image, id) in images.iter_mut().zip(1..) {
             image.id = id;
         }
-        let directory = create_temp_snapshot_dir()?;
-        let mut captured = Self {
-            images: Vec::new(),
-            directory: Some(directory.clone()),
-        };
+        let snapshots = TempSnapshotDir::create()?;
         let budget = || {
             if cancel.is_cancelled() {
                 Err(AttachmentError::Cancelled)
@@ -113,21 +109,15 @@ impl CapturedImages {
                 Ok(())
             }
         };
-        capture_image_snapshots(&mut images, &directory, &budget)?;
-        captured.images = images;
-        Ok(captured)
+        capture_image_snapshots(&mut images, snapshots.path(), &budget)?;
+        Ok(Self {
+            images,
+            _snapshots: Some(snapshots),
+        })
     }
 
     pub(crate) fn images(&self) -> &[ImageAttachment] {
         &self.images
-    }
-}
-
-impl Drop for CapturedImages {
-    fn drop(&mut self) {
-        if let Some(directory) = &self.directory {
-            cleanup_snapshot_dir(directory);
-        }
     }
 }
 
