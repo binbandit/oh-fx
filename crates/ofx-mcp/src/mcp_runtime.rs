@@ -2205,7 +2205,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
       version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
-      capabilities='{"prompts":{},"resources":{},"completions":{}}'
+      capabilities='{"prompts":{},"resources":{"listChanged":true},"completions":{}}'
       if [ -f "$STATE/resources-only" ]; then capabilities='{"resources":{},"completions":{}}'; fi
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":$capabilities,\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
     *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
@@ -2214,16 +2214,26 @@ while IFS= read -r line; do
       reply "$id" '{"prompts":[{"name":"review","arguments":[{"name":"tone"}]}]}' ;;
     *'"method":"resources/templates/list"'*)
       echo templates >> "$STATE/requests"
-      reply "$id" '{"resourceTemplates":[{"uriTemplate":"custom://project/{path}","name":"project"}]}' ;;
+      if [ -f "$STATE/broken" ]; then
+        reply "$id" '{"resourceTemplates":[{"uriTemplate":"a://{x}","name":"a"},{"uriTemplate":"a://{x}","name":"a"}]}'
+      else
+        reply "$id" '{"resourceTemplates":[{"uriTemplate":"custom://project/{path}","name":"project"}]}'
+      fi ;;
     *'"method":"completion/complete"'*)
       params=$(printf '%s' "$line" | sed -n 's/.*"params":\(.*\)}$/\1/p')
       echo "complete $params" >> "$STATE/requests"
+      if [ -f "$STATE/crash" ]; then exit 0; fi
       case "$line" in
         *'"value":"fail"'*)
           printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"rejected"}}\n' "$id" ;;
         *'"ref/prompt"'*) reply "$id" '{"completion":{"values":["balpha","bbeta"],"total":5,"hasMore":true}}' ;;
         *) reply "$id" '{"completion":{"values":["src/alpha"]}}' ;;
-      esac ;;
+      esac
+      if [ -f "$STATE/notify" ]; then
+        rm "$STATE/notify"
+        touch "$STATE/broken"
+        printf '{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}\n'
+      fi ;;
   esac
 done
 "#;
@@ -2329,6 +2339,44 @@ done
             )
         );
         assert_eq!(requests(resources_only.path()), "");
+        runtime.shutdown(ShutdownMode::Immediate).await;
+    }
+
+    #[tokio::test]
+    async fn a_completion_waits_for_a_changed_catalog_and_restarts_a_stopped_server() {
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(state.path().join("notify"), "").unwrap();
+        let runtime = runtime(vec![config("fixture", COMPLETION_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let template = "custom://project/{path}";
+        let complete = || {
+            runtime.complete_resource_template_argument(
+                "fixture",
+                template,
+                completion("path", "src/"),
+                &[],
+            )
+        };
+        let completed = Ok(CompletionResult {
+            values: vec!["src/alpha".to_owned()],
+            total: None,
+            has_more: None,
+        });
+        assert_eq!(complete().await, completed);
+        until_resources_invalidated(&runtime).await;
+        assert_eq!(complete().await, Err(McpError::McpFeatureCatalogChanged));
+        std::fs::remove_file(state.path().join("broken")).unwrap();
+        std::fs::write(state.path().join("crash"), "").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(complete().await, Err(McpError::McpConnectionClosed));
+        std::fs::remove_file(state.path().join("crash")).unwrap();
+        assert_eq!(complete().await, completed);
+        assert_eq!(runtime.current()[0].restarts(), 1);
+        let request = "complete {\"ref\":{\"type\":\"ref/resource\",\"uri\":\"custom://project/{path}\"},\"argument\":{\"name\":\"path\",\"value\":\"src/\"}}\n";
+        assert_eq!(
+            requests(state.path()),
+            format!("templates\n{request}templates\ntemplates\n{request}templates\n{request}")
+        );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 }

@@ -237,10 +237,10 @@ impl Server {
             let Some(client) = self.feature_client(deadline).await? else {
                 continue;
             };
+            let id = client.transport.next_request_id()?;
             let params =
                 request_params(reference, argument, context, completion::Limits::default())?;
             self.check_current(&client, &identity)?;
-            let id = client.transport.next_request_id()?;
             let response = client
                 .transport
                 .request(TransportRequest::new(

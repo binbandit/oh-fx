@@ -263,14 +263,19 @@ mod tests {
                 "{result}"
             );
         }
-        assert_eq!(
-            parse(
-                &json!({"completion": {"values": [], "total": 1e3}}),
-                Limits::default()
-            )
-            .map(|result| result.total),
-            Ok(Some(1000))
-        );
+        for total in ["1e3", "1000.0", "1.0e3"] {
+            assert_eq!(
+                parse_result(
+                    &format!(
+                        r#"{{"jsonrpc":"2.0","id":1,"result":{{"completion":{{"values":[],"total":{total}}}}}}}"#
+                    ),
+                    Limits::default()
+                )
+                .map(|result| result.total),
+                Ok(Some(1000)),
+                "{total}"
+            );
+        }
         assert_eq!(
             parse_result(
                 r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}"#,
