@@ -146,10 +146,7 @@ impl CodexProvider {
     }
 
     fn build(&self, request: &ModelRequest<'_>) -> Result<String, ResponsesError> {
-        match self
-            .attachments
-            .withhold_oversized_attachments(request.messages)
-        {
+        match self.attachments.withhold_oversized_images(request.messages) {
             Some(messages) => {
                 let projected = ModelRequest {
                     messages: &messages,

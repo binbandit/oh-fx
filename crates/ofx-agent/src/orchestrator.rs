@@ -70,6 +70,7 @@ mod rejection_trace;
 mod request_usage;
 mod response_language;
 mod steering;
+mod tool_images;
 mod turn_ledger;
 mod turn_log;
 mod turn_trace;
@@ -89,6 +90,7 @@ use provider_tools::{
 use recovery::{Restart, RestoredReply, recovery_tool_choice};
 use rejection_trace::{Denial, Refusal, Refused};
 use response_language::{Reply, TurnLanguage};
+use tool_images::carries_tool_images;
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
 use turn_trace::ToolTrail;
@@ -231,6 +233,7 @@ struct Turn {
     shell_failures: ShellExecutionFailureRetry,
     fast_mode: bool,
     fast_notice_shown: bool,
+    tool_image_notice_shown: bool,
     compaction: TurnCompaction,
     raw_outputs: Vec<RecordedOutput>,
     earlier_files: EarlierEvidence,
@@ -625,6 +628,7 @@ impl Agent {
             shell_failures: ShellExecutionFailureRetry::default(),
             fast_mode: self.config.fast_mode,
             fast_notice_shown: false,
+            tool_image_notice_shown: false,
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
             earlier_files: EarlierEvidence::default(),
@@ -910,7 +914,7 @@ impl Agent {
             self.require_image_input(cancel).await?;
             let entered = enter_step(turn, step);
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
-            if self.has_compactable_context(turn) {
+            if self.has_compactable_context(turn) || carries_tool_images(&self.history) {
                 self.resolve_capabilities(cancel).await?;
             }
             self.refresh_dynamic_tools(&turn.selected_tools);
@@ -918,6 +922,7 @@ impl Agent {
             let instructions = self.instructions(&skills, &context, &servers);
             history_trace::projected(turn.trace, turn.projection.take(), instructions.len());
             let messages = self.request_messages(turn);
+            let messages = self.project_tool_images(turn, messages, events);
             let gateway_messages = instructions.len() + messages.len();
             self.trace_step(turn, (step + 1, entered), gateway_messages);
             let request = self.turn_request(turn, &instructions, &messages, events);
