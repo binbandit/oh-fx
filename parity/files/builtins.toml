@@ -56,7 +56,7 @@ note = "Sound/attention hook delivery pacing are unimplemented."
 upstream = "src/builtins/mcp.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/profile_store.rs", "crates/ofx-mcp/src/native_config.rs", "crates/ofx-app/src/mcp_commands.rs"]
-note = "Profile configuration, connected-tool composition, workspace authority previews and the /mcp summary, list, path, add, remove, reload and trust handlers exist, /mcp resource list and templates and /mcp prompt list print upstream's listing, and /mcp resource read prints the untrusted contents or the masked protocol error; /mcp resource complete, prompt get and complete, auth and logout and the Slack preset are missing."
+note = "Profile configuration, connected-tool composition, workspace authority previews and the /mcp summary, list, path, add, remove, reload and trust handlers exist, /mcp resource list and templates and /mcp prompt list print upstream's listing, /mcp resource read prints the untrusted contents and /mcp prompt get the untrusted prompt messages, or the masked protocol error; /mcp resource complete, prompt complete, auth and logout and the Slack preset are missing."
 
 [[file]]
 upstream = "src/builtins/modes.zig"
