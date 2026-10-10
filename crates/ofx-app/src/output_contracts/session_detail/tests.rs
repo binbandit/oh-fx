@@ -218,3 +218,74 @@ fn a_session_fx_saved_carries_its_marker_after_upstreams_fields() {
         )
     );
 }
+
+#[test]
+fn stored_text_reaches_the_terminal_escaped_and_json_keeps_it() {
+    let hostile = "\u{1b}[2Jline\r\nnext\u{9b}31m\u{202e}\ttab";
+    let call = ToolCallEvent::new(
+        "call\u{1b}",
+        "shell\u{9b}",
+        hostile,
+        ToolArgumentIntegrity::Valid,
+    );
+    let mut result = ToolResultEvent::new(
+        "call\u{1b}",
+        "shell\u{9b}",
+        ToolResultStatus::Success,
+        "result.txt",
+        3,
+        ArtifactCompleteness::Complete,
+    );
+    result.preview = Some(hostile.to_owned());
+    let mut evidence = read_evidence();
+    evidence.path = "src/\u{202e}evil.rs".to_owned();
+    let cut = archive(
+        "sess-hostile",
+        "en\u{9b}",
+        vec![
+            ArchivedTurn::Replied {
+                user: hostile.to_owned(),
+                assistant: hostile.to_owned(),
+                execution: TurnExecution {
+                    steps: vec![ExecutedStep {
+                        assistant: Some(hostile.to_owned()),
+                        calls: vec![call.clone()],
+                        results: vec![result],
+                    }],
+                    files: vec![evidence],
+                    steering: Vec::new(),
+                },
+            },
+            ArchivedTurn::Interrupted {
+                user: "u".to_owned(),
+                assistant: None,
+                tool_call: Some(call),
+                execution: TurnExecution::default(),
+            },
+            ArchivedTurn::Compacted(CompactedHistory {
+                summary: hostile.to_owned(),
+                removed_turn_count: 1,
+                compaction_count: 1,
+            }),
+        ],
+    );
+    let (text, json) = rendered(&cut);
+    let block = "\\x1b[2Jline\\x0d\nnext\\u{009b}31m\\u{202e}\ttab\n";
+    assert_eq!(
+        text,
+        format!(
+            concat!(
+                "[session] sess-hostile\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: en\\u{{009b}}\nhistory_len: 3\n",
+                "\n[turn 1]\n[user]\n{block}[execution]\nassistant:\n{block}",
+                "tool_call: call\\x1b shell\\u{{009b}}\narguments:\n{block}",
+                "tool_result: call\\x1b shell\\u{{009b}} success\noutput:\n{block}",
+                "file: read success src/\\u{{202e}}evil.rs\n[assistant]\n{block}",
+                "\n[turn 2]\n[user]\nu\n[interrupted]\ntool_call_id: call\\x1b\ntool_name: shell\\u{{009b}}\n",
+                "\n[turn 3]\n[compacted] removed_turns=1 compactions=1\n{block}",
+            ),
+            block = block
+        )
+    );
+    assert!(!text.contains(['\u{1b}', '\r', '\u{9b}', '\u{202e}']));
+    assert!(json.contains("\"text\":\"\\u001b[2Jline\\r\\nnext\u{9b}31m\u{202e}\\ttab\""));
+}

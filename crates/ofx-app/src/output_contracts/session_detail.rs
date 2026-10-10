@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 use ofx_agent::checkpoint_model_text;
 use ofx_cli::OutputFormat;
 use ofx_session::{ArchivedTurn, SessionArchive, TurnExecution};
+use ofx_text::escape_terminal_controls;
 use serde_json::{Value, json};
+
+use crate::output_contracts::status::safe;
 
 pub struct SessionDetailSnapshot<'a> {
     pub archive: &'a SessionArchive,
@@ -25,10 +28,10 @@ impl SessionDetailSnapshot<'_> {
         let archive = self.archive;
         let mut out = format!(
             "[session] {}\ncreated_at_ms: {}\nupdated_at_ms: {}\nlanguage: {}\nhistory_len: {}\n",
-            archive.id,
+            safe(&archive.id),
             archive.created_at_ms,
             archive.updated_at_ms,
-            archive.conversation_language,
+            safe(&archive.conversation_language),
             archive.turns.len()
         );
         if let Some(marker) = archive.source.marker() {
@@ -99,8 +102,8 @@ fn write_turn_text(out: &mut String, turn: &ArchivedTurn) {
             out.push_str("[interrupted]\n");
             match tool_call {
                 Some(call) => {
-                    let _ = writeln!(out, "tool_call_id: {}", call.call_id);
-                    let _ = writeln!(out, "tool_name: {}", call.tool_name);
+                    let _ = writeln!(out, "tool_call_id: {}", safe(&call.call_id));
+                    let _ = writeln!(out, "tool_name: {}", safe(&call.tool_name));
                 }
                 None => out.push_str("tool: (none)\n"),
             }
@@ -124,7 +127,12 @@ fn write_execution_text(out: &mut String, execution: &TurnExecution) {
             write_text_block(out, assistant);
         }
         for call in &step.calls {
-            let _ = writeln!(out, "tool_call: {} {}", call.call_id, call.tool_name);
+            let _ = writeln!(
+                out,
+                "tool_call: {} {}",
+                safe(&call.call_id),
+                safe(&call.tool_name)
+            );
             out.push_str("arguments:\n");
             write_text_block(out, &call.arguments_json);
         }
@@ -132,8 +140,8 @@ fn write_execution_text(out: &mut String, execution: &TurnExecution) {
             let _ = writeln!(
                 out,
                 "tool_result: {} {} {}",
-                result.call_id,
-                result.tool_name,
+                safe(&result.call_id),
+                safe(&result.tool_name),
                 result.status.label()
             );
             out.push_str("output:\n");
@@ -146,7 +154,7 @@ fn write_execution_text(out: &mut String, execution: &TurnExecution) {
             "file: {} {} {}",
             file.action.label(),
             file.status.label(),
-            file.path
+            safe(&file.path)
         );
     }
 }
@@ -156,7 +164,12 @@ fn write_text_block(out: &mut String, text: &str) {
         out.push_str("(empty)\n");
         return;
     }
-    out.push_str(text);
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(&escape_terminal_controls(line));
+    }
     if !text.ends_with('\n') {
         out.push('\n');
     }
