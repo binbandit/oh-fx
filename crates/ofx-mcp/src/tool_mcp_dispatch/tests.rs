@@ -459,3 +459,149 @@ async fn a_server_that_misses_its_startup_timeout_fails_the_selection_as_upstrea
         format_tool_execution_error_json(NAME, "McpConnectionTimedOut")
     );
 }
+
+fn remote_runtime(url: &str) -> Arc<McpRuntime> {
+    Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![McpServerConfig::remote(
+                "fixture",
+                crate::mcp_contract::TransportType::Http,
+                url,
+            )],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ))
+}
+
+async fn cancel_when(runtime: &Arc<McpRuntime>, started: impl Future<Output = ()>) -> ToolOutput {
+    let cancellation = CancellationToken::new();
+    let selecting = tokio::spawn(
+        McpSelectTool::new(Some(Arc::clone(runtime)))
+            .prepare(r#"{"name":"mcp_fixture_echo"}"#)
+            .unwrap()
+            .execute(ToolContext::new(
+                ToolCallId::new("select"),
+                cancellation.clone(),
+                PathAccess::WorkspaceOnly,
+            )),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), started)
+        .await
+        .unwrap();
+    cancellation.cancel();
+    selecting.await.unwrap()
+}
+
+#[tokio::test]
+async fn a_start_cancelled_while_an_http_server_lists_its_tools_ends_the_session() {
+    use crate::test_support::{FakeServer, Reply};
+    let server = FakeServer::start(|request| match request.method.as_str() {
+        "DELETE" => Reply::status(204),
+        _ => match request.method_name().as_deref() {
+            Some("initialize") => Reply::json(&format!(
+                r#"{{"jsonrpc":"2.0","id":{},"result":{{"protocolVersion":"2025-11-25","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"fixture","version":"1"}}}}}}"#,
+                request.request_id().unwrap()
+            ))
+            .header("Mcp-Session-Id", "session-1"),
+            Some("tools/list") => Reply::sse(&[]).held_open(),
+            _ => Reply::status(202),
+        },
+    })
+    .await;
+    let runtime = remote_runtime(&server.url);
+    runtime.connect_for_ask(false).await;
+    let output = cancel_when(&runtime, async {
+        assert!(
+            server
+                .wait_for(|request| request.method_name().as_deref() == Some("tools/list"))
+                .await
+        );
+    })
+    .await;
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "Cancelled")
+    );
+    assert!(
+        server
+            .wait_for(|request| request.method == "DELETE"
+                && request.header("mcp-session-id") == Some("session-1"))
+            .await
+    );
+}
+
+const STALLED_LISTING: &str = r#"
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*)
+      echo $$ > "$STATE/pid"
+      while :; do sleep 1; done ;;
+  esac
+done
+"#;
+
+fn still_running(pid: &str) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .is_ok_and(|output| {
+            let state = String::from_utf8_lossy(&output.stdout);
+            let state = state.trim();
+            !state.is_empty() && !state.starts_with('Z')
+        })
+}
+
+#[tokio::test]
+async fn a_start_cancelled_while_a_stdio_server_lists_its_tools_stops_the_server() {
+    let state = tempfile::tempdir().unwrap();
+    let mut config = McpServerConfig::stdio(
+        "fixture",
+        "/bin/sh",
+        vec!["-c".to_owned(), STALLED_LISTING.to_owned()],
+    );
+    config.env.push(crate::mcp_contract::EnvVar {
+        key: "STATE".to_owned(),
+        value: state.path().to_string_lossy().into_owned(),
+    });
+    let runtime = Arc::new(McpRuntime::new(
+        NativeConfigLoad {
+            configs: vec![config],
+            ..NativeConfigLoad::default()
+        },
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    ));
+    runtime.connect_for_ask(false).await;
+    let recorded = state.path().join("pid");
+    let output = cancel_when(&runtime, async {
+        while std::fs::read_to_string(&recorded).map_or(true, |pid| pid.trim().is_empty()) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        output.content,
+        format_tool_execution_error_json(NAME, "Cancelled")
+    );
+    let pid = std::fs::read_to_string(&recorded)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while still_running(&pid) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        !still_running(&pid),
+        "server {pid} outlived its cancelled start"
+    );
+}
