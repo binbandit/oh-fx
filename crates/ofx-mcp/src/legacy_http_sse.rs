@@ -15,7 +15,7 @@ use crate::error::McpError;
 use crate::legacy_sse::{Event, Parser};
 use crate::legacy_streamable_http::HttpEndpoint;
 use crate::mcp_contract::HttpHeader;
-use crate::protocol_messages::build_cancellation_notification;
+use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::streamable_http::{EndpointError, MediaType, parse_media_type, validate_endpoint};
 use crate::timing::{spawn, timeout_at};
 use crate::transport::{Cancellation, McpTransport, ShutdownMode, TransportRequest};
@@ -322,7 +322,7 @@ impl SseShared {
     }
 
     fn dispatch_message(&self, data: &str) -> Result<(), McpError> {
-        let value: Value = serde_json::from_str(data).map_err(|_| McpError::McpInvalidJson)?;
+        let value = parse_json(data.as_bytes()).ok_or(McpError::McpInvalidJson)?;
         let object = value.as_object().ok_or(McpError::McpInvalidJson)?;
         if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return Err(McpError::McpInvalidJson);
