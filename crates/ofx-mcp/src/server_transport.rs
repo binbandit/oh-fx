@@ -84,7 +84,7 @@ impl StartupFailure {
         }
     }
 
-    fn explained(error: McpError, message: Option<String>) -> Self {
+    pub(crate) fn explained(error: McpError, message: Option<String>) -> Self {
         Self {
             message,
             ..Self::new(error, None)
@@ -382,9 +382,9 @@ pub(crate) async fn connect_http(
 async fn http_endpoint(
     config: &McpServerConfig,
     options: &ConnectOptions,
-) -> Result<(HttpEndpoint, mpsc::UnboundedReceiver<Value>), McpError> {
-    let url = config.remote_url()?;
-    validate_endpoint(url)?;
+) -> Result<(HttpEndpoint, mpsc::UnboundedReceiver<Value>), StartupFailure> {
+    let url = config.remote_url().map_err(McpError::from)?;
+    validate_endpoint(url).map_err(McpError::from)?;
     let client = |follow_redirects| {
         ofx_http::build_connection_client(&ConnectionOptions {
             user_agent: options.user_agent.clone(),
@@ -395,7 +395,7 @@ async fn http_endpoint(
     };
     let store = options.profile_data.as_deref().map(CredentialStore::new);
     let auth =
-        HttpAuth::resolve(config, store, &client(false)?, &|name| env::var(name).ok()).await?;
+        HttpAuth::resolve(config, store, || client(false), &|name| env::var(name).ok()).await?;
     let (sender, notifications) = mpsc::unbounded_channel();
     let endpoint = HttpEndpoint {
         http: client(ConnectionOptions::default().follow_redirects)?,

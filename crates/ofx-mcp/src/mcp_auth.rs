@@ -5,12 +5,14 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_auth::{FormBody, percent_encode};
 use reqwest::StatusCode;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use serde_json::error::Category;
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::error::McpError;
 use crate::oauth_uri::OAuthUri;
+use crate::streamable_http::HeaderError;
 
 const EXPIRY_SKEW_MS: i64 = 60 * 1000;
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
@@ -101,7 +103,7 @@ pub(crate) async fn refresh_credentials(
         return Err(McpError::McpRefreshUnavailable);
     }
     validate_json_content_type(response.content_type.as_deref())?;
-    let Ok(Value::Object(object)) = serde_json::from_slice::<Value>(&response.body) else {
+    let Value::Object(object) = parse_json(&response.body)? else {
         return Err(McpError::InvalidTokenResponse);
     };
     let access_token = required_secret(&object, "access_token")?;
@@ -189,7 +191,10 @@ async fn post_form(
         .header(CONTENT_TYPE, FORM_CONTENT_TYPE)
         .body(form.as_str().to_owned());
     if let Some(authorization) = authorization {
-        request = request.header(AUTHORIZATION, authorization.as_str());
+        let mut value = HeaderValue::from_str(authorization)
+            .map_err(|_| McpError::Header(HeaderError::InvalidHeaderValue))?;
+        value.set_sensitive(true);
+        request = request.header(AUTHORIZATION, value);
     }
     let mut response = request.send().await?;
     let status = response.status();
@@ -209,6 +214,13 @@ async fn post_form(
         status,
         content_type,
         body,
+    })
+}
+
+pub(crate) fn parse_json(bytes: &[u8]) -> Result<Value, McpError> {
+    serde_json::from_slice(bytes).map_err(|error| match error.classify() {
+        Category::Eof => McpError::UnexpectedEndOfInput,
+        _ => McpError::SyntaxError,
     })
 }
 

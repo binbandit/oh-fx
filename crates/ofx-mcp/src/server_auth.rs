@@ -1,4 +1,4 @@
-use std::sync::{Mutex as StateMutex, PoisonError};
+use std::sync::{Arc, Mutex as StateMutex, PoisonError};
 
 use reqwest::RequestBuilder;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
@@ -8,10 +8,12 @@ use crate::error::McpError;
 use crate::mcp_auth::{Credentials, now_ms, refresh_credentials};
 use crate::mcp_auth_store::CredentialStore;
 use crate::mcp_contract::{HttpHeader, McpServerConfig};
+use crate::server_transport::StartupFailure;
 use crate::streamable_http::{HeaderError, validate_header_value, validate_static_headers};
 
 const CREDENTIALS_EXPIRED: &str = "MCP credentials expired.";
 const REFRESH_FAILED: &str = "MCP credential refresh failed.";
+const UNREADABLE_STORE: &str = "Stored MCP credentials could not be read securely.";
 
 pub(crate) struct HttpAuth {
     headers: Vec<HttpHeader>,
@@ -22,20 +24,21 @@ struct StoredAuth {
     server: String,
     store: CredentialStore,
     http: reqwest::Client,
-    credentials: Mutex<Credentials>,
-    failure: StateMutex<Option<String>>,
+    credentials: Arc<Mutex<Credentials>>,
+    failure: Arc<StateMutex<Option<String>>>,
 }
 
 impl HttpAuth {
     pub(crate) async fn resolve(
         config: &McpServerConfig,
         store: Option<CredentialStore>,
-        http: &reqwest::Client,
+        oauth_client: impl FnOnce() -> Result<reqwest::Client, McpError>,
         environment: &(dyn Fn(&str) -> Option<String> + Sync),
-    ) -> Result<Self, McpError> {
+    ) -> Result<Self, StartupFailure> {
         let loaded = match store {
             Some(store) if config.allow_stored_credentials => load_stored(config, &store)
-                .await?
+                .await
+                .map_err(|error| unreadable_store(&config.name, error))?
                 .map(|credentials| (store, credentials)),
             _ => None,
         };
@@ -44,30 +47,60 @@ impl HttpAuth {
             environment,
             loaded.as_ref().map(|(_, credentials)| credentials),
         )?;
-        let stored = loaded.map(|(store, credentials)| StoredAuth {
-            server: config.name.clone(),
-            store,
-            http: http.clone(),
-            credentials: Mutex::new(credentials),
-            failure: StateMutex::new(None),
-        });
+        let stored = match loaded {
+            Some((store, credentials)) => Some(StoredAuth {
+                server: config.name.clone(),
+                store,
+                http: oauth_client()?,
+                credentials: Arc::new(Mutex::new(credentials)),
+                failure: Arc::default(),
+            }),
+            None => None,
+        };
         Ok(Self { headers, stored })
     }
 
     pub(crate) async fn apply(&self, builder: RequestBuilder) -> Result<RequestBuilder, McpError> {
-        let mut builder = builder;
-        for header in &self.headers {
-            builder = builder.header(header.name.as_str(), header.value.as_str());
+        let builder = self.apply_static(builder);
+        match &self.stored {
+            Some(stored) => Ok(builder.header(AUTHORIZATION, stored.authorization().await?)),
+            None => Ok(builder),
         }
-        if let Some(stored) = &self.stored {
-            builder = builder.header(AUTHORIZATION, stored.authorization().await?);
+    }
+
+    pub(crate) fn apply_current(&self, builder: RequestBuilder) -> RequestBuilder {
+        let builder = self.apply_static(builder);
+        let current = self
+            .stored
+            .as_ref()
+            .and_then(|stored| stored.credentials.try_lock().ok())
+            .and_then(|credentials| bearer_header(&credentials).ok());
+        match current {
+            Some(value) => builder.header(AUTHORIZATION, value),
+            None => builder,
         }
-        Ok(builder)
     }
 
     pub(crate) fn failure(&self) -> Option<String> {
         self.stored.as_ref().and_then(StoredAuth::failure)
     }
+
+    fn apply_static(&self, builder: RequestBuilder) -> RequestBuilder {
+        self.headers.iter().fold(builder, |builder, header| {
+            builder.header(header.name.as_str(), header.value.as_str())
+        })
+    }
+}
+
+fn unreadable_store(server: &str, error: McpError) -> StartupFailure {
+    if error == McpError::Cancelled {
+        return StartupFailure::from(error);
+    }
+    ofx_trace::log(
+        "mcp",
+        format_args!("credential load failed server={server} err={error}"),
+    );
+    StartupFailure::explained(error, Some(UNREADABLE_STORE.to_owned()))
 }
 
 async fn load_stored(
@@ -92,31 +125,27 @@ async fn load_stored(
 
 impl StoredAuth {
     async fn authorization(&self) -> Result<HeaderValue, McpError> {
-        let mut credentials = self.credentials.lock().await;
-        if credentials.needs_refresh(now_ms()) {
-            if credentials.refresh_token.is_none() {
-                self.fail(CREDENTIALS_EXPIRED);
-                return Err(McpError::McpAuthenticationRequired);
-            }
-            let refreshed = match refresh_credentials(&self.http, &credentials).await {
-                Ok(refreshed) => refreshed,
-                Err(error) => {
-                    if !matches!(error, McpError::Cancelled | McpError::McpRequestTimedOut) {
-                        self.fail(REFRESH_FAILED);
-                    }
-                    return Err(error);
-                }
-            };
-            let store = self.store.clone();
-            let server = self.server.clone();
-            let saved = refreshed.clone();
-            tokio::task::spawn_blocking(move || store.save(&server, &saved))
-                .await
-                .map_err(|_| McpError::Cancelled)??;
-            *credentials = refreshed;
-            *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let credentials = Arc::clone(&self.credentials).lock_owned().await;
+        if !credentials.needs_refresh(now_ms()) {
+            return bearer_header(&credentials);
         }
-        bearer_header(&credentials)
+        if credentials.refresh_token.is_none() {
+            self.fail(CREDENTIALS_EXPIRED);
+            return Err(McpError::McpAuthenticationRequired);
+        }
+        let refreshed = match refresh_credentials(&self.http, &credentials).await {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                self.fail(REFRESH_FAILED);
+                return Err(error);
+            }
+        };
+        let store = self.store.clone();
+        let server = self.server.clone();
+        let failure = Arc::clone(&self.failure);
+        tokio::spawn(install(credentials, refreshed, store, server, failure))
+            .await
+            .map_err(|_| McpError::Cancelled)?
     }
 
     fn fail(&self, reason: &str) {
@@ -129,6 +158,37 @@ impl StoredAuth {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+}
+
+async fn install(
+    mut credentials: tokio::sync::OwnedMutexGuard<Credentials>,
+    refreshed: Credentials,
+    store: CredentialStore,
+    server: String,
+    failure: Arc<StateMutex<Option<String>>>,
+) -> Result<HeaderValue, McpError> {
+    let saved = refreshed.clone();
+    let (server, result) = tokio::task::spawn_blocking(move || {
+        let result = store.save(&server, &saved);
+        (server, result)
+    })
+    .await
+    .map_err(|_| McpError::Cancelled)?;
+    trace_store_repair("refresh", &server, result?.repaired_entries);
+    *credentials = refreshed;
+    *failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    bearer_header(&credentials)
+}
+
+pub(crate) fn trace_store_repair(actor: &str, server: &str, repaired_entries: usize) {
+    if repaired_entries > 0 {
+        ofx_trace::log(
+            "mcp",
+            format_args!(
+                "removed unreadable MCP credential entries actor={actor} server={server} count={repaired_entries}"
+            ),
+        );
     }
 }
 
@@ -153,25 +213,21 @@ fn resolve_headers(
             value,
         });
     }
-    let authorization = match stored {
-        Some(credentials) => Some(credentials.bearer().to_string()),
-        None => match &config.bearer_token_env {
-            Some(env_name) => Some(format!(
-                "Bearer {}",
-                environment(env_name).ok_or(McpError::McpBearerEnvironmentMissing)?
-            )),
-            None => None,
-        },
-    };
-    let checked = authorization.map(|value| HttpHeader {
+    let authorization = |value: String| HttpHeader {
         name: "Authorization".to_owned(),
         value,
-    });
-    let mut all = headers.clone();
-    all.extend(checked.iter().cloned());
-    validate_static_headers(&all)?;
-    if stored.is_none() {
-        headers.extend(checked);
+    };
+    if let Some(credentials) = stored {
+        validate_header_value(&credentials.bearer())?;
+        let mut checked = headers.clone();
+        checked.push(authorization(String::new()));
+        validate_static_headers(&checked)?;
+    } else {
+        if let Some(env_name) = &config.bearer_token_env {
+            let token = environment(env_name).ok_or(McpError::McpBearerEnvironmentMissing)?;
+            headers.push(authorization(format!("Bearer {token}")));
+        }
+        validate_static_headers(&headers)?;
     }
     Ok(headers)
 }

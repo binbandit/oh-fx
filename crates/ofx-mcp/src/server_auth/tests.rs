@@ -63,6 +63,8 @@ fn missing_environment_values_fail_before_any_request() {
 mod stored {
     use std::path::PathBuf;
 
+    use reqwest::RequestBuilder;
+    use reqwest::header::AUTHORIZATION;
     use zeroize::Zeroizing;
 
     use super::*;
@@ -307,6 +309,86 @@ mod stored {
             .err()
             .unwrap();
         assert_eq!(failure.error, McpError::InvalidMcpCredentialStore);
+        assert_eq!(
+            startup_failure_message(&failure, 5_000, 5_000),
+            "Stored MCP credentials could not be read securely."
+        );
         assert!(fixture.server.requests().is_empty());
+    }
+
+    async fn resolved(fixture: &Fixture) -> HttpAuth {
+        HttpAuth::resolve(
+            &fixture.config(),
+            Some(fixture.store()),
+            || Ok(oauth_client()),
+            &|_| None,
+        )
+        .await
+        .ok()
+        .unwrap()
+    }
+
+    fn oauth_client() -> reqwest::Client {
+        ofx_http::build_connection_client(&ofx_http::ConnectionOptions {
+            follow_redirects: false,
+            ..ofx_http::ConnectionOptions::default()
+        })
+        .unwrap()
+    }
+
+    fn token_requests(fixture: &Fixture) -> usize {
+        fixture
+            .server
+            .requests()
+            .iter()
+            .filter(|request| request.path == "/token")
+            .count()
+    }
+
+    fn authorization(builder: RequestBuilder) -> Option<String> {
+        builder
+            .build()
+            .unwrap()
+            .headers()
+            .get(AUTHORIZATION)
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_share_one_refresh() {
+        let fixture = Fixture::start(RENEWED).await;
+        fixture
+            .store()
+            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .unwrap();
+        let auth = resolved(&fixture).await;
+        let http = oauth_client();
+        let (first, second) = tokio::join!(
+            auth.apply(http.get(&fixture.server.url)),
+            auth.apply(http.get(&fixture.server.url))
+        );
+        assert_eq!(token_requests(&fixture), 1);
+        for builder in [first.unwrap(), second.unwrap()] {
+            assert_eq!(
+                authorization(builder).as_deref(),
+                Some("Bearer renewed-token")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_a_session_uses_the_current_bearer_without_a_refresh() {
+        let fixture = Fixture::start(RENEWED).await;
+        fixture
+            .store()
+            .save("remote", &fixture.credentials(1, Some("stored-refresh")))
+            .unwrap();
+        let auth = resolved(&fixture).await;
+        let closing = auth.apply_current(oauth_client().delete(&fixture.server.url));
+        assert_eq!(
+            authorization(closing).as_deref(),
+            Some("Bearer stored-token")
+        );
+        assert_eq!(token_requests(&fixture), 0);
     }
 }

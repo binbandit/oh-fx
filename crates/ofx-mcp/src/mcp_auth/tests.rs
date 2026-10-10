@@ -171,6 +171,14 @@ async fn only_invalid_grant_rejects_the_refresh_for_good() {
             McpError::McpRefreshRejected,
         ),
         (
+            Answer {
+                status: 302,
+                content_type: Some("application/json"),
+                body: r#"{"access_token":"a"}"#.to_owned(),
+            },
+            McpError::McpRefreshUnavailable,
+        ),
+        (
             json(400, r#"{"error":"invalid_request"}"#),
             McpError::McpRefreshUnavailable,
         ),
@@ -201,7 +209,8 @@ async fn token_responses_are_validated() {
             McpError::InvalidOAuthResponseContentType,
         ),
         (json(200, "[]"), McpError::InvalidTokenResponse),
-        (json(200, "{"), McpError::InvalidTokenResponse),
+        (json(200, "{"), McpError::UnexpectedEndOfInput),
+        (json(200, "{]"), McpError::SyntaxError),
         (
             json(200, r#"{"access_token":""}"#),
             McpError::InvalidOAuthResponse,

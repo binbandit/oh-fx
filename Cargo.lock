@@ -865,6 +865,7 @@ dependencies = [
  "ofx-http",
  "ofx-jsonrpc",
  "ofx-text",
+ "ofx-trace",
  "reqwest",
  "rustix",
  "serde_json",

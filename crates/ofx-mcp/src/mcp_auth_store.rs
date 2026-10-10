@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_config::{AdvisoryLock, PrivateDir};
+use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::error::McpError;
-use crate::mcp_auth::Credentials;
+use crate::mcp_auth::{Credentials, parse_json};
 use crate::oauth_uri::canonical_resource;
 
 const SCHEMA_VERSION: i64 = 1;
@@ -136,17 +136,16 @@ fn lock(directory: PrivateDir) -> Result<LockedDir, McpError> {
 }
 
 fn load_store(directory: &PrivateDir) -> Result<Store, McpError> {
-    if !directory.private_file_exists(FILE_NAME)? {
-        return Ok(Store::default());
+    match directory.read_exact_private(FILE_NAME, MAX_STORE_BYTES) {
+        Ok(Some(bytes)) => parse_store(&bytes),
+        Ok(None) => Ok(Store::default()),
+        Err(DurableError::TooLarge) => Err(McpError::StreamTooLong),
+        Err(error) => Err(error.into()),
     }
-    let Some(bytes) = directory.read_private(FILE_NAME, MAX_STORE_BYTES)? else {
-        return Ok(Store::default());
-    };
-    parse_store(&bytes)
 }
 
 fn parse_store(bytes: &[u8]) -> Result<Store, McpError> {
-    let Ok(Value::Object(document)) = serde_json::from_slice::<Value>(bytes) else {
+    let Value::Object(document) = parse_json(bytes)? else {
         return Err(McpError::InvalidMcpCredentialStore);
     };
     if document.get("version").and_then(Value::as_i64) != Some(SCHEMA_VERSION) {

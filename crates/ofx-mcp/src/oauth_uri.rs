@@ -1,13 +1,12 @@
 use crate::error::McpError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OAuthUri<'a> {
     pub(crate) scheme: &'a str,
     pub(crate) has_userinfo: bool,
-    pub(crate) host: Option<&'a str>,
+    pub(crate) host: Option<String>,
     pub(crate) port: Option<u16>,
-    pub(crate) path: &'a str,
-    pub(crate) query: Option<&'a str>,
+    pub(crate) path: String,
     pub(crate) fragment: Option<&'a str>,
 }
 
@@ -25,18 +24,14 @@ impl<'a> OAuthUri<'a> {
             Some((rest, fragment)) => (rest, Some(fragment)),
             None => (rest, None),
         };
-        let (rest, query) = match rest.split_once('?') {
-            Some((rest, query)) => (rest, Some(query)),
-            None => (rest, None),
-        };
+        let rest = rest.split_once('?').map_or(rest, |(rest, _)| rest);
         let Some(after) = rest.strip_prefix("//") else {
             return Some(Self {
                 scheme,
                 has_userinfo: false,
                 host: None,
                 port: None,
-                path: rest,
-                query,
+                path: percent_decoded(rest),
                 fragment,
             });
         };
@@ -52,10 +47,9 @@ impl<'a> OAuthUri<'a> {
         Some(Self {
             scheme,
             has_userinfo,
-            host: Some(host),
+            host: Some(percent_decoded(host)),
             port,
-            path,
-            query,
+            path: percent_decoded(path),
             fragment,
         })
     }
@@ -65,7 +59,7 @@ impl<'a> OAuthUri<'a> {
     }
 
     pub(crate) fn has_loopback_host(&self) -> bool {
-        self.host.is_some_and(|host| {
+        self.host.as_deref().is_some_and(|host| {
             host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost") || host == "[::1]"
         })
     }
@@ -77,6 +71,7 @@ impl<'a> OAuthUri<'a> {
     pub(crate) fn origin(&self) -> Result<String, McpError> {
         let host = self
             .host
+            .as_deref()
             .filter(|host| !host.is_empty())
             .ok_or(McpError::InvalidMcpAuthEndpoint)?;
         let scheme = self.scheme.to_ascii_lowercase();
@@ -91,8 +86,12 @@ impl<'a> OAuthUri<'a> {
         })
     }
 
-    pub(crate) fn raw_path(&self) -> &'a str {
-        if self.path.is_empty() { "/" } else { self.path }
+    pub(crate) fn raw_path(&self) -> &str {
+        if self.path.is_empty() {
+            "/"
+        } else {
+            &self.path
+        }
     }
 }
 
@@ -112,11 +111,30 @@ fn split_port(host_port: &str) -> Option<(&str, Option<u16>)> {
         }
     };
     let (host, port) = host_port.split_at(port_start);
-    let digits = &port[1..];
-    if digits.is_empty() {
-        return Some((host, None));
+    Some((host, Some(port[1..].parse().ok()?)))
+}
+
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let pair = bytes
+            .get(index + 1..index + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (bytes[index], pair) {
+            (b'%', Some(byte)) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            (byte, _) => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
     }
-    Some((host, Some(digits.parse().ok()?)))
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 pub(crate) fn canonical_resource(endpoint: &str) -> Result<String, McpError> {
@@ -149,6 +167,10 @@ mod tests {
             ("http://127.0.0.1:3000/mcp", "http://127.0.0.1:3000/mcp"),
             ("http://LOCALHOST:9/", "http://localhost:9/"),
             ("http://[::1]:7/mcp", "http://[::1]:7/mcp"),
+            (
+                "https://MCP%2Eexample.com/a%20b/%zz",
+                "https://mcp.example.com/a b/%zz",
+            ),
         ] {
             assert_eq!(
                 canonical_resource(endpoint).unwrap(),
@@ -183,6 +205,7 @@ mod tests {
         assert!(loopback("http://127.0.0.1:1/"));
         assert!(loopback("HTTP://localhost:80"));
         assert!(loopback("http://[::1]:5/x"));
+        assert!(loopback("http://local%68ost:5/x"));
         assert!(!loopback("http://localhost/"));
         assert!(!loopback("https://localhost:443/"));
         assert!(!loopback("http://127.0.0.2:1/"));

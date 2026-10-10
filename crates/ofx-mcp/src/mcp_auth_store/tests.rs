@@ -140,7 +140,6 @@ fn the_top_level_schema_version_is_strict() {
         r#"{"version":1,"credentials":{}}"#,
         r#"{"version":1}"#,
         "[]",
-        "{",
     ] {
         assert_eq!(
             parse_store(document.as_bytes()).err(),
@@ -148,6 +147,11 @@ fn the_top_level_schema_version_is_strict() {
             "{document}"
         );
     }
+    assert_eq!(
+        parse_store(b"{").err(),
+        Some(McpError::UnexpectedEndOfInput)
+    );
+    assert_eq!(parse_store(b"{]").err(), Some(McpError::SyntaxError));
 }
 
 #[test]
@@ -266,30 +270,30 @@ fn a_save_drops_rejected_entries_and_reports_the_repair() {
 #[test]
 fn an_unsafe_or_invalid_file_is_refused() {
     let home = Home::new();
-    home.write(&store_json(&[ONE]));
-    fs::set_permissions(home.file(), fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(matches!(
+    let load = || {
         home.store()
-            .load("one", "https://mcp.example/a", None, None),
-        Err(McpError::Durable(_))
-    ));
+            .load("one", "https://mcp.example/a", None, None)
+    };
+    home.write(&store_json(&[ONE]));
+    for mode in [0o644, 0o400, 0o700] {
+        fs::set_permissions(home.file(), fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(
+            load(),
+            Err(McpError::Durable(DurableError::PermissionsUnsupported)),
+            "{mode:o}"
+        );
+    }
     fs::remove_file(home.file()).unwrap();
     let elsewhere = home.data().join("elsewhere.json");
     fs::write(&elsewhere, store_json(&[ONE])).unwrap();
     fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o600)).unwrap();
     symlink(&elsewhere, home.file()).unwrap();
-    assert!(matches!(
-        home.store()
-            .load("one", "https://mcp.example/a", None, None),
-        Err(McpError::Durable(_))
-    ));
+    assert_eq!(load(), Err(McpError::Durable(DurableError::PathUnsafe)));
     fs::remove_file(home.file()).unwrap();
+    home.write(&" ".repeat(MAX_STORE_BYTES + 1));
+    assert_eq!(load(), Err(McpError::StreamTooLong));
     home.write(r#"{"version":3,"credentials":[]}"#);
-    assert_eq!(
-        home.store()
-            .load("one", "https://mcp.example/a", None, None),
-        Err(McpError::InvalidMcpCredentialStore)
-    );
+    assert_eq!(load(), Err(McpError::InvalidMcpCredentialStore));
 }
 
 #[test]

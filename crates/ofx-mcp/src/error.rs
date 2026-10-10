@@ -153,8 +153,12 @@ pub enum McpError {
     InvalidMcpCredentialStore,
     #[error("McpCredentialStoreTooLarge")]
     McpCredentialStoreTooLarge,
-    #[error("McpCredentialStoreUnavailable")]
-    McpCredentialStoreUnavailable,
+    #[error("SyntaxError")]
+    SyntaxError,
+    #[error("UnexpectedEndOfInput")]
+    UnexpectedEndOfInput,
+    #[error("StreamTooLong")]
+    StreamTooLong,
     #[error("LockBusy")]
     LockBusy,
     #[error(transparent)]

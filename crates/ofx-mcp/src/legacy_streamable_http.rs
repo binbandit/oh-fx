@@ -327,7 +327,23 @@ impl Drop for CancelOnDrop<'_> {
 }
 
 impl HttpShared {
+    fn closing_builder(&self) -> Result<RequestBuilder, McpError> {
+        Ok(self
+            .auth
+            .apply_current(self.unauthorized_builder(Method::DELETE, false, None)?))
+    }
+
     async fn builder(
+        &self,
+        method: Method,
+        accepts_json: bool,
+        last_event_id: Option<&str>,
+    ) -> Result<RequestBuilder, McpError> {
+        let builder = self.unauthorized_builder(method, accepts_json, last_event_id)?;
+        self.auth.apply(builder).await
+    }
+
+    fn unauthorized_builder(
         &self,
         method: Method,
         accepts_json: bool,
@@ -351,7 +367,7 @@ impl HttpShared {
             validate_header_value(last_event_id)?;
             builder = builder.header("Last-Event-ID", last_event_id);
         }
-        self.auth.apply(builder).await
+        Ok(builder)
     }
 
     async fn post_builder(&self, body: &str) -> Result<RequestBuilder, McpError> {
@@ -602,7 +618,7 @@ impl HttpShared {
         if self.session_id.is_none() || self.session_retired.load(Ordering::Acquire) {
             return;
         }
-        let Ok(builder) = self.builder(Method::DELETE, false, None).await else {
+        let Ok(builder) = self.closing_builder() else {
             return;
         };
         let _ = timeout(CLOSE_TIMEOUT, builder.send()).await;
