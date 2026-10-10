@@ -60,6 +60,8 @@ mod provider_runtime;
 
 pub(crate) use provider_runtime::{Intent, Refusal, provider_label, provider_names};
 
+type McpTools = (Option<Arc<McpRuntime>>, Arc<dyn Tool>);
+
 const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
 const CODEX_SOURCE_REPAIR: &str = "Reconnect Codex through /login to repair this source.";
@@ -630,7 +632,7 @@ impl Profile {
         tools: &[Arc<dyn Tool>],
         limits: &ContextLimits,
         interactive: bool,
-    ) -> Result<(Option<Arc<McpRuntime>>, Arc<dyn Tool>), ProfileStoreError> {
+    ) -> Result<McpTools, ProfileStoreError> {
         let runtime = self.load_mcp_runtime(tools, limits, interactive)?;
         let features = Arc::new(McpFeatures::new(runtime.clone()));
         Ok((runtime, features))
