@@ -7,6 +7,7 @@ use crate::catalog_freshness::{
     Freshness, RefreshAction, SnapshotMetadata, begin_refresh, decide_refresh, failed_refresh,
     request_refresh,
 };
+use crate::error::McpError;
 use crate::features::tools::ToolCatalog;
 use crate::operation_control::monotonic_millis;
 use crate::server_connection::{McpClient, lock};
@@ -24,14 +25,15 @@ impl McpClient {
         snapshot.metadata = request_refresh(snapshot.metadata);
     }
 
-    pub(crate) async fn settled_tools(&self, deadline: Instant) -> Refreshed {
+    pub(crate) async fn settled_tools(&self, deadline: Instant) -> Result<Refreshed, McpError> {
         loop {
             let mut settled = pin!(self.tools_settled.notified());
             settled.as_mut().enable();
-            if lock(&self.tools).metadata.freshness != Freshness::Refreshing
-                || timeout_at(deadline, settled).await.is_err()
-            {
-                return self.refresh_tools(deadline).await;
+            if lock(&self.tools).metadata.freshness != Freshness::Refreshing {
+                return Ok(self.refresh_tools(deadline).await);
+            }
+            if timeout_at(deadline, settled).await.is_err() {
+                return Err(McpError::McpRequestTimedOut);
             }
         }
     }

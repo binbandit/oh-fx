@@ -23,10 +23,10 @@ while IFS= read -r line; do
       version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1.0\"}}" ;;
     *'"method":"tools/list"'*)
-      echo list >> "$STATE/lists"
       name=$(cat "$STATE/name" 2>/dev/null || echo alpha)
       ttl=$(cat "$STATE/ttl" 2>/dev/null || echo 60000)
       result="{\"ttlMs\":$ttl,\"tools\":[{\"name\":\"$name\",\"inputSchema\":{\"type\":\"object\"}}]}"
+      echo list >> "$STATE/lists"
       if [ -f "$STATE/fail" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"unavailable"}}\n' "$id"
       elif [ -f "$STATE/slow" ]; then
@@ -35,6 +35,7 @@ while IFS= read -r line; do
         reply "$id" "$result"
       fi ;;
     *'"method":"tools/call"'*)
+      echo call >> "$STATE/calls"
       reply "$id" '{"content":[{"type":"text","text":"called"}]}'
       if [ -f "$STATE/notify" ]; then
         rm "$STATE/notify"
@@ -61,21 +62,47 @@ fn write(state: &Path, name: &str, content: &str) {
     std::fs::write(state.join(name), content).unwrap();
 }
 
-fn lists(state: &Path) -> usize {
-    std::fs::read_to_string(state.join("lists"))
+fn lines(state: &Path, name: &str) -> usize {
+    std::fs::read_to_string(state.join(name))
         .unwrap_or_default()
         .lines()
         .count()
 }
 
+fn lists(state: &Path) -> usize {
+    lines(state, "lists")
+}
+
 async fn started(state: &Path) -> Arc<Server> {
+    started_with(config(state)).await
+}
+
+async fn started_with(config: McpServerConfig) -> Arc<Server> {
     let server = Arc::new(Server::new(
-        config(state),
+        config,
         ConnectOptions::default(),
         Arc::new(AtomicU64::new(0)),
     ));
     server.start().await;
     server
+}
+
+async fn started_with_operation_timeout(state: &Path, operation_timeout_ms: u32) -> Arc<Server> {
+    let mut config = config(state);
+    config.operation_timeout_ms = operation_timeout_ms;
+    started_with(config).await
+}
+
+async fn call_directly(client: &McpClient, advertised: &Advertised) -> bool {
+    client
+        .call_tool(
+            &advertised.tool.name,
+            "{}",
+            CallOptions::default(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .is_ok()
 }
 
 fn advertised(server: &Server) -> Advertised {
@@ -267,5 +294,54 @@ async fn a_call_is_refused_while_a_change_notification_waits_for_its_list() {
     assert!(call(&server, &alpha).await);
     assert_eq!(lists(state.path()), 3);
     assert_eq!(health(&server), (CacheFreshness::Fresh, 0, None));
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn a_call_whose_deadline_passes_while_a_list_is_in_flight_never_reaches_the_server() {
+    let state = tempfile::tempdir().unwrap();
+    let server = started_with_operation_timeout(state.path(), 50).await;
+    let alpha = advertised(&server);
+    let client = ready_client(&server);
+    write(state.path(), "slow", "");
+    client.request_tool_refresh();
+    let refreshing = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .refresh_tools(Instant::now() + Duration::from_secs(5))
+                .await
+        })
+    };
+    while lists(state.path()) < 2 {
+        sleep(Duration::from_millis(5)).await;
+    }
+    let timed_out = server.call(&alpha, "{}", CallOptions::default()).await;
+    assert!(matches!(
+        timed_out,
+        Err(CallFailure::Mcp(McpError::McpRequestTimedOut))
+    ));
+    refreshing.await.unwrap();
+    assert!(call_directly(&client, &alpha).await);
+    assert_eq!(lines(state.path(), "calls"), 1);
+    server.stop(ShutdownMode::Immediate).await;
+}
+
+#[tokio::test]
+async fn a_call_whose_own_list_uses_up_its_deadline_never_reaches_the_server() {
+    let state = tempfile::tempdir().unwrap();
+    write(state.path(), "ttl", "0");
+    let server = started_with_operation_timeout(state.path(), 50).await;
+    let alpha = advertised(&server);
+    let client = ready_client(&server);
+    write(state.path(), "slow", "");
+    let timed_out = server.call(&alpha, "{}", CallOptions::default()).await;
+    assert!(matches!(
+        timed_out,
+        Err(CallFailure::Mcp(McpError::McpRequestTimedOut))
+    ));
+    assert_eq!(lists(state.path()), 2);
+    assert!(call_directly(&client, &alpha).await);
+    assert_eq!(lines(state.path(), "calls"), 1);
     server.stop(ShutdownMode::Immediate).await;
 }

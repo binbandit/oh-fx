@@ -202,7 +202,7 @@ impl Server {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
-        let refreshed = client.settled_tools(deadline).await;
+        let refreshed = client.settled_tools(deadline).await?;
         if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
@@ -218,6 +218,9 @@ impl Server {
             return Err(CallFailure::DefinitionChanged {
                 still_advertised: current.is_some(),
             });
+        }
+        if Instant::now() >= deadline {
+            return Err(McpError::McpRequestTimedOut.into());
         }
         Ok(client
             .call_tool(name, arguments_json, options, deadline)
