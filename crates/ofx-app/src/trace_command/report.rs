@@ -9,7 +9,7 @@ use std::process::Command;
 use ofx_agent::{CompactionEvent, ToolCallTrace};
 use ofx_contract::{PermissionMode, ReasoningEffort, is_provider_search_alias};
 use ofx_text::mask_secrets;
-use ofx_trace::Sequenced;
+use ofx_trace::{NetworkTrace, Sequenced};
 
 use crate::context::civil_from_unix_days;
 
@@ -45,6 +45,7 @@ pub(super) struct Snapshot {
     terminal: Terminal,
     compaction: Vec<Sequenced<CompactionEvent>>,
     tool_calls: ToolCallTrace,
+    network: NetworkTrace,
     tail: Option<Tail>,
 }
 
@@ -98,6 +99,7 @@ impl Snapshot {
             },
             compaction: ofx_agent::compaction_trace(),
             tool_calls: ofx_agent::tool_call_trace(),
+            network: ofx_trace::network_trace(),
             tail,
         }
     }
@@ -115,6 +117,7 @@ impl Snapshot {
         self.write_current_state(out)?;
         self.write_problems(out)?;
         self.write_compaction(out)?;
+        network_calls::write_section(out, &self.network)?;
         tool_calls::write_section(out, &self.tool_calls)?;
         self.write_runtime_context(out)?;
         if let Some(tail) = &self.tail {
@@ -190,6 +193,7 @@ impl Snapshot {
                 self.facts.processing, self.facts.stream_active, self.facts.queued
             )?;
         }
+        count += network_calls::write_problems(out, &self.network)?;
         count += tool_calls::write_problems(out, &self.tool_calls)?;
         for event in self
             .compaction
@@ -460,6 +464,7 @@ fn process_memory(pid: u32) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+mod network_calls;
 mod tool_calls;
 
 #[cfg(test)]
