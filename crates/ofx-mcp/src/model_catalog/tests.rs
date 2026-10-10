@@ -36,14 +36,14 @@ fn an_empty_catalog_says_so_as_upstream_writes_it() {
 #[test]
 fn servers_are_listed_in_name_order_without_tool_metadata() {
     let section = render_model_catalog(&[
-        server("zeta", Availability::Failed, None),
+        server("zeta", Availability::AuthenticationRequired, None),
         server("alpha", Availability::Ready, Some(2)),
     ]);
     let (header, footer) = SECTION_GOLDEN.split_once("  <none />\n").unwrap();
     assert_eq!(
         section.text,
         format!(
-            "{header}  <server name=\"alpha\" state=\"ready\" tools=\"2\" />\n  <server name=\"zeta\" state=\"failed\" />\n{footer}"
+            "{header}  <server name=\"alpha\" state=\"ready\" tools=\"2\" />\n  <server name=\"zeta\" state=\"authentication_required\" />\n{footer}"
         )
     );
     assert_eq!(section.notice, None);
@@ -216,6 +216,15 @@ fn changes_name_each_transition_addition_and_removal() {
             &[server("linear", Availability::Ready, Some(74))],
         ),
         Some(notice_with("  linear: failed -> ready (74 tools)\n"))
+    );
+    assert_eq!(
+        render_change_notice(
+            &[baseline("linear", Availability::AuthenticationRequired)],
+            &[server("linear", Availability::Ready, Some(74))],
+        ),
+        Some(notice_with(
+            "  linear: authentication_required -> ready (74 tools)\n"
+        ))
     );
     assert_eq!(
         render_change_notice(
