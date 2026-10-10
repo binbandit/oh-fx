@@ -7,6 +7,7 @@ use rustix::io::Errno;
 use serde_json::{Value, json};
 
 use crate::session_children::CONTROL_DIR;
+use crate::session_codec::SessionPreferences;
 use crate::session_discovery::{Classification, classify_session};
 use crate::session_error::SessionError;
 use crate::session_log::managed_file::{
@@ -52,6 +53,7 @@ struct CopyState {
     log_bytes: u64,
     recovery: Option<FileStamp>,
     title: Option<String>,
+    preferences: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +74,7 @@ pub(crate) fn seal(copy: &PrivateDir, id: &str, source: ImportSource) -> Result<
             "log_bytes": state.log_bytes,
             "recovery_json": state.recovery.map(stamp_json),
             "title": state.title,
+            "preferences": state.preferences,
         },
     });
     Ok(copy.replace(IMPORT_MARKER, marker.to_string().as_bytes())?)
@@ -247,6 +250,11 @@ fn source_stamp(source: &PrivateDir) -> Result<ImportSource, SessionError> {
     })
 }
 
+pub(crate) fn untouched_import(copy: &PrivateDir, id: &str) -> Option<ImportSource> {
+    let marker = read_marker(copy)?;
+    untouched(copy, id, &marker).then_some(marker.source)
+}
+
 fn untouched(copy: &PrivateDir, id: &str, marker: &Marker) -> bool {
     present(copy, CONTROL_DIR).is_ok_and(|children| !children)
         && copy_state(copy, id).is_ok_and(|state| state == marker.copy)
@@ -258,10 +266,27 @@ fn copy_state(copy: &PrivateDir, id: &str) -> Result<CopyState, SessionError> {
     } else {
         None
     };
+    let metadata = read_metadata(copy, id)?;
     Ok(CopyState {
         log_bytes: file_stamp(copy, EVENTS_FILE)?.size,
         recovery,
-        title: read_metadata(copy, id)?.title,
+        title: metadata.title,
+        preferences: preferences_json(&metadata.preferences),
+    })
+}
+
+fn preferences_json(preferences: &SessionPreferences) -> Value {
+    let SessionPreferences {
+        provider,
+        model,
+        effort,
+        fast_mode,
+    } = preferences;
+    json!({
+        "provider": provider,
+        "model": model,
+        "effort": effort.label(),
+        "fast_mode": fast_mode,
     })
 }
 
@@ -364,6 +389,7 @@ pub(crate) fn read_marker(copy: &PrivateDir) -> Option<Marker> {
             log_bytes: copy.get("log_bytes")?.as_u64()?,
             recovery,
             title,
+            preferences: copy.get("preferences")?.clone(),
         },
     })
 }

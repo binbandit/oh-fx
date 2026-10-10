@@ -2,11 +2,13 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-use ofx_config::PrivateDir;
+use ofx_config::{PrivateDir, ProviderId};
+use ofx_contract::ReasoningEffort;
 
 use super::super::tests::{
     Home, Saved, ids, shell_turn, shell_turn_with_an_unknown_event, snapshot,
 };
+use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_event::{AssistantEvent, ConversationEvent, TurnCompletedEvent, UserEvent};
 use crate::session_log::WritableSession;
@@ -277,9 +279,13 @@ fn an_unfinished_fx_log_rewrite_is_refused_but_its_freshness_pin_is_not() {
     );
 }
 
+fn codex() -> SavedProvider {
+    SavedProvider::new(ProviderId::Codex, None).unwrap()
+}
+
 #[test]
-fn a_paused_turn_a_rename_or_a_child_keeps_the_copy_when_fx_moves_on() {
-    let keep: [(&str, OwnWork); 3] = [
+fn work_done_in_oh_fx_keeps_the_copy_when_fx_moves_on() {
+    let keep: [(&str, OwnWork); 7] = [
         ("paused", |home, session| {
             drop(session);
             add(
@@ -295,6 +301,23 @@ fn a_paused_turn_a_rename_or_a_child_keeps_the_copy_when_fx_moves_on() {
             drop(session);
             fs::create_dir(home.own_sessions().join(ID).join("subagent")).unwrap();
         }),
+        ("model", |_, mut session| {
+            session
+                .select_model("openai/gpt-5-mini", None, false)
+                .unwrap();
+        }),
+        ("effort", |_, mut session| {
+            let low = ReasoningEffort::parse("low").unwrap();
+            session
+                .select_model("openai/gpt-5", Some(&low), false)
+                .unwrap();
+        }),
+        ("fast mode", |_, mut session| {
+            session.select_model("openai/gpt-5", None, true).unwrap();
+        }),
+        ("provider", |_, mut session| {
+            session.select_provider(codex(), "gpt-5.5").unwrap();
+        }),
     ];
     for (case, own_work) in keep {
         let home = Home::new();
@@ -305,6 +328,52 @@ fn a_paused_turn_a_rename_or_a_child_keeps_the_copy_when_fx_moves_on() {
         drop(importing(&home).resume(ID).unwrap());
         assert_eq!(copy_of(&home, "events.jsonl"), kept, "{case}");
     }
+}
+
+#[test]
+fn a_choice_that_changes_nothing_still_lets_fx_refresh_the_copy() {
+    let home = Home::new();
+    saved(&["one"], 100).write(&home.fx_sessions());
+    let mut session = importing(&home).resume(ID).unwrap();
+    session.select_model("openai/gpt-5", None, false).unwrap();
+    drop(session);
+    saved(&["one", "two in fx"], 200).write(&home.fx_sessions());
+
+    drop(importing(&home).resume(ID).unwrap());
+    assert_eq!(
+        copy_of(&home, "events.jsonl"),
+        fx_file(&home, "events.jsonl")
+    );
+}
+
+#[test]
+fn a_provider_rebind_on_resume_keeps_the_copy_refreshable_until_oh_fx_works_in_it() {
+    let home = Home::new();
+    saved(&["one"], 100).write(&home.fx_sessions());
+    let mut session = importing(&home).resume(ID).unwrap();
+    session.rebind_provider(codex(), "gpt-5.5").unwrap();
+    drop(session);
+    saved(&["one", "two in fx"], 200).write(&home.fx_sessions());
+
+    let mut session = importing(&home).resume(ID).unwrap();
+    assert_eq!(
+        copy_of(&home, "events.jsonl"),
+        fx_file(&home, "events.jsonl")
+    );
+    assert_eq!(
+        copy_of(&home, "session.json"),
+        fx_file(&home, "session.json")
+    );
+    session.rebind_provider(codex(), "gpt-5.5").unwrap();
+    session.append(3, &own_turn("asked in oh-fx")).unwrap();
+    session.rebind_provider(codex(), "gpt-5.5").unwrap();
+    drop(session);
+    saved(&["one", "two in fx", "three in fx"], 300).write(&home.fx_sessions());
+
+    drop(importing(&home).resume(ID).unwrap());
+    let log = String::from_utf8(copy_of(&home, "events.jsonl")).unwrap();
+    assert!(log.contains("asked in oh-fx"), "{log}");
+    assert!(!log.contains("three in fx"), "{log}");
 }
 
 #[test]

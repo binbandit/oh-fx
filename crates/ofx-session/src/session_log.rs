@@ -17,6 +17,7 @@ use ofx_contract::{
 };
 use ofx_text::lowercase_hex;
 
+use crate::fx_sessions::{seal, untouched_import};
 use crate::history_snapshot::{CacheWriter, HistoryCache};
 use crate::session::infer_conversation_language;
 use crate::session_children::CONTROL_DIR;
@@ -505,6 +506,19 @@ impl WritableSession {
         preferences.provider = provider;
         model.clone_into(&mut preferences.model);
         self.set_preferences(preferences, now_ms())
+    }
+
+    pub fn rebind_provider(
+        &mut self,
+        provider: SavedProvider,
+        model: &str,
+    ) -> Result<(), SessionError> {
+        let imported = untouched_import(&self.owned.dir, &self.metadata.id);
+        self.select_provider(provider, model)?;
+        match imported {
+            Some(source) => seal(&self.owned.dir, &self.metadata.id, source),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn rebind_workspace(&mut self, workspace_root: &str) -> Result<(), SessionError> {

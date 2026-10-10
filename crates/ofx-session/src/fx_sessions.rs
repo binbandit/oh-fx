@@ -11,7 +11,7 @@ use crate::session_error::SessionError;
 use crate::session_log::managed_file::{has_private_dir_mode, session_directory_names};
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
-pub(crate) use import::{ImportSource, seal};
+pub(crate) use import::{ImportSource, seal, untouched_import};
 
 const PROFILE_DIR: &str = ".fx";
 const SESSIONS_DIR: &str = "sessions";

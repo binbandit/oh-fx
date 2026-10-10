@@ -228,7 +228,7 @@ impl LiveSession {
 
     pub fn rebind_provider(&self, model: &str) -> Result<(), SessionError> {
         self.session()
-            .select_provider(self.route.provider.clone(), model)
+            .rebind_provider(self.route.provider.clone(), model)
     }
 
     pub fn rebind_notice(&self, saved: &str) -> String {
