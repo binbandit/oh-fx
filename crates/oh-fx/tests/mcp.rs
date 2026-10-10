@@ -522,6 +522,61 @@ fn ask_without_mcp_servers_still_offers_mcp_features_and_says_there_is_no_runtim
     );
 }
 
+fn search_call(id: &str, arguments: &Value) -> Reply {
+    Reply::sse(&chat_tool_call_events(
+        id,
+        "capability_search",
+        &arguments.to_string(),
+    ))
+}
+
+#[test]
+fn ask_finds_profile_mcp_tools_and_names_unknown_or_failed_servers_with_capability_search() {
+    let server = FakeServer::start([
+        search_call("search", &json!({"query": "fixture echo"})),
+        search_call("absent", &json!({"query": "echo", "server": "absent"})),
+        search_call("broken", &json!({"query": "echo", "server": "broken"})),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    home.profile_servers(&json!({
+        "fixture": {"command": "/bin/sh", "args": [home.script("fixture.sh", FIXTURE_SERVER)]},
+        "broken": {"command": "/bin/sh", "args": [home.script("broken.sh", FAILING_SERVER)]},
+    }));
+    let output = home.ask(&["ask", "find a tool"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        last_tool_result(&requests[1]),
+        r#"{"skills":[],"mcp_tools":[{"name":"mcp_fixture_echo","server":"fixture","description":"Echo text.","purpose":"Echo text.","usage":["mcp","fixture","echo"]}],"counts":{"skills":0,"mcp_tools":1},"total_matches":{"skills":0,"mcp_tools":1}}"#
+    );
+    assert_eq!(
+        last_tool_result(&requests[2]),
+        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"server_not_found"}"#
+    );
+    let failed = last_tool_result(&requests[3]);
+    assert!(
+        failed.starts_with(r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"server_failed","mcp_error":"MCP server 'broken' is unavailable: "#),
+        "{failed}"
+    );
+}
+
+#[test]
+fn ask_without_mcp_servers_reports_mcp_search_unavailable() {
+    let server = FakeServer::start([
+        search_call("search", &json!({"query": "echo"})),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let output = home.ask(&["ask", "find a tool"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        last_tool_result(&server.requests()[1]),
+        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"unavailable"}"#
+    );
+}
+
 #[test]
 fn ask_mode_blocks_an_mcp_tool_call_without_running_it() {
     let server = FakeServer::start([

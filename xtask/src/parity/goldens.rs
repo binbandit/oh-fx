@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+mod capability_search;
 mod compaction;
 mod mcp_features;
 mod mcp_servers;
@@ -16,6 +17,7 @@ const SYSTEM_SOURCE: &str = "src/builtins/system_prompt.md";
 const COMPACTION_SOURCE: &str = "src/core/compactor/summarize.zig";
 const CLASSIFIER_SOURCE: &str = "src/core/permissions/auto_classifier.zig";
 const TOOLS_SOURCE: &str = "src/builtins/tools.zig";
+const LEXICAL_SOURCE: &str = "src/core/shared/lexical_relevance.zig";
 const MODEL_CATALOG_SOURCE: &str = "src/core/mcp/model_catalog.zig";
 const WRITER_SOURCE: &str = "src/core/tooling/model_tool_schema.zig";
 const TOOL_SPECS_SOURCE: &str = "src/core/tooling/tool_specs.zig";
@@ -77,6 +79,11 @@ const EXTRACTORS: &[Extractor] = &[
         golden: "mcp_features_tool.json",
         sources: &[TOOLS_SOURCE, WRITER_SOURCE],
         extract: mcp_features,
+    },
+    Extractor {
+        golden: "capability_search_tool.json",
+        sources: &[TOOLS_SOURCE, LEXICAL_SOURCE, WRITER_SOURCE],
+        extract: capability_search,
     },
 ];
 
@@ -142,6 +149,15 @@ fn mcp_servers_change_notice(sources: &Sources) -> Result<String, String> {
 fn mcp_features(sources: &Sources) -> Result<String, String> {
     let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
     mcp_features::extract(source(sources, TOOLS_SOURCE)?, limit)
+}
+
+fn capability_search(sources: &Sources) -> Result<String, String> {
+    let limit = tool_schema::description_limit(source(sources, WRITER_SOURCE)?)?;
+    capability_search::extract(
+        source(sources, TOOLS_SOURCE)?,
+        source(sources, LEXICAL_SOURCE)?,
+        limit,
+    )
 }
 
 fn derive(

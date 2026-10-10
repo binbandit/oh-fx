@@ -36,15 +36,18 @@ async fn execute(arguments: &str, max_bytes: usize, cancellation: CancellationTo
 }
 
 #[test]
-fn schema_and_description_match_the_pinned_export() {
-    let expected: Value =
-        serde_json::from_str(include_str!("schema.json")).expect("parse source schema");
+fn spec_matches_the_upstream_golden() {
     let search = tool(16384);
-    assert_eq!(search.spec().name, expected["name"]);
-    assert_eq!(search.spec().description, expected["description"]);
+    let spec = search.spec();
+    let actual = format!(
+        r#"{{"type":"function","name":{},"description":{},"inputSchema":{}}}"#,
+        Value::from(spec.name.as_str()),
+        Value::from(spec.description.as_str()),
+        spec.input_schema
+    );
     assert_eq!(
-        search.spec().input_schema,
-        expected["inputSchema"].to_string()
+        actual.as_bytes(),
+        include_bytes!("../../../../parity/goldens/capability_search_tool.json")
     );
 }
 

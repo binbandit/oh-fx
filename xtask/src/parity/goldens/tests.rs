@@ -96,7 +96,31 @@ pub const mcp_features = ToolSpec{
     },
     .executor_kind = .mcp_features,
 };
+
+const capability_search_description =
+    "Find installed skills and configured MCP tools for a described capability.";
+
+pub const capability_search = ToolSpec{
+    .name = "capability_search",
+    .internal = true,
+    .description = capability_search_description,
+    .model_schema = .{
+        .name = "capability_search",
+        .description = capability_search_description,
+        .input_schema = .{
+            .properties = &.{
+                .{ .name = "query", .json_type = .string, .bounds = &.{ .min_length = 1, .max_length = lexical_relevance.max_query_bytes }, .description = "Natural-language capability needed for the current task." },
+                .{ .name = "server", .json_type = .string, .bounds = &.{ .min_length = 1 }, .description = "Optional exact configured MCP server alias." },
+            },
+            .required = &.{"query"},
+            .additional_properties = false,
+        },
+    },
+    .executor_kind = .capability_search,
+};
 "#;
+const LEXICAL: &str = "pub const max_query_bytes: usize = 4 * 1024;\n";
+const CAPABILITY_SEARCH_TOOL: &str = r#"{"type":"function","name":"capability_search","description":"Find installed skills and configured MCP tools for a described capability.","inputSchema":{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":4096,"description":"Natural-language capability needed for the current task."},"server":{"type":"string","minLength":1,"description":"Optional exact configured MCP server alias."}},"additionalProperties":false,"required":["query"]}}"#;
 const WRITER: &str = "pub const description_max_bytes: usize = 1024;\n";
 const AUDITED_ONLY: &[(&str, &str)] = &[(
     TOOL_SPECS_SOURCE,
@@ -127,6 +151,7 @@ const SOURCES: &[(&str, &str)] = &[
     (WRITER_SOURCE, WRITER),
     (TOOLS_SOURCE, TOOLS),
     (MODEL_CATALOG_SOURCE, MODEL_CATALOG),
+    (LEXICAL_SOURCE, LEXICAL),
 ];
 const GOLDENS: &[(&str, &str)] = &[
     ("system_prompt.md", "system\n"),
@@ -143,6 +168,7 @@ const GOLDENS: &[(&str, &str)] = &[
     ),
     ("mcp_servers_change_notice.txt", "Changed:\nCurrent.\n"),
     ("mcp_features_tool.json", MCP_FEATURES_TOOL),
+    ("capability_search_tool.json", CAPABILITY_SEARCH_TOOL),
 ];
 
 fn setup_git(directory: &Path, args: &[&str]) -> String {
@@ -617,6 +643,51 @@ fn mcp_features_extraction_writes_inline_enums_and_objects_and_rejects_changed_g
         assert!(mcp_features::extract(&source, 1024).is_err());
     }
     assert!(mcp_features::extract(TOOLS, 500).is_err());
+}
+
+#[test]
+fn capability_search_extraction_writes_length_bounds_and_rejects_changed_grammar() {
+    assert_eq!(
+        capability_search::extract(TOOLS, LEXICAL, 1024).unwrap(),
+        CAPABILITY_SEARCH_TOOL
+    );
+    assert_eq!(
+        capability_search::extract(TOOLS, "pub const max_query_bytes: usize = 77;\n", 1024)
+            .unwrap(),
+        CAPABILITY_SEARCH_TOOL.replace(r#""maxLength":4096"#, r#""maxLength":77"#)
+    );
+    for lexical in [
+        "",
+        "pub const max_query_bytes: usize = 4 + 1024;\n",
+        "pub const max_query_bytes: usize = 4 * 1024;\npub const max_query_bytes: usize = 1;\n",
+    ] {
+        assert!(capability_search::extract(TOOLS, lexical, 1024).is_err());
+    }
+    for source in [
+        String::new(),
+        format!("{TOOLS}\n{TOOLS}"),
+        TOOLS.replace("    .internal = true,\n", ""),
+        TOOLS.replace(".min_length = 1 }", ".min_items = 1 }"),
+        TOOLS.replace(".min_length = 1 }", ".min_length = 1, .min_length = 2 }"),
+        TOOLS.replace("lexical_relevance.max_query_bytes", "other.max_query_bytes"),
+        TOOLS.replace(
+            ".min_length = 1, .max_length",
+            ".min_length = one, .max_length",
+        ),
+        TOOLS.replace(
+            ".description = capability_search_description",
+            ".description = unknown_description",
+        ),
+        TOOLS.replacen(
+            r#".name = "capability_search","#,
+            r#".name = "capability","#,
+            1,
+        ),
+        TOOLS.replace(r#".required = &.{"query"}"#, r#".required = &.{"task"}"#),
+    ] {
+        assert!(capability_search::extract(&source, LEXICAL, 1024).is_err());
+    }
+    assert!(capability_search::extract(TOOLS, LEXICAL, 40).is_err());
 }
 
 #[test]

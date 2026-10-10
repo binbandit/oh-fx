@@ -12,7 +12,7 @@ pub(super) fn extract(source: &str, limit: usize) -> Result<String, String> {
     if spec[1] != spec[2] {
         return Err("product and model tool names differ".to_owned());
     }
-    let (properties, names) = properties(&spec[3], &[], limit)?;
+    let (properties, names) = properties(&spec[3], &[], &[], limit)?;
     Ok(function(
         string(&spec[2], limit)?,
         string(&description[1], limit)?,
