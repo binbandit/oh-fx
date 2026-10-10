@@ -218,7 +218,7 @@ note = "Zig-only runtime test harness and fixtures; not shipped by the native pr
 upstream = "src/core/agent/runtime/text_completion.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/text_completion.rs"]
-note = "Compactor text requests stream into bounded results; host-managed authority/pulse and tool-image request context are absent."
+note = "Compactor text requests stream into bounded results with upstream's failure reasons and their masked one-line details, and each request writes its compaction model call trace line; host-managed authority/pulse and tool-image request context are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/tool_admission.zig"

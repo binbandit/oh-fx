@@ -83,13 +83,13 @@ The Herdr socket protocol is ported from `34f1ed1` (its source is unchanged at `
 | #1110 | `dcf9287` | Load all Grok subscription models | `defer:grok` | future Grok model catalog | `xai_grok_models.zig`: modality metadata only adds image support; it no longer filters the list or fails it. A failed fetch, a non-200 answer, or invalid JSON is traced and ignored, and models without metadata stay with vision off. |
 | #1062 | `34f1ed1` | Replace context compaction with a turn-by-turn ledger | `ported` | `ofx-agent`, `ofx-app`, `ofx-config`, `ofx-contract`, `ofx-gateway`, `ofx-text`, `ofx-tui` | The compactor, `text_completion.zig`, the `auto_compact_percent` setting, each model's context window, and automatic and provider-overflow compaction in the turn loop. `/compact` runs manual compaction through `Agent::compact`, and the footer shows its activity and feedback. See [Compactor](#compactor). |
 | #1062 | `34f1ed1` | (same) | `ported` | `ofx-agent`, `ofx-session` | `ask` saves each checkpoint behind the `fx-compactor-v1` marker and a resumed session renders it again. |
-| #1062 | `34f1ed1` | (same) | `defer:sessions` | future session store, `read_tool_result` | Saved `M<n>`, `T<n>`, and `L<n>` records, `read_tool_result` search, and folding earlier compactions. |
+| #1062 | `34f1ed1` | (same) | `defer:sessions` | future session store, `read_tool_result` | Saved `M<n>`, `T<n>`, and `L<n>` records, `read_tool_result` search, and folding earlier compactions, with their `context_compaction` trace lines. |
 | #1062 | `34f1ed1` | (same) | `defer:interactive` | future interactive shell | The compaction activity line during automatic and provider-overflow compaction. |
 | #1062 | `34f1ed1` | (same) | `defer:acp` | future ACP | ACP applies the auto compaction percent. |
 | #1062 | `34f1ed1` | (same) | `defer:ai-gateway` | future Vercel AI Gateway transport | The fallback model for a failed or empty summary. |
 | #1062 | `34f1ed1` | (same) | `ported` | `ofx-trace`, `ofx-agent`, `ofx-app` | The `/trace` compaction ring and its report section, and the turn loop's compaction decision, `no_compactable_context`, `overflow_recovery_incomplete`, and `provider_overflow_recovery` trace lines. |
-| #1062 | `34f1ed1` | (same) | `defer:trace` | future trace slices | The compactor's own trace lines, which need its trace context. |
-| #1062 | `34f1ed1` | (same) | `omitted` | none | The credential check behind `ContextCompactionUnavailable`: the summary request uses the turn's own provider connection and credential. |
+| #1062 | `34f1ed1` | (same) | `ported` | `ofx-trace`, `ofx-agent`, `ofx-session`, `ofx-contract` | The compactor's own trace lines: retention, each summary request and its failure, the notes read and checked, the clipped request and text, and the failed, no-op, committed and installed compaction, with the differences [differences/compaction.md](differences/compaction.md) records. |
+| #1062 | `34f1ed1` | (same) | `omitted` | none | The credential check behind `ContextCompactionUnavailable` and its `credential_unauthorized` trace line: the summary request uses the turn's own provider connection and credential. |
 | #1062 | `34f1ed1` | (same) | `n/a` | none | `scripts/check-compactor-boundary.sh` and its CI steps, AGENTS.md and CONTRIBUTING.md process text, the SDK compaction test. |
 
 The `slack` command (`slack install`, `slack status`, and `slack refresh`) predates this range and is omitted for the same reason as the Slack MCP preset. `oh-fx slack` fails as any unknown command does.
@@ -160,7 +160,6 @@ The private result reader supports bounded raw pages, and storage no longer appl
 - **Interactive:** the footer shows the compaction activity line (`activity_status.zig`) during automatic and provider-overflow compaction, with the turn's clock, as it already does for `/compact`.
 - **ACP:** ACP applies the auto compaction percent.
 - **Vercel AI Gateway:** `model.zig` sends a failed or empty summary once more to another model family.
-- **Trace:** the compactor's own trace lines through `trace.zig`.
 
 ### MCP OAuth
 
