@@ -73,11 +73,6 @@ pub(crate) fn is_valid_uri_template(template: &str) -> bool {
     parse_uri_template(template).is_some()
 }
 
-pub(crate) fn template_may_resolve(template: &str, uri: &str) -> bool {
-    let mut budget = TemplateMatchBudget::new(DEFAULT_TEMPLATE_MATCH_STEPS);
-    match_template_with_budget(template, uri, &mut budget) == TemplateMatch::Matches
-}
-
 pub(crate) fn match_template_with_budget(
     template: &str,
     uri: &str,
@@ -383,6 +378,11 @@ fn is_reserved(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn template_may_resolve(template: &str, uri: &str) -> bool {
+        let mut budget = TemplateMatchBudget::new(DEFAULT_TEMPLATE_MATCH_STEPS);
+        match_template_with_budget(template, uri, &mut budget) == TemplateMatch::Matches
+    }
 
     fn repeated(prefix: &str, byte: char, total: usize) -> String {
         let mut value = prefix.to_owned();

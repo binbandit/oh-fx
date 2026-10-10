@@ -5,6 +5,7 @@ mod error;
 mod feature_catalog;
 mod feature_catalog_runtime;
 mod feature_operations;
+mod feature_snapshot;
 mod features;
 mod health;
 mod json_number;
@@ -44,7 +45,8 @@ mod workspace_config;
 
 pub use command_provider::{AddIntent, AddIntentError, is_valid_server_name, parse_add_intent};
 pub use error::McpError;
-pub use feature_operations::{PromptSummary, ResourceSummary};
+pub use feature_operations::{PromptSummary, ResourceReadFailure, ResourceSummary};
+pub use features::common::{ResourceContent, ResourceData};
 pub use features::prompts::PromptArgument;
 pub use local_inspection::{
     ConfiguredServer, LocalConfigInspection, ProfileConfigDiagnostic, inspect_local_config,

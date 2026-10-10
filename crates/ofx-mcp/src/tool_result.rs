@@ -53,7 +53,7 @@ pub(crate) fn restart_failed_output(server: &str, tool: &str, failure: &str) -> 
     Value::Object(object).to_string()
 }
 
-fn protocol_diagnostic(error: &RpcError) -> String {
+pub(crate) fn protocol_diagnostic(error: &RpcError) -> String {
     let mut text = format!(
         "MCP protocol error {}: {}",
         error.code,

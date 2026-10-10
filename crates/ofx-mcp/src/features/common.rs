@@ -50,18 +50,18 @@ pub(crate) struct CacheHints {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResourceData {
+pub enum ResourceData {
     Text(String),
     Blob(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResourceContent {
-    pub(crate) uri: String,
-    pub(crate) mime_type: Option<String>,
-    pub(crate) annotations_json: Option<String>,
-    pub(crate) metadata_json: Option<String>,
-    pub(crate) data: ResourceData,
+pub struct ResourceContent {
+    pub uri: String,
+    pub mime_type: Option<String>,
+    pub annotations_json: Option<String>,
+    pub metadata_json: Option<String>,
+    pub data: ResourceData,
 }
 
 impl ResourceContent {

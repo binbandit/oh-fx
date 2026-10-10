@@ -1,13 +1,24 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::catalog_freshness::{SnapshotMetadata, failed_refresh, request_refresh};
+use crate::catalog_freshness::{
+    Freshness, SnapshotMetadata, effective_freshness, failed_refresh, request_refresh,
+};
 use crate::error::McpError;
-use crate::features::common::Listed;
+use crate::features::common::{Listed, ResourceContent};
 use crate::features::prompts::Prompt;
 use crate::features::resources::{Resource, ResourceTemplate};
 use crate::protocol_messages::ServerCapabilities;
 use crate::server_connection::{McpClient, lock};
+
+const MAX_CACHED_READS: usize = 64;
+
+#[derive(Debug, Clone)]
+struct CachedRead {
+    uri: String,
+    contents: Arc<[ResourceContent]>,
+    metadata: SnapshotMetadata,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct Snapshot<T> {
@@ -22,6 +33,7 @@ pub(crate) struct FeatureCatalogs {
     resources: Mutex<Option<Snapshot<Resource>>>,
     templates: Mutex<Option<Snapshot<ResourceTemplate>>>,
     prompts: Mutex<Option<Snapshot<Prompt>>>,
+    reads: Mutex<Vec<CachedRead>>,
 }
 
 impl FeatureCatalogs {
@@ -30,6 +42,7 @@ impl FeatureCatalogs {
         *lock(&self.resources) = None;
         *lock(&self.templates) = None;
         *lock(&self.prompts) = None;
+        lock(&self.reads).clear();
     }
 
     pub(crate) fn advertises_resources(&self) -> bool {
@@ -61,6 +74,48 @@ impl FeatureCatalogs {
         expire(&self.resources);
         expire(&self.templates);
         expire(&self.prompts);
+        for read in lock(&self.reads).iter_mut() {
+            read.metadata = request_refresh(read.metadata);
+        }
+    }
+
+    pub(crate) fn cached_read(
+        &self,
+        uri: &str,
+        now_ms: u64,
+        stale: bool,
+    ) -> Option<Arc<[ResourceContent]>> {
+        lock(&self.reads)
+            .iter()
+            .find(|read| {
+                read.uri == uri
+                    && (effective_freshness(read.metadata, now_ms, false) == Freshness::Fresh)
+                        != stale
+            })
+            .map(|read| Arc::clone(&read.contents))
+    }
+
+    pub(crate) fn publish_read(
+        &self,
+        uri: &str,
+        contents: Arc<[ResourceContent]>,
+        expires_at_ms: u64,
+    ) {
+        let mut reads = lock(&self.reads);
+        if let Some(index) = reads.iter().position(|read| read.uri == uri) {
+            reads.remove(index);
+        } else if reads.len() >= MAX_CACHED_READS {
+            reads.remove(0);
+        }
+        reads.push(CachedRead {
+            uri: uri.to_owned(),
+            contents,
+            metadata: SnapshotMetadata::fresh(expires_at_ms),
+        });
+    }
+
+    pub(crate) fn clear_reads(&self) {
+        lock(&self.reads).clear();
     }
 }
 

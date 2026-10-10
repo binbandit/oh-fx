@@ -12,7 +12,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::feature_operations::{PromptSummary, ResourceSummary};
+use crate::feature_operations::{PromptSummary, ResourceReadFailure, ResourceSummary};
+use crate::features::common::ResourceContent;
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
 use crate::native_config::NativeConfigLoad;
@@ -190,6 +191,15 @@ impl McpRuntime {
     ) -> Result<Vec<ResourceSummary>, McpError> {
         let (server, deadline) = self.feature_server(server_name).await?;
         server.list_resources(include_templates, deadline).await
+    }
+
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<Arc<[ResourceContent]>, ResourceReadFailure> {
+        let (server, deadline) = self.feature_server(server_name).await?;
+        server.read_resource(uri, deadline).await
     }
 
     pub async fn list_prompts(&self, server_name: &str) -> Result<Vec<PromptSummary>, McpError> {
