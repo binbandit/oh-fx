@@ -41,8 +41,8 @@ pub use path_error::PathError;
 pub use pathing::{
     FileIdentity, FileKind, FileMutationTarget, MAX_PATH_BYTES, PATH_ENTRY_WHITESPACE, TargetMode,
     descriptor_identity, entry_identity, open_child_directory, open_directory, path_inside,
-    resolve_file_mutation_target, resolve_workspace_or_external_path, resolve_workspace_path,
-    workspace_relative_path,
+    resolve_file_mutation_target, resolve_workspace_or_external_literal_path,
+    resolve_workspace_or_external_path, resolve_workspace_path, workspace_relative_path,
 };
 pub use record_tape::{
     CaptureStatus, RecordingDestination, RecordingPolicy, TAPE_MAGIC, TapeError, TapeFrame,
