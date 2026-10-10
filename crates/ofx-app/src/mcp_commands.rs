@@ -604,24 +604,20 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use ofx_config::{ContextLimitName, ContextLimits};
+    use ofx_config::ContextLimits;
     use ofx_mcp::{
         ConnectOptions, NativeConfigLoad, PromptArgument, PromptContentKind, PromptMessage,
-        PromptRole, SchemaLimits,
+        PromptRole,
     };
 
     use super::*;
 
     fn runtime() -> McpRuntime {
-        let limits = ContextLimits::default();
         McpRuntime::new(
             NativeConfigLoad::default(),
             ConnectOptions::default(),
             Vec::new(),
-            SchemaLimits {
-                server_instructions: limits.get(ContextLimitName::McpServerInstructionsBytes),
-                selected_schema: limits.get(ContextLimitName::McpSelectedSchemaBytes),
-            },
+            ContextLimits::default(),
         )
     }
 

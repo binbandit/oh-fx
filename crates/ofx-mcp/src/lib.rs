@@ -43,6 +43,7 @@ mod tool_mcp_registry;
 mod tool_names;
 mod tool_operations;
 mod tool_result;
+mod tool_search;
 mod transport;
 mod uri;
 mod workspace_config;
@@ -86,7 +87,6 @@ pub use settings_choices::{ProjectMcpSettingsChange, apply_project_mcp_action_to
 pub use startup_admission::{StartupDecision, StartupPhase, decide_startup};
 pub use streamable_http::{EndpointError, HeaderError, validate_endpoint, validate_static_headers};
 pub use tool_mcp_feature_dispatch::McpFeatures;
-pub use tool_mcp_registry::SchemaLimits;
 pub use transport::ShutdownMode;
 pub use workspace_config::{
     WORKSPACE_CONFIG_FILE_NAME, load_workspace_config, load_workspace_config_with_environment,

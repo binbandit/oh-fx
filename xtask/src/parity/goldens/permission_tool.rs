@@ -32,7 +32,8 @@ pub(super) fn extract(source: &str, limit: usize) -> Result<String, String> {
     let schema = unique(source, FUNCTION_SCHEMA, "pub const function_schema:")?;
     unique(source, TOOLS_JSON, "fn toolsJsonAlloc(")?;
     let decisions = strings(&decisions[1], limit)?.join(",");
-    let (properties, names) = properties(&declared[1], &[("decision_values", &decisions)], limit)?;
+    let (properties, names) =
+        properties(&declared[1], &[("decision_values", &decisions)], &[], limit)?;
     let tool = format!(
         "[{}]",
         function(

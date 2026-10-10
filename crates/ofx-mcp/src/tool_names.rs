@@ -4,6 +4,7 @@ use crate::error::McpError;
 
 const MAX_ALIASES: usize = 64 * 1024;
 const MAX_NAME_LEN: usize = 64;
+const MAX_TOOL_TAGS: usize = 16;
 
 #[derive(Debug, Default)]
 pub(crate) struct ToolNames {
@@ -37,6 +38,29 @@ impl ToolNames {
             self.by_identity.insert(identity, candidate.clone());
             return Ok(candidate);
         }
+    }
+}
+
+pub(crate) fn tags_for(server: &str, tool: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    push_tag(&mut tags, "mcp");
+    for text in [server, tool] {
+        for token in
+            text.split(|character: char| !u8::try_from(character).is_ok_and(is_identifier_byte))
+        {
+            push_tag(&mut tags, token);
+        }
+    }
+    tags
+}
+
+fn push_tag(tags: &mut Vec<String>, raw: &str) {
+    if raw.is_empty() || tags.len() >= MAX_TOOL_TAGS {
+        return;
+    }
+    let normalized = raw.to_ascii_lowercase();
+    if !tags.contains(&normalized) {
+        tags.push(normalized);
     }
 }
 
@@ -94,6 +118,21 @@ mod tests {
         assert_eq!(names.name(&[], "a_b", "c").unwrap(), collision);
         assert_eq!(first, "mcp_a_b_c");
         assert_eq!(collision, "mcp_a_b_c_2");
+    }
+
+    #[test]
+    fn tags_are_the_lowercase_identifier_runs_of_the_server_and_tool_names() {
+        assert_eq!(
+            tags_for("Data.Dog", "list_Monitors data"),
+            ["mcp", "data", "dog", "list_monitors"]
+        );
+        assert_eq!(tags_for("mcp", "MCP"), ["mcp"]);
+        assert_eq!(tags_for("é-x", "y€z"), ["mcp", "-x", "y", "z"]);
+        let many = (0..20).map(|index| format!("t{index}")).collect::<Vec<_>>();
+        let tags = tags_for("server", &many.join(" "));
+        assert_eq!(tags.len(), 16);
+        assert_eq!(tags[..3], ["mcp", "server", "t0"]);
+        assert_eq!(tags[15], "t13");
     }
 
     #[test]
