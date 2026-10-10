@@ -56,8 +56,9 @@ pub use session_event::{
 };
 pub use session_layout::is_valid_session_id;
 pub use session_log::{
-    ArchivedSteering, ArchivedTurn, CompactedHistory, ExecutedStep, PendingRecovery, SavedHistory,
-    SavedSession, SavedTurn, SessionArchive, SessionDisposal, TurnExecution, WritableSession,
+    ArchivedResult, ArchivedSteering, ArchivedTurn, CompactedHistory, ExecutedStep,
+    PendingRecovery, SavedHistory, SavedSession, SavedTurn, SessionArchive, SessionDisposal,
+    TurnExecution, WritableSession,
 };
 pub use session_store::{ListScope, RememberedSession, ResumeTarget, SessionCatalog, SessionStore};
 pub use session_store_types::{

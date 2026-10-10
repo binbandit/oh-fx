@@ -43,6 +43,7 @@ pub(super) enum LegacyTurn {
 pub(super) struct CompactedSummary {
     pub(super) summary: String,
     pub(super) removed_turn_count: usize,
+    pub(super) compaction_count: usize,
 }
 
 pub(super) struct ConversationTurn {
@@ -61,7 +62,7 @@ pub(super) struct Execution {
 }
 
 pub(super) struct Step {
-    pub(super) assistant: String,
+    pub(super) assistant: Option<String>,
     pub(super) replay: Option<SavedReplay>,
     pub(super) calls: Vec<ToolCallEvent>,
     pub(super) results: Vec<SavedResult>,
@@ -87,7 +88,7 @@ pub(super) struct SavedResult {
 
 pub(super) struct Steering {
     pub(super) text: String,
-    pub(super) assistant_prefix: String,
+    pub(super) assistant_prefix: Option<String>,
     pub(super) after_tool_step_count: usize,
 }
 
@@ -97,6 +98,7 @@ pub(super) enum TurnClose {
         reason: InterruptReason,
         partial: Option<String>,
         pending: Option<ToolCallEvent>,
+        completed: Vec<String>,
         cancelled: Option<CancelledCommand>,
     },
 }
@@ -116,7 +118,7 @@ pub(super) fn history_turn(value: Json<'_>) -> Option<LegacyTurn> {
 fn compacted_summary(fields: &mut Fields<'_>) -> Option<CompactedSummary> {
     let summary = durable_text(fields.required("summary")?)?;
     let removed_turn_count = usize::try_from(fields.unsigned("removed_turn_count")?).ok()?;
-    fields.unsigned("compaction_count")?;
+    let compaction_count = usize::try_from(fields.unsigned("compaction_count")?).ok()?;
     let root_messages = fields.required("root_user_messages");
     let root_complete = fields.required("root_user_messages_complete");
     let feedback = fields.required("permission_feedback");
@@ -141,6 +143,7 @@ fn compacted_summary(fields: &mut Fields<'_>) -> Option<CompactedSummary> {
     Some(CompactedSummary {
         summary,
         removed_turn_count,
+        compaction_count,
     })
 }
 
@@ -216,7 +219,10 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
         Json::Null => None,
         call => Some(interrupted_call(call)?),
     };
-    list(fields.required("completed_tool_names")?, durable_bytes)?;
+    let completed = list(fields.required("completed_tool_names")?, durable_bytes)?
+        .into_iter()
+        .map(|name| String::from_utf8_lossy(&name).into_owned())
+        .collect();
     let reason = fields.or(
         "terminal_reason",
         InterruptReason::Cancelled,
@@ -247,6 +253,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
             reason,
             partial,
             pending,
+            completed,
             cancelled,
         },
     })))
@@ -302,7 +309,7 @@ fn steering(value: Json<'_>, version: u64, tool_steps: usize) -> Option<Vec<Stee
         list(value, |text| {
             Some(Steering {
                 text: durable_text(text)?,
-                assistant_prefix: String::new(),
+                assistant_prefix: None,
                 after_tool_step_count: tool_steps,
             })
         })?
@@ -322,7 +329,8 @@ fn steering_entry(value: Json<'_>) -> Option<Steering> {
     let mut fields = Fields::new(value)?;
     let entry = Steering {
         text: durable_text(fields.required("text")?)?,
-        assistant_prefix: fields.present_or_null("assistant_prefix", durable_text)?,
+        assistant_prefix: fields
+            .present_or_null("assistant_prefix", |value| durable_text(value).map(Some))?,
         after_tool_step_count: usize::try_from(fields.unsigned("after_tool_step_count")?).ok()?,
     };
     fields.finish(entry)
@@ -330,7 +338,7 @@ fn steering_entry(value: Json<'_>) -> Option<Steering> {
 
 fn tool_step(value: Json<'_>, version: u64) -> Option<Step> {
     let mut fields = Fields::new(value)?;
-    let assistant = fields.present_or_null("assistant", durable_text)?;
+    let assistant = fields.present_or_null("assistant", |value| durable_text(value).map(Some))?;
     let mut calls = list(fields.required("tool_calls")?, tool_call)?;
     let mut results = list(fields.required("tool_results")?, |result| {
         tool_result(result, version)

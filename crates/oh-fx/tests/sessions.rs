@@ -781,6 +781,26 @@ fn session_shows_a_session_fx_saved_without_touching_it() {
     assert_eq!(fx_tree(&home), before);
 }
 
+#[test]
+fn session_shows_a_session_fx_saved_before_0_0_8_as_fx_saved_it() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    save_schema_v3_in_fx(&home, "fx-legacy", "workspace");
+    let before = fx_tree(&home);
+
+    assert_eq!(
+        described(&home.session(&["fx-legacy"], &[])),
+        "[session] fx-legacy\ncreated_at_ms: 1\nupdated_at_ms: 20\nlanguage: en\nhistory_len: 1\nsource: fx\n\n[turn 1]\n[user]\nasked in fx 0.0.7\n[assistant]\nanswered\n"
+    );
+    let json = described(&home.session(&["--id", "fx-legacy", "--json"], &[]));
+    assert!(
+        json.ends_with(",\"history_len\":1,\"conversation_language\":\"en\",\"history\":[{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[],\"steering\":[]}}],\"source\":\"fx\"}\n"),
+        "{json}"
+    );
+    assert!(!home.root.join("data/oh-fx/sessions/fx-legacy").exists());
+    assert_eq!(fx_tree(&home), before);
+}
+
 fn save_schema_v3_in_fx(home: &Home, id: &str, workspace: &str) -> usize {
     let generation = "01".repeat(16);
     let session = home.root.join(".fx/sessions").join(id);
