@@ -1636,6 +1636,7 @@ mod tests {
             text: format!("{}\n", "y".repeat(70)).repeat(6_000),
         });
         test.deliver(request(1, 4));
+        test.follow_wall_clock();
         let started = Instant::now();
         let (elapsed, written) = test.draining_after(Duration::from_millis(700), |shell| {
             shell.commit_frame().unwrap();
