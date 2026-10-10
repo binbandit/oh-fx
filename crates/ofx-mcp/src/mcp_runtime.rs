@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ofx_config::{ContextLimitName, ContextLimitValue, ContextLimits};
 use ofx_contract::{
-    BoxFuture, DynamicTools, McpSearchRequest, McpSearchResult, McpToolSearch, Tool,
+    BoxFuture, DynamicTools, McpSearchHost, McpSearchRequest, McpSearchResult, McpToolSearch, Tool,
 };
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
@@ -38,6 +38,7 @@ use crate::transport::ShutdownMode;
 const REQUIRED_FALLBACK: &str = "Check the trusted profile configuration and retry.";
 const STARTUP_POLL: Duration = Duration::from_millis(5);
 const DISCOVERING: &str = r#"{"tools":[],"count":0,"state":"discovering","retryable":true}"#;
+const SERVER_NOT_FOUND: &str = r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#;
 
 pub struct McpRuntime {
     servers: Mutex<Vec<Arc<Server>>>,
@@ -125,26 +126,30 @@ impl McpRuntime {
         settling
     }
 
-    pub(crate) fn search(&self, request: McpSearchRequest<'_>) -> McpSearchResult {
+    pub(crate) fn search(&self, request: &McpSearchRequest) -> McpSearchResult {
         let servers = self.current();
+        let server = request.server.as_deref();
+        let mut search_result = self.limits.get(ContextLimitName::McpSearchResultBytes);
+        if let McpSearchHost::Ask { result_bytes } = request.host {
+            if server.is_some_and(|name| !servers.iter().any(|known| known.config.name == name)) {
+                return McpSearchResult::plain(SERVER_NOT_FOUND);
+            }
+            if result_bytes < search_result.effective_bytes() {
+                search_result.value = ContextLimitValue::Bytes(result_bytes);
+            }
+        }
         if self.discovering.load(Ordering::Acquire)
             && !servers.iter().any(|server| server.catalog().is_some())
         {
             return McpSearchResult::plain(DISCOVERING);
         }
-        let mut search_result = self.limits.get(ContextLimitName::McpSearchResultBytes);
-        if let Some(bytes) = request.result_bytes
-            && bytes < search_result.effective_bytes()
-        {
-            search_result.value = ContextLimitValue::Bytes(bytes);
-        }
         tool_search::search(
             &servers,
-            &mut lock(&self.names),
+            &self.names,
             &self.reserved,
             Search {
-                query: request.query,
-                server: request.server,
+                query: &request.query,
+                server,
             },
             SearchLimits {
                 description: self.limits.get(ContextLimitName::McpDescriptionBytes),
@@ -649,8 +654,16 @@ impl DynamicTools for McpRuntime {
 }
 
 impl McpToolSearch for McpRuntime {
-    fn search_tools<'a>(&'a self, request: McpSearchRequest<'a>) -> BoxFuture<'a, McpSearchResult> {
-        Box::pin(async move { self.search(request) })
+    fn search_tools(
+        self: Arc<Self>,
+        request: McpSearchRequest,
+    ) -> BoxFuture<'static, McpSearchResult> {
+        Box::pin(async move {
+            match tokio::task::spawn_blocking(move || self.search(&request)).await {
+                Ok(result) => result,
+                Err(error) => std::panic::resume_unwind(error.into_panic()),
+            }
+        })
     }
 }
 
@@ -822,6 +835,10 @@ done
             "First\n\nServer instructions: Prefer alpha."
         );
         assert_eq!(spec.input_schema, r#"{"type":"object"}"#);
+        assert_eq!(
+            runtime.tools()[1].spec().description,
+            "MCP tool\n\nServer instructions: Prefer alpha."
+        );
         let Ok(prepared) = runtime.tools()[0].prepare("{}") else {
             panic!("arguments were refused");
         };

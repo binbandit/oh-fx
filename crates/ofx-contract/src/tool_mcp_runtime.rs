@@ -1,12 +1,20 @@
+use std::sync::Arc;
+
 use ofx_text::PreparedQuery;
 
 use crate::BoxFuture;
 
-#[derive(Debug, Clone, Copy)]
-pub struct McpSearchRequest<'a> {
-    pub query: &'a PreparedQuery,
-    pub server: Option<&'a str>,
-    pub result_bytes: Option<usize>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpSearchHost {
+    Ask { result_bytes: usize },
+    Interactive,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpSearchRequest {
+    pub query: Arc<PreparedQuery>,
+    pub server: Option<String>,
+    pub host: McpSearchHost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,5 +34,8 @@ impl McpSearchResult {
 }
 
 pub trait McpToolSearch: Send + Sync {
-    fn search_tools<'a>(&'a self, request: McpSearchRequest<'a>) -> BoxFuture<'a, McpSearchResult>;
+    fn search_tools(
+        self: Arc<Self>,
+        request: McpSearchRequest,
+    ) -> BoxFuture<'static, McpSearchResult>;
 }

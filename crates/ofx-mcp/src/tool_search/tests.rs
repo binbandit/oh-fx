@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use ofx_config::{ContextLimits, parse_context_limit_override};
-use ofx_contract::McpSearchRequest;
+use ofx_contract::{McpSearchHost, McpSearchRequest};
 use serde_json::json;
 
 use super::*;
@@ -114,20 +114,28 @@ async fn connected(configs: Vec<McpServerConfig>, overrides: &[&str]) -> McpRunt
 }
 
 fn search(runtime: &McpRuntime, query: &str, server: Option<&str>) -> McpSearchResult {
-    search_within(runtime, query, server, None)
+    search_from(runtime, query, server, McpSearchHost::Interactive)
 }
 
 fn search_within(
     runtime: &McpRuntime,
     query: &str,
     server: Option<&str>,
-    result_bytes: Option<usize>,
+    result_bytes: usize,
 ) -> McpSearchResult {
-    let query = PreparedQuery::prepare(query.to_owned()).unwrap();
-    runtime.search(McpSearchRequest {
-        query: &query,
-        server,
-        result_bytes,
+    search_from(runtime, query, server, McpSearchHost::Ask { result_bytes })
+}
+
+fn search_from(
+    runtime: &McpRuntime,
+    query: &str,
+    server: Option<&str>,
+    host: McpSearchHost,
+) -> McpSearchResult {
+    runtime.search(&McpSearchRequest {
+        query: Arc::new(PreparedQuery::prepare(query.to_owned()).unwrap()),
+        server: server.map(str::to_owned),
+        host,
     })
 }
 
@@ -172,6 +180,10 @@ async fn a_server_scope_names_an_unknown_or_failed_server() {
     assert_eq!(
         search(&runtime, "monitors", Some("absent")).model_output,
         SERVER_NOT_FOUND
+    );
+    assert_eq!(
+        search_within(&runtime, "monitors", Some("absent"), 16384).model_output,
+        r#"{"tools":[],"count":0,"error":"McpServerNotFound"}"#
     );
     let Lifecycle::Failed(failure) = runtime_server(&runtime, "broken").lifecycle() else {
         panic!("the server failed");
@@ -236,7 +248,7 @@ async fn an_oversized_result_omits_trailing_tools_with_a_cursor_and_a_notice() {
     let full = search(&runtime, "datadog", None);
     assert_eq!(full.notice, None);
     let limit = full.model_output.len() - 1;
-    let result = search_within(&runtime, "datadog", None, Some(limit));
+    let result = search_within(&runtime, "datadog", None, limit);
     let output: Value = serde_json::from_str(&result.model_output).unwrap();
     assert_eq!(output["count"], 1);
     assert_eq!(output["total_matches"], 2);
@@ -268,10 +280,10 @@ async fn an_oversized_result_omits_trailing_tools_with_a_cursor_and_a_notice() {
         )
     );
     assert_eq!(
-        search_within(&runtime, "datadog", None, Some(1 << 20)).model_output,
+        search_within(&runtime, "datadog", None, 1 << 20).model_output,
         full.model_output
     );
-    let tiny = search_within(&runtime, "datadog", None, Some(1));
+    let tiny = search_within(&runtime, "datadog", None, 1);
     let output: Value = serde_json::from_str(&tiny.model_output).unwrap();
     assert_eq!(output["count"], 0);
     assert_eq!(output["context_limit"]["omitted_count"], 2);
@@ -455,4 +467,23 @@ async fn only_the_leading_bytes_of_descriptions_and_schemas_are_searched() {
             "{query}"
         );
     }
+}
+
+#[tokio::test]
+async fn dropping_or_abandoning_startup_discovery_ends_the_discovering_state() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.path().join("hold"), "").unwrap();
+    let runtime = runtime(vec![fixture.server("datadog", DATADOG)], &[]);
+    let empty =
+        r#"{"tools":[],"count":0,"total_matches":0,"more_available":false,"next_cursor":null}"#;
+    drop(runtime.connect(StartupPhase::All));
+    assert_eq!(search(&runtime, "datadog", None).model_output, empty);
+    let discovery = runtime.connect(StartupPhase::All);
+    assert!(
+        search(&runtime, "datadog", None)
+            .model_output
+            .contains("discovering")
+    );
+    discovery.abandon().await;
+    assert_eq!(search(&runtime, "datadog", None).model_output, empty);
 }

@@ -358,7 +358,7 @@ fn saved_searches_describe_themselves_as_their_calls_did() {
     }
 }
 
-type Searched = (String, Option<String>, Option<usize>);
+type Searched = (String, Option<String>, McpSearchHost);
 
 struct FakeMcp {
     result: McpSearchResult,
@@ -382,11 +382,14 @@ impl FakeMcp {
 }
 
 impl McpToolSearch for FakeMcp {
-    fn search_tools<'a>(&'a self, request: McpSearchRequest<'a>) -> BoxFuture<'a, McpSearchResult> {
+    fn search_tools(
+        self: Arc<Self>,
+        request: McpSearchRequest,
+    ) -> BoxFuture<'static, McpSearchResult> {
         self.requests.lock().unwrap().push((
             request.query.raw().to_owned(),
-            request.server.map(str::to_owned),
-            request.result_bytes,
+            request.server,
+            request.host,
         ));
         Box::pin(async move { self.result.clone() })
     }
@@ -497,7 +500,13 @@ async fn ask_bounds_the_mcp_search_by_half_the_combined_budget_and_reports_its_n
     );
     assert_eq!(
         mcp.requests(),
-        [("mail-helper".to_owned(), None, Some((16384 - 512) / 2))]
+        [(
+            "mail-helper".to_owned(),
+            None,
+            McpSearchHost::Ask {
+                result_bytes: (16384 - 512) / 2
+            }
+        )]
     );
     let scoped = run(
         &searching(&fixture.search(16384), &mcp),
@@ -511,7 +520,13 @@ async fn ask_bounds_the_mcp_search_by_half_the_combined_budget_and_reports_its_n
     );
     assert_eq!(
         mcp.requests()[1],
-        ("send".to_owned(), Some("mail".to_owned()), Some(16384))
+        (
+            "send".to_owned(),
+            Some("mail".to_owned()),
+            McpSearchHost::Ask {
+                result_bytes: 16384
+            }
+        )
     );
 }
 
@@ -527,7 +542,10 @@ async fn the_interactive_host_searches_mcp_within_its_own_limits() {
         output.content,
         r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"discovering"}"#
     );
-    assert_eq!(mcp.requests(), [("anything".to_owned(), None, None)]);
+    assert_eq!(
+        mcp.requests(),
+        [("anything".to_owned(), None, McpSearchHost::Interactive)]
+    );
 }
 
 #[tokio::test]

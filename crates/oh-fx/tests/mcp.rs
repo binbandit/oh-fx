@@ -553,7 +553,7 @@ fn ask_finds_profile_mcp_tools_and_names_unknown_or_failed_servers_with_capabili
     );
     assert_eq!(
         last_tool_result(&requests[2]),
-        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_state":"server_not_found"}"#
+        r#"{"skills":[],"mcp_tools":[],"counts":{"skills":0,"mcp_tools":0},"total_matches":{"skills":0,"mcp_tools":0},"mcp_error":"McpServerNotFound"}"#
     );
     let failed = last_tool_result(&requests[3]);
     assert!(

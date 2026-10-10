@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use ofx_config::{ContextLimitName, ContextLimits};
 use ofx_contract::{
-    ActionLabel, BoxFuture, CallDescription, Concurrency, McpSearchRequest, McpSearchResult,
-    McpToolSearch, PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
-    format_plain_action,
+    ActionLabel, BoxFuture, CallDescription, Concurrency, McpSearchHost, McpSearchRequest,
+    McpSearchResult, McpToolSearch, PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect,
+    ToolOutput, ToolSpec, format_plain_action,
 };
 use ofx_skills::{
     RootPolicy, SkillDiscoveryContext, SkillSearchResult, diagnostic_summary, search_skills,
@@ -81,7 +81,7 @@ impl CapabilitySearch {
 }
 
 struct Input {
-    query: PreparedQuery,
+    query: Arc<PreparedQuery>,
     server: Option<String>,
 }
 
@@ -95,7 +95,7 @@ impl Input {
                 "capability_search field \"query\" must not be empty",
             ));
         }
-        let query = PreparedQuery::prepare(query).map_err(|_| {
+        let query = PreparedQuery::prepare(query).map(Arc::new).map_err(|_| {
             ToolOutput::failure("capability_search query must not exceed 4096 bytes")
         })?;
         let server = optional_string(NAME, &object, "server")?;
@@ -238,12 +238,19 @@ impl SearchContext {
     async fn search_mcp(&self, input: &Input, max_bytes: usize) -> McpSearchResult {
         match &self.mcp {
             Some(mcp) => {
-                mcp.search_tools(McpSearchRequest {
-                    query: &input.query,
-                    server: input.server.as_deref(),
-                    result_bytes: (!self.interactive_host).then_some(max_bytes),
-                })
-                .await
+                Arc::clone(mcp)
+                    .search_tools(McpSearchRequest {
+                        query: Arc::clone(&input.query),
+                        server: input.server.clone(),
+                        host: if self.interactive_host {
+                            McpSearchHost::Interactive
+                        } else {
+                            McpSearchHost::Ask {
+                                result_bytes: max_bytes,
+                            }
+                        },
+                    })
+                    .await
             }
             None if self.interactive_host => McpSearchResult::plain(NO_RUNTIME),
             None => McpSearchResult::plain(UNAVAILABLE),

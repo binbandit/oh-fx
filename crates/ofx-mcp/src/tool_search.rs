@@ -1,5 +1,5 @@
 use std::fmt::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ofx_config::ContextLimit;
 use ofx_contract::McpSearchResult;
@@ -51,7 +51,7 @@ struct Candidate<'a> {
 
 pub(crate) fn search(
     servers: &[Arc<Server>],
-    names: &mut ToolNames,
+    names: &Mutex<ToolNames>,
     reserved: &[String],
     request: Search<'_>,
     limits: SearchLimits,
@@ -85,6 +85,7 @@ pub(crate) fn search(
         })
         .collect();
     let mut candidates = Vec::new();
+    let mut names = names.lock().unwrap_or_else(PoisonError::into_inner);
     for published in &catalogs {
         let server_name = published.server;
         for tool in &published.catalog.tools {
@@ -104,6 +105,7 @@ pub(crate) fn search(
             });
         }
     }
+    drop(names);
     let documents: Vec<Document<'_>> = candidates.iter().map(document).collect();
     let page = retrieve(
         Request {
