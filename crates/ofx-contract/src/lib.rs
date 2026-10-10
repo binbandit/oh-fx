@@ -102,7 +102,8 @@ pub use types::{
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,
     ModelCatalog, ModelCatalogSource, ModelControls, ModelOption, Notice, NoticeLink, NoticeTone,
-    QuestionRequest, SavedToolCall, StatuslineItem, StatuslineToggles, ToolDeferral, ToolRejection,
-    TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity, WorkspaceIdentitySource,
+    QuestionRequest, SavedFileChange, SavedToolCall, StatuslineItem, StatuslineToggles,
+    ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity,
+    WorkspaceIdentitySource,
 };
 pub use workspace_menu::{DirectoryAccess, WorkspaceMenu, WorkspaceMenuEntry};

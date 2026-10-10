@@ -2621,7 +2621,7 @@ fn a_session_holding_the_command_replays_fx_saved_resumes_and_keeps_them() {
 
 fn append_fx_file_edit_turn(home: &Home, id: &str) {
     let arguments =
-        json!({"path": "src/lib.rs", "old_string": "old();", "new_string": "new();\n    more();"})
+        json!({"path": "linked/lib.rs", "old_string": "old();", "new_string": "new();\n    more();"})
             .to_string();
     home.append(
         id,
@@ -2651,12 +2651,12 @@ fn append_fx_file_edit_turn(home: &Home, id: &str) {
                     "output_bytes": 21,
                     "stored_bytes": 21,
                     "completeness": "complete",
-                    "preview": "Edited src/lib.rs (1)",
+                    "preview": "Edited /srv/shared/lib.rs (1)",
                     "provider_native": false,
                     "created_at_ms": 1,
                     "permission_feedback": [],
                     "committed_file_presentation": {
-                        "path": "src/lib.rs",
+                        "path": "/srv/shared/lib.rs",
                         "kind": "edited",
                         "lines": [
                             {"kind": "deletion", "old_line": 2, "new_line": null, "text": "    old();"},
@@ -2685,7 +2685,7 @@ fn append_fx_file_edit_turn(home: &Home, id: &str) {
 }
 
 #[test]
-fn a_resumed_edit_shows_the_line_counts_fx_saved() {
+fn a_resumed_edit_shows_the_path_and_line_counts_fx_saved() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["Ready."])),
         Reply::sse(&chat_text_events(&["Moved on."])),
@@ -2703,7 +2703,11 @@ fn a_resumed_edit_shows_the_line_counts_fx_saved() {
     assert!(
         appears_in_order(
             &screen,
-            &["┃ edit the code", "src/lib.rs +2 / -1", "Edited the code."]
+            &[
+                "┃ edit the code",
+                "Edited /srv/shared/lib.rs +2 / -1",
+                "Edited the code."
+            ]
         ),
         "{screen}"
     );

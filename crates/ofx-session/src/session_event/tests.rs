@@ -1,5 +1,5 @@
 use ofx_config::ProviderId;
-use ofx_contract::{TurnSummary, TurnTokenProgress};
+use ofx_contract::{FileChangeStats, TurnSummary, TurnTokenProgress};
 
 use super::*;
 
@@ -970,9 +970,9 @@ fn presentation_frame(tool: &str, presentation: &str) -> String {
 
 #[test]
 fn committed_file_presentations_from_upstream_frames_round_trip_byte_for_byte() {
-    for (tool, presentation, stats) in [
-        ("edit_file", EDIT_PRESENTATION, (2, 1)),
-        ("write_file", WRITE_PRESENTATION, (2, 0)),
+    for (tool, presentation, path, stats) in [
+        ("edit_file", EDIT_PRESENTATION, "src/lib.rs", (2, 1)),
+        ("write_file", WRITE_PRESENTATION, "notes.md", (2, 0)),
     ] {
         let frame = presentation_frame(tool, presentation);
         let envelope = decode_conversation_frame(frame.as_bytes()).unwrap();
@@ -983,7 +983,10 @@ fn committed_file_presentations_from_upstream_frames_round_trip_byte_for_byte() 
         };
         assert_eq!(
             result.file_change(),
-            Some(FileChangeStats::from_lines(stats.0, stats.1))
+            Some(SavedFileChange {
+                path: path.to_owned(),
+                stats: FileChangeStats::from_lines(stats.0, stats.1),
+            })
         );
     }
     let sparse = presentation_frame(
