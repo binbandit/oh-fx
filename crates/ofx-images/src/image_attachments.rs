@@ -10,8 +10,8 @@ use crate::image_data::detect_media_type;
 mod snapshots;
 
 pub use snapshots::{
-    CaptureBudget, VerifiedSnapshot, capture_image_snapshots, cleanup_snapshot_dir,
-    create_temp_snapshot_dir, load_verified_snapshot,
+    CaptureBudget, TempSnapshotDir, VerifiedSnapshot, capture_image_snapshots,
+    load_verified_snapshot,
 };
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;

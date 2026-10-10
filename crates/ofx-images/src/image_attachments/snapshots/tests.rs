@@ -587,7 +587,8 @@ fn verified_snapshot_loading_stops_when_the_budget_does() {
 
 #[test]
 fn temporary_snapshot_directories_are_private_and_removed_whole() {
-    let directory = create_temp_snapshot_dir().unwrap();
+    let temporary = TempSnapshotDir::create().unwrap();
+    let directory = temporary.path().to_owned();
     let root = fs::canonicalize(TEMP_ROOT).unwrap();
     let name = Path::new(&directory).file_name().unwrap().to_str().unwrap();
 
@@ -606,6 +607,89 @@ fn temporary_snapshot_directories_are_private_and_removed_whole() {
         ..ImageAttachment::default()
     }];
     capture_image_snapshots(&mut attachments, &format!("{directory}/images"), UNLIMITED).unwrap();
-    cleanup_snapshot_dir(&directory);
+    drop(temporary);
     assert!(!Path::new(&directory).exists());
+}
+
+fn outside_with_sentinel(fixture: &Fixture) -> PathBuf {
+    let outside = fixture.root.join("outside");
+    fs::create_dir_all(outside.join("inner")).unwrap();
+    fs::write(outside.join("sentinel"), b"keep").unwrap();
+    fs::write(outside.join("inner/sentinel"), b"keep").unwrap();
+    outside
+}
+
+fn assert_untouched(outside: &Path) {
+    assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
+    assert_eq!(fs::read(outside.join("inner/sentinel")).unwrap(), b"keep");
+}
+
+#[test]
+fn cleanup_never_follows_a_nested_parent_swapped_for_a_symlink() {
+    let fixture = Fixture::new();
+    let outside = outside_with_sentinel(&fixture);
+    let directory = fixture.root.join("snapshots");
+    fs::create_dir_all(directory.join("nested/inner")).unwrap();
+    fs::write(directory.join("nested/inner/image.bin"), PNG).unwrap();
+    fs::write(directory.join("kept.bin"), PNG).unwrap();
+    fs::remove_dir_all(directory.join("nested")).unwrap();
+    symlink(&outside, directory.join("nested")).unwrap();
+    fs::create_dir(directory.join("deeper")).unwrap();
+    symlink(&outside, directory.join("deeper/link")).unwrap();
+
+    cleanup_snapshot_dir(&fixture.snapshot_dir());
+
+    assert!(!directory.exists());
+    assert_untouched(&outside);
+}
+
+#[test]
+fn cleanup_stays_in_the_opened_parent_after_it_is_swapped_for_a_symlink() {
+    let fixture = Fixture::new();
+    let outside = outside_with_sentinel(&fixture);
+    let parent = fixture.root.join("parent");
+    fs::create_dir_all(parent.join("inner/images")).unwrap();
+    fs::write(parent.join("inner/images/image.bin"), PNG).unwrap();
+    let opened = open_directory_no_follow(&fixture.path("parent")).unwrap();
+    fs::rename(&parent, fixture.root.join("moved")).unwrap();
+    symlink(&outside, &parent).unwrap();
+
+    delete_tree(&opened, "inner").unwrap();
+
+    assert!(!fixture.root.join("moved/inner").exists());
+    assert_untouched(&outside);
+}
+
+#[test]
+fn cleanup_removes_a_symlinked_snapshot_directory_without_following_it() {
+    let fixture = Fixture::new();
+    let outside = outside_with_sentinel(&fixture);
+    symlink(&outside, fixture.root.join("snapshots")).unwrap();
+
+    cleanup_snapshot_dir(&fixture.snapshot_dir());
+
+    assert!(fs::symlink_metadata(fixture.root.join("snapshots")).is_err());
+    assert_untouched(&outside);
+}
+
+#[test]
+fn cleanup_leaves_everything_when_a_parent_component_is_a_symlink() {
+    let fixture = Fixture::new();
+    let outside = outside_with_sentinel(&fixture);
+    symlink(&outside, fixture.root.join("parent")).unwrap();
+
+    cleanup_snapshot_dir(&fixture.path("parent/inner"));
+
+    assert_untouched(&outside);
+}
+
+#[test]
+fn cleanup_refuses_dot_names() {
+    let fixture = Fixture::new();
+    let outside = outside_with_sentinel(&fixture);
+
+    cleanup_snapshot_dir(&fixture.path("outside/inner/.."));
+    cleanup_snapshot_dir(&fixture.path("outside/."));
+
+    assert_untouched(&outside);
 }

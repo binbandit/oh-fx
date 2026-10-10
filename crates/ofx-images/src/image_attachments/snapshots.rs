@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::fs::{self, DirBuilder, File};
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
@@ -6,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::ImageAttachment;
 use ofx_text::lowercase_hex;
-use rustix::fs::{AtFlags, Mode, OFlags};
+use rustix::fs::{AtFlags, Dir, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 
@@ -35,34 +36,78 @@ struct StreamedSnapshot {
     media_type: &'static str,
 }
 
-pub fn create_temp_snapshot_dir() -> Result<String, AttachmentError> {
-    let root = fs::canonicalize(TEMP_ROOT)?
-        .into_os_string()
-        .into_string()
-        .map_err(|_| AttachmentError::ImageSnapshotPathUnsafe)?;
-    for _ in 0..TEMP_DIRECTORY_ATTEMPTS {
-        let mut suffix = [0_u8; 8];
-        getrandom::fill(&mut suffix).map_err(|_| AttachmentError::Unexpected)?;
-        let path = format!(
-            "{root}/{TEMP_DIRECTORY_PREFIX}{:x}",
-            u64::from_ne_bytes(suffix)
-        );
-        match DirBuilder::new().mode(PRIVATE_DIRECTORY_MODE).create(&path) {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(AttachmentError::PathAlreadyExists)
+#[derive(Debug)]
+pub struct TempSnapshotDir {
+    path: String,
 }
 
-pub fn cleanup_snapshot_dir(path: &str) {
-    let Some((parent, _)) = split_parent(path) else {
+impl TempSnapshotDir {
+    pub fn create() -> Result<Self, AttachmentError> {
+        let root = fs::canonicalize(TEMP_ROOT)?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| AttachmentError::ImageSnapshotPathUnsafe)?;
+        for _ in 0..TEMP_DIRECTORY_ATTEMPTS {
+            let mut suffix = [0_u8; 8];
+            getrandom::fill(&mut suffix).map_err(|_| AttachmentError::Unexpected)?;
+            let path = format!(
+                "{root}/{TEMP_DIRECTORY_PREFIX}{:x}",
+                u64::from_ne_bytes(suffix)
+            );
+            match DirBuilder::new().mode(PRIVATE_DIRECTORY_MODE).create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(AttachmentError::PathAlreadyExists)
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl Drop for TempSnapshotDir {
+    fn drop(&mut self) {
+        cleanup_snapshot_dir(&self.path);
+    }
+}
+
+fn cleanup_snapshot_dir(path: &str) {
+    let Some((parent, name)) = split_parent(path) else {
         return;
     };
-    if open_directory_no_follow(parent).is_ok() {
-        let _ = fs::remove_dir_all(path);
+    if validate_component(name).is_err() {
+        return;
     }
+    if let Ok(parent) = open_directory_no_follow(parent) {
+        let _ = delete_tree(&parent, name);
+    }
+}
+
+fn delete_tree<Name: rustix::path::Arg + Copy>(parent: &OwnedFd, name: Name) -> Result<(), Errno> {
+    match rustix::fs::unlinkat(parent, name, AtFlags::empty()) {
+        Err(Errno::ISDIR | Errno::PERM) => {}
+        unlinked => return unlinked,
+    }
+    let directory = rustix::fs::openat(parent, name, directory_flags(), Mode::empty())?;
+    for entry in entry_names(&directory)? {
+        delete_tree(&directory, entry.as_c_str())?;
+    }
+    rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR)
+}
+
+fn entry_names(directory: &OwnedFd) -> Result<Vec<CString>, Errno> {
+    let mut names = Vec::new();
+    for entry in Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name != c"." && name != c".." {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
 }
 
 pub fn capture_image_snapshots(
