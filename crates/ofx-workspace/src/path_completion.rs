@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ofx_text::is_terminal_safe;
 
 use crate::file_index::{CandidateKind, MAX_PATH_LEN, MAX_SEARCH_RESULTS, NameQuery, SearchResult};
-use crate::pathing::resolve_workspace_or_external_literal_path;
+use crate::pathing::resolve_workspace_or_external_literal_path_with_home;
 
 const DIRECTORY_SHORTCUTS: [&str; 3] = ["~", ".", ".."];
 
@@ -57,8 +57,9 @@ pub fn complete(
     let Some(matcher) = NameQuery::new(parsed.basename_query) else {
         return Ok(Vec::new());
     };
-    let resolved = resolve_workspace_or_external_literal_path(workspace_root, parsed.parent, home)
-        .map_err(|_| PathCompletionError::Unavailable)?;
+    let resolved =
+        resolve_workspace_or_external_literal_path_with_home(workspace_root, parsed.parent, home)
+            .map_err(|_| PathCompletionError::Unavailable)?;
     checkpoint(cancel)?;
     let entries = fs::read_dir(&resolved).map_err(|_| PathCompletionError::Unavailable)?;
     let mut ranked: Vec<(_, SearchResult)> = Vec::with_capacity(limit + 1);
@@ -135,7 +136,7 @@ pub fn is_current_candidate_kind(
     }
     let home = env::var_os("HOME");
     let Ok(resolved) =
-        resolve_workspace_or_external_literal_path(workspace_root, path, home.as_deref())
+        resolve_workspace_or_external_literal_path_with_home(workspace_root, path, home.as_deref())
     else {
         return false;
     };

@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,7 @@ const PORTKEY_KEY: &str = "pk-test-0123456789";
 const UPSTREAM_READ_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"read_file","description":"Read one file with bounded line-numbered output and optional start_line/line_count range. UTF-8 text returns as numbered lines; image files (PNG, JPEG, GIF, WebP up to 3.9MB) attach to the result so you can see them. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: inspect an exact known path before editing or explaining code, or view an image file. When NOT to use: list directories, search many files, read non-image binary data, or bypass dedicated search tools.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"start_line":{"type":"integer","description":"Optional 1-based first line to return. Defaults to 1."},"line_count":{"type":"integer","description":"Optional positive number of lines to return. Defaults to the normal read cap and is bounded."}},"required":["path"]}}}"#;
 const ASK_USAGE: &str = "usage: oh-fx ask [--auto|--full-access] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>\n";
 const KEY: [(&str, &str); 1] = [("PORTKEY_API_KEY", PORTKEY_KEY)];
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nrest";
 const UPSTREAM_GLOB_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"glob_files","description":"Find file paths matching a glob pattern, with mode=count for exact path counts without listing entries. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: locate files by name, extension, or directory pattern; narrow path or pattern if candidate caps appear. When NOT to use: search file contents, read files, run find, or count non-file concepts.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match, such as src/**/*.zig or *.md."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"mode":{"type":"string","enum":["matches","count"],"description":"Use matches to return sample paths, or count to return an exact matching path count without listing entries."}},"required":["pattern"]}}}"#;
 const UPSTREAM_GREP_FILES_TOOL: &str = r#"{"type":"function","function":{"name":"grep_files","description":"Search text files for a literal substring, optionally narrowed by path/include, with output modes for matching lines, files-with-matches, or counts plus head_limit/offset pagination and bounded context_lines for matches mode. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Use include as the type/path filter, such as *.zig. When to use: find exact symbols, strings, TODOs, or usage sites. When NOT to use: regex is not supported; avoid unknown-concept exploration, filename lookup, known-path reads, and shell grep; do not repeat the same or equivalent search after a caller search only finds a definition.","parameters":{"type":"object","properties":{"pattern":{"type":"string","description":"Literal plain-text pattern to search for."},"path":{"type":"string","minLength":1,"description":"Optional search root relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. Omit this field to use the current directory; never send an empty string. Narrow it when possible."},"include":{"type":"string","description":"Optional glob pattern applied to candidate file paths before reading files, such as *.zig or src/**/*.ts."},"case_insensitive":{"type":"boolean","description":"Search case-insensitively when true."},"mode":{"type":"string","enum":["matches","files_with_matches","count"],"description":"Use matches for line matches, files_with_matches for unique matching paths, or count for exact matching-line and matching-file counts."},"head_limit":{"type":"integer","description":"Optional positive maximum results to return for matches or files_with_matches. Defaults to the normal output cap."},"offset":{"type":"integer","description":"Optional zero-based result offset for matches or files_with_matches pagination. Defaults to 0."},"context_lines":{"type":"integer","description":"Optional non-negative number of lines before and after each emitted match in matches mode. Bounded by the tool."}},"required":["pattern"]}}}"#;
 const UPSTREAM_EDIT_FILE_TOOL: &str = r#"{"type":"function","function":{"name":"edit_file","description":"Edit an existing file by replacing one exact old_string occurrence with new_string. Paths may be workspace-relative or external using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy. When to use: make a focused patch after reading the file. When NOT to use: broad rewrites, ambiguous repeated text, generated formatting, missing files, or cross-file refactors.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root, or an external path using an absolute path, ~/..., or a relative workspace escape such as ../...; external access is subject to permission policy."},"old_string":{"type":"string","description":"Exact text to find in the file. Must match exactly once."},"new_string":{"type":"string","description":"Text to replace old_string with."}},"required":["path","old_string","new_string"]}}}"#;
@@ -1255,6 +1256,7 @@ fn flags_that_request_the_current_defaults_run_normally() {
 fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
     let server = FakeServer::start([]);
     let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
     for (args, feature) in [
         (&["ask", "--image", "shot.png", "hi"][..], "ask --image"),
         (&["ask", "--sessions-v2", "hi"], "ask --sessions-v2"),
@@ -1280,6 +1282,80 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
     assert_eq!(result["error"], "NotAvailableYet");
     assert_eq!(result["exit_code"], 1);
     assert!(server.requests().is_empty());
+}
+
+#[test]
+fn ask_checks_every_image_before_anything_else_as_upstream_does() {
+    let server = FakeServer::start([]);
+    let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
+    fs::write(home.workspace.join("notes.png"), "plain text").unwrap();
+    fs::create_dir(home.workspace.join("folder.png")).unwrap();
+    let large = fs::File::create(home.workspace.join("large.png")).unwrap();
+    large.set_len(20 * 1024 * 1024 + 1).unwrap();
+    for (image, reason, error) in [
+        ("missing.png", "image file not found", "FileNotFound"),
+        (
+            "notes.png",
+            "unsupported image type",
+            "UnsupportedImageType",
+        ),
+        (
+            "large.png",
+            "image exceeds the 20 MiB limit",
+            "ImageTooLarge",
+        ),
+        ("folder.png", "NotRegularFile", "NotRegularFile"),
+        ("~nobody/a.png", "InvalidPath", "InvalidPath"),
+    ] {
+        let args = [
+            "ask",
+            "--sessions-v2",
+            "--image",
+            "shot.png",
+            "--image",
+            image,
+            "--image",
+            "missing-too.png",
+            "hi",
+        ];
+        let output = home.ask(&args, &KEY);
+        assert_eq!(output.status.code(), Some(1), "{image}");
+        assert_eq!(stdout(&output), "", "{image}");
+        assert_eq!(
+            stderr(&output),
+            format!("oh-fx ask: failed to attach image \"{image}\": {reason}\n"),
+        );
+        let mut json = vec!["ask", "--json"];
+        json.extend_from_slice(&args[1..]);
+        let output = home.ask(&json, &KEY);
+        assert_eq!(output.status.code(), Some(1), "{image}");
+        assert_eq!(stderr(&output), "", "{image}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["error"], format!("{error}: {image}"));
+        assert_eq!(result["exit_code"], 1);
+        assert_eq!(result["session_id"], "");
+    }
+    let output = home.ask(&["ask", "--image", "Missing Shot.png", "hi"], &KEY);
+    assert_eq!(
+        stderr(&output),
+        "oh-fx ask: failed to attach image \"Missing Shot.png\": image file not found\n"
+    );
+    let output = home.ask(
+        &[
+            OsStr::new("ask"),
+            OsStr::new("--image"),
+            OsStr::from_bytes(b"\xff.png"),
+            OsStr::new("hi"),
+        ],
+        &KEY,
+    );
+    assert_eq!(
+        output.stderr,
+        b"oh-fx ask: failed to attach image \"\xff.png\": InvalidPath\n"
+    );
+    assert!(server.requests().is_empty());
+    assert!(!home.root.join("data").exists());
 }
 
 #[test]

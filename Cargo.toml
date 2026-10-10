@@ -26,6 +26,7 @@ ofx-exec = { path = "crates/ofx-exec" }
 ofx-gateway = { path = "crates/ofx-gateway" }
 ofx-github = { path = "crates/ofx-github" }
 ofx-http = { path = "crates/ofx-http" }
+ofx-images = { path = "crates/ofx-images" }
 ofx-jsonrpc = { path = "crates/ofx-jsonrpc" }
 ofx-markdown = { path = "crates/ofx-markdown" }
 ofx-mcp = { path = "crates/ofx-mcp" }
