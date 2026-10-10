@@ -361,6 +361,54 @@ mod stored {
     }
 
     #[tokio::test]
+    async fn a_refresh_replaces_only_the_grant_it_refreshed() {
+        let fixture = Fixture::start(RENEWED).await;
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let auth = resolved(&fixture).await;
+        let other_issuer = GrantLookup::new(
+            "remote",
+            &fixture.server.url,
+            None,
+            Some("https://other-issuer.example"),
+        )
+        .unwrap();
+        let mut newer = fixture.credentials(i64::MAX, None);
+        newer.issuer = "https://other-issuer.example".to_owned();
+        newer.access_token = Zeroizing::new("newer-token".to_owned());
+        fixture.store().save(&other_issuer, &newer).unwrap();
+        let builder = auth
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization(builder).as_deref(),
+            Some("Bearer renewed-token")
+        );
+        let kept = fixture.store().load(&other_issuer).unwrap().unwrap();
+        assert_eq!(kept.access_token.as_str(), "newer-token");
+        let refreshed = fixture
+            .store()
+            .load(
+                &GrantLookup::new(
+                    "remote",
+                    &fixture.server.url,
+                    None,
+                    Some("https://issuer.example"),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(refreshed.access_token.as_str(), "renewed-token");
+    }
+
+    #[tokio::test]
     async fn concurrent_requests_share_one_refresh() {
         let fixture = Fixture::start(RENEWED).await;
         fixture

@@ -30,7 +30,6 @@ pub(crate) struct HttpAuth {
 
 struct StoredAuth {
     server: String,
-    lookup: GrantLookup,
     store: CredentialStore,
     http: reqwest::Client,
     credentials: Arc<Mutex<Credentials>>,
@@ -49,22 +48,21 @@ impl HttpAuth {
             Some(store) if config.allow_stored_credentials => {
                 let lookup = GrantLookup::for_server(config)
                     .map_err(|error| unreadable_store(&config.name, error))?;
-                load_stored(lookup.clone(), &store)
+                load_stored(lookup, &store)
                     .await
                     .map_err(|error| unreadable_store(&config.name, error))?
-                    .map(|credentials| (store, lookup, credentials))
+                    .map(|credentials| (store, credentials))
             }
             _ => None,
         };
         let headers = resolve_headers(
             config,
             environment,
-            loaded.as_ref().map(|(_, _, credentials)| credentials),
+            loaded.as_ref().map(|(_, credentials)| credentials),
         )?;
         let stored = match loaded {
-            Some((store, lookup, credentials)) => Some(StoredAuth {
+            Some((store, credentials)) => Some(StoredAuth {
                 server: config.name.clone(),
-                lookup,
                 store,
                 http: oauth_client()?,
                 bearer: Arc::new(StateMutex::new(bearer_header(&credentials)?)),
@@ -144,7 +142,6 @@ impl StoredAuth {
         let installing = Installing {
             store: self.store.clone(),
             server: self.server.clone(),
-            lookup: self.lookup.clone(),
             bearer: Arc::clone(&self.bearer),
             failure: Arc::clone(&self.failure),
         };
@@ -176,7 +173,6 @@ impl StoredAuth {
 struct Installing {
     store: CredentialStore,
     server: String,
-    lookup: GrantLookup,
     bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
 }
@@ -190,7 +186,7 @@ impl Installing {
         let saved = refreshed.clone();
         let store = self.store;
         let (server, result) = tokio::task::spawn_blocking(move || {
-            let result = store.save(&self.lookup, &saved);
+            let result = store.save_refreshed(&self.server, &saved);
             (self.server, result)
         })
         .await

@@ -183,7 +183,7 @@ note = "Credentials, canonicalResource, the loopback and secure URL policy, refr
 upstream = "src/core/mcp/mcp_auth_store.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_auth_store.rs"]
-note = "load and save of the private file store with upstream's bytes, entry isolation, identity matching and the timed credentials.lock exist under $XDG_DATA_HOME/oh-fx; a configured resource or issuer matches a grant by the coverage and trailing-slash rules discovery accepted it under, and save replaces every grant that lookup finds, and the macOS keychain backend is not used, as docs/differences/mcp.md records, and status and delete are missing."
+note = "load and save of the private file store with upstream's bytes, entry isolation, identity matching and the timed credentials.lock exist under $XDG_DATA_HOME/oh-fx; a configured resource or issuer matches a grant by the coverage and trailing-slash rules discovery accepted it under, an authorization replaces every grant that lookup finds while a refresh replaces only its own, and the macOS keychain backend is not used, as docs/differences/mcp.md records, and status and delete are missing."
 
 [[file]]
 upstream = "src/core/mcp/mcp_contract.zig"
