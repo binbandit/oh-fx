@@ -85,10 +85,15 @@ struct RecoveryRoute {
     provider: SavedProvider,
     model: String,
     credential: Option<RouteCredential>,
-    requested_fast_mode: bool,
+    requested: RequestedModes,
     fast_mode: bool,
-    requested_ultrafast_mode: bool,
     may_have_sent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestedModes {
+    fast_mode: bool,
+    ultrafast_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,9 +328,11 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
             provider,
             model,
             credential,
-            requested_fast_mode,
+            requested: RequestedModes {
+                fast_mode: requested_fast_mode,
+                ultrafast_mode: requested_ultrafast_mode,
+            },
             fast_mode,
-            requested_ultrafast_mode,
             may_have_sent: consumed_attempts > 0 || outstanding_reservation,
         },
     };

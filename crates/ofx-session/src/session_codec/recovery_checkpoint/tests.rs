@@ -60,9 +60,11 @@ fn checkpoint() -> RecoveryCheckpoint {
                 "chatgpt_subscription",
                 Some([0xab; 32]),
             )),
-            requested_fast_mode: false,
+            requested: RequestedModes {
+                fast_mode: false,
+                ultrafast_mode: false,
+            },
             fast_mode: true,
-            requested_ultrafast_mode: false,
             may_have_sent: true,
         },
         compaction_prepared: false,
