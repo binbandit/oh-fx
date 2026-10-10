@@ -74,7 +74,7 @@ note = "Resource, template and prompt catalogs are fetched page by page and refr
 upstream = "src/core/mcp/feature_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_operations.rs"]
-note = "Resource, template and prompt listing and resource reads exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one until OAuth lands, as docs/differences/mcp.md records. Prompt invocation, completion, modern resource update subscriptions, URL elicitation and input-required rounds are missing."
+note = "Resource, template and prompt listing, resource reads and prompt gets exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one until OAuth lands, as docs/differences/mcp.md records. A prompt get resolves the prompt and checks its arguments, restarts a stopped stdio server, refuses a changed prompt catalog before it is sent, and returns a JSON-RPC error as its protocol diagnostic. Completion, modern resource update subscriptions, URL elicitation and input-required rounds are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_result.zig"
@@ -85,7 +85,7 @@ modules = []
 upstream = "src/core/mcp/feature_snapshot.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_snapshot.rs"]
-note = "Concrete and template resource identities under one shared match budget exist, with the currency check before a read is sent and before it is cached, both against the connection that will send or sent the read. Currency compares the listed resources or templates instead of upstream's digest of every descriptor field, so a refresh that changes only a description keeps a resolved identity current. The check before sending runs just before the request, where upstream's guard spans the send for HTTP servers, as docs/differences/mcp.md records. Prompt and template-only identities are missing."
+note = "Concrete and template resource identities under one shared match budget exist, with the currency check before a read is sent and before it is cached, both against the connection that will send or sent the read. Prompt identities resolve the prompt by name and check the prompts/get arguments, as snapshotPromptIdentity does, with the same currency check before the get is sent. Currency compares the listed resources, templates or prompts as oh-fx keeps them instead of upstream's digest of every descriptor field, so a refresh that changes only fields oh-fx does not keep, such as a resource's description or a prompt's icons, _meta or argument descriptions, keeps a resolved identity current, as docs/differences/mcp.md records. The check before sending runs just before the request, where upstream's guard spans the send for HTTP servers, as docs/differences/mcp.md records. Template-only identities are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_transport.zig"
@@ -96,7 +96,7 @@ modules = []
 upstream = "src/core/mcp/features/common.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/features/common.rs"]
-note = "Envelope parsing with the depth limit, complete results, cache hints, annotations, icons and bounded metadata exist, with the list page parser and catalog builder that upstream repeats in each feature file shared by resources, templates and prompts, and protocol errors, resource contents and base64 checks exist; prompt content validation and the MRTR limits are missing."
+note = "Envelope parsing with the depth limit and the refusal of duplicate keys, complete results, cache hints, annotations, icons and bounded metadata exist, with the list page parser and catalog builder that upstream repeats in each feature file shared by resources, templates and prompts, and protocol errors, resource contents, prompt content validation with resource links, and base64 checks exist; the MRTR limits are missing until the modern protocol is ported."
 
 [[file]]
 upstream = "src/core/mcp/features/completion.zig"
@@ -106,8 +106,8 @@ modules = []
 [[file]]
 upstream = "src/core/mcp/features/prompts.zig"
 status = "partial"
-modules = ["crates/ofx-mcp/src/features/prompts.rs", "crates/ofx-mcp/src/features/common.rs"]
-note = "prompts/list pages, prompt and argument descriptor validation and the prompt catalog builder exist; prompts/get results, the prompts/get arguments check (validateArgumentsJson) and the get request builder are missing."
+modules = ["crates/ofx-mcp/src/features/prompts.rs", "crates/ofx-mcp/src/features/common.rs", "crates/ofx-mcp/src/protocol_messages.rs"]
+note = "prompts/list pages, prompt and argument descriptor validation, the prompt catalog builder, prompts/get results with every content kind and their message and content limits, the prompts/get arguments check (validateArgumentsJson) and the get request exist. The get request is built in protocol_messages.rs from the checked arguments. Argument descriptions, icons and metadata are checked but not kept until a view needs them, and input-required results with their continuation request fields are missing until the modern protocol is ported."
 
 [[file]]
 upstream = "src/core/mcp/features/resources.zig"
@@ -196,7 +196,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, model catalogs, deferred ask connections and URL completion are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; ACP host channels, model catalogs, deferred ask connections and URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"

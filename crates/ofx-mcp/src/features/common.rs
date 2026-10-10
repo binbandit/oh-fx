@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
+use ofx_contract::parse_strict_json_value;
 use ofx_jsonrpc::RpcError;
 use serde_json::{Map, Value};
 
 use crate::catalog_freshness::{CacheScope, earliest_expiry, page_expiry};
 use crate::error::McpError;
-use crate::json_number::ttl_milliseconds;
+use crate::json_number::{non_negative_u64, ttl_milliseconds};
 use crate::mcp_contract::validate_json_rpc_response_envelope;
 
 const MAX_SUPPORTED_JSON_DEPTH: usize = 128;
@@ -255,7 +256,8 @@ fn list_result_error(error: McpError) -> McpError {
 }
 
 pub(crate) fn parse_envelope(response: &str, limits: Limits) -> Result<Value, McpError> {
-    let value: Value = serde_json::from_str(response).map_err(|_| McpError::InvalidEnvelope)?;
+    let value =
+        parse_strict_json_value(response.as_bytes()).map_err(|_| McpError::InvalidEnvelope)?;
     validate_json_depth(&value, limits.json_depth)?;
     validate_json_rpc_response_envelope(&value).map_err(|_| McpError::InvalidEnvelope)?;
     Ok(value)
@@ -362,6 +364,59 @@ pub(crate) fn parse_resource_content(
     })
 }
 
+pub(crate) fn validate_prompt_content(value: &Value, limits: Limits) -> Result<(), McpError> {
+    let object = value.as_object().ok_or(McpError::InvalidContent)?;
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or(McpError::InvalidContent)?;
+    if let Some(annotations) = object.get("annotations") {
+        validate_annotations(annotations, limits)?;
+    }
+    if let Some(metadata) = object.get("_meta") {
+        if !metadata.is_object() {
+            return Err(McpError::InvalidContent);
+        }
+        validate_bounded_json(metadata, limits.metadata_bytes, limits.json_depth)?;
+    }
+    match kind {
+        "text" => required_string_allow_empty(object, "text", limits.content_field_bytes).map(drop),
+        "image" | "audio" => {
+            let data = required_string_allow_empty(object, "data", limits.content_field_bytes)?;
+            required_string(object, "mimeType", limits.title_bytes)?;
+            if is_valid_base64(data) {
+                Ok(())
+            } else {
+                Err(McpError::InvalidContent)
+            }
+        }
+        "resource_link" => validate_resource_link(object, limits),
+        "resource" => {
+            let resource = object.get("resource").ok_or(McpError::InvalidContent)?;
+            parse_resource_content(resource, limits).map(drop)
+        }
+        _ => Err(McpError::InvalidContent),
+    }
+}
+
+fn validate_resource_link(object: &Map<String, Value>, limits: Limits) -> Result<(), McpError> {
+    required_string(object, "uri", limits.uri_bytes)?;
+    required_string(object, "name", limits.title_bytes)?;
+    optional_string(object, "title", limits.title_bytes)?;
+    optional_string(object, "description", limits.description_bytes)?;
+    optional_string(object, "mimeType", limits.title_bytes)?;
+    if let Some(icons) = object.get("icons") {
+        validate_icons(icons, limits)?;
+    }
+    if object
+        .get("size")
+        .is_some_and(|size| non_negative_u64(size).is_none())
+    {
+        return Err(McpError::InvalidContent);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_annotations(value: &Value, limits: Limits) -> Result<(), McpError> {
     let object = value.as_object().ok_or(McpError::InvalidContent)?;
     if let Some(audience) = object.get("audience") {
@@ -429,6 +484,18 @@ pub(crate) fn required_string<'a>(
         .ok_or(McpError::InvalidContent)
 }
 
+fn required_string_allow_empty<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    max_bytes: usize,
+) -> Result<&'a str, McpError> {
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| value.len() <= max_bytes)
+        .ok_or(McpError::InvalidContent)
+}
+
 pub(crate) fn optional_string<'a>(
     object: &'a Map<String, Value>,
     name: &str,
@@ -465,7 +532,11 @@ pub(crate) fn validate_bounded_json(
     bounded_json(value, max_bytes, max_depth).map(drop)
 }
 
-fn bounded_json(value: &Value, max_bytes: usize, max_depth: usize) -> Result<String, McpError> {
+pub(crate) fn bounded_json(
+    value: &Value,
+    max_bytes: usize,
+    max_depth: usize,
+) -> Result<String, McpError> {
     validate_json_depth(value, max_depth)?;
     let json = value.to_string();
     if json.len() > max_bytes {
@@ -549,6 +620,16 @@ mod tests {
             parse_envelope(r#"{"jsonrpc":"1.0","id":1,"result":{}}"#, limits),
             Err(McpError::InvalidEnvelope)
         );
+        for duplicate in [
+            r#"{"jsonrpc":"2.0","id":1,"id":1,"result":{}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"items":[{"type":"text","text":"a","text":"b"}]}}"#,
+        ] {
+            assert_eq!(
+                parse_envelope(duplicate, limits),
+                Err(McpError::InvalidEnvelope),
+                "{duplicate}"
+            );
+        }
         let failure = parse_envelope(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}"#,
             limits,
@@ -633,6 +714,45 @@ mod tests {
         ] {
             assert_eq!(
                 validate_icons(&invalid, limits),
+                Err(McpError::InvalidContent),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_resource_links_follow_the_shared_descriptor_bounds() {
+        let limits = Limits::default();
+        let link = |fields: Value| {
+            let mut content = json!({"type": "resource_link", "uri": "git://repo", "name": "repo"});
+            content
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            validate_prompt_content(&content, limits)
+        };
+        assert_eq!(
+            link(json!({
+                "title": "Repository",
+                "description": "The repository",
+                "mimeType": "text/x-git",
+                "icons": [{"src": "https://x/icon.png"}],
+                "size": 1e3
+            })),
+            Ok(())
+        );
+        for invalid in [
+            json!({"name": ""}),
+            json!({"uri": "x".repeat(64 * 1024 + 1)}),
+            json!({"name": "x".repeat(4097)}),
+            json!({"title": 1}),
+            json!({"mimeType": "x".repeat(4097)}),
+            json!({"icons": [{"src": ""}]}),
+            json!({"size": 1.5}),
+            json!({"size": "3"}),
+        ] {
+            assert_eq!(
+                link(invalid.clone()),
                 Err(McpError::InvalidContent),
                 "{invalid}"
             );

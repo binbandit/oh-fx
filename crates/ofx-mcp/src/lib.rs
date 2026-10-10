@@ -45,9 +45,11 @@ mod workspace_config;
 
 pub use command_provider::{AddIntent, AddIntentError, is_valid_server_name, parse_add_intent};
 pub use error::McpError;
-pub use feature_operations::{PromptSummary, ResourceReadFailure, ResourceSummary};
+pub use feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
 pub use features::common::{ResourceContent, ResourceData};
-pub use features::prompts::PromptArgument;
+pub use features::prompts::{
+    PromptArgument, PromptContentKind, PromptGetResult, PromptMessage, PromptRole,
+};
 pub use local_inspection::{
     ConfiguredServer, LocalConfigInspection, ProfileConfigDiagnostic, inspect_local_config,
 };
