@@ -1623,7 +1623,7 @@ mod tests {
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
         PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus,
-        StatuslineItem, StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome,
+        StatuslineItem, StatuslineToggles, StopAction, ToolResultStatus, TurnId, TurnOutcome,
         TurnPresentationOutcome,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
@@ -7810,6 +7810,56 @@ mod tests {
                 .iter()
                 .any(|tool| tool["function"]["name"] == "subagent");
             assert_eq!(offered, saved);
+        }
+    }
+
+    fn saved_turn_events(home: &tempfile::TempDir) -> Vec<Value> {
+        let id = saved_sessions(home)[0]["id"].as_str().unwrap().to_owned();
+        fs::read_to_string(
+            home.path()
+                .join("data/sessions")
+                .join(id)
+                .join("events.jsonl"),
+        )
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
+        .filter(|event| event.get("assistant").is_some() || event.get("turn_completed").is_some())
+        .collect()
+    }
+
+    fn assistant_frame(text: &str, standalone: bool) -> Value {
+        json!({"assistant": {"text": text, "provider_replay": null, "standalone_response": standalone}})
+    }
+
+    #[tokio::test]
+    async fn stop_hook_answers_are_saved_in_upstreams_frames() {
+        for (action, final_text) in [
+            (StopAction::Allow, None),
+            (StopAction::ContinueOnce("verify".to_owned()), Some("final")),
+        ] {
+            let server = FakeServer::start([
+                Reply::sse(&chat_text_events(&["candidate"])),
+                Reply::sse(&chat_text_events(&["final"])),
+            ]);
+            let mut hooks = HookRuntime::default();
+            hooks
+                .register_stop("test.stop", move |_| Ok(action.clone()))
+                .unwrap();
+            let mut harness = Harness::start_saved_with_hooks(&server, hooks.freeze()).await;
+            harness.submit("answer");
+            harness.until(finished(TurnOutcome::Completed)).await;
+            let events = saved_turn_events(&harness.home);
+            assert_eq!(
+                events[..2],
+                [
+                    assistant_frame("candidate", true),
+                    assistant_frame(final_text.unwrap_or_default(), false),
+                ]
+            );
+            assert!(events[2].get("turn_completed").is_some(), "{events:?}");
+            let log = serde_json::to_string(&events).unwrap();
+            assert!(!log.contains("hook context"), "{log}");
         }
     }
 

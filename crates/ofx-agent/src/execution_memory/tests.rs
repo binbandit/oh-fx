@@ -577,3 +577,18 @@ fn restored_steering_is_read_as_steering_without_a_wrapper() {
     );
     assert_eq!(turn.reply, "Done.");
 }
+
+#[test]
+fn a_reply_ending_as_a_standalone_step_leaves_the_turn_an_empty_reply() {
+    let history = vec![ChatMessage::user("go"), assistant("candidate", &[])];
+    let plain = history_turn(&history, 0, history.len());
+    assert!(plain.steps.is_empty());
+    assert_eq!(plain.reply, "candidate");
+    let ended = ended_turn(&history, 0, history.len(), true);
+    assert_eq!(ended.reply, "");
+    assert_eq!(ended.reply_replay, None);
+    assert_eq!(ended.steps.len(), 1);
+    assert_eq!(ended.steps[0].assistant, "candidate");
+    assert!(ended.steps[0].calls.is_empty());
+    assert_eq!(ended.steps[0].end(), 2);
+}

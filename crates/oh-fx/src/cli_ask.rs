@@ -3060,6 +3060,87 @@ mod tests {
         Reply::Raw(format!("{head}{body}").into_bytes())
     }
 
+    fn streamed_codex(server: &FakeServer) -> ofx_gateway::CodexProvider {
+        ofx_gateway::CodexProvider::new(
+            ofx_gateway::CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
+            Arc::new(StreamedAskContext),
+            "oh-fx/test",
+            CodexEndpoints {
+                responses: format!("{}/responses", server.base_url()),
+            },
+        )
+        .unwrap()
+    }
+
+    fn streamed_config() -> ofx_agent::AgentConfig {
+        ofx_agent::AgentConfig {
+            model: "gpt-test".to_owned(),
+            system_prompt: String::new(),
+            max_output_tokens: None,
+            step_limit: 3,
+            reasoning_effort: None,
+            fast_mode: false,
+            ultrafast_mode: false,
+            auto_compact_percent: ofx_contract::AutoCompactPercent::new(80).unwrap(),
+        }
+    }
+
+    fn streamed_presenter(mode: OutputMode) -> (Presenter, Screen, Screen) {
+        let mut presenter = json_presenter();
+        presenter.mode = mode;
+        let stdout = Screen::default();
+        let stderr = Screen::default();
+        presenter.stdout = Box::new(stdout.clone());
+        presenter.stderr = Box::new(stderr.clone());
+        (presenter, stdout, stderr)
+    }
+
+    async fn continued_by_a_stop_hook(mode: OutputMode) -> (Presenter, Screen) {
+        let answer = |text: &str| {
+            Reply::sse(&[
+                serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string(),
+                serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+                    .to_string(),
+            ])
+        };
+        let server = FakeServer::start([answer("Candidate."), answer("Final.")]);
+        let mut hooks = ofx_contract::HookRuntime::default();
+        hooks
+            .register_stop("test.stop", |_| {
+                Ok(ofx_contract::StopAction::ContinueOnce("verify".to_owned()))
+            })
+            .unwrap();
+        let mut agent = Agent::new(
+            Arc::new(streamed_codex(&server)),
+            Vec::new(),
+            Arc::new(StreamedAskContext),
+            Arc::new(StreamedAskContext),
+            streamed_config(),
+        )
+        .with_lifecycle(hooks.freeze(), ofx_contract::HookScope::Ask);
+        let (mut presenter, stdout, _) = streamed_presenter(mode);
+        let report = agent
+            .run_turn(
+                "Answer",
+                &mut |event| assert!(presenter.handle(event)),
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(server.requests().len(), 2);
+        assert_eq!(report.final_text, "Candidate.\nFinal.");
+        (presenter, stdout)
+    }
+
+    #[tokio::test]
+    async fn a_stop_continuation_starts_on_a_new_line_only_in_the_terminal() {
+        let (_, terminal) = continued_by_a_stop_hook(OutputMode::Terminal).await;
+        assert_eq!(terminal.text(), "Candidate.\nFinal.");
+        let (_, raw) = continued_by_a_stop_hook(OutputMode::Raw).await;
+        assert_eq!(raw.text(), "Candidate.Final.");
+        let (json, _) = continued_by_a_stop_hook(OutputMode::Json).await;
+        assert_eq!(json.output, "Candidate.Final.");
+    }
+
     async fn streamed_ask_from_events(
         calls: &[(&str, &str)],
         fail: bool,
@@ -3090,15 +3171,6 @@ mod tests {
         let initial = events.unwrap_or_else(|| streamed_read_with_prose(calls, fail, prose));
         replies.extend([Reply::sse(&initial), Reply::sse(&final_events)]);
         let server = FakeServer::start(replies);
-        let provider = ofx_gateway::CodexProvider::new(
-            ofx_gateway::CodexAccess::new("token".to_owned(), "acct".to_owned(), i64::MAX),
-            Arc::new(StreamedAskContext),
-            "oh-fx/test",
-            CodexEndpoints {
-                responses: format!("{}/responses", server.base_url()),
-            },
-        )
-        .unwrap();
         let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tool = StreamedReadFixture {
             spec: ofx_contract::ToolSpec {
@@ -3110,27 +3182,13 @@ mod tests {
             executions: Arc::clone(&executions),
         };
         let mut agent = Agent::new(
-            Arc::new(provider),
+            Arc::new(streamed_codex(&server)),
             vec![Arc::new(tool)],
             Arc::new(StreamedAskContext),
             Arc::new(StreamedAskContext),
-            ofx_agent::AgentConfig {
-                model: "gpt-test".to_owned(),
-                system_prompt: String::new(),
-                max_output_tokens: None,
-                step_limit: 3,
-                reasoning_effort: None,
-                fast_mode: false,
-                ultrafast_mode: false,
-                auto_compact_percent: ofx_contract::AutoCompactPercent::new(80).unwrap(),
-            },
+            streamed_config(),
         );
-        let mut presenter = json_presenter();
-        presenter.mode = mode;
-        let stderr = Screen::default();
-        let stdout = Screen::default();
-        presenter.stderr = Box::new(stderr.clone());
-        presenter.stdout = Box::new(stdout.clone());
+        let (mut presenter, stdout, stderr) = streamed_presenter(mode);
         let report = agent
             .run_turn(
                 "Read the files",

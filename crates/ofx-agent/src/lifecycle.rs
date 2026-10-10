@@ -1,6 +1,6 @@
 use ofx_contract::{
     HookInvocation, HookScope, HookView, PostTurnEndInput, PreToolUseInput, PreToolUseOutcome,
-    ToolCall, TurnId, TurnPresentationOutcome, pre_tool_use_blocked_json,
+    StopInput, StopOutcome, ToolCall, TurnId, TurnPresentationOutcome, pre_tool_use_blocked_json,
     pre_tool_use_failed_closed_json,
 };
 use tokio::task::JoinHandle;
@@ -72,6 +72,39 @@ impl LifecycleContext {
                 ToolPreparation::Blocked(pre_tool_use_failed_closed_json(&call.name))
             }
         })
+    }
+
+    pub(crate) fn has_stop(&self) -> bool {
+        self.view.has_stop()
+    }
+
+    pub(crate) async fn stop(
+        &self,
+        turn_id: TurnId,
+        step_index: usize,
+        assistant_text: &str,
+        can_continue: bool,
+        cancel: &CancellationToken,
+    ) -> Option<StopOutcome> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let view = self.view.clone();
+        let scope = self.scope;
+        let assistant_text = assistant_text.to_owned();
+        let dispatched = tokio::task::spawn_blocking(move || {
+            view.run_stop(&StopInput {
+                invocation: HookInvocation { scope, turn_id },
+                step_index,
+                assistant_text: &assistant_text,
+                can_continue,
+            })
+        })
+        .await;
+        if cancel.is_cancelled() {
+            return None;
+        }
+        Some(dispatched.unwrap_or(StopOutcome::Allow))
     }
 
     pub(crate) fn post_turn_end(&mut self, turn_id: TurnId, outcome: TurnPresentationOutcome) {

@@ -18,12 +18,13 @@ use ofx_contract::{
     PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
     RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure, ReviewHold,
     ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StreamEvent, SubagentStatus, SubagentStatusSink, Tool,
-    ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolCallId, ToolContext,
-    ToolEffect, ToolOutput, ToolRejection, ToolResultStatus, ToolSpec, TurnId, TurnOutcome,
-    TurnPresentationOutcome, TurnStop, UiEvent, Usage, bound_model_output,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    RouteRecoveryStatus, SkillBinding, StopOutcome, StreamEvent, SubagentStatus,
+    SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
+    ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
+    ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome, TurnStop, UiEvent, Usage,
+    bound_model_output, continuation_message, join_visible_segments, malformed_tool_arguments_json,
+    non_object_tool_arguments_json, tool_execution_failure_json, tool_permission_denied_json,
+    tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -33,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_steps::allows_step;
 use crate::approvals::Approvals;
+use crate::assistant_stream::normalize_assistant_text_for_display;
 use crate::compactor::{CompactionError, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::lifecycle::{LifecycleContext, ToolPreparation};
@@ -212,6 +214,15 @@ struct Turn {
     continuation: Option<&'static str>,
     restored: RestoredReply,
     steps: u64,
+    stop: StopState,
+}
+
+#[derive(Default)]
+struct StopState {
+    dispatched: bool,
+    candidate: Option<String>,
+    continuation: Option<String>,
+    trailing: bool,
 }
 
 struct ProjectInstructions {
@@ -553,6 +564,7 @@ impl Agent {
             continuation: None,
             restored: RestoredReply::default(),
             steps: 0,
+            stop: StopState::default(),
         }
     }
 
@@ -634,7 +646,10 @@ impl Agent {
             }
             Err(Stop::Failed { failure, partial }) => {
                 let spoke = !partial.trim_matches(TRIMMED).is_empty();
-                let ending = if !spoke
+                let ending = if turn.stop.candidate.is_some() {
+                    self.keep_partial_turn(turn.start, &partial);
+                    Ending::Replied
+                } else if !spoke
                     && !self.has_turn_progress(turn.start)
                     && !turn.compaction.compacted_steps
                     && failure != TurnFailure::StepLimitReached
@@ -657,6 +672,7 @@ impl Agent {
         {
             failure = Some(TurnFailure::Persistence(error));
         }
+        self.forget_stop_continuation(&turn);
         self.hold_interruption(ending, turn.start);
         events(UiEvent::TurnFinished {
             turn_id: id,
@@ -686,6 +702,66 @@ impl Agent {
     fn post_turn_end(&mut self, turn_id: TurnId, outcome: TurnPresentationOutcome) {
         if let Some(lifecycle) = &mut self.lifecycle {
             lifecycle.post_turn_end(turn_id, outcome);
+        }
+    }
+
+    async fn stop_checkpoint(
+        &mut self,
+        turn: &mut Turn,
+        reply: Option<String>,
+        can_continue: bool,
+        events: EventSink<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, Stop> {
+        let Some(text) = reply else {
+            return Ok(None);
+        };
+        let Some(lifecycle) = self
+            .lifecycle
+            .as_ref()
+            .filter(|lifecycle| lifecycle.has_stop() && !turn.stop.dispatched)
+        else {
+            return Ok(Some(text));
+        };
+        turn.stop.dispatched = true;
+        turn.stop.trailing = true;
+        let normalized = normalize_assistant_text_for_display(&text);
+        let rendered = if normalized.is_empty() {
+            EMPTY_RESPONSE_TEXT
+        } else {
+            &normalized
+        };
+        let step_index = usize::try_from(turn.steps).unwrap_or(usize::MAX);
+        match lifecycle
+            .stop(turn.id, step_index, rendered, can_continue, cancel)
+            .await
+        {
+            None => Err(Stop::interrupted()),
+            Some(StopOutcome::Allow) => Ok(Some(text)),
+            Some(StopOutcome::ContinueOnce(context)) => {
+                let continuation = continuation_message(&context);
+                self.history.push(ChatMessage::user(continuation.clone()));
+                turn.stop = StopState {
+                    dispatched: true,
+                    candidate: Some(text),
+                    continuation: Some(continuation),
+                    trailing: false,
+                };
+                events(UiEvent::AssistantBoundary { turn_id: turn.id });
+                Ok(None)
+            }
+        }
+    }
+
+    fn forget_stop_continuation(&mut self, turn: &Turn) {
+        let Some(continuation) = &turn.stop.continuation else {
+            return;
+        };
+        let start = (turn.start + 1).min(self.history.len());
+        if let Some(index) = self.history[start..].iter().position(|message| {
+            matches!(message, ChatMessage::User { content, .. } if content == continuation)
+        }) {
+            self.history.remove(start + index);
         }
     }
 
@@ -813,9 +889,16 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<Option<String>, Stop> {
         match (completion.finish_reason, completion.tool_calls.is_empty()) {
-            (FinishReason::Stop, true) => self.finish(turn, completion, more_steps, events),
+            (FinishReason::Stop, true) => {
+                let reply = self.finish(turn, completion, more_steps, events)?;
+                self.stop_checkpoint(turn, reply, more_steps, events, cancel)
+                    .await
+            }
             (FinishReason::Stop, false) if ends_with_provider_results(&completion) => {
-                self.finish_with_provider_results(turn, completion, more_steps, events)
+                let reply =
+                    self.finish_with_provider_results(turn, completion, more_steps, events)?;
+                self.stop_checkpoint(turn, reply, more_steps, events, cancel)
+                    .await
             }
             (FinishReason::Stop, false) if completion.tool_calls.iter().all(provider_executed) => {
                 self.run_batch(turn, completion, more_steps, events, cancel)
@@ -1740,6 +1823,10 @@ impl Agent {
             tool_calls: Vec::new(),
             provider_replay: history_replay,
         };
+        let presented = match &turn.stop.candidate {
+            Some(candidate) => join_visible_segments(candidate, &history_text),
+            None => history_text,
+        };
         if more_steps && let Some(steering) = self.finalizing_steering() {
             self.history.push(reply);
             self.append_steering(turn.id, steering, events);
@@ -1752,7 +1839,7 @@ impl Agent {
             });
         }
         self.history.push(reply);
-        Ok(Some(history_text))
+        Ok(Some(presented))
     }
 
     fn has_turn_progress(&self, start: usize) -> bool {

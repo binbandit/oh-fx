@@ -40,7 +40,8 @@ pub use history_turn::{
 pub use hooks::{
     AttentionKind, AttentionRequiredInput, HookDispatchError, HookHandlerError, HookInvocation,
     HookRegistrationError, HookRuntime, HookScope, HookView, PostTurnEndInput, PreToolUseAction,
-    PreToolUseInput, PreToolUseOutcome,
+    PreToolUseInput, PreToolUseOutcome, StopAction, StopInput, StopOutcome, continuation_message,
+    join_visible_segments,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use mcp_servers::{McpServersCatalog, McpServersSection};

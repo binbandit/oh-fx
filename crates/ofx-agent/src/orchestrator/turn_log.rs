@@ -8,7 +8,7 @@ use super::recovery::Restart;
 use super::turn_ledger::TurnRecord;
 use super::{Agent, Stop, Turn, TurnFailure};
 use crate::compactor::{Compacted, encode_checkpoint, restore_checkpoint};
-use crate::execution_memory::{ToolStep, history_turn, logged_steps};
+use crate::execution_memory::{ToolStep, ended_turn, logged_steps};
 use crate::model_response_recovery::DEFAULT_MAX_PROVIDER_ATTEMPTS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +80,7 @@ impl Agent {
         let recorded = self.record_turn(prompt, turn, ending, &files);
         self.settle_steering(turn.start);
         self.note_recorded(turn, ending, recorded.is_ok());
-        self.send_file_evidence(turn.start, &files);
+        self.send_file_evidence(turn, &files);
         recorded
     }
 
@@ -88,23 +88,34 @@ impl Agent {
         if ending == Ending::Discarded || turn.start >= self.history.len() {
             return Vec::new();
         }
-        let parsed = history_turn(&self.history, turn.start, self.history.len());
+        let parsed = ended_turn(
+            &self.history,
+            turn.start,
+            self.history.len(),
+            turn.stop.trailing,
+        );
         let steps = logged_steps(&parsed.steps, &turn.raw_outputs);
         turn.earlier_files.turn_files(&steps)
     }
 
     pub(super) fn keep_compacted_files(&self, turn: &mut Turn, covered: usize) {
-        let parsed = history_turn(&self.history, turn.start, self.history.len());
+        let parsed = ended_turn(
+            &self.history,
+            turn.start,
+            self.history.len(),
+            turn.stop.trailing,
+        );
         let steps = logged_steps(&parsed.steps, &turn.raw_outputs);
         let covered = covered.min(steps.len());
         turn.earlier_files.keep_compacted(&steps[..covered]);
     }
 
-    fn send_file_evidence(&mut self, start: usize, files: &[FileEvidence]) {
+    fn send_file_evidence(&mut self, turn: &Turn, files: &[FileEvidence]) {
+        let start = turn.start;
         if files.is_empty() || start >= self.history.len() {
             return;
         }
-        let parsed = history_turn(&self.history, start, self.history.len());
+        let parsed = ended_turn(&self.history, start, self.history.len(), turn.stop.trailing);
         let at = parsed.steps.last().map_or(start + 1, ToolStep::end);
         self.history
             .insert(at, ChatMessage::user(file_evidence_context(files)));
@@ -122,7 +133,7 @@ impl Agent {
             return Ok(());
         };
         let parsed = (ending != Ending::Discarded && start < self.history.len())
-            .then(|| history_turn(&self.history, start, self.history.len()));
+            .then(|| ended_turn(&self.history, start, self.history.len(), turn.stop.trailing));
         let logged = match (parsed, ending) {
             (Some(parsed), Ending::Replied) => HistoryTurn {
                 user: parsed.user,
@@ -233,7 +244,7 @@ impl Agent {
 }
 
 fn turn_so_far<'a>(history: &'a [ChatMessage], turn: &Turn) -> HistoryTurn<'a> {
-    let parsed = history_turn(history, turn.start, history.len());
+    let parsed = ended_turn(history, turn.start, history.len(), turn.stop.trailing);
     HistoryTurn {
         user: parsed.user,
         steps: logged_steps(&parsed.steps, &turn.raw_outputs),

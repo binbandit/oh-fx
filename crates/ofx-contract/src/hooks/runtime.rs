@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
 use super::definitions::{
-    ARGUMENTS_JSON_BYTES, AttentionRequiredInput, HANDLER_NAME_BYTES, HookDispatchError,
-    HookHandlerError, HookRegistrationError, PostTurnEndInput, PreToolUseAction, PreToolUseInput,
-    PreToolUseOutcome, REASON_BYTES,
+    ARGUMENTS_JSON_BYTES, AttentionRequiredInput, CONTEXT_BYTES, HANDLER_NAME_BYTES,
+    HookDispatchError, HookHandlerError, HookRegistrationError, PostTurnEndInput, PreToolUseAction,
+    PreToolUseInput, PreToolUseOutcome, REASON_BYTES, StopAction, StopInput, StopOutcome,
 };
 use crate::types::ToolArgumentIntegrity;
 
 type SideEffect<Input> = Box<dyn Fn(&Input) + Send + Sync>;
 type PreToolUseHandler =
     Box<dyn Fn(&PreToolUseInput<'_>) -> Result<PreToolUseAction, HookHandlerError> + Send + Sync>;
+type StopHandler =
+    Box<dyn Fn(&StopInput<'_>) -> Result<StopAction, HookHandlerError> + Send + Sync>;
 
 struct Registered<Handler> {
     name: Box<str>,
@@ -19,6 +21,7 @@ struct Registered<Handler> {
 #[derive(Default)]
 pub struct HookRuntime {
     pre_tool_use: Vec<Registered<PreToolUseHandler>>,
+    stop: Vec<Registered<StopHandler>>,
     post_turn_end: Vec<Registered<SideEffect<PostTurnEndInput>>>,
     attention_required: Vec<Registered<SideEffect<AttentionRequiredInput>>>,
 }
@@ -34,6 +37,19 @@ impl HookRuntime {
     ) -> Result<(), HookRegistrationError> {
         validate_registration(name, &self.pre_tool_use)?;
         self.pre_tool_use.push(Registered {
+            name: name.into(),
+            run: Box::new(run),
+        });
+        Ok(())
+    }
+
+    pub fn register_stop(
+        &mut self,
+        name: &str,
+        run: impl Fn(&StopInput<'_>) -> Result<StopAction, HookHandlerError> + Send + Sync + 'static,
+    ) -> Result<(), HookRegistrationError> {
+        validate_registration(name, &self.stop)?;
+        self.stop.push(Registered {
             name: name.into(),
             run: Box::new(run),
         });
@@ -58,6 +74,7 @@ impl HookRuntime {
 
     pub fn freeze(self) -> HookView {
         let empty = self.pre_tool_use.is_empty()
+            && self.stop.is_empty()
             && self.post_turn_end.is_empty()
             && self.attention_required.is_empty();
         HookView((!empty).then(|| Arc::new(self)))
@@ -101,6 +118,32 @@ impl HookView {
             }
         }
         Ok(rewritten.map_or(PreToolUseOutcome::Unchanged, PreToolUseOutcome::Rewritten))
+    }
+
+    pub fn has_stop(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|runtime| !runtime.stop.is_empty())
+    }
+
+    pub fn run_stop(&self, input: &StopInput<'_>) -> StopOutcome {
+        let Some(runtime) = &self.0 else {
+            return StopOutcome::Allow;
+        };
+        for handler in &runtime.stop {
+            match (handler.run)(input) {
+                Err(_) => return StopOutcome::Allow,
+                Ok(StopAction::Allow) => {}
+                Ok(StopAction::ContinueOnce(context)) => {
+                    return if input.can_continue && context.len() <= CONTEXT_BYTES {
+                        StopOutcome::ContinueOnce(context)
+                    } else {
+                        StopOutcome::Allow
+                    };
+                }
+            }
+        }
+        StopOutcome::Allow
     }
 
     pub fn has_post_turn_end(&self) -> bool {
@@ -198,5 +241,7 @@ fn validate_handler_name(name: &str) -> Result<(), HookRegistrationError> {
 
 #[cfg(test)]
 mod pre_tool_use_tests;
+#[cfg(test)]
+mod stop_tests;
 #[cfg(test)]
 mod tests;
