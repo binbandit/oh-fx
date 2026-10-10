@@ -1368,8 +1368,8 @@ fn drain_install_inputs(
             }
             InstallInput::Clear(first_kept) => {
                 state.pending_clear = Some(first_kept);
-                state.worker.clear();
                 state.worker.request_cancel();
+                state.worker.clear();
                 cancel.cancel();
             }
             InstallInput::Prompt(prompt) => state.worker.admit(prompt),
@@ -1433,8 +1433,8 @@ fn run_deferred(
             CommandEffect::Logout(target) => return state.sign_out_during_work(catalog, &target),
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
-                state.worker.clear();
                 state.worker.request_cancel();
+                state.worker.clear();
                 cancel.cancel();
                 return;
             }

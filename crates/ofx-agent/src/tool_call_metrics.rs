@@ -52,6 +52,7 @@ pub(crate) struct ToolCallRecord<'a> {
     pub(crate) output: &'a str,
     pub(crate) outcome: ToolCallOutcome,
     pub(crate) started_at_ms: i64,
+    pub(crate) finished_at_ms: i64,
     pub(crate) subagent_id: u64,
 }
 
@@ -117,7 +118,7 @@ impl ToolCallRing {
     }
 
     pub(crate) fn record(&self, record: &ToolCallRecord<'_>) {
-        let elapsed = ofx_trace::timestamp_ms().saturating_sub(record.started_at_ms);
+        let elapsed = record.finished_at_ms.saturating_sub(record.started_at_ms);
         let duration_ms = u32::try_from(elapsed.max(0)).unwrap_or(u32::MAX);
         let (args, args_total_bytes, result, result_total_bytes) =
             if record.name == PAYLOAD_FREE_TOOL {

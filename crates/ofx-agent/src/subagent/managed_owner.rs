@@ -209,7 +209,10 @@ impl Owner {
             return Admitted::Rejected("host_unavailable");
         }
         if let Some(existing) = state.registry.find_by_operation(operation_id) {
-            if existing.operation_fingerprint(operation_id) != Some(fingerprint) {
+            let Some(observed) = existing.operation_fingerprint(operation_id) else {
+                return Admitted::Rejected("operation_conflict");
+            };
+            if observed != fingerprint {
                 trace_log!(
                     SUBAGENT,
                     "admission rejected operation={operation_id} child_id={} code=operation_conflict",
@@ -372,10 +375,14 @@ impl Owner {
         };
         let waiter = slot.waiter();
         state.slots.insert(start.child_id.clone(), slot);
-        let parent_id = state
-            .store
-            .as_ref()
-            .map_or_else(|| UNKNOWN.to_owned(), |store| store.parent_id().to_owned());
+        let parent_id = if ofx_trace::enabled(SUBAGENT) {
+            state
+                .store
+                .as_ref()
+                .map_or_else(|| UNKNOWN.to_owned(), |store| store.parent_id().to_owned())
+        } else {
+            String::new()
+        };
         let owner = Arc::clone(self);
         tokio::spawn(async move {
             let Start {

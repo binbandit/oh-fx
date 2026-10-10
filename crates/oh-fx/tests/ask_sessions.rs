@@ -592,7 +592,7 @@ fn a_compaction_during_ask_writes_its_context_compaction_trace_lines() {
         "{written}"
     );
     assert!(
-        lines[8].starts_with("event=decision turn_id=1 step_id=2 decision=no_op "),
+        lines[8].starts_with("event=decision turn_id=1 step_id=1 decision=no_op "),
         "{written}"
     );
     assert!(

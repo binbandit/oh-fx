@@ -235,6 +235,9 @@ impl WorkerRuntime {
 
     pub fn request_interactive_cancel(&self) {
         let mut state = self.lock();
+        if state.interruption == Interruption::Stop {
+            return;
+        }
         let processing = state.processing();
         let queued = state.queue.len();
         let steering_pending = state
