@@ -1460,6 +1460,10 @@ fn save_schema_v3_in_fx(home: &Home) -> PathBuf {
 const V3_TURN: &str = "{\"kind\":\"assistant\",\"user\":{\"text\":\"asked in fx 0.0.7\",\"images\":[]},\"assistant\":\"answered in fx 0.0.7\",\"execution\":{\"schema_version\":3,\"tool_steps\":[],\"files\":[]}}";
 
 fn save_schema_v3_turns_in_fx(home: &Home, turns: &[&str]) -> PathBuf {
+    save_schema_v3_log_in_fx(home, turns, None)
+}
+
+fn save_schema_v3_log_in_fx(home: &Home, turns: &[&str], open: Option<&str>) -> PathBuf {
     let fx = home.root.join(".fx");
     let session = fx.join("sessions").join(FX_ID);
     fs::create_dir_all(&session).expect("create an fx session");
@@ -1480,6 +1484,12 @@ fn save_schema_v3_turns_in_fx(home: &Home, turns: &[&str]) -> PathBuf {
             format!(
                 "{{\"conversation_language\":\"en\",\"total_input_tokens\":7,\"total_output_tokens\":3,\"turn\":{turn}}}"
             ),
+        ));
+    }
+    if let Some(open) = open {
+        frames.push((
+            "recovery_checkpoint_set",
+            format!("{{\"checkpoint\":{open}}}"),
         ));
     }
     let committed = frames.len();
@@ -1579,4 +1589,29 @@ fn ask_resumes_a_session_fx_0_0_7_compacted_from_its_summary() {
     assert!(request.contains("kept after it"), "{request}");
     assert!(!request.contains("FIRST_REMOVED"), "{request}");
     assert!(!request.contains("SECOND_REMOVED"), "{request}");
+}
+
+#[test]
+fn ask_continues_the_request_an_fx_session_never_finished() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["continued"]))]);
+    let home = Home::new(&server.base_url());
+    let open = "{\"version\":2,\"turn_id\":2,\"user\":{\"text\":\"UNFINISHED_REQUEST\",\"images\":[]},\"assistant_source\":\"\",\"execution\":{\"schema_version\":4,\"tool_steps\":[],\"files\":[]},\"cause\":\"network_interrupted\",\"action\":\"retrying_request\",\"tool_state\":\"none\",\"authority\":{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"credential_source\":\"ai_gateway_api_key\",\"credential_identity\":null},\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":0,\"outstanding_reservation\":false}";
+    let source = save_schema_v3_log_in_fx(&home, &[V3_TURN], Some(open));
+    let untouched = fs::read(source.join("events.jsonl")).expect("read fx's log");
+
+    let result = home.ask_json(&["--resume-id", FX_ID, "--continue-recovery"], &[]);
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["final_output"], "continued");
+    assert_eq!(
+        texts(&conversation(&server.requests()[0])),
+        [
+            "user: asked in fx 0.0.7",
+            "assistant: answered in fx 0.0.7",
+            "user: UNFINISHED_REQUEST"
+        ]
+    );
+    assert_eq!(
+        fs::read(source.join("events.jsonl")).expect("read fx's log"),
+        untouched
+    );
 }
