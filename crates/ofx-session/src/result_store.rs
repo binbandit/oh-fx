@@ -17,8 +17,15 @@ const HANDLE_SUFFIX: &str = ".txt";
 const MAX_HANDLE_BYTES: usize = 160;
 const MAX_TOOL_PART_BYTES: usize = 48;
 const DIGEST_HEX_BYTES: usize = 8;
+const DIFF_HANDLE_PREFIX: &str = "diff-";
+const DIFF_HANDLE_SUFFIX: &str = ".json";
+const DIFF_CONTENT_MAX_BYTES: usize = 2 * STORED_TEXT_MAX_BYTES;
 
 pub(crate) fn make_handle(tool_call_id: &str, tool_name: &str, text: &str) -> String {
+    bytes_handle(tool_call_id, tool_name, text.as_bytes())
+}
+
+pub(crate) fn bytes_handle(tool_call_id: &str, tool_name: &str, bytes: &[u8]) -> String {
     let mut handle = String::from(HANDLE_PREFIX);
     if tool_name.is_empty() {
         handle.push_str("call");
@@ -30,9 +37,30 @@ pub(crate) fn make_handle(tool_call_id: &str, tool_name: &str, text: &str) -> St
     handle.push('-');
     push_digest_hex(&mut handle, tool_call_id.as_bytes());
     handle.push('-');
-    push_digest_hex(&mut handle, text.as_bytes());
+    push_digest_hex(&mut handle, bytes);
     handle.push_str(HANDLE_SUFFIX);
     handle
+}
+
+pub(crate) fn diff_content_pack(
+    tool_call_id: &str,
+    previous_content: Option<&[u8]>,
+    after_content: Option<&[u8]>,
+) -> Option<(String, Vec<u8>)> {
+    let mut pack = b"{\"previous_content\":".to_vec();
+    push_pack_content(&mut pack, previous_content)?;
+    pack.extend_from_slice(b",\"after_content\":");
+    push_pack_content(&mut pack, after_content)?;
+    pack.push(b'}');
+    if pack.len() > DIFF_CONTENT_MAX_BYTES {
+        return None;
+    }
+    let mut handle = String::from(DIFF_HANDLE_PREFIX);
+    push_digest_hex(&mut handle, tool_call_id.as_bytes());
+    handle.push('-');
+    push_digest_hex(&mut handle, &pack);
+    handle.push_str(DIFF_HANDLE_SUFFIX);
+    Some((handle, pack))
 }
 
 pub(crate) fn store_result(
@@ -48,25 +76,44 @@ pub(crate) fn store_result(
     Ok(())
 }
 
+fn push_pack_content(pack: &mut Vec<u8>, content: Option<&[u8]>) -> Option<()> {
+    let Some(bytes) = content else {
+        pack.extend_from_slice(b"null");
+        return Some(());
+    };
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return serde_json::to_writer(pack, text).ok();
+    }
+    pack.push(b'[');
+    for (index, byte) in bytes.iter().enumerate() {
+        if index > 0 {
+            pack.push(b',');
+        }
+        pack.extend_from_slice(byte.to_string().as_bytes());
+    }
+    pack.push(b']');
+    Some(())
+}
+
 pub(crate) fn store_new_results<'a>(
     session: &PrivateDir,
-    results: impl IntoIterator<Item = (&'a str, &'a str)>,
+    results: impl IntoIterator<Item = (&'a str, &'a [u8])>,
 ) -> Result<(), SessionError> {
     let mut results = results.into_iter().peekable();
     if results.peek().is_none() {
         return Ok(());
     }
     let dir = session.open_or_create_child(TOOL_RESULTS_DIR)?;
-    for (handle, text) in results {
+    for (handle, bytes) in results {
         if !is_valid_handle(handle) {
             return Err(SessionError::InvalidConversationEvent);
         }
         match create_managed_file(&dir, handle) {
             Ok(mut file) => {
-                file.write_all(text.as_bytes())?;
+                file.write_all(bytes)?;
                 rustix::fs::fsync(&file)?;
             }
-            Err(SessionError::SessionAlreadyExists) => dir.replace(handle, text.as_bytes())?,
+            Err(SessionError::SessionAlreadyExists) => dir.replace(handle, bytes)?,
             Err(error) => return Err(error),
         }
     }
@@ -148,6 +195,14 @@ pub(crate) fn preview(text: &str) -> &str {
     &text[..text.floor_char_boundary(PREVIEW_BYTES)]
 }
 
+pub(crate) fn bytes_preview(bytes: &[u8]) -> Option<&str> {
+    let mut end = PREVIEW_BYTES.min(bytes.len());
+    while end > 0 && end < bytes.len() && bytes[end] & 0b1100_0000 == 0b1000_0000 {
+        end -= 1;
+    }
+    std::str::from_utf8(&bytes[..end]).ok()
+}
+
 pub(crate) fn format_stored_result_output(
     handle: &str,
     preview: &str,
@@ -190,7 +245,14 @@ mod tests {
         let first = make_handle("call_1", "shell", "one");
         let second = make_handle("call_2", "shell", "two");
         store_result(&dir, &second, "stale").unwrap();
-        store_new_results(&dir, [(first.as_str(), "one"), (second.as_str(), "two")]).unwrap();
+        store_new_results(
+            &dir,
+            [
+                (first.as_str(), &b"one"[..]),
+                (second.as_str(), &b"two"[..]),
+            ],
+        )
+        .unwrap();
         let results = root.path().join("session/tool-results");
         for (handle, text) in [(&first, "one"), (&second, "two")] {
             let path = results.join(handle);
@@ -199,7 +261,7 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         assert_eq!(
-            store_new_results(&dir, [("../escape", "x")]),
+            store_new_results(&dir, [("../escape", &b"x"[..])]),
             Err(SessionError::InvalidConversationEvent)
         );
     }

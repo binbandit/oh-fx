@@ -3,6 +3,7 @@ mod durable_state;
 mod durable_turn;
 mod legacy_checkpoint;
 mod legacy_frame;
+mod legacy_presentation;
 mod recovery_file;
 mod replay;
 

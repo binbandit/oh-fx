@@ -6,15 +6,18 @@ use super::LegacySession;
 use super::durable_turn::{
     ConversationTurn, Execution, LegacyTurn, SavedResult, Steering, TurnClose,
 };
+use super::legacy_presentation::{CommandReplay, LegacyPresentation};
 use super::recovery_file::recovery_file;
-use crate::result_store::{make_handle, preview, store_new_results};
+use crate::result_store::{
+    PREVIEW_BYTES, bytes_handle, bytes_preview, diff_content_pack, store_new_results,
+};
 use crate::session_codec::{SessionMetadata, encode_session_metadata};
 use crate::session_display_metadata::history_title;
 use crate::session_error::SessionError;
 use crate::session_event::{
-    ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, ConversationEvent,
-    ConversationState, FileEvidence, InterruptedEvent, SteeringEvent, ToolResultEvent,
-    TurnCompletedEvent, UserEvent, encode_conversation_frame,
+    ArtifactCompleteness, AssistantEvent, CommittedFilePresentation, ContextCheckpointEvent,
+    ConversationEvent, ConversationState, FileEvidence, InterruptedEvent, SavedReplay,
+    SteeringEvent, ToolResultEvent, TurnCompletedEvent, UserEvent, encode_conversation_frame,
 };
 use crate::session_log::managed_file::{create_managed_file, sync_dir};
 use crate::session_log::{
@@ -38,7 +41,7 @@ struct LogBuilder {
 
 struct StoredResult {
     handle: String,
-    text: String,
+    bytes: Vec<u8>,
 }
 
 impl LegacySession {
@@ -93,11 +96,10 @@ impl LegacySession {
             None => None,
         };
         let recovery = file.map(|file| {
-            results.extend(
-                file.spilled
-                    .into_iter()
-                    .map(|(handle, text)| StoredResult { handle, text }),
-            );
+            results.extend(file.spilled.into_iter().map(|(handle, text)| StoredResult {
+                handle,
+                bytes: text.into_bytes(),
+            }));
             file.bytes
         });
         Ok(Converted {
@@ -164,7 +166,7 @@ impl Converted {
             copy,
             self.results
                 .iter()
-                .map(|result| (result.handle.as_str(), result.text.as_str())),
+                .map(|result| (result.handle.as_str(), result.bytes.as_slice())),
         )?;
         let mut log = Vec::new();
         for (seq, event) in (1_u64..).zip(&self.events) {
@@ -212,13 +214,19 @@ fn turn_events(
     }
     let mut follows_standalone = false;
     for (index, step) in steps.into_iter().enumerate() {
-        if !step.assistant.is_empty() || follows_standalone {
-            events.push(assistant(step.assistant, step.calls.is_empty()));
+        if !step.assistant.is_empty() || step.replay.is_some() || follows_standalone {
+            events.push(assistant(
+                step.assistant,
+                step.replay,
+                step.calls.is_empty(),
+            ));
         }
         follows_standalone = step.calls.is_empty();
         events.extend(step.calls.into_iter().map(ConversationEvent::ToolCall));
         for result in step.results {
-            events.push(ConversationEvent::ToolResult(result_event(result, results)));
+            events.push(ConversationEvent::ToolResult(result_event(
+                result, results,
+            )?));
         }
         while let Some(entry) = steering.next_if(|entry| entry.after_tool_step_count == index + 1) {
             steering_events(entry, &mut events);
@@ -232,9 +240,9 @@ fn turn_events(
         .filter(|file| !file.path.is_empty())
         .collect();
     match close {
-        TurnClose::Replied(reply) => {
-            if !reply.is_empty() || ends_standalone {
-                events.push(assistant(reply, false));
+        TurnClose::Replied(reply, provider_replay) => {
+            if !reply.is_empty() || provider_replay.is_some() || ends_standalone {
+                events.push(assistant(reply, provider_replay, false));
             }
             events.push(ConversationEvent::TurnCompleted(TurnCompletedEvent {
                 files,
@@ -245,14 +253,22 @@ fn turn_events(
             reason,
             partial,
             pending,
+            cancelled,
         } => {
             if let Some(call) = pending {
                 if ends_standalone {
-                    events.push(assistant(String::new(), false));
+                    events.push(assistant(String::new(), None, false));
                 }
                 events.push(ConversationEvent::ToolCall(call));
             }
             let mut interrupted = InterruptedEvent::new(reason, partial);
+            if let Some(cancelled) = cancelled {
+                (
+                    interrupted.command_replay_ref,
+                    interrupted.command_replay_bytes,
+                ) = CommandReplay::available(cancelled.replay.as_ref());
+                interrupted.command_artifact_ref = cancelled.artifact;
+            }
             interrupted.files = files;
             interrupted.turn_summary = turn_summary;
             events.push(ConversationEvent::Interrupted(interrupted));
@@ -261,17 +277,21 @@ fn turn_events(
     Ok(events)
 }
 
-fn assistant(text: String, standalone_response: bool) -> ConversationEvent {
+fn assistant(
+    text: String,
+    provider_replay: Option<SavedReplay>,
+    standalone_response: bool,
+) -> ConversationEvent {
     ConversationEvent::Assistant(AssistantEvent {
         text,
-        provider_replay: None,
+        provider_replay,
         standalone_response,
     })
 }
 
 fn steering_events(entry: Steering, events: &mut Vec<ConversationEvent>) {
     if !entry.assistant_prefix.is_empty() {
-        events.push(assistant(entry.assistant_prefix, false));
+        events.push(assistant(entry.assistant_prefix, None, false));
     }
     if !entry.text.is_empty() {
         events.push(ConversationEvent::Steering(SteeringEvent {
@@ -280,18 +300,24 @@ fn steering_events(entry: Steering, events: &mut Vec<ConversationEvent>) {
     }
 }
 
-fn result_event(result: SavedResult, results: &mut Vec<StoredResult>) -> ToolResultEvent {
-    let preview = result
-        .preview
-        .unwrap_or_else(|| preview(&result.output).to_owned());
+fn result_event(
+    result: SavedResult,
+    results: &mut Vec<StoredResult>,
+) -> Result<ToolResultEvent, SessionError> {
+    let preview = match result.preview {
+        Some(preview) => preview,
+        None => bytes_preview(&result.output)
+            .ok_or(SessionError::InvalidConversationEvent)?
+            .to_owned(),
+    };
     let (artifact_ref, stored_bytes, truncated) = if let Some(handle) = result.output_handle {
         (handle, result.stored_output_bytes, result.truncated)
     } else {
-        let handle = make_handle(&result.call_id, &result.tool_name, &result.output);
+        let handle = bytes_handle(&result.call_id, &result.tool_name, &result.output);
         let stored_bytes = u64::try_from(result.output.len()).unwrap_or(u64::MAX);
         results.push(StoredResult {
             handle: handle.clone(),
-            text: result.output,
+            bytes: result.output,
         });
         (handle, stored_bytes, true)
     };
@@ -300,6 +326,11 @@ fn result_event(result: SavedResult, results: &mut Vec<StoredResult>) -> ToolRes
     } else {
         ArtifactCompleteness::Complete
     };
+    let presentation = result
+        .presentation
+        .map(|presentation| shown_presentation(&result.call_id, *presentation, results))
+        .transpose()?;
+    let (replay_ref, replay_bytes) = CommandReplay::available(result.replay.as_ref());
     let mut event = ToolResultEvent::new(
         result.call_id,
         result.tool_name,
@@ -314,5 +345,48 @@ fn result_event(result: SavedResult, results: &mut Vec<StoredResult>) -> ToolRes
     event.created_at_ms = result.created_at_ms;
     event.permission_feedback = result.permission_feedback;
     event.command_process_presentation = result.process;
-    event
+    event.committed_file_presentation = presentation;
+    event.command_replay_ref = replay_ref;
+    event.command_replay_bytes = replay_bytes;
+    Ok(event)
+}
+
+fn shown_presentation(
+    call_id: &str,
+    legacy: LegacyPresentation,
+    results: &mut Vec<StoredResult>,
+) -> Result<Box<CommittedFilePresentation>, SessionError> {
+    let LegacyPresentation {
+        mut shown,
+        previous_content,
+        after_content,
+    } = legacy;
+    let size = |content: &Option<Vec<u8>>| content.as_ref().map_or(0, Vec::len);
+    let inline = size(&previous_content).saturating_add(size(&after_content));
+    let pack = if shown.content_handle.is_none() && inline > PREVIEW_BYTES {
+        diff_content_pack(
+            call_id,
+            previous_content.as_deref(),
+            after_content.as_deref(),
+        )
+    } else {
+        None
+    };
+    if let Some((handle, pack)) = pack {
+        shown.content_handle = Some(handle.clone());
+        results.push(StoredResult {
+            handle,
+            bytes: pack,
+        });
+        return Ok(Box::new(shown));
+    }
+    let text = |content: Option<Vec<u8>>| {
+        content
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| SessionError::InvalidConversationEvent)
+    };
+    shown.previous_content = text(previous_content)?;
+    shown.after_content = text(after_content)?;
+    Ok(Box::new(shown))
 }
