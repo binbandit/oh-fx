@@ -69,7 +69,7 @@ note = "Append and recent-entry loading exist; clearWorkspace is missing; invali
 upstream = "src/core/session/result_store.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/result_store.rs"]
-note = "Stored result handles and previews exist; paged ResultReader, image snapshots and compactor content packs are missing."
+note = "Stored result handles and previews exist, and an fx schema-v3 import writes tool output byte for byte and edit contents into diff packs named and encoded as storeDiffContent does; paged ResultReader, image snapshots and compactor content packs are missing."
 
 [[file]]
 upstream = "src/core/session/session.zig"
@@ -108,8 +108,8 @@ note = "Only the subagent control directory exists, with a child's owner marker 
 [[file]]
 upstream = "src/core/session/session_codec.zig"
 status = "partial"
-modules = ["crates/ofx-session/src/session_codec.rs", "crates/ofx-session/src/session_migration/durable_turn.rs", "crates/ofx-session/src/session_migration/durable_state.rs", "crates/ofx-session/src/session_migration/legacy_checkpoint.rs"]
-note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, and approval feedback written and restored as upstream does; the legacy connection preferences, the history turns and compacted summaries, the durable state a replacement carries, and the version 1, version 2 and pre-public route checkpoints are read when fx's schema-v3 sessions are imported, the pre-public ones archived as failed turns as archive_legacy_recovery does, and the turn fields oh-fx cannot write yet come with the rest of NEW-G."
+modules = ["crates/ofx-session/src/session_codec.rs", "crates/ofx-session/src/session_migration/durable_turn.rs", "crates/ofx-session/src/session_migration/durable_state.rs", "crates/ofx-session/src/session_migration/legacy_checkpoint.rs", "crates/ofx-session/src/session_migration/legacy_presentation.rs"]
+note = "Modern metadata and preference codecs exist, and the recovery checkpoint form upstream writes today is read and written, with the interrupted reply, tool evidence, and approval feedback written and restored as upstream does; the legacy connection preferences, the history turns and compacted summaries, the durable state a replacement carries, and the version 1, version 2 and pre-public route checkpoints are read when fx's schema-v3 sessions are imported, the pre-public ones archived as failed turns as archive_legacy_recovery does, with file presentations, command replays, cancelled commands and provider replays; images, review feedback, terminal actions and compaction cancellations wait for their NEW-H frame fields."
 
 [[file]]
 upstream = "src/core/session/session_commands.zig"
@@ -156,13 +156,13 @@ note = "Session-ID validation/generation exists; terminal-specific IDs and v2 di
 upstream = "src/core/session/session_log.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_log.rs", "crates/ofx-session/src/session_migration/conversion.rs", "crates/ofx-session/src/session_migration/recovery_file.rs"]
-note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy and the in-place import recovery are missing; the permission and usage sidecars are not written, as for oh-fx's own sessions."
+note = "Modern append/replay exists, and a matching recovery checkpoint stays pending for continuation or is committed as an interrupted turn, and retry checkpoints are written and cleared; importLegacySnapshotState's conversion writes an fx schema-v3 session into oh-fx's copy, never in place, compacted summaries becoming checkpoints as upstream writes them, edit contents over 4 KiB spilled into diff packs as spillHistoryTurnFilePresentations does, and a checkpoint left set becoming recovery.json as writeConversationRecoveryState writes it, long outputs spilled and an oversized checkpoint left out; recovery checkpoint prefix validation/copy and the in-place import recovery are missing; the permission and usage sidecars are not written, as for oh-fx's own sessions."
 
 [[file]]
 upstream = "src/core/session/session_migration.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_migration.rs"]
-note = "Reads the committed prefix of the schema-v3 semantic event log fx 0.0.1 to 0.0.7 wrote, as loadSchemaV3ReadOnly does, and converts an ordinary conversation into oh-fx's copy of the fx session instead of rewriting it in place, as docs/differences/sessions.md records. State replacements are read once their chunks and digests check out, and compacted summaries become checkpoints as upstream's import writes them. A recovery checkpoint left set at the watermark becomes the copy's recovery, or a failed turn when it predates fx's public repository. Base64 text, a subagent work id or provider-run tool result in an open checkpoint, and turn fields oh-fx cannot write yet keep a session hidden. The v1 and v2 session.json snapshots are not ported: only builds before fx's public repository wrote them, and the first public commit already writes the schema-v3 layout."
+note = "Reads the committed prefix of the schema-v3 semantic event log fx 0.0.1 to 0.0.7 wrote, as loadSchemaV3ReadOnly does, and converts an ordinary conversation into oh-fx's copy of the fx session instead of rewriting it in place, as docs/differences/sessions.md records. State replacements are read once their chunks and digests check out, and compacted summaries become checkpoints as upstream's import writes them. A recovery checkpoint left set at the watermark becomes the copy's recovery, or a failed turn when it predates fx's public repository. Edits, command replays, cancelled commands and provider replays are kept, edit contents over 4 KiB moving into diff packs, and tool output that is not UTF-8 is stored byte for byte. Other base64 text, which upstream's import cannot write either, images, review feedback, terminal actions and compaction cancellations, and a subagent work id, provider-run result, presentation or replay in an open checkpoint keep a session hidden. The v1 and v2 session.json snapshots are not ported: only builds before fx's public repository wrote them, and the first public commit already writes the schema-v3 layout."
 
 [[file]]
 upstream = "src/core/session/session_projection.zig"
