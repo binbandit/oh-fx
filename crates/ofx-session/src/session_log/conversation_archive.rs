@@ -7,6 +7,7 @@ use super::conversation_writer::scan_log;
 use super::managed_file::{Access, open_managed_file};
 use super::{CompactedHistory, EVENTS_FILE, ReplayScan, read_checkpoint, read_metadata};
 use crate::session_children::has_owner_marker;
+use crate::session_codec::SessionMetadata;
 use crate::session_error::SessionError;
 use crate::session_event::{
     AssistantEvent, ConversationEvent, InterruptedEvent, SavedReplay, ToolCallEvent,
@@ -81,10 +82,7 @@ pub(crate) fn load_archive(
     if holds_schema_v3(dir, id)? {
         return Err(SessionError::UnsupportedSessionSchema);
     }
-    let metadata = read_metadata(dir, id)?;
-    let archive = read_turns(dir).map_err(|_| unreadable_log)?;
-    session_usage_sidecar::load_conversation(dir, id, metadata.updated_at_ms)?;
-    read_checkpoint(dir, archive.checkpoint_seq())?;
+    let (metadata, archive) = read_conversation(dir, id, unreadable_log)?;
     if metadata.subagent_child {
         return Err(SessionError::SessionNotFound);
     }
@@ -96,6 +94,22 @@ pub(crate) fn load_archive(
         turns: archive.turns,
         source: SessionSource::OhFx,
     })
+}
+
+pub(crate) fn check_conversation(dir: &PrivateDir, id: &str) -> Result<(), SessionError> {
+    read_conversation(dir, id, SessionError::InvalidConversationFrame).map(|_| ())
+}
+
+fn read_conversation(
+    dir: &PrivateDir,
+    id: &str,
+    unreadable_log: SessionError,
+) -> Result<(SessionMetadata, ArchiveBuilder), SessionError> {
+    let metadata = read_metadata(dir, id)?;
+    let archive = read_turns(dir).map_err(|_| unreadable_log)?;
+    session_usage_sidecar::load_conversation(dir, id, metadata.updated_at_ms)?;
+    read_checkpoint(dir, archive.checkpoint_seq())?;
+    Ok((metadata, archive))
 }
 
 fn read_turns(dir: &PrivateDir) -> Result<ArchiveBuilder, SessionError> {
