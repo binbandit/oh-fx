@@ -233,7 +233,7 @@ fn effort_label(effort: &ReasoningEffort) -> &str {
     }
 }
 
-fn is_valid_model(model: &str) -> bool {
+pub(crate) fn is_valid_model(model: &str) -> bool {
     (1..=MAX_MODEL_BYTES).contains(&model.len())
         && !model.starts_with(is_ascii_space)
         && !model.ends_with(is_ascii_space)

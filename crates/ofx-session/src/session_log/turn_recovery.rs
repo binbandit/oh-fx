@@ -17,7 +17,7 @@ use crate::session_log::managed_file::{entry_exists, read_managed_file};
 use crate::session_log::now_ms;
 use crate::session_log::turn_events::{TurnArtifacts, saved_replay, turn_events};
 
-const RECOVERY_FILE: &str = "recovery.json";
+pub(crate) const RECOVERY_FILE: &str = "recovery.json";
 const RECOVERY_ASKED_FILE: &str = "recovery.asked";
 
 #[derive(Debug, Default)]

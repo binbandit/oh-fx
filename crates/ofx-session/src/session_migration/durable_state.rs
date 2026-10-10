@@ -6,6 +6,7 @@ use crate::session_codec::SessionPreferences;
 use crate::session_codec::recovery_checkpoint::{durable_bytes, list};
 
 use super::durable_turn::{LegacyTurn, history_turn, is_valid_work_id};
+use super::legacy_checkpoint::{LegacyCheckpoint, legacy_checkpoint};
 use super::legacy_frame::preferences;
 
 const STATE_TAIL: [&str; 6] = [
@@ -33,7 +34,7 @@ pub(super) struct DurableState {
     pub(super) turns: Vec<LegacyTurn>,
     pub(super) context_history_start: usize,
     pub(super) subagent_child: bool,
-    pub(super) recovery_set: bool,
+    pub(super) recovery: Option<LegacyCheckpoint>,
 }
 
 struct Rule {
@@ -59,7 +60,7 @@ pub(super) fn durable_state(bytes: &[u8]) -> Option<DurableState> {
         turns: list(next(&mut entries, "history")?, history_turn)?,
         context_history_start: 0,
         subagent_child: false,
-        recovery_set: false,
+        recovery: None,
     };
     next(&mut entries, "total_input_tokens")?.as_u64()?;
     next(&mut entries, "total_output_tokens")?.as_u64()?;
@@ -79,7 +80,7 @@ pub(super) fn durable_state(bytes: &[u8]) -> Option<DurableState> {
                 .filter(|id| is_valid_work_id(id))
                 .map(|_| ())?,
             4 => state.subagent_child = value.as_bool()?.then_some(true)?,
-            _ => state.recovery_set = matches!(value, Json::Object(_)).then_some(true)?,
+            _ => state.recovery = Some(legacy_checkpoint(value)?),
         }
     }
     (state.context_history_start <= state.turns.len()).then_some(state)

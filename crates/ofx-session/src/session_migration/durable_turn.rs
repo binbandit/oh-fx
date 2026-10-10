@@ -236,7 +236,7 @@ fn interrupted(fields: &mut Fields<'_>) -> Option<LegacyTurn> {
     })))
 }
 
-fn user(value: Json<'_>) -> Option<(String, Option<String>)> {
+pub(super) fn user(value: Json<'_>) -> Option<(String, Option<String>)> {
     let mut fields = Fields::new(value)?;
     let text = durable_text(fields.required("text")?)?;
     match fields.required("images")? {
@@ -252,7 +252,7 @@ fn user(value: Json<'_>) -> Option<(String, Option<String>)> {
     fields.finish((text, work_id))
 }
 
-fn execution(value: Json<'_>) -> Option<Execution> {
+pub(super) fn execution(value: Json<'_>) -> Option<Execution> {
     let mut fields = Fields::new(value)?;
     let version = fields
         .unsigned("schema_version")
