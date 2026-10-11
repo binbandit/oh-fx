@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, symlink};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
@@ -722,4 +723,51 @@ fn a_review_traces_its_start_composition_sends_retries_and_result() {
             "{secret}\n{log}"
         );
     }
+}
+
+#[test]
+fn a_review_cancelled_while_pending_traces_its_cancelled_result() {
+    let gate = Gate::default();
+    let server = FakeServer::start([
+        run("touch marker"),
+        decision(r#"{"decision":"clear"}"#).after(&gate),
+    ]);
+    let home = Home::new(&settings(&server.base_url(), None));
+    let running = home.start("create the marker file");
+    wait_until(|| server.requests().len() == 2, "the review never started");
+    let interrupted = Command::new("kill")
+        .args(["-INT", &running.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    assert!(interrupted.success());
+    let output = running.wait_with_output().expect("wait for oh-fx");
+    gate.open();
+
+    assert_eq!(output.status.signal(), Some(2), "{}", stderr(&output));
+    assert!(!home.workspace.join("marker").exists());
+    let log = home.trace_log();
+    let lines = permission_lines(&log);
+    let expected = [
+        "start tool_name=shell action_kind=command call_id=call_1",
+        "compose_start origin=root ",
+        "compose_result result=ready ",
+        "send attempt=1 max_attempts=3 target_call_id=call_1",
+        "result tool_name=shell decision=cancelled_or_error fallback_reason=Cancelled elapsed_ms=",
+    ];
+    assert_eq!(lines.len(), expected.len(), "{log}");
+    for (line, prefix) in lines.iter().zip(expected) {
+        assert!(line.starts_with(prefix), "{prefix}\n{log}");
+    }
+    assert!(
+        lines[4].ends_with(" execution_started=false call_id=call_1"),
+        "{log}"
+    );
+    let result = log
+        .find("event=auto_review_result")
+        .expect("the review result");
+    let cancelled = log
+        .find("event=permission_error")
+        .expect("the cancelled permission");
+    assert!(result < cancelled, "{log}");
+    assert_eq!(server.requests().len(), 2);
 }

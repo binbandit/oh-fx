@@ -25,18 +25,43 @@ pub(crate) fn budget_exhausted(call: &ToolCall) {
     unavailable_before_review(call, ReviewFailure::TurnReviewBudgetExhausted);
 }
 
-pub(crate) fn started(call: &ToolCall, action: GatedAction<'_>) -> Instant {
-    trace_log!(
-        PERMISSION,
-        "event=auto_review_start tool_name={} action_kind={} call_id={}",
-        call.name,
-        action_kind(action),
-        call.id.as_str()
-    );
-    Instant::now()
+pub(crate) struct Review<'a> {
+    call: &'a ToolCall,
+    started: Instant,
+    settled: bool,
 }
 
-pub(crate) fn finished(call: &ToolCall, started: Instant, reviewed: Option<&Reviewed>) {
+impl<'a> Review<'a> {
+    pub(crate) fn start(call: &'a ToolCall, action: GatedAction<'_>) -> Self {
+        trace_log!(
+            PERMISSION,
+            "event=auto_review_start tool_name={} action_kind={} call_id={}",
+            call.name,
+            action_kind(action),
+            call.id.as_str()
+        );
+        Self {
+            call,
+            started: Instant::now(),
+            settled: false,
+        }
+    }
+
+    pub(crate) fn finish(mut self, reviewed: Option<&Reviewed>) {
+        self.settled = true;
+        result(self.call, self.started, reviewed);
+    }
+}
+
+impl Drop for Review<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            result(self.call, self.started, None);
+        }
+    }
+}
+
+fn result(call: &ToolCall, started: Instant, reviewed: Option<&Reviewed>) {
     let (name, id) = (&call.name, call.id.as_str());
     let elapsed = started.elapsed().as_millis();
     match reviewed.map(|reviewed| &reviewed.verdict) {

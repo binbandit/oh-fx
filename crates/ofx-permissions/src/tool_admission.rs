@@ -296,7 +296,7 @@ impl PermissionGate for PermissionPolicy {
                 request.earlier_requests,
                 request.compacted_turns,
             );
-            let started = review_trace::started(call, request.action);
+            let review = review_trace::Review::start(call, request.action);
             let outcome = match review_request::review_subject(&request, &trusted_root_context) {
                 Some(subject) => reviewer.review(&subject, cancel).await,
                 None => Some(Reviewed {
@@ -304,7 +304,7 @@ impl PermissionGate for PermissionPolicy {
                     usage: Usage::default(),
                 }),
             };
-            review_trace::finished(call, started, outcome.as_ref());
+            review.finish(outcome.as_ref());
             outcome
         })
     }
