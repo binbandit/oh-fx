@@ -2,7 +2,7 @@ use std::fmt;
 
 use ofx_contract::{
     BoxFuture, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, ProviderReplay, StreamSink, ToolCall,
+    ProviderErrorKind, ProviderReplay, StreamEvent, StreamSink, ToolCall,
 };
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
 use ofx_images::AttachmentDimensionCache;
@@ -11,7 +11,9 @@ use zeroize::Zeroizing;
 
 use crate::chat_completions::sanitized;
 use crate::client::{FailureCause, Finish, GatewayAttempt, GatewayCompletion};
-use crate::vercel_protocol::{RequestError, build_request, replay_source, select_replay_parts};
+use crate::vercel_protocol::{
+    RequestError, build_request, build_review_request, replay_source, select_replay_parts,
+};
 
 const CHAT_URL: &str = "https://ai-gateway.vercel.sh/v4/ai/language-model";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
@@ -114,6 +116,23 @@ impl GatewayProvider {
         }
     }
 
+    pub fn review_body(&self, request: &ModelRequest<'_>) -> Option<String> {
+        build_review_request(request).ok()
+    }
+
+    pub async fn review(
+        &self,
+        request: &ModelRequest<'_>,
+        body: String,
+        cancel: &CancellationToken,
+    ) -> Result<Completion, ProviderError> {
+        let mut discarded = |_: StreamEvent| {};
+        let completion = self
+            .attempt(request, Some(body), &mut discarded, cancel)
+            .await?;
+        into_review_completion(completion, request.model, &self.secrets)
+    }
+
     async fn complete(
         &self,
         request: &ModelRequest<'_>,
@@ -121,6 +140,17 @@ impl GatewayProvider {
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
+        let completion = self.attempt(request, body, sink, cancel).await?;
+        into_completion(completion, request.model, &self.secrets)
+    }
+
+    async fn attempt(
+        &self,
+        request: &ModelRequest<'_>,
+        body: Option<String>,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> Result<GatewayCompletion, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
@@ -137,8 +167,7 @@ impl GatewayProvider {
             model: request.model,
             secrets: &self.secrets,
         };
-        let completion = attempt.stream(payload, sink, cancel).await?;
-        into_completion(completion, request.model, &self.secrets)
+        attempt.stream(payload, sink, cancel).await
     }
 }
 
@@ -179,6 +208,44 @@ impl ModelProvider for GatewayProvider {
 
 fn request_failure(error: RequestError) -> ProviderError {
     ProviderError::new(ProviderErrorKind::Protocol, error.to_string())
+}
+
+fn into_review_completion(
+    completion: GatewayCompletion,
+    model: &str,
+    secrets: &[String],
+) -> Result<Completion, ProviderError> {
+    let timed_out = completion.failure_cause == Some(FailureCause::GatewayStreamTimeout);
+    if timed_out
+        || matches!(
+            completion.finish,
+            Some(Finish::ProviderError | Finish::ContentFilter)
+        )
+    {
+        return into_completion(completion, model, secrets);
+    }
+    completion
+        .tools
+        .admission()
+        .map_err(|code| ProviderError::new(ProviderErrorKind::Protocol, code))?;
+    let GatewayCompletion {
+        content,
+        usage,
+        tools,
+        ..
+    } = completion;
+    let tool_calls = tools.into_calls();
+    Ok(Completion {
+        content: (!content.is_empty()).then_some(content),
+        finish_reason: if tool_calls.is_empty() {
+            FinishReason::Stop
+        } else {
+            FinishReason::ToolCalls
+        },
+        tool_calls,
+        usage,
+        provider_replay: None,
+    })
 }
 
 fn into_completion(
