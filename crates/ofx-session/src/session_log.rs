@@ -14,7 +14,7 @@ use std::mem;
 use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
+use ofx_config::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 use ofx_contract::{
     HistoryCut, HistoryTurn, ReasoningEffort, RecoveryPoint, RestoredHistory, TurnEnd, TurnStop,
 };
@@ -53,8 +53,7 @@ pub(crate) use conversation_recovery::{
 use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
-    open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_dir_tree,
-    same_directory, sync_dir,
+    open_managed_file, publish_dir, read_managed_file, remove_dir_tree, same_directory, sync_dir,
 };
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
@@ -89,27 +88,34 @@ pub struct SavedSession {
 
 struct OwnedSessionDir {
     dir: PrivateDir,
+    id: String,
     previous_owner_died: bool,
     _lock: AdvisoryLock,
 }
 
 impl OwnedSessionDir {
-    fn acquire(dir: PrivateDir, lock_deadline: Duration) -> Result<Self, SessionError> {
+    fn acquire(dir: PrivateDir, id: &str, lock_deadline: Duration) -> Result<Self, SessionError> {
         let lock = lock_with_deadline(&dir, SESSION_LOCK_FILE, lock_deadline)?
             .ok_or(SessionError::SessionBusy)?;
-        Ok(Self::holding(dir, lock))
+        Ok(Self::holding(dir, id, lock))
     }
 
-    fn holding(dir: PrivateDir, lock: AdvisoryLock) -> Self {
-        let previous_owner_died = entry_exists(&dir, OWNER_LIVE_FILE).unwrap_or(false);
+    fn holding(dir: PrivateDir, id: &str, lock: AdvisoryLock) -> Self {
+        let previous_owner_died = entry_exists(&dir, OWNER_LIVE_FILE).unwrap_or_else(|error| {
+            trace_log!(SESSION, "owner liveness probe failed id={id} err={error}");
+            false
+        });
         let marker = format!(
             "{{\"pid\":{},\"opened_at_ms\":{}}}\n",
             process::id(),
             now_ms()
         );
-        let _ = dir.replace(OWNER_LIVE_FILE, marker.as_bytes());
+        if let Err(error) = dir.replace(OWNER_LIVE_FILE, marker.as_bytes()) {
+            trace_log!(SESSION, "owner liveness mark failed id={id} err={error}");
+        }
         Self {
             dir,
+            id: id.to_owned(),
             previous_owner_died,
             _lock: lock,
         }
@@ -118,7 +124,18 @@ impl OwnedSessionDir {
 
 impl Drop for OwnedSessionDir {
     fn drop(&mut self) {
-        let _ = self.dir.remove(OWNER_LIVE_FILE);
+        let id = &self.id;
+        match self.dir.remove(OWNER_LIVE_FILE) {
+            Ok(RemoveOutcome::Removed | RemoveOutcome::Missing) => {}
+            Ok(RemoveOutcome::RemovedNotDurable) => trace_log!(
+                SESSION,
+                "owner liveness clear sync failed id={id} err={}",
+                DurableError::Failed
+            ),
+            Err(error) => {
+                trace_log!(SESSION, "owner liveness clear failed id={id} err={error}");
+            }
+        }
     }
 }
 
@@ -258,7 +275,13 @@ impl WritableSession {
             self.writer.block_open_turn();
         }
         saved?;
-        self.discard_recovery();
+        if let Err(error) = self.clear_saved_recovery() {
+            trace_log!(
+                SESSION,
+                "event=committed_turn_recovery_cleanup_failed session={} err={error}",
+                self.metadata.id
+            );
+        }
         self.write_first_title(fresh, turn.user)?;
         self.save_language()
     }
@@ -270,6 +293,11 @@ impl WritableSession {
         let mut proposed = self.metadata.clone();
         proposed.conversation_language.clone_from(&self.language);
         self.write_metadata(proposed).map_err(|error| {
+            trace_log!(
+                SESSION,
+                "history committed but language metadata failed session={} err={error}",
+                self.metadata.id
+            );
             self.writer.mark_uncertain();
             match error {
                 SessionError::SessionPersistenceUncertain => error,
@@ -300,6 +328,7 @@ impl WritableSession {
             &self.metadata.preferences.provider,
             checkpoint,
         )?;
+        clear_recovery(&self.owned.dir).ok();
         self.history = replayed_history(self.history(), self.writer.committed_bytes())?;
         Ok(())
     }
@@ -323,10 +352,15 @@ impl WritableSession {
     }
 
     pub fn discard_recovery(&mut self) {
-        if !matches!(self.recovery, Recovery::Absent) {
-            clear_recovery(&self.owned.dir);
-            self.recovery = Recovery::Absent;
+        self.clear_saved_recovery().ok();
+    }
+
+    fn clear_saved_recovery(&mut self) -> Result<(), DurableError> {
+        if matches!(self.recovery, Recovery::Absent) {
+            return Ok(());
         }
+        self.recovery = Recovery::Absent;
+        clear_recovery(&self.owned.dir)
     }
 
     pub fn holds_recovery(&self) -> bool {
@@ -434,8 +468,14 @@ impl WritableSession {
         };
         let mut proposed = self.metadata.clone();
         proposed.title = Some(title);
-        self.write_metadata(proposed)
-            .or_else(|_| self.require_writable())
+        self.write_metadata(proposed).or_else(|error| {
+            trace_log!(
+                SESSION,
+                "derived session title not persisted session={} err={error}",
+                self.metadata.id
+            );
+            self.require_writable()
+        })
     }
 
     fn active_prefix(
@@ -592,6 +632,7 @@ pub(crate) fn start_session(
     let staging = staging_name()?;
     create_private_dir(sessions, &staging).map_err(|_| SessionError::SessionStartFailed)?;
     let language = metadata.conversation_language.clone();
+    let metadata_id = metadata.id.clone();
     let prepared =
         prepare_session(sessions, &staging, &metadata.id, &manifest).map(|(owned, writer)| {
             WritableSession {
@@ -608,21 +649,46 @@ pub(crate) fn start_session(
                 usage_checkpoints: UsageCheckpoints::default(),
             }
         });
+    let id = metadata_id;
     let session = match prepared {
         Ok(session) => session,
         Err(error) => {
-            remove_created_dir(sessions, &staging);
+            discard_unpublished(sessions, &staging, &id);
             return Err(error);
         }
     };
-    let id = session.metadata.id.clone();
     if let Err(error) = publish_dir(sessions, &staging, &id) {
+        if error != SessionError::SessionAlreadyExists {
+            trace_log!(
+                SESSION,
+                "session creation publication failed id={id} err={error}"
+            );
+        }
         drop(session);
-        remove_created_dir(sessions, &staging);
+        discard_unpublished(sessions, &staging, &id);
         return Err(error);
     }
-    sync_dir(sessions).map_err(|_| SessionError::SessionStartFailed)?;
+    sync_dir(sessions).map_err(|error| {
+        trace_log!(
+            SESSION,
+            "session creation retained published state id={id} durability=uncertain err={error}"
+        );
+        SessionError::SessionStartFailed
+    })?;
     Ok(session)
+}
+
+fn discard_unpublished(sessions: &PrivateDir, staging: &str, id: &str) {
+    trace_log!(
+        SESSION,
+        "session creation discarded unpublished state id={id}"
+    );
+    if let Err(error) = remove_dir_tree(sessions, staging) {
+        trace_log!(
+            SESSION,
+            "session creation cleanup retained id={id} err={error}"
+        );
+    }
 }
 
 fn prepare_session(
@@ -634,7 +700,7 @@ fn prepare_session(
     let dir = sessions
         .open_child_private(staging)?
         .ok_or(SessionError::SessionStartFailed)?;
-    let owned = OwnedSessionDir::acquire(dir, LOCK_DEADLINE)?;
+    let owned = OwnedSessionDir::acquire(dir, id, LOCK_DEADLINE)?;
     owned.dir.replace(MANIFEST_FILE, manifest)?;
     let file = create_managed_file(&owned.dir, EVENTS_FILE)?;
     file.sync_all()?;
@@ -654,7 +720,11 @@ pub(crate) fn resume_session(
     let dir = sessions
         .open_child_private(id)?
         .ok_or(SessionError::SessionNotFound)?;
-    resume_owned(sessions, id, OwnedSessionDir::acquire(dir, lock_deadline)?)
+    resume_owned(
+        sessions,
+        (id, Opening::Resume),
+        OwnedSessionDir::acquire(dir, id, lock_deadline)?,
+    )
 }
 
 pub(crate) fn resume_held_session(
@@ -663,12 +733,16 @@ pub(crate) fn resume_held_session(
     dir: PrivateDir,
     lock: AdvisoryLock,
 ) -> Result<WritableSession, SessionError> {
-    resume_owned(sessions, id, OwnedSessionDir::holding(dir, lock))
+    resume_owned(
+        sessions,
+        (id, Opening::Import),
+        OwnedSessionDir::holding(dir, id, lock),
+    )
 }
 
 fn resume_owned(
     sessions: &PrivateDir,
-    id: &str,
+    (id, opening): (&str, Opening),
     owned: OwnedSessionDir,
 ) -> Result<WritableSession, SessionError> {
     let still_named = sessions
@@ -681,14 +755,15 @@ fn resume_owned(
     let file = open_managed_file(&owned.dir, EVENTS_FILE, Access::Writable)?
         .ok_or(SessionError::InvalidSessionFormat)?;
     let mut replay = ReplayScan::default();
-    let (scan, cache) = scan_writable(&owned.dir, id, &file, &mut replay)?;
+    let (scan, cache) = scan_writable(&owned.dir, (id, opening), &file, &mut replay)?;
     let mut writer = ConversationWriter::open(file, scan, &mut replay)?;
     let cache = cache.and_then(|cache| cache.finish(&owned.dir, writer.committed_bytes()));
     let closed_from = writer.committed_bytes();
-    let recovery = open_unfinished_turn(&owned.dir, &mut writer, &metadata.preferences.provider)?;
+    let recovery =
+        open_unfinished_turn(&owned.dir, id, &mut writer, &metadata.preferences.provider)?;
     let end = writer.committed_bytes();
     replay.observe_range(History::log(writer.file()), closed_from, end)?;
-    let history = with_history(writer.file(), cache.as_ref(), |history| {
+    let history = with_history(id, writer.file(), cache.as_ref(), |history| {
         let window = replay.finish(history, end)?;
         replay_history(history, end, &window)
     })?;
@@ -724,7 +799,7 @@ pub(crate) fn load_session(sessions: &PrivateDir, id: &str) -> Result<SavedSessi
         .ok_or(SessionError::InvalidSessionFormat)?;
     let length = file.metadata()?.len();
     let cache = HistoryCache::open(&dir, id, &file, length);
-    let history = with_history(&file, cache.as_ref(), |history| {
+    let history = with_history(id, &file, cache.as_ref(), |history| {
         let mut replay = ReplayScan::default();
         let scan = scan_log(history, length, &mut replay, None)?;
         let window = replay.finish(history, scan.complete_bytes)?;
@@ -733,9 +808,15 @@ pub(crate) fn load_session(sessions: &PrivateDir, id: &str) -> Result<SavedSessi
     Ok(SavedSession { metadata, history })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opening {
+    Resume,
+    Import,
+}
+
 fn scan_writable(
     dir: &PrivateDir,
-    id: &str,
+    (id, opening): (&str, Opening),
     file: &File,
     replay: &mut ReplayScan,
 ) -> Result<(LogScan, Option<CacheWriter>), SessionError> {
@@ -743,15 +824,32 @@ fn scan_writable(
     if let Some(mut cache) = CacheWriter::open(dir, id, file, length) {
         let (view, tee) = cache.split();
         let mut cached = ReplayScan::default();
-        if let Ok(scan) = scan_log(History::cached(file, view), length, &mut cached, Some(tee)) {
-            *replay = cached;
-            return Ok((scan, Some(cache)));
+        match scan_log(History::cached(file, view), length, &mut cached, Some(tee)) {
+            Ok(scan) => {
+                *replay = cached;
+                return Ok((scan, Some(cache)));
+            }
+            Err(error) => trace_log!(
+                SESSION,
+                "history cache scan rejected id={id} err={error}; rebuilding from log"
+            ),
         }
     }
     let mut cache = if length == 0 {
         None
     } else {
         CacheWriter::create(dir, id)
+            .inspect_err(|error| match opening {
+                Opening::Resume => trace_log!(
+                    SESSION,
+                    "history cache rebuild-open failed id={id} err={error}"
+                ),
+                Opening::Import => trace_log!(
+                    SESSION,
+                    "history cache create-on-import failed id={id} err={error}"
+                ),
+            })
+            .ok()
     };
     let tee = cache.as_mut().map(CacheWriter::tee);
     let scan = scan_log(History::log(file), length, replay, tee)?;
@@ -759,14 +857,19 @@ fn scan_writable(
 }
 
 fn with_history<T>(
+    id: &str,
     file: &File,
     cache: Option<&HistoryCache>,
     read: impl Fn(History<'_>) -> Result<T, SessionError>,
 ) -> Result<T, SessionError> {
-    if let Some(cache) = cache
-        && let Ok(value) = read(History::cached(file, cache.view()))
-    {
-        return Ok(value);
+    if let Some(cache) = cache {
+        match read(History::cached(file, cache.view())) {
+            Ok(value) => return Ok(value),
+            Err(error) => trace_log!(
+                SESSION,
+                "history cache replay rejected id={id} err={error}; reading log"
+            ),
+        }
     }
     read(History::log(file))
 }

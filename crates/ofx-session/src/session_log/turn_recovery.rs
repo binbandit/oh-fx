@@ -1,5 +1,6 @@
-use ofx_config::PrivateDir;
+use ofx_config::{DurableError, EMERGENCY_CEILING_BYTES, PrivateDir, RemoveOutcome};
 use ofx_contract::{RecoveredTurn, RecoveryPoint, StepResult};
+use ofx_trace::trace_log;
 
 use crate::result_store::{
     PREVIEW_BYTES, STORED_TEXT_MAX_BYTES, make_handle, preview, store_result,
@@ -16,6 +17,7 @@ use crate::session_log::conversation_writer::ConversationWriter;
 use crate::session_log::managed_file::{entry_exists, read_managed_file};
 use crate::session_log::now_ms;
 use crate::session_log::turn_events::{TurnArtifacts, saved_replay, turn_events};
+use crate::session_trace::SESSION;
 
 pub(crate) const RECOVERY_FILE: &str = "recovery.json";
 const RECOVERY_ASKED_FILE: &str = "recovery.asked";
@@ -60,12 +62,24 @@ impl PendingRecovery {
 
 pub(crate) fn open_unfinished_turn(
     dir: &PrivateDir,
+    id: &str,
     writer: &mut ConversationWriter,
     provider: &SavedProvider,
 ) -> Result<Recovery, SessionError> {
     if let Some(checkpoint) = read_checkpoint(dir, writer.last_seq())? {
         if checkpoint.compaction_prepared() {
             commit_checkpoint(dir, writer, provider, Box::new(checkpoint))?;
+            if let Err(error) = clear_recovery(dir) {
+                trace_log!(
+                    SESSION,
+                    "compaction source committed but recovery cleanup failed err={error}"
+                );
+            }
+            trace_log!(
+                SESSION,
+                "event=compaction_source_restored session={id} through_seq={}",
+                writer.last_seq()
+            );
             return Ok(Recovery::Absent);
         }
         return Ok(Recovery::Pending(Box::new(checkpoint)));
@@ -103,9 +117,7 @@ pub(crate) fn commit_checkpoint(
         interrupted.turn_summary = checkpoint.turn_summary();
         interrupted.files = checkpoint.into_files();
     }
-    writer.append(timestamp_ms, &events[usize::from(open)..])?;
-    clear_recovery(dir);
-    Ok(())
+    writer.append(timestamp_ms, &events[usize::from(open)..])
 }
 
 pub(crate) fn save_checkpoint(
@@ -140,10 +152,14 @@ pub(crate) fn save_checkpoint(
         created_at_ms: now_ms(),
     };
     let Some(bytes) = encode_recovery_file(conversation_seq, &source)? else {
+        trace_log!(
+            SESSION,
+            "event=recovery_checkpoint_oversized cap_bytes={EMERGENCY_CEILING_BYTES}; keeping previous durable checkpoint"
+        );
         return Ok(());
     };
     dir.replace(RECOVERY_FILE, &bytes)?;
-    let _ = dir.remove(RECOVERY_ASKED_FILE);
+    clear_recovery_asked(dir);
     Ok(())
 }
 
@@ -157,7 +173,12 @@ fn spilled_output(dir: &PrivateDir, result: &StepResult<'_>) -> SavedOutput {
         return inline;
     }
     let handle = make_handle(result.call_id, result.tool_name, result.output);
-    if store_result(dir, &handle, result.output).is_err() {
+    if let Err(error) = store_result(dir, &handle, result.output) {
+        trace_log!(
+            SESSION,
+            "event=recovery_checkpoint_spill_failed tool_call_id={} err={error}; keeping result inline",
+            result.call_id
+        );
         return inline;
     }
     SavedOutput {
@@ -167,17 +188,32 @@ fn spilled_output(dir: &PrivateDir, result: &StepResult<'_>) -> SavedOutput {
 }
 
 pub(crate) fn recovery_was_asked(dir: &PrivateDir) -> bool {
-    entry_exists(dir, RECOVERY_ASKED_FILE).unwrap_or(false)
+    entry_exists(dir, RECOVERY_ASKED_FILE).unwrap_or_else(|error| {
+        trace_log!(SESSION, "recovery ask marker probe failed err={error}");
+        false
+    })
 }
 
 pub(crate) fn mark_recovery_asked(dir: &PrivateDir) {
     let marker = format!("{{\"asked_at_ms\":{}}}\n", now_ms());
-    let _ = dir.replace(RECOVERY_ASKED_FILE, marker.as_bytes());
+    if let Err(error) = dir.replace(RECOVERY_ASKED_FILE, marker.as_bytes()) {
+        trace_log!(SESSION, "recovery ask marker write failed err={error}");
+    }
 }
 
-pub(crate) fn clear_recovery(dir: &PrivateDir) {
-    let _ = dir.remove(RECOVERY_FILE);
-    let _ = dir.remove(RECOVERY_ASKED_FILE);
+pub(crate) fn clear_recovery(dir: &PrivateDir) -> Result<(), DurableError> {
+    let removed = dir.remove(RECOVERY_FILE);
+    clear_recovery_asked(dir);
+    match removed? {
+        RemoveOutcome::RemovedNotDurable => Err(DurableError::Failed),
+        RemoveOutcome::Removed | RemoveOutcome::Missing => Ok(()),
+    }
+}
+
+fn clear_recovery_asked(dir: &PrivateDir) {
+    if let Err(error) = dir.remove(RECOVERY_ASKED_FILE) {
+        trace_log!(SESSION, "recovery ask marker clear failed err={error}");
+    }
 }
 
 pub(crate) fn read_checkpoint(
