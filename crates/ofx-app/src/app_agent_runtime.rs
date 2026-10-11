@@ -747,7 +747,7 @@ impl Controller {
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
                 UiCommand::SignIn { provider } => self.choose_login(&provider).await,
                 UiCommand::ReopenSignIn => self.state.steer_sign_in(SignInControl::reopen),
-                UiCommand::CancelSignIn => self.state.steer_sign_in(SignInControl::cancel),
+                UiCommand::CancelSignIn => self.cancel_sign_in().await,
                 UiCommand::RetryHeldPrompt => self.retry_held_prompt().await,
                 UiCommand::DropHeldPrompt => self.drop_held_prompts(),
                 UiCommand::SelectModel {
@@ -1467,7 +1467,7 @@ fn run_deferred(
         UiCommand::SelectProvider { .. } => return state.provider_busy(),
         UiCommand::SignIn { provider } => return state.sign_in_busy(&provider),
         UiCommand::ReopenSignIn => return state.steer_sign_in(SignInControl::reopen),
-        UiCommand::CancelSignIn => return state.steer_sign_in(SignInControl::cancel),
+        UiCommand::CancelSignIn => return state.cancel_sign_in_during_work(work, cancel),
         UiCommand::TogglePermissionMode => return state.permissions.toggle_mode(),
         UiCommand::ToggleStatusline { item } => return state.flip_statusline(item),
         UiCommand::StepSetting { setting, delta } => {
@@ -6007,6 +6007,100 @@ mod tests {
         assert!(dropped.contains(&UiEvent::SignInEnded));
         assert!(notices(dropped).is_empty());
         assert!(codex.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_sent_right_after_a_cancelled_sign_in_waits_for_the_next_one() {
+        let issuer = FakeServer::start([granted_tokens()]);
+        let codex = FakeServer::start([codex_text("welcome back")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signing_in(&codex_settings(), &issuer, &codex, &catalog).await;
+        held(&mut harness, "before the cancel").await;
+        harness.send(select_provider("codex"));
+        within(harness.until(sign_in_started)).await;
+        harness.send(UiCommand::CancelSignIn);
+        harness.submit("after the cancel");
+        let cancelled = within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+        assert_eq!(
+            cancelled[..2],
+            [UiEvent::SignInEnded, UiEvent::HeldPromptDropped]
+        );
+        assert_eq!(notices(cancelled), [auth(NoticeTone::Warning, SIGNED_OUT)]);
+        harness.send(select_provider("codex"));
+        let started = within(harness.until(sign_in_started)).await;
+        let url = sign_in_url(started);
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        let resumed = within(harness.until(finished(TurnOutcome::Completed))).await;
+        browser.join().unwrap();
+        assert!(!resumed.contains(&UiEvent::HeldPromptDropped));
+        let request = codex.requests()[0].json().to_string();
+        assert!(request.contains("after the cancel"), "{request}");
+        assert!(!request.contains("before the cancel"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_that_reaches_a_finished_sign_in_stops_its_prompt_and_runs_the_next_one() {
+        let issuer = FakeServer::start([granted_tokens()]);
+        let codex = FakeServer::start([codex_partial(), codex_text("answered again")]);
+        let catalog = codex_catalog(false, 2);
+        let mut harness = signing_in(&codex_settings(), &issuer, &codex, &catalog).await;
+        held(&mut harness, "before the cancel").await;
+        harness.send(select_provider("codex"));
+        let started = within(harness.until(sign_in_started)).await;
+        let url = sign_in_url(started);
+        let browser = std::thread::spawn(move || authorize_in_browser(&url));
+        within(harness.until(|event| matches!(event, UiEvent::AssistantText { .. }))).await;
+        browser.join().unwrap();
+        let turn_id = harness.running_turn();
+        harness.send(UiCommand::CancelSignIn);
+        harness.submit("after the cancel");
+        harness.send(UiCommand::Cancel { turn_id });
+        let interrupted = within(harness.until(finished(TurnOutcome::Interrupted))).await;
+        assert!(
+            !interrupted
+                .iter()
+                .any(|event| matches!(event, UiEvent::SteeringApplied { .. }))
+        );
+        let resumed = within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert!(!resumed.contains(&UiEvent::HeldPromptDropped));
+        let requests = codex.requests();
+        assert_eq!(requests.len(), 2);
+        let first = requests[0].json().to_string();
+        assert!(!first.contains("after the cancel"), "{first}");
+        let second = requests[1].json().to_string();
+        assert!(second.contains("after the cancel"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn esc_during_typed_ahead_compaction_drops_the_waiting_prompt_but_not_the_next_one() {
+        let issuer = FakeServer::start([]);
+        let codex = FakeServer::start([]);
+        let catalog = FakeServer::start([]);
+        let local = tool_work_then_chat(held_summary(), &["answered again"]);
+        let other = FakeServer::start([]);
+        let settings = switching_settings("local", &local, &other);
+        let mut harness = signing_in(&settings, &issuer, &codex, &catalog).await;
+        chat(&mut harness, &["read the notes", "q1", "q2", "q3", "q4"]).await;
+        harness.send(select_provider("codex"));
+        harness.command("/compact");
+        within(harness.until(sign_in_started)).await;
+        summary_requested(&local).await;
+        harness.submit("before the cancel");
+        within(harness.until(|event| *event == UiEvent::PromptHeld)).await;
+        harness.send(UiCommand::CancelSignIn);
+        within(harness.until(|event| *event == UiEvent::HeldPromptDropped)).await;
+        harness.submit("after the cancel");
+        harness.send(UiCommand::CancelCompaction);
+        let resumed = within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert!(resumed.contains(&UiEvent::SignInEnded));
+        assert!(!resumed.contains(&UiEvent::PromptHeld));
+        assert!(!resumed.contains(&UiEvent::HeldPromptDropped));
+        let requests = local.requests();
+        let request = requests.last().unwrap().json().to_string();
+        assert!(request.contains("after the cancel"), "{request}");
+        assert!(!request.contains("before the cancel"), "{request}");
+        assert!(issuer.requests().is_empty());
+        assert_eq!(saved_settings(&harness)["provider"], "local");
     }
 
     async fn signed_out(codex: &FakeServer, catalog: &FakeServer) -> Harness {

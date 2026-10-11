@@ -162,6 +162,7 @@ enum SubmissionState {
     Queued,
     Active,
     Held,
+    Withdrawn,
     Cancelled,
 }
 

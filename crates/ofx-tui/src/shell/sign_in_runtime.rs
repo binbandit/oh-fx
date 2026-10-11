@@ -54,6 +54,7 @@ impl Shell<'_> {
 
     fn cancel_sign_in(&mut self) {
         self.sign_in = None;
+        self.withdraw_held_prompts();
         self.send(UiCommand::CancelSignIn);
     }
 
