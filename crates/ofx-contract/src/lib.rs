@@ -120,11 +120,13 @@ pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,
     ModelCatalog, ModelCatalogSource, ModelControls, ModelOption, Notice, NoticeLink, NoticeTone,
     QuestionRequest, SavedFileChange, SavedToolCall, StatuslineItem, StatuslineToggles,
-    ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, WorkspaceIdentity,
-    WorkspaceIdentitySource,
+    ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, UsageMenuUpdate,
+    WorkspaceIdentity, WorkspaceIdentitySource,
 };
 pub use usage_report::{
-    GenerationFact, ModelUsage, PendingMarker, UsageCompleteness, UsageCoverage, UsageIncident,
-    UsageReport, UsageReportError, UsageScope, UsageTotals, build_rolling_report, format_utc_date,
+    GenerationFact, ModelUsage, PendingMarker, SessionActivity, SessionModelSource, SessionTotals,
+    SessionUsageSource, UsageCompleteness, UsageCoverage, UsageIncident, UsageReport,
+    UsageReportError, UsageScope, UsageTotals, build_rolling_report, build_session_report,
+    format_utc_date,
 };
 pub use workspace_menu::{DirectoryAccess, WorkspaceMenu, WorkspaceMenuEntry};

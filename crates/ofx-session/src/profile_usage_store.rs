@@ -140,7 +140,7 @@ impl ProfileUsageStore {
         };
         validate_readable(home)?;
         loop {
-            if let Some(_lock) = lock_existing(home, self.lock_deadline)? {
+            if let Some(_lock) = lock_existing(home, self.lock_deadline, &self.abandoned)? {
                 return load_unlocked(home);
             }
             let loaded = load_unlocked(home)?;
@@ -165,6 +165,7 @@ fn validate_readable(home: &PrivateDir) -> Result<(), UsageStoreError> {
 fn lock_existing(
     home: &PrivateDir,
     deadline: Duration,
+    abandoned: &AtomicBool,
 ) -> Result<Option<OwnedFd>, UsageStoreError> {
     let flags =
         OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
@@ -177,6 +178,9 @@ fn lock_existing(
     verify_private_file(&fs::fstat(&lock)?)?;
     let started = Instant::now();
     loop {
+        if abandoned.load(Ordering::Acquire) {
+            return Err(UsageStoreError::LockAbandoned);
+        }
         match fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => return Ok(Some(lock)),
             Err(Errno::WOULDBLOCK | Errno::INTR) => {}

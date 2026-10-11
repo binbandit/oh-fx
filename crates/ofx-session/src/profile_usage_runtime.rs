@@ -13,6 +13,9 @@ use crate::profile_usage_store::{
 };
 use crate::usage_recovery::UsageRecovery;
 
+pub(crate) const ROLLING_SCOPES: [UsageScope; 3] =
+    [UsageScope::Days30, UsageScope::Days7, UsageScope::Hours24];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProfileUsageError {
     #[error(transparent)]
@@ -49,6 +52,21 @@ impl ProfilePublisher {
 
     pub fn abandon_for_process_exit(&self) {
         self.abandoned.store(true, Ordering::Release);
+    }
+
+    pub fn rolling_reports(
+        &self,
+        snapshot_time_ms: i64,
+        recovery: &UsageRecovery,
+    ) -> Result<[UsageReport; 3], ProfileUsageError> {
+        let loaded = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .load()?;
+        let [days_30, days_7, hours_24] =
+            ROLLING_SCOPES.map(|scope| build_report(&loaded, scope, snapshot_time_ms, recovery));
+        Ok([days_30?, days_7?, hours_24?])
     }
 
     pub(crate) fn publish(&self, event: ProfileEvent<'_>) -> Result<(), ProfileUsageError> {

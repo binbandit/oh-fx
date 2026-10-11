@@ -4,8 +4,13 @@ use ofx_text::{prefix_by_width, visible_width};
 use crate::row_text::{Row, single_line_ellipsized};
 use crate::theme::Theme;
 
+mod usage;
 mod workspace;
 
+pub(crate) use usage::{
+    UsageMenuView, usage_desired_row_count, usage_menu_hint_row, usage_menu_rows,
+    usage_visible_model_items,
+};
 pub(crate) use workspace::{
     workspace_desired_row_count, workspace_menu_hint_row, workspace_menu_rows,
 };

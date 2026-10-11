@@ -1150,10 +1150,12 @@ fn slash_commands_switch_models_show_help_and_exit() {
         "✗ workspace: Workspace update rejected: directory does not exist",
     );
     session.send(b"/cost\r");
-    wait(
-        &session,
-        "* usage: Durable profile usage is unavailable in this host; active session usage",
-    );
+    wait(&session, "Usage  [30 days]  7 days  24 hours  Session");
+    wait(&session, "Tracking has not started");
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| !screen.contains("tab scope"))
+        .unwrap_or_else(|screen| panic!("the usage menu stays open:\n{screen}"));
     session.send(b"/stats\r");
     wait(&session, "* stats: ansi_bytes=");
     session.send(b"/copy\r");

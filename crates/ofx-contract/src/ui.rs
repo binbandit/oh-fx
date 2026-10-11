@@ -12,6 +12,7 @@ use crate::types::{
     CommandProcessPresentation, FileChangeStats, PermissionMode, QuestionBatchEntry,
     ReasoningEffort, RouteRecoveryStatus, ToolResultStatus, ToolStatusDetail, TurnSummary, Usage,
 };
+use crate::usage_report::{UsageReport, UsageScope};
 use crate::workspace_menu::WorkspaceMenu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -254,7 +255,18 @@ pub enum ModelCatalog {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum UsageMenuUpdate {
+    Opened {
+        scope: UsageScope,
+        report: Option<Box<UsageReport>>,
+    },
+    Report(Box<UsageReport>),
+    Loading(UsageScope),
+    Failed(UsageScope),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
     TurnStarted {
         turn_id: TurnId,
@@ -406,6 +418,9 @@ pub enum UiEvent {
     WorkspaceMenuOpened {
         menu: WorkspaceMenu,
     },
+    UsageMenu {
+        update: UsageMenuUpdate,
+    },
     SettingsMenuOpened {
         snapshot: SettingsSnapshot,
     },
@@ -522,6 +537,12 @@ pub enum UiCommand {
         id: String,
     },
     CloseSessionPicker,
+    RefreshUsage {
+        scope: UsageScope,
+    },
+    ReloadUsage {
+        scope: UsageScope,
+    },
 }
 
 #[cfg(test)]

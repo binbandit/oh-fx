@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, ChildStore, MeteredProvider};
 use ofx_config::SelectionError;
-use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory};
+use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory, UsageReport, UsageReportError};
 use ofx_session::{
     PendingRecovery, ProfilePublisher, ResumeTarget, RouteCredential, SavedProvider,
     SessionDisposal, SessionError, SessionLog, SessionPreferences, SessionStore, TitleGate,
@@ -262,6 +262,10 @@ impl LiveSession {
 
     pub fn observe_prompt(&self, prompt: &str) {
         self.session().observe_prompt(prompt);
+    }
+
+    pub(crate) fn usage_report(&self) -> Result<UsageReport, UsageReportError> {
+        self.session().usage_report()
     }
 
     pub fn rebind_provider(&self, model: &str) -> Result<(), SessionError> {
