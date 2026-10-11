@@ -159,3 +159,136 @@ fn a_ledger_past_eight_mib_compacts_after_an_append_once_records_have_aged() {
         [started, filler, generation(FACT_ID, now, 1)].concat()
     );
 }
+
+fn filler_id(index: usize) -> String {
+    format!("gen_{index:026}")
+}
+
+fn tail_of(ledger: &str) -> &str {
+    &ledger[ledger.len() - 32..]
+}
+
+#[test]
+fn a_peer_never_compacts_from_records_another_writer_has_replaced() {
+    let now = now_ms();
+    let expired = now - 40 * DAY_MS;
+    let mut ledger = coverage(now - 50 * DAY_MS);
+    for index in 0..MAX_RECORDS - 3 {
+        ledger.push_str(&pending(&filler_id(index), now - DAY_MS));
+    }
+    ledger.push_str(&incident(expired, "incomplete"));
+    ledger.push_str(&incident(now, "incomplete"));
+    let fixture = Fixture::new();
+    fixture.write(ledger.as_bytes());
+    let mut first = fixture.store();
+    let mut second = fixture.store();
+    let cached = PendingMarker {
+        id: filler_id(0),
+        observed_at_ms: now - DAY_MS,
+    };
+    assert_eq!(
+        second.append_event(ProfileEvent::Pending(&cached)),
+        Ok(AppendOutcome::Duplicate)
+    );
+
+    let acknowledged = UsageIncident {
+        occurred_at_ms: now - 1_000,
+        completeness: UsageCompleteness::Incomplete,
+    };
+    assert_eq!(
+        first.append_event(ProfileEvent::Incident(&acknowledged)),
+        Ok(AppendOutcome::Appended)
+    );
+    let replaced = fs::read_to_string(fixture.ledger()).unwrap();
+    assert_eq!(replaced.len(), ledger.len());
+    assert_eq!(tail_of(&replaced), tail_of(&ledger));
+
+    assert_eq!(
+        second.append_event(ProfileEvent::Generation(&fact(FACT_ID, now, 1))),
+        Err(UsageStoreError::CapacityExceeded)
+    );
+    assert_eq!(fs::read_to_string(fixture.ledger()).unwrap(), replaced);
+    let loaded = fixture.store().load().unwrap();
+    assert!(loaded.incidents.contains(&acknowledged));
+    assert!(
+        loaded
+            .incidents
+            .iter()
+            .all(|incident| incident.occurred_at_ms != expired)
+    );
+}
+
+#[test]
+fn a_replacement_with_the_same_length_and_tail_is_read_again() {
+    let now = now_ms();
+    let fixture = Fixture::new();
+    let last = incident(now, "incomplete");
+    fixture.write(
+        [coverage(0), generation(FACT_ID, now, 1), last.clone()]
+            .concat()
+            .as_bytes(),
+    );
+    let mut store = fixture.store();
+    assert_eq!(
+        store.append_event(ProfileEvent::Generation(&fact(FACT_ID, now, 1))),
+        Ok(AppendOutcome::Duplicate)
+    );
+    let swapped = [coverage(0), generation(OTHER_ID, now, 1), last].concat();
+    let staged = fixture.data().join("staged");
+    fs::write(&staged, &swapped).unwrap();
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::rename(&staged, fixture.ledger()).unwrap();
+
+    assert_eq!(
+        store.append_event(ProfileEvent::Generation(&fact(OTHER_ID, now, 1))),
+        Ok(AppendOutcome::Duplicate)
+    );
+    assert_eq!(fs::read_to_string(fixture.ledger()).unwrap(), swapped);
+}
+
+#[test]
+fn compaction_keeps_conflicting_pending_markers_without_writing_their_derived_incidents() {
+    let now = NOW;
+    let index = indexed(&[
+        coverage(0),
+        pending(FACT_ID, now - DAY_MS),
+        pending(FACT_ID, now - 2 * DAY_MS),
+        incident(now - DAY_MS, "pending"),
+    ]);
+    assert_eq!(index.loaded.incidents.len(), 2);
+    let kept = [
+        coverage(0),
+        pending(FACT_ID, now - DAY_MS),
+        pending(FACT_ID, now - 2 * DAY_MS),
+        incident(now - DAY_MS, "pending"),
+    ];
+    assert_eq!(index.retained_lines(now), kept.concat());
+    assert_eq!(index.retained_count(now), kept.len());
+    let reread = indexed(&kept);
+    assert_eq!(reread.loaded.incidents, index.loaded.incidents);
+}
+
+#[test]
+fn compacting_a_ledger_of_conflicting_pending_markers_stays_within_the_record_limit() {
+    let now = now_ms();
+    let mut ledger = coverage(now - 50 * DAY_MS);
+    for index in 0..(MAX_RECORDS - 3) / 2 {
+        ledger.push_str(&pending(&filler_id(index), now - DAY_MS));
+        ledger.push_str(&pending(&filler_id(index), now - DAY_MS - 1));
+    }
+    let rows = ledger.lines().count();
+    let fixture = Fixture::new();
+    fixture.write(ledger.as_bytes());
+    let mut store = fixture.store();
+    let old = fact(FACT_ID, now - 40 * DAY_MS, 1);
+    assert_eq!(
+        store.append_event(ProfileEvent::Generation(&old)),
+        Ok(AppendOutcome::Appended)
+    );
+    let compacted = fs::read_to_string(fixture.ledger()).unwrap();
+    assert_eq!(compacted, ledger);
+    assert_eq!(compacted.lines().count(), rows);
+    let loaded = fixture.store().load().unwrap();
+    assert_eq!(loaded.pending.len(), rows - 1);
+    assert_eq!(loaded.incidents.len(), (rows - 1) / 2);
+}

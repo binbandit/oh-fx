@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::os::fd::AsFd;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -76,8 +76,9 @@ impl ProfileUsageStore {
         let mut boundary = tail.length;
         let mut committed = false;
         if compacted {
-            base_records = index.retained_count(now);
-            let mut retained = index.retained_lines(now);
+            let current = read_index(&file, tail.length, &self.abandoned)?;
+            base_records = current.retained_count(now);
+            let mut retained = current.retained_lines(now);
             if tail.incomplete {
                 retained.push_str(&appended);
                 next_length = u64::try_from(retained.len()).ok();
@@ -85,6 +86,7 @@ impl ProfileUsageStore {
                 replace_ledger(home, retained.as_bytes())?;
                 committed = true;
             } else {
+                within_capacity(u64::try_from(retained.len()).ok(), base_records, 0)?;
                 replace_ledger(home, retained.as_bytes())?;
                 file = open_writable_ledger(home)?;
                 boundary = ledger_length(&file)?;
@@ -145,10 +147,19 @@ fn compact_ledger(
     now: i64,
 ) -> Result<(), UsageStoreError> {
     let file = open_writable_ledger(home)?;
-    let length = ledger_length(&file)?;
-    let retained = ensure_index(slot, &file, length, abandoned)?.retained_lines(now);
+    let current = read_index(&file, ledger_length(&file)?, abandoned)?;
+    let retained = current.retained_lines(now);
+    let length = u64::try_from(retained.len()).ok();
+    if within_capacity(length, current.retained_count(now), 0).is_err() {
+        return Ok(());
+    }
     *slot = None;
     replace_ledger(home, retained.as_bytes())
+}
+
+fn ledger_identity(file: &File) -> Result<(u64, u64), UsageStoreError> {
+    let metadata = file.metadata().map_err(|_| UsageStoreError::ReadFailed)?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 fn ledger_length(file: &File) -> Result<u64, UsageStoreError> {
@@ -285,28 +296,41 @@ fn ensure_index<'a>(
     boundary: u64,
     abandoned: &AtomicBool,
 ) -> Result<&'a mut RecordIndex, UsageStoreError> {
+    let identity = ledger_identity(file)?;
     let current = slot.as_mut().is_some_and(|index| {
-        (boundary == index.boundary && index.tail_matches(file))
-            || (boundary > index.boundary && index.absorb_tail(file, boundary, abandoned))
+        index.identity == identity
+            && ((boundary == index.boundary && index.tail_matches(file))
+                || (boundary > index.boundary && index.absorb_tail(file, boundary, abandoned)))
     });
     if !current {
         *slot = None;
-        if boundary > MAX_FILE_BYTES {
-            return Err(UsageStoreError::CapacityExceeded);
-        }
-        let mut fresh = RecordIndex::default();
-        if boundary > 0 {
-            let bytes = read_prefix(file, boundary)?;
-            if bytes.last() != Some(&b'\n') {
-                return Err(UsageStoreError::Incomplete);
-            }
-            fresh.absorb_bytes(&bytes, Some(abandoned))?;
-            fresh.boundary = boundary;
-            fresh.sample_tail(&bytes);
-        }
-        *slot = Some(fresh);
+        *slot = Some(read_index(file, boundary, abandoned)?);
     }
     slot.as_mut().ok_or(UsageStoreError::Invalid)
+}
+
+fn read_index(
+    file: &File,
+    boundary: u64,
+    abandoned: &AtomicBool,
+) -> Result<RecordIndex, UsageStoreError> {
+    if boundary > MAX_FILE_BYTES {
+        return Err(UsageStoreError::CapacityExceeded);
+    }
+    let mut fresh = RecordIndex {
+        identity: ledger_identity(file)?,
+        ..RecordIndex::default()
+    };
+    if boundary > 0 {
+        let bytes = read_prefix(file, boundary)?;
+        if bytes.last() != Some(&b'\n') {
+            return Err(UsageStoreError::Incomplete);
+        }
+        fresh.absorb_bytes(&bytes, Some(abandoned))?;
+        fresh.boundary = boundary;
+        fresh.sample_tail(&bytes);
+    }
+    Ok(fresh)
 }
 
 impl RecordIndex {

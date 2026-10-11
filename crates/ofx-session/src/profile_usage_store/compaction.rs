@@ -82,8 +82,9 @@ impl RecordIndex {
             .loaded
             .incidents
             .iter()
-            .filter(move |incident| incident.occurred_at_ms >= cutoff)
-            .map(ProfileEvent::Incident);
+            .zip(&self.derived_incidents)
+            .filter(move |(incident, derived)| !**derived && incident.occurred_at_ms >= cutoff)
+            .map(|(incident, _)| ProfileEvent::Incident(incident));
         facts.chain(pending).chain(incidents)
     }
 

@@ -273,6 +273,8 @@ struct RecordIndex {
     record_count: usize,
     boundary: u64,
     tail_sample: Vec<u8>,
+    identity: (u64, u64),
+    derived_incidents: Vec<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -341,9 +343,13 @@ impl RecordIndex {
                         occurred_at_ms: observed_at_ms,
                         completeness: UsageCompleteness::Incomplete,
                     });
+                    self.derived_incidents.push(true);
                 }
             }
-            ParsedRecord::Incident(incident) => loaded.incidents.push(incident),
+            ParsedRecord::Incident(incident) => {
+                loaded.incidents.push(incident);
+                self.derived_incidents.push(false);
+            }
         }
         Ok(())
     }
