@@ -6,13 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ofx_config::{ProfilePaths, Settings};
 use ofx_contract::{Notice, NoticeTone, UiEvent};
 use ofx_mcp::{
-    McpRuntime, NativeConfigLoad, ProfileStoreError, ProjectMcpChoices, ReloadOutcome,
-    load_native_configs, preview_workspace_authority, profile_config_path,
+    AuthenticationOutcome, McpRuntime, NativeConfigLoad, ProfileStoreError, ProjectMcpChoices,
+    ReloadOutcome, load_native_configs, preview_workspace_authority, profile_config_path,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Emit;
+use crate::mcp_auth_notices;
 use crate::mcp_commands::{
     Completion, render_completions, render_prompt_get, render_prompt_listing,
     render_resource_listing, render_resource_read,
@@ -109,11 +110,18 @@ struct Pending {
     task: JoinHandle<()>,
 }
 
+struct PendingAuthentication {
+    server: String,
+    cancel: CancellationToken,
+    task: JoinHandle<()>,
+}
+
 pub(crate) struct McpHost {
     runtime: Arc<McpRuntime>,
     sources: McpSources,
     emit: Emit,
     pending: Mutex<Option<Pending>>,
+    authentication: Mutex<Option<PendingAuthentication>>,
 }
 
 impl McpHost {
@@ -123,6 +131,7 @@ impl McpHost {
             sources,
             emit,
             pending: Mutex::new(None),
+            authentication: Mutex::new(None),
         }
     }
 
@@ -135,6 +144,7 @@ impl McpHost {
     }
 
     pub(crate) fn begin_reload(&self) {
+        self.discard_authentication("reload");
         let runtime = Arc::clone(&self.runtime);
         let sources = self.sources.clone();
         self.replace_pending(|cancel| async move { reload(&runtime, &sources, &cancel).await });
@@ -213,6 +223,7 @@ impl McpHost {
     }
 
     pub(crate) fn begin_authority_reduction(&self, rebuild: bool) {
+        self.discard_authentication("authority_reduction");
         self.cancel_pending();
         self.runtime.revoke_workspace_except(&[]);
         let runtime = Arc::clone(&self.runtime);
@@ -245,10 +256,75 @@ impl McpHost {
             pending.task.abort();
         }
     }
+
+    pub(crate) fn begin_authentication(&self, server: String) -> String {
+        let mut slot = lock(&self.authentication);
+        let reloading = lock(&self.pending)
+            .as_ref()
+            .is_some_and(|pending| !pending.task.is_finished());
+        if reloading
+            || slot
+                .as_ref()
+                .is_some_and(|pending| !pending.task.is_finished())
+        {
+            return mcp_auth_notices::busy(&server);
+        }
+        if let Err(error) = self.runtime.validate_authentication_server(&server) {
+            return mcp_auth_notices::failed(&server, &error);
+        }
+        let cancel = CancellationToken::new();
+        let runtime = Arc::clone(&self.runtime);
+        let emit = Arc::clone(&self.emit);
+        let profile = self.sources.profile_path();
+        let name = server.clone();
+        let stop = cancel.clone();
+        let task = tokio::spawn(async move {
+            let open = |url: &str| ofx_auth::browser_allowed() && ofx_auth::open_url(url);
+            let result = runtime.authenticate_server(&name, &open, &stop).await;
+            let reconnect = match result {
+                Ok(AuthenticationOutcome::Authenticated { .. }) => runtime
+                    .reconnect_authenticated_server(&name, &stop)
+                    .await
+                    .err(),
+                _ => None,
+            };
+            if stop.is_cancelled() {
+                return;
+            }
+            emit(UiEvent::Notice {
+                notice: mcp_auth_notices::completion(&name, result, reconnect, profile.as_deref()),
+            });
+        });
+        let waiting = mcp_auth_notices::waiting(&server);
+        *slot = Some(PendingAuthentication {
+            server,
+            cancel,
+            task,
+        });
+        waiting
+    }
+
+    fn discard_authentication(&self, reason: &str) {
+        let Some(pending) = lock(&self.authentication).take() else {
+            return;
+        };
+        if !pending.task.is_finished() {
+            ofx_trace::log(
+                "mcp",
+                format_args!(
+                    "discarding pending authentication server={} reason={reason}",
+                    pending.server
+                ),
+            );
+        }
+        pending.cancel.cancel();
+        pending.task.abort();
+    }
 }
 
 impl Drop for McpHost {
     fn drop(&mut self) {
+        self.discard_authentication("shutdown");
         self.cancel_pending();
     }
 }
@@ -424,5 +500,117 @@ mod tests {
             Some((NoticeTone::Warning, AUTHORITY_REDUCED_FAILED.to_owned()))
         );
         assert_eq!(body(Err(ReloadFailure::Cancelled)), None);
+    }
+
+    fn hanging_host() -> (
+        McpHost,
+        Arc<Mutex<Vec<UiEvent>>>,
+        std::net::TcpListener,
+        tempfile::TempDir,
+    ) {
+        use ofx_config::ContextLimits;
+        use ofx_mcp::{ConnectOptions, McpServerConfig, TransportType};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let data = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(McpRuntime::new(
+            NativeConfigLoad {
+                configs: vec![McpServerConfig::remote("docs", TransportType::Http, &url)],
+                ..NativeConfigLoad::default()
+            },
+            ConnectOptions {
+                profile_data: Some(data.path().to_path_buf()),
+                ..ConnectOptions::default()
+            },
+            Vec::new(),
+            ContextLimits::default(),
+        ));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&events);
+        let host = McpHost::new(
+            runtime,
+            McpSources::new(None, data.path().to_path_buf()),
+            Arc::new(move |event| lock(&seen).push(event)),
+        );
+        (host, events, listener, data)
+    }
+
+    fn authentication_notices(events: &Mutex<Vec<UiEvent>>) -> usize {
+        lock(events)
+            .iter()
+            .filter(|event| {
+                matches!(event, UiEvent::Notice { notice } if notice.body.contains("authentication"))
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn one_authentication_runs_at_a_time_and_a_reload_discards_it_silently() {
+        let (host, events, listener, _data) = hanging_host();
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            host.begin_authentication("docs".to_owned()),
+            mcp_auth_notices::waiting("docs")
+        );
+        let mut parked = None;
+        for _ in 0..500 {
+            if let Ok((stream, _)) = listener.accept() {
+                parked = Some(stream);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(parked.is_some(), "the authentication reached discovery");
+        assert_eq!(
+            host.begin_authentication("docs".to_owned()),
+            mcp_auth_notices::busy("docs")
+        );
+        host.begin_reload();
+        assert_eq!(
+            host.begin_authentication("docs".to_owned()),
+            mcp_auth_notices::busy("docs")
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(authentication_notices(&events), 0);
+        assert!(lock(&host.authentication).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_authentication_that_fails_reports_once() {
+        let (host, events, listener, _data) = hanging_host();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
+        assert_eq!(
+            host.begin_authentication("docs".to_owned()),
+            mcp_auth_notices::waiting("docs")
+        );
+        for _ in 0..200 {
+            if authentication_notices(&events) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let notices: Vec<(NoticeTone, String)> = lock(&events)
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::Notice { notice } => Some((notice.tone, notice.body.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            [(
+                NoticeTone::Warning,
+                "MCP authentication for 'docs' failed: ProtectedResourceMetadataUnavailable."
+                    .to_owned()
+            )]
+        );
+        assert_eq!(
+            host.begin_authentication("absent".to_owned()),
+            "MCP authentication for 'absent' failed: McpServerNotFound."
+        );
     }
 }
