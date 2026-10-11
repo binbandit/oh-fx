@@ -783,6 +783,7 @@ impl Controller {
                 }
                 UiCommand::ApplyReadyUpgrade => {
                     if self.apply_ready_upgrade() {
+                        while commands.recv().await.is_some() {}
                         return;
                     }
                 }
@@ -3001,10 +3002,12 @@ mod tests {
         harness
             .until(|event| *event == UiEvent::ExitRequested)
             .await;
-        timeout(Duration::from_secs(10), harness.until(|_| false))
+        harness.submit("not served");
+        let home = timeout(Duration::from_secs(10), harness.finish())
             .await
-            .expect("the controller stops after requesting the relaunch");
-        let sessions = saved_sessions(&harness.home);
+            .expect("the controller stops once the shell has left");
+        assert!(server.requests().is_empty());
+        let sessions = saved_sessions(&home);
         assert_eq!(sessions.len(), 1);
         let mut argv = Vec::new();
         let _ = relaunch.run_with(|command| {
@@ -3035,8 +3038,8 @@ mod tests {
             Some(Readiness::settled(UpgradeState::Ready)),
             relaunch.clone(),
         );
-        let mut harness = Harness::upgrading(&server, upgrade, Some(true)).await;
-        let argv = apply_ready_upgrade(&mut harness, &relaunch).await;
+        let harness = Harness::upgrading(&server, upgrade, Some(true)).await;
+        let argv = apply_ready_upgrade(harness, &relaunch).await;
         assert_eq!(argv[0], "--ultrafast");
         assert_eq!(argv[1], "resume");
     }
@@ -3058,7 +3061,7 @@ mod tests {
             ultrafast_notice(&mut harness, "/ultrafast").await,
             (NoticeTone::Neutral, "requested: off".to_owned())
         );
-        let argv = apply_ready_upgrade(&mut harness, &relaunch).await;
+        let argv = apply_ready_upgrade(harness, &relaunch).await;
         assert_eq!(
             argv,
             [
@@ -3075,16 +3078,22 @@ mod tests {
     }
 
     async fn apply_ready_upgrade(
-        harness: &mut Harness,
+        mut harness: Harness,
         relaunch: &crate::app_upgrade_runtime::Relaunch,
     ) -> Vec<std::ffi::OsString> {
         harness.send(UiCommand::ApplyReadyUpgrade);
         harness
             .until(|event| *event == UiEvent::ExitRequested)
             .await;
-        timeout(Duration::from_secs(10), harness.until(|_| false))
+        assert!(
+            timeout(Duration::from_millis(300), harness.until(|_| false))
+                .await
+                .is_err(),
+            "the controller waits for the shell to leave before it closes the session"
+        );
+        timeout(Duration::from_secs(10), harness.finish())
             .await
-            .expect("the controller stops after requesting the relaunch");
+            .expect("the controller stops once the shell has left");
         let mut argv = Vec::new();
         let _ = relaunch.run_with(|command| {
             argv.extend(command.get_args().map(ToOwned::to_owned));

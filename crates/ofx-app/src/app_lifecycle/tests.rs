@@ -26,6 +26,9 @@ const CHILD_CATALOG: &str = "OH_FX_LIFECYCLE_CHILD_CATALOG";
 const CHILD_PANIC: &str = "OH_FX_LIFECYCLE_CHILD_PANIC";
 const CHILD_CLIPBOARD: &str = "OH_FX_LIFECYCLE_CHILD_CLIPBOARD";
 const CHILD_UPGRADE: &str = "OH_FX_LIFECYCLE_CHILD_UPGRADE";
+const CHILD_UPGRADE_EXIT: &str = "OH_FX_LIFECYCLE_CHILD_UPGRADE_EXIT";
+const UPGRADE_EXIT_TEST: &str =
+    "app_lifecycle::tests::a_ready_upgrade_exit_marks_the_shell_stages_before_the_worker_cleanup";
 const CLIPBOARD_TEST: &str =
     "app_lifecycle::tests::leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight";
 const UPGRADE_TEST: &str =
@@ -453,6 +456,100 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
             while commands.blocking_recv().is_some() {}
             worker_stages.mark("persistence_finalized");
             fs::write(stopped, "").unwrap();
+        },
+    );
+    if let Ok(joined) = outcome {
+        shutdown.finish(joined, Some(&directory.join("state")), 0);
+    }
+    process::exit(i32::from(outcome.is_err()));
+}
+
+#[test]
+fn a_ready_upgrade_exit_marks_the_shell_stages_before_the_worker_cleanup() {
+    if let Some(directory) = env::var_os(CHILD_UPGRADE_EXIT) {
+        run_a_shell_left_for_an_upgrade(Path::new(&directory));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = Command::new(env::current_exe().unwrap());
+    command
+        .args([
+            UPGRADE_EXIT_TEST,
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD_UPGRADE_EXIT, directory.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("TERM", "xterm-256color");
+    let mut session = PtySession::spawn(command, 24, 80).unwrap();
+    session
+        .wait_for(WAIT, |screen| screen.contains(FIRST_FRAME))
+        .unwrap_or_else(|screen| panic!("the shell never started:\n{screen}"));
+    session.send(b"\x07");
+    let status = session
+        .wait_exit(WAIT)
+        .expect("the upgrade exit ends the shell");
+    assert!(status.success(), "{status:?}");
+    let saved = fs::read_to_string(
+        directory
+            .path()
+            .join("state/diagnostics/last-shutdown.json"),
+    )
+    .expect("the shutdown report");
+    let report: Value = serde_json::from_str(&saved).unwrap();
+    let stages = report["stages"].as_array().unwrap();
+    let names: Vec<&str> = stages
+        .iter()
+        .map(|stage| stage["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "terminal_released",
+            "background_stops_requested",
+            "persistence_finalized",
+            "worker_thread_joined",
+            "complete"
+        ],
+        "{saved}"
+    );
+    let totals: Vec<u64> = stages
+        .iter()
+        .map(|stage| stage["total_ms"].as_u64().unwrap())
+        .collect();
+    assert_eq!(totals[0], stages[0]["step_ms"].as_u64().unwrap(), "{saved}");
+    assert!(totals.windows(2).all(|pair| pair[0] <= pair[1]), "{saved}");
+}
+
+fn run_a_shell_left_for_an_upgrade(directory: &Path) -> ! {
+    let (events, receiver) = ui_channel().unwrap();
+    let shutdown = ShutdownTrace::default();
+    let worker_stages = shutdown.clone();
+    let options = ShellOptions {
+        lifecycle: Some(Box::new(Exiting {
+            shutdown: shutdown.clone(),
+            herdr: None,
+            stop_upgrader: None,
+        })),
+        ..shell_options()
+    };
+    let outcome = host(
+        options,
+        events,
+        receiver,
+        Leaving {
+            shutdown: Some(&shutdown),
+            ..Leaving::default()
+        },
+        move |events, mut commands| {
+            while let Some(command) = commands.blocking_recv() {
+                if command == UiCommand::ApplyReadyUpgrade {
+                    events.send(UiEvent::ExitRequested);
+                    break;
+                }
+            }
+            while commands.blocking_recv().is_some() {}
+            worker_stages.mark("persistence_finalized");
         },
     );
     if let Ok(joined) = outcome {
