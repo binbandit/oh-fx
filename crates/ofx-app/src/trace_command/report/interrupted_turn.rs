@@ -1,9 +1,7 @@
 use std::fmt::{self, Write as _};
 
+use super::{masked_prefix, tool_display_name};
 use ofx_agent::InterruptedTurn;
-use ofx_text::mask_secrets;
-
-use super::{cut, tool_display_name};
 
 const ARGUMENT_BYTES: usize = 1200;
 
@@ -33,14 +31,10 @@ pub(super) fn write_section(out: &mut String, turn: Option<&InterruptedTurn>) ->
     if let Some(call) = &turn.in_flight {
         writeln!(out, "  in_flight_tool: {}", tool_display_name(&call.name))?;
         if !call.arguments.is_empty() {
-            let shown = cut(&call.arguments, ARGUMENT_BYTES);
-            writeln!(out, "  in_flight_args:\n    {}", mask_secrets(shown))?;
-            if shown.len() < call.arguments.len() {
-                writeln!(
-                    out,
-                    "    ... (truncated, {} more bytes)",
-                    call.arguments.len() - shown.len()
-                )?;
+            let (shown, left_out) = masked_prefix(&call.arguments, ARGUMENT_BYTES);
+            writeln!(out, "  in_flight_args:\n    {shown}")?;
+            if left_out > 0 {
+                writeln!(out, "    ... (truncated, {left_out} more bytes)")?;
             }
         }
     }

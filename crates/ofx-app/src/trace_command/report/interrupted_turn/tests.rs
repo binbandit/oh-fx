@@ -1,5 +1,7 @@
 use ofx_contract::ToolCall;
 
+use ofx_text::mask_secrets;
+
 use super::*;
 
 const SECRET: &str = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
@@ -49,6 +51,44 @@ fn the_section_names_the_in_flight_call_and_the_completed_tools() {
             "- interrupted turn in_flight_tool=shell completed_tools=2\n".to_owned()
         )
     );
+}
+
+const SECRET_FORMS: [(&str, &str, &str); 4] = [
+    (
+        "https://deploy:",
+        "hunter2secretvalue",
+        "@example.test/path",
+    ),
+    (
+        "Authorization: Bearer ",
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+        " end",
+    ),
+    ("API_KEY=", "supersecretvalue1234", " next"),
+    ("{\"api_key\":\"", "supersecretvalue1234", "\"}"),
+];
+
+#[test]
+fn arguments_are_masked_before_they_are_cut() {
+    for (before, secret, after) in SECRET_FORMS {
+        for kept in 0..=secret.len() {
+            let padding = "x".repeat(ARGUMENT_BYTES - before.len() - kept);
+            let arguments = format!("{padding}{before}{secret}{after}");
+            let written = section(Some(&turn(&arguments, &[])));
+            let (shown, left_out) = masked_prefix(&arguments, ARGUMENT_BYTES);
+            assert!(shown.len() <= ARGUMENT_BYTES);
+            assert!(
+                !written.contains(&secret[..4]),
+                "{before}{secret} cut after {kept} secret bytes: {}",
+                &written[written.len().saturating_sub(120)..]
+            );
+            assert_eq!(
+                written.contains("... (truncated, "),
+                left_out > 0,
+                "{written}"
+            );
+        }
+    }
 }
 
 #[test]

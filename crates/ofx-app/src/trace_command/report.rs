@@ -388,6 +388,12 @@ fn tool_display_name(name: &str) -> &str {
     }
 }
 
+fn masked_prefix(text: &str, limit: usize) -> (String, usize) {
+    let masked = mask_secrets(text);
+    let shown = cut(&masked, limit);
+    (shown.to_owned(), masked.len() - shown.len())
+}
+
 fn cut(text: &str, limit: usize) -> &str {
     &text[..text.floor_char_boundary(limit)]
 }
