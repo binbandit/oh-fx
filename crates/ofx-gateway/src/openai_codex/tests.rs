@@ -133,6 +133,7 @@ fn openai_codex_request_uses_responses_input_and_converts_ai_sdk_tool_schemas() 
             tool_name: "read_file".to_owned(),
             content: "contents".to_owned(),
             status: ToolResultStatus::Success,
+            images: Vec::new(),
         },
     ];
     let body = build_request(

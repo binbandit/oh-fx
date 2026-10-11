@@ -738,6 +738,7 @@ async fn a_parallel_group_is_admitted_whole_before_any_of_its_calls_runs() {
                 tool_name: "flag".to_owned(),
                 content: content.to_owned(),
                 status: ToolResultStatus::Success,
+                images: Vec::new(),
             })
             .collect::<Vec<_>>()
     );

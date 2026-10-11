@@ -107,6 +107,7 @@ fn review_messages() -> [ChatMessage; 3] {
             tool_name: call.name,
             content: "Tool call has not executed; it is pending permission review.".to_owned(),
             status: ToolResultStatus::Success,
+            images: Vec::new(),
         },
     ]
 }

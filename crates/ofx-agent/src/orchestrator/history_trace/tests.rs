@@ -25,6 +25,7 @@ fn read_step() -> [ChatMessage; 2] {
             tool_name: "read_file".to_owned(),
             content: "text".to_owned(),
             status: ToolResultStatus::Success,
+            images: Vec::new(),
         },
     ]
 }

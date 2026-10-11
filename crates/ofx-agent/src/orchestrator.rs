@@ -70,6 +70,7 @@ mod rejection_trace;
 mod request_usage;
 mod response_language;
 mod steering;
+mod tool_images;
 mod turn_ledger;
 mod turn_log;
 mod turn_trace;
@@ -230,7 +231,7 @@ struct Turn {
     shell_corrections: ShellValidationRetry,
     shell_failures: ShellExecutionFailureRetry,
     fast_mode: bool,
-    fast_notice_shown: bool,
+    notices: CatalogNotices,
     compaction: TurnCompaction,
     raw_outputs: Vec<RecordedOutput>,
     earlier_files: EarlierEvidence,
@@ -247,6 +248,12 @@ struct Turn {
     selected_tools: SelectedTools,
     trail: ToolTrail,
     projection: Option<history_trace::HistoryShape>,
+}
+
+#[derive(Default)]
+struct CatalogNotices {
+    fast: bool,
+    tool_images: bool,
 }
 
 #[derive(Default)]
@@ -624,7 +631,7 @@ impl Agent {
             shell_corrections: ShellValidationRetry::default(),
             shell_failures: ShellExecutionFailureRetry::default(),
             fast_mode: self.config.fast_mode,
-            fast_notice_shown: false,
+            notices: CatalogNotices::default(),
             compaction: TurnCompaction::default(),
             raw_outputs: Vec::new(),
             earlier_files: EarlierEvidence::default(),
@@ -910,14 +917,12 @@ impl Agent {
             self.require_image_input(cancel).await?;
             let entered = enter_step(turn, step);
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
-            if self.has_compactable_context(turn) {
-                self.resolve_capabilities(cancel).await?;
-            }
+            self.resolve_step_capabilities(turn, events, cancel).await?;
             self.refresh_dynamic_tools(&turn.selected_tools);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             history_trace::projected(turn.trace, turn.projection.take(), instructions.len());
-            let messages = self.request_messages(turn);
+            let messages = self.step_messages(turn);
             let gateway_messages = instructions.len() + messages.len();
             self.trace_step(turn, (step + 1, entered), gateway_messages);
             let request = self.turn_request(turn, &instructions, &messages, events);
@@ -1207,8 +1212,8 @@ impl Agent {
         let options = known
             .model
             .provider_options(self.config.reasoning_effort.as_deref(), turn.fast_mode);
-        if turn.fast_mode && !options.fast && known.catalog_unavailable && !turn.fast_notice_shown {
-            turn.fast_notice_shown = true;
+        if turn.fast_mode && !options.fast && known.catalog_unavailable && !turn.notices.fast {
+            turn.notices.fast = true;
             events(UiEvent::Operational {
                 turn_id: turn.id,
                 text: format!("{FAST_UNAVAILABLE_NOTICE}\n"),
@@ -1740,7 +1745,7 @@ impl Agent {
             if interrupted {
                 turn.trail.interrupted_at(call);
             }
-            let Some(output) = output else {
+            let Some(mut output) = output else {
                 continue;
             };
             turn.selected_tools.record(&output);
@@ -1762,6 +1767,7 @@ impl Agent {
                 turn.shell_corrections.observe(call, &output.content);
             }
             let shown_whole = output.model_view_covers_full_file == Some(true);
+            let images = output.take_images();
             let bytes = output.content.len();
             let result_kind = turn_trace::result_kind(&output);
             let (model_output, truncated) =
@@ -1797,6 +1803,7 @@ impl Agent {
                 tool_name: call.name.clone(),
                 content,
                 status,
+                images,
             });
         }
     }

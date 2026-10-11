@@ -1,5 +1,7 @@
 use std::fs;
 
+use ofx_contract::ToolImage;
+
 use super::*;
 use crate::test_sources::{CapturedImages, user_with_images};
 
@@ -114,4 +116,142 @@ fn chat_completions_requires_each_image_snapshot_to_verify() {
             Err(ProtocolError::ImageUnavailable)
         );
     }
+}
+
+fn tool_with_images(
+    id: &str,
+    content: &str,
+    status: ToolResultStatus,
+    images: Vec<ToolImage>,
+) -> ChatMessage {
+    ChatMessage::Tool {
+        call_id: ToolCallId::new(id),
+        tool_name: "read_file".to_owned(),
+        content: content.to_owned(),
+        status,
+        images,
+    }
+}
+
+fn tool_image(data: &str, mime_type: &str) -> ToolImage {
+    ToolImage {
+        data: data.to_owned(),
+        mime_type: mime_type.to_owned(),
+        source_ref: None,
+    }
+}
+
+fn calls(ids: &[&str]) -> ChatMessage {
+    ChatMessage::Assistant {
+        content: None,
+        tool_calls: ids.iter().map(|id| call(id, "read_file", "{}")).collect(),
+        provider_replay: None,
+    }
+}
+
+fn sent_messages(request: &OwnedRequest) -> Vec<Value> {
+    let body: Value = serde_json::from_str(&build(request, ToolChoiceMode::Omit).unwrap()).unwrap();
+    body["messages"].as_array().unwrap().clone()
+}
+
+#[test]
+fn chat_completions_serializes_retained_tool_images_as_a_follow_up_user_message() {
+    let request = OwnedRequest {
+        messages: vec![
+            ChatMessage::user("hi"),
+            calls(&["call-1"]),
+            tool_with_images(
+                "call-1",
+                "image attached",
+                ToolResultStatus::Success,
+                vec![tool_image("aGVsbG8", "image/png")],
+            ),
+        ],
+        ..test_tool_request()
+    };
+
+    let body = build(&request, ToolChoiceMode::Omit).unwrap();
+
+    assert!(
+        body.contains(concat!(
+            r#"{"role":"tool","content":"image attached","tool_call_id":"call-1"},"#,
+            r#"{"role":"user","content":[{"type":"text","text":"The tool \"read_file\" returned 1 image(s)."},"#,
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8"}}]}],"#,
+        )),
+        "{body}"
+    );
+    let messages = sent_messages(&request);
+    assert_eq!(
+        messages[messages.len() - 1],
+        json!({"role": "user", "content": [
+            {"type": "text", "text": "The tool \"read_file\" returned 1 image(s)."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8"}},
+        ]})
+    );
+    assert_eq!(messages[messages.len() - 2]["content"], "image attached");
+}
+
+#[test]
+fn chat_completions_merges_parallel_tool_images_into_one_follow_up_after_the_tool_run() {
+    let request = OwnedRequest {
+        messages: vec![
+            ChatMessage::user("hi"),
+            calls(&["call-1", "call-2"]),
+            tool_with_images(
+                "call-1",
+                "image a",
+                ToolResultStatus::Success,
+                vec![tool_image("aGVsbG8", "image/png")],
+            ),
+            tool_with_images(
+                "call-2",
+                "image b",
+                ToolResultStatus::Success,
+                vec![tool_image("d29ybGQ", "image/jpeg")],
+            ),
+            ChatMessage::user("thanks"),
+        ],
+        ..test_tool_request()
+    };
+
+    let messages = sent_messages(&request);
+
+    assert_eq!(messages.len(), 8);
+    assert_eq!(messages[4]["role"], "tool");
+    assert_eq!(messages[5]["role"], "tool");
+    assert_eq!(
+        messages[6],
+        json!({"role": "user", "content": [
+            {"type": "text", "text": "Tool results returned 2 image(s)."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8"}},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,d29ybGQ"}},
+        ]})
+    );
+    assert_eq!(messages[7], json!({"role": "user", "content": "thanks"}));
+}
+
+#[test]
+fn chat_completions_withholds_images_from_denied_tool_results() {
+    let request = OwnedRequest {
+        messages: vec![
+            ChatMessage::user("hi"),
+            calls(&["call-1"]),
+            tool_with_images(
+                "call-1",
+                r#"{"error":{"type":"tool_permission_denied","reason":"user_denied"}}"#,
+                ToolResultStatus::Failure,
+                vec![tool_image("aGVsbG8", "image/png")],
+            ),
+        ],
+        ..test_tool_request()
+    };
+
+    let messages = sent_messages(&request);
+
+    assert_eq!(messages.len(), 5);
+    assert!(
+        !build(&request, ToolChoiceMode::Omit)
+            .unwrap()
+            .contains("image_url")
+    );
 }
