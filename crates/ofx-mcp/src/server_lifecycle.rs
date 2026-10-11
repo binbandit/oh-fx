@@ -6,13 +6,16 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::auth_state::AuthState;
 use crate::catalog_freshness::Freshness;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
-use crate::server_transport::{ConnectOptions, StartupFailure, startup_failure_message};
+use crate::server_transport::{
+    ConnectOptions, StartupFailure, startup_deadline, startup_failure_message,
+};
 use crate::timing::{spawn, timeout_at};
 use crate::tool_operations::CallOptions;
 use crate::transport::ShutdownMode;
@@ -89,6 +92,7 @@ impl From<McpError> for CallFailure {
 pub(crate) struct Server {
     pub(crate) config: McpServerConfig,
     pub(crate) features: FeatureCatalogs,
+    pub(crate) auth: Arc<AuthState>,
     options: ConnectOptions,
     state: Mutex<State>,
     recovery: tokio::sync::Mutex<()>,
@@ -105,6 +109,7 @@ impl Server {
         Self {
             config,
             features: FeatureCatalogs::default(),
+            auth: Arc::default(),
             options,
             state: Mutex::new(State::Waiting),
             recovery: tokio::sync::Mutex::new(()),
@@ -150,16 +155,21 @@ impl Server {
             *state = State::Starting;
         }
         let _starting = StartAttempt(self);
-        self.connect(McpClient::connect(&self.config, &self.options))
-            .await
-            .map_err(|failure| {
-                let timeout_ms = self.config.startup_timeout_ms;
-                self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
-                match failure.error {
-                    McpError::McpRequestTimedOut => McpError::McpConnectionTimedOut,
-                    error => error,
-                }
-            })
+        self.connect(McpClient::connect_until(
+            &self.config,
+            &self.options,
+            startup_deadline(&self.config),
+            &self.auth,
+        ))
+        .await
+        .map_err(|failure| {
+            let timeout_ms = self.config.startup_timeout_ms;
+            self.settle_failure(startup_failure_message(&failure, timeout_ms, timeout_ms));
+            match failure.error {
+                McpError::McpRequestTimedOut => McpError::McpConnectionTimedOut,
+                error => error,
+            }
+        })
     }
 
     fn abandon_start(&self) {
@@ -224,7 +234,15 @@ impl Server {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
+        if client.transport.stream_rejected_authentication() {
+            self.authentication_failed(&client);
+            return Err(McpError::McpAuthenticationRequired.into());
+        }
         let refreshed = client.settled_tools(deadline).await?;
+        if let Some(error) = refreshed.lost_authentication {
+            self.authentication_failed(&client);
+            return Err(error.into());
+        }
         if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
@@ -242,19 +260,59 @@ impl Server {
         if Instant::now() >= deadline {
             return Err(McpError::McpRequestTimedOut.into());
         }
-        Ok(client
+        let outcome = client
             .call_tool(name, arguments_json, options, deadline)
-            .await?)
+            .await;
+        if let Err(error) = &outcome
+            && client.transport.lost_authentication(error)
+        {
+            self.authentication_failed(&client);
+        }
+        Ok(outcome?)
+    }
+
+    fn authentication_failed(&self, client: &McpClient) {
+        let Some(auth) = client.transport.http_auth() else {
+            return;
+        };
+        let retired = {
+            let mut state = lock(&self.state);
+            let State::Ready(connection) = &*state else {
+                return;
+            };
+            if !std::ptr::eq(Arc::as_ptr(&connection.client), client) {
+                return;
+            }
+            let connection = connection.clone();
+            *state = State::Failed(auth.capture());
+            connection
+        };
+        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        retired.stop.cancel();
+        spawn(async move {
+            retired.client.shutdown(ShutdownMode::Graceful).await;
+        });
     }
 
     pub(crate) async fn refresh_tools(&self, client: &McpClient, deadline: Instant) {
-        if client.refresh_tools(deadline).await.replaced {
+        if client.transport.stream_rejected_authentication() {
+            self.authentication_failed(client);
+            return;
+        }
+        let refreshed = client.refresh_tools(deadline).await;
+        if refreshed.lost_authentication.is_some() {
+            self.authentication_failed(client);
+        } else if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
         while let Ok(refreshed) = client.settled_tools(deadline).await {
+            if refreshed.lost_authentication.is_some() {
+                self.authentication_failed(client);
+                return;
+            }
             if refreshed.replaced {
                 self.catalog_generation.fetch_add(1, Ordering::AcqRel);
             }
@@ -305,6 +363,7 @@ impl Server {
                 &self.config,
                 &self.options,
                 deadline,
+                &self.auth,
             )))
             .await
         {
@@ -400,3 +459,6 @@ fn millis_until(deadline: Instant) -> u32 {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+#[cfg(test)]
+mod tests;

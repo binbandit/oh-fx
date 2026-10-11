@@ -36,14 +36,14 @@ fn an_empty_catalog_says_so_as_upstream_writes_it() {
 #[test]
 fn servers_are_listed_in_name_order_without_tool_metadata() {
     let section = render_model_catalog(&[
-        server("zeta", Availability::Failed, None),
+        server("zeta", Availability::AuthenticationRequired, None),
         server("alpha", Availability::Ready, Some(2)),
     ]);
     let (header, footer) = SECTION_GOLDEN.split_once("  <none />\n").unwrap();
     assert_eq!(
         section.text,
         format!(
-            "{header}  <server name=\"alpha\" state=\"ready\" tools=\"2\" />\n  <server name=\"zeta\" state=\"failed\" />\n{footer}"
+            "{header}  <server name=\"alpha\" state=\"ready\" tools=\"2\" />\n  <server name=\"zeta\" state=\"authentication_required\" />\n{footer}"
         )
     );
     assert_eq!(section.notice, None);
@@ -101,25 +101,99 @@ fn names_are_encoded_and_omissions_stay_within_the_budget_without_naming_them() 
 }
 
 #[test]
-fn availability_follows_the_classified_connection() {
-    for (connection, expected) in [
-        (ConnectionState::Ready, Availability::Ready),
-        (ConnectionState::Connecting, Availability::Discovering),
-        (ConnectionState::Disabled, Availability::Disabled),
-        (ConnectionState::Failed, Availability::Failed),
-        (ConnectionState::Disconnected, Availability::Unavailable),
-    ] {
-        assert_eq!(classify_availability(connection, false), expected);
-    }
-    for (connection, expected) in [
+fn availability_follows_the_connection_authentication_and_deferred_state() {
+    use crate::health::AuthenticationState as Auth;
+    for (connection, authentication, deferred, expected) in [
+        (
+            ConnectionState::Ready,
+            Auth::None,
+            false,
+            Availability::Ready,
+        ),
+        (
+            ConnectionState::Connecting,
+            Auth::None,
+            false,
+            Availability::Discovering,
+        ),
         (
             ConnectionState::Disconnected,
+            Auth::None,
+            true,
             Availability::AvailableOnDemand,
         ),
-        (ConnectionState::Disabled, Availability::Disabled),
-        (ConnectionState::Ready, Availability::Ready),
+        (
+            ConnectionState::Failed,
+            Auth::Required,
+            false,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Disconnected,
+            Auth::Required,
+            false,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Disconnected,
+            Auth::Required,
+            true,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Disabled,
+            Auth::None,
+            false,
+            Availability::Disabled,
+        ),
+        (
+            ConnectionState::Disabled,
+            Auth::Required,
+            false,
+            Availability::Disabled,
+        ),
+        (
+            ConnectionState::Disabled,
+            Auth::None,
+            true,
+            Availability::Disabled,
+        ),
+        (
+            ConnectionState::Failed,
+            Auth::None,
+            false,
+            Availability::Failed,
+        ),
+        (
+            ConnectionState::Ready,
+            Auth::None,
+            true,
+            Availability::Ready,
+        ),
+        (
+            ConnectionState::Ready,
+            Auth::Required,
+            false,
+            Availability::AuthenticationRequired,
+        ),
+        (
+            ConnectionState::Failed,
+            Auth::Configured,
+            false,
+            Availability::Failed,
+        ),
+        (
+            ConnectionState::Disconnected,
+            Auth::None,
+            false,
+            Availability::Unavailable,
+        ),
     ] {
-        assert_eq!(classify_availability(connection, true), expected);
+        assert_eq!(
+            classify_availability(connection, authentication, deferred),
+            expected,
+            "{connection:?} {authentication:?} {deferred}"
+        );
     }
 }
 
@@ -142,6 +216,15 @@ fn changes_name_each_transition_addition_and_removal() {
             &[server("linear", Availability::Ready, Some(74))],
         ),
         Some(notice_with("  linear: failed -> ready (74 tools)\n"))
+    );
+    assert_eq!(
+        render_change_notice(
+            &[baseline("linear", Availability::AuthenticationRequired)],
+            &[server("linear", Availability::Ready, Some(74))],
+        ),
+        Some(notice_with(
+            "  linear: authentication_required -> ready (74 tools)\n"
+        ))
     );
     assert_eq!(
         render_change_notice(

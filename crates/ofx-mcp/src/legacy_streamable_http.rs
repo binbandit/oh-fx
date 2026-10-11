@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE, WWW_AUTHENTICATE};
+use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
 use tokio::runtime::Handle;
@@ -267,6 +267,12 @@ impl LegacyHttpClient {
     }
 }
 
+impl LegacyHttpClient {
+    pub(crate) fn auth(&self) -> &HttpAuth {
+        &self.shared.auth
+    }
+}
+
 impl Drop for LegacyHttpClient {
     fn drop(&mut self) {
         let stopped = self.shared.stopping.swap(true, Ordering::AcqRel);
@@ -389,7 +395,7 @@ impl HttpShared {
             committed.store(true, Ordering::Release);
         }
         let response = builder.send().await?;
-        reject_redirect_or_authentication(&response)?;
+        self.auth.reject(&response)?;
         self.require_success(&response)?;
         let request_id = options.request_id;
         let session_id = options
@@ -433,7 +439,7 @@ impl HttpShared {
 
     async fn post_accepted(&self, body: &str) -> Result<(), McpError> {
         let response = self.post_builder(body).await?.send().await?;
-        reject_redirect_or_authentication(&response)?;
+        self.auth.reject(&response)?;
         if response.status() == StatusCode::ACCEPTED {
             Ok(())
         } else {
@@ -472,7 +478,7 @@ impl HttpShared {
                         .await?
                         .send()
                         .await?;
-                    reject_redirect_or_authentication(&response)?;
+                    self.auth.reject(&response)?;
                     self.require_success(&response)?;
                     if media_type(&response)? != MediaType::EventStream {
                         return Err(McpError::UnsupportedContentType);
@@ -573,7 +579,7 @@ impl HttpShared {
             .await?
             .send()
             .await?;
-        reject_redirect_or_authentication(&response)?;
+        self.auth.reject(&response)?;
         if response.status() == StatusCode::METHOD_NOT_ALLOWED {
             return Err(McpError::McpNotificationListenerUnsupported);
         }
@@ -640,9 +646,13 @@ async fn listener_main(shared: Arc<HttpShared>) {
                 sleep(Duration::from_millis(cursor.retry_ms.into())).await;
                 continue;
             }
+            Err(McpError::McpAuthenticationRequired) => {
+                shared.auth.reject_stream();
+                return;
+            }
             Err(
                 McpError::McpNotificationListenerUnsupported
-                | McpError::McpAuthenticationRequired
+                | McpError::McpRefreshRejected
                 | McpError::McpSessionExpired
                 | McpError::MissingFinalResponse,
             ) => return,
@@ -658,18 +668,6 @@ async fn listener_main(shared: Arc<HttpShared>) {
 
 fn retry_delay(attempt: u32) -> Duration {
     (0..attempt.min(RETRY_MAX_ATTEMPT)).fold(RETRY_INITIAL, |delay, _| (delay * 2).min(RETRY_MAX))
-}
-
-fn reject_redirect_or_authentication(response: &Response) -> Result<(), McpError> {
-    let status = response.status();
-    if status.is_redirection() {
-        return Err(McpError::RedirectNotAllowed);
-    }
-    let challenged = response.headers().contains_key(WWW_AUTHENTICATE);
-    if status == StatusCode::UNAUTHORIZED || (status == StatusCode::FORBIDDEN && challenged) {
-        return Err(McpError::McpAuthenticationRequired);
-    }
-    Ok(())
 }
 
 fn media_type(response: &Response) -> Result<MediaType, McpError> {
