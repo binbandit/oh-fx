@@ -250,3 +250,60 @@ fn an_unreadable_usage_sidecar_needs_recovery_even_for_a_complete_log() {
     assert!(recovery.usage_incomplete);
     assert_eq!(recovery.boundary.seq, 3);
 }
+
+#[test]
+fn a_result_saved_only_as_its_command_replay_depends_on_that_replay_alone() {
+    let replay = "fx-command-replay-aae1a4c602fd36c8.bin";
+    let mut replayed = ToolResultEvent::new(
+        "one",
+        "shell",
+        ToolResultStatus::Success,
+        replay,
+        3,
+        ArtifactCompleteness::Complete,
+    );
+    replayed.command_replay_ref = Some(replay.to_owned());
+    replayed.command_replay_bytes = Some(4);
+    let mut separate = ToolResultEvent::new(
+        "two",
+        "shell",
+        ToolResultStatus::Success,
+        "result-two.txt",
+        3,
+        ArtifactCompleteness::Complete,
+    );
+    separate.command_replay_ref = Some(replay.to_owned());
+    separate.command_replay_bytes = Some(4);
+    let bytes = [
+        frames(
+            1,
+            &[
+                user("list"),
+                call("one"),
+                call("two"),
+                ConversationEvent::ToolResult(replayed),
+                ConversationEvent::ToolResult(separate),
+                completed(),
+            ],
+        ),
+        b"{".to_vec(),
+    ]
+    .concat();
+    let log = Log::new(&bytes);
+    let recovered = recovered_log(&log.dir, log.boundary().unwrap()).unwrap();
+    let replay_artifact = RecoveredArtifact::CommandReplay {
+        handle: replay.to_owned(),
+        bytes: 4,
+    };
+    assert_eq!(
+        recovered.artifacts,
+        [
+            replay_artifact.clone(),
+            RecoveredArtifact::ToolOutput {
+                handle: "result-two.txt".to_owned(),
+                bytes: 3,
+            },
+            replay_artifact,
+        ]
+    );
+}

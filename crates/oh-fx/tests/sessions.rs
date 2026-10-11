@@ -1044,6 +1044,45 @@ fn session_recover_reports_unauthenticated_artifacts_with_a_failing_status() {
     assert_eq!(fx_tree(&home), before);
 }
 
+fn refused_as_untrustworthy(home: &Home, ids: &[&str]) {
+    for id in ids {
+        assert_eq!(
+            refused(&home.session(&["recover", id], &[])),
+            (
+                String::new(),
+                "oh-fx session: no exact trustworthy recovery boundary was found; the source was left unchanged\n"
+                    .to_owned()
+            ),
+            "{id}"
+        );
+    }
+}
+
+fn own_sessions(home: &Home) -> Vec<String> {
+    fs::read_dir(home.root.join("data/oh-fx/sessions"))
+        .expect("the sessions directory")
+        .map(|entry| {
+            entry
+                .expect("a session entry")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 name")
+        })
+        .collect()
+}
+
+fn recovered_cleanly(home: &Home, id: &str) -> String {
+    let text = described(&home.session(&["recover", id], &[]));
+    let copy = recovered_id(&text);
+    assert_eq!(
+        text,
+        format!(
+            "[session recovery] copied {id} to {copy}\nhistory_turns: 1\nresume: oh-fx --resume {copy}\n"
+        )
+    );
+    copy
+}
+
 #[test]
 fn session_recover_checks_each_artifact_against_the_digest_its_name_carries() {
     let server = FakeServer::start(replies(0));
@@ -1070,45 +1109,51 @@ fn session_recover_checks_each_artifact_against_the_digest_its_name_carries() {
         &forged,
         &[stored_output("a.t"), command_artifact(&forged)],
     );
-    save_fx_shell_session(
-        &home,
-        "fx-replay-only",
-        AUTHENTICATED_REPLAY,
-        AUTHENTICATED_REPLAY,
-        &[command_artifact(AUTHENTICATED_REPLAY)],
-    );
     let before = fx_tree(&home);
 
-    let text = described(&home.session(&["recover", "fx-verified"], &[]));
-    let copy = recovered_id(&text);
-    assert_eq!(
-        text,
-        format!(
-            "[session recovery] copied fx-verified to {copy}\nhistory_turns: 1\nresume: oh-fx --resume {copy}\n"
-        )
-    );
-    for id in ["fx-changed-output", "fx-forged-replay", "fx-replay-only"] {
-        assert_eq!(
-            refused(&home.session(&["recover", id], &[])),
-            (
-                String::new(),
-                "oh-fx session: no exact trustworthy recovery boundary was found; the source was left unchanged\n"
-                    .to_owned()
-            ),
-            "{id}"
-        );
+    let copy = recovered_cleanly(&home, "fx-verified");
+    refused_as_untrustworthy(&home, &["fx-changed-output", "fx-forged-replay"]);
+    assert_eq!(own_sessions(&home), [copy]);
+    assert_eq!(fx_tree(&home), before);
+}
+
+#[test]
+fn session_recover_takes_a_result_fx_saved_only_as_its_replay_from_that_replay() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    let forged = format!("fx-command-replay-{}.bin", "0".repeat(64));
+    for (id, replay, artifacts) in [
+        (
+            "fx-replay-only",
+            AUTHENTICATED_REPLAY,
+            vec![command_artifact(AUTHENTICATED_REPLAY)],
+        ),
+        ("fx-replay-only-missing", AUTHENTICATED_REPLAY, Vec::new()),
+        (
+            "fx-replay-only-forged",
+            forged.as_str(),
+            vec![command_artifact(&forged)],
+        ),
+    ] {
+        save_fx_shell_session(&home, id, replay, replay, &artifacts);
     }
-    let sessions: Vec<String> = fs::read_dir(home.root.join("data/oh-fx/sessions"))
-        .expect("the sessions directory")
-        .map(|entry| {
-            entry
-                .expect("a session entry")
-                .file_name()
-                .into_string()
-                .expect("a UTF-8 name")
-        })
-        .collect();
-    assert_eq!(sessions, [copy]);
+    let before = fx_tree(&home);
+
+    let copy = recovered_cleanly(&home, "fx-replay-only");
+    let session = home.root.join("data/oh-fx/sessions").join(&copy);
+    assert_eq!(
+        fs::read(session.join("logs/commands").join(AUTHENTICATED_REPLAY))
+            .expect("the copied replay"),
+        b"fx!!"
+    );
+    assert!(
+        !session
+            .join("tool-results")
+            .join(AUTHENTICATED_REPLAY)
+            .exists()
+    );
+    refused_as_untrustworthy(&home, &["fx-replay-only-missing", "fx-replay-only-forged"]);
+    assert_eq!(own_sessions(&home), [copy]);
     assert_eq!(fx_tree(&home), before);
 }
 

@@ -162,10 +162,12 @@ fn referenced_artifacts(event: &ConversationEvent) -> Vec<RecoveredArtifact> {
     };
     match event {
         ConversationEvent::ToolResult(result) => {
-            artifacts.push(RecoveredArtifact::ToolOutput {
-                handle: result.artifact_ref.clone(),
-                bytes: result.stored_bytes,
-            });
+            if result.command_replay_ref.as_ref() != Some(&result.artifact_ref) {
+                artifacts.push(RecoveredArtifact::ToolOutput {
+                    handle: result.artifact_ref.clone(),
+                    bytes: result.stored_bytes,
+                });
+            }
             if let Some(handle) = result
                 .committed_file_presentation
                 .as_ref()
