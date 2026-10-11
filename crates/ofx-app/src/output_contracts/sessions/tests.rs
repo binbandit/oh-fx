@@ -1,4 +1,6 @@
-use ofx_session::{SessionMigration, SessionMigrationStatus, SessionSource};
+use ofx_session::{
+    SessionMigration, SessionMigrationStatus, SessionRecovery, SessionRecoveryStatus, SessionSource,
+};
 
 use super::*;
 
@@ -240,4 +242,73 @@ fn migration_under_the_v2_store_explains_itself() {
         session_lookup_message("SessionMigrationUnavailable"),
         Some("session migrate converts v1 sessions and is not available with sessions v2 yet")
     );
+}
+
+fn recovery(
+    target: &str,
+    status: SessionRecoveryStatus,
+    usage_incomplete: bool,
+) -> SessionRecovery {
+    SessionRecovery {
+        source_session_id: "source-session".to_owned(),
+        recovered_session_id: target.to_owned(),
+        history_len: 4,
+        usage_incomplete,
+        status,
+    }
+}
+
+fn rendered(recovery: &SessionRecovery) -> (String, String) {
+    let snapshot = SessionRecoverySnapshot { recovery };
+    (
+        snapshot.render(OutputFormat::Text),
+        snapshot.render(OutputFormat::Json),
+    )
+}
+
+#[test]
+fn core_session_recovery_snapshot_text_and_json_stay_stable() {
+    assert_eq!(
+        rendered(&recovery("recovered-session", SessionRecoveryStatus::Recovered, false)),
+        (
+            "[session recovery] copied source-session to recovered-session\nhistory_turns: 4\nresume: oh-fx --resume recovered-session\n".to_owned(),
+            "{\"kind\":\"session_recovery\",\"source_id\":\"source-session\",\"recovered_id\":\"recovered-session\",\"status\":\"recovered\",\"history_turns\":4}\n".to_owned(),
+        )
+    );
+    assert_eq!(
+        rendered(&recovery(
+            "partial-session",
+            SessionRecoveryStatus::RecoveredWithUnverifiedArtifacts,
+            false
+        )),
+        (
+            "[session recovery] copied source-session to partial-session\nhistory_turns: 4\nwarning: legacy command artifacts could not be authenticated\nresume: oh-fx --resume partial-session\n".to_owned(),
+            "{\"kind\":\"session_recovery\",\"source_id\":\"source-session\",\"recovered_id\":\"partial-session\",\"status\":\"recovered_with_unverified_artifacts\",\"history_turns\":4}\n".to_owned(),
+        )
+    );
+    assert_eq!(
+        rendered(&recovery(
+            "target-session",
+            SessionRecoveryStatus::Indeterminate,
+            false
+        ))
+        .0,
+        "[session recovery] could not confirm target target-session\nsource: source-session (unchanged)\nresolve: oh-fx --resume target-session\ninspect: oh-fx doctor\n"
+    );
+}
+
+#[test]
+fn core_session_recovery_keeps_incomplete_accounting_visible_for_every_result() {
+    for status in [
+        SessionRecoveryStatus::Recovered,
+        SessionRecoveryStatus::RecoveredWithUnverifiedArtifacts,
+        SessionRecoveryStatus::Indeterminate,
+    ] {
+        let (text, json) = rendered(&recovery("copy", status, true));
+        assert!(
+            text.contains("warning: historical usage is incomplete because the source accounting data is corrupt\n"),
+            "{text}"
+        );
+        assert!(json.ends_with(",\"usage_incomplete\":true}\n"), "{json}");
+    }
 }

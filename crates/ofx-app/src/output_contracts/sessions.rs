@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use ofx_cli::OutputFormat;
-use ofx_session::{SessionMigration, SessionSummary};
+use ofx_session::{SessionMigration, SessionRecovery, SessionRecoveryStatus, SessionSummary};
 use ofx_text::encode_terminal_safe;
 use serde_json::{Map, Value, json};
 
@@ -201,6 +201,58 @@ impl SessionMigrationSnapshot<'_> {
     }
 }
 
+pub struct SessionRecoverySnapshot<'a> {
+    pub recovery: &'a SessionRecovery,
+}
+
+impl SessionRecoverySnapshot<'_> {
+    pub fn render(&self, format: OutputFormat) -> String {
+        let recovery = self.recovery;
+        match format {
+            OutputFormat::Text => self.render_text(),
+            OutputFormat::Json => {
+                let mut object = json!({
+                    "kind": "session_recovery",
+                    "source_id": recovery.source_session_id,
+                    "recovered_id": recovery.recovered_session_id,
+                    "status": recovery.status.label(),
+                    "history_turns": recovery.history_len,
+                });
+                if let (true, Some(fields)) = (recovery.usage_incomplete, object.as_object_mut()) {
+                    fields.insert("usage_incomplete".to_owned(), json!(true));
+                }
+                let mut line = object.to_string();
+                line.push('\n');
+                line
+            }
+        }
+    }
+
+    fn render_text(&self) -> String {
+        let recovery = self.recovery;
+        let source = &recovery.source_session_id;
+        let target = &recovery.recovered_session_id;
+        let usage_warning = if recovery.usage_incomplete {
+            "warning: historical usage is incomplete because the source accounting data is corrupt\n"
+        } else {
+            ""
+        };
+        match recovery.status {
+            SessionRecoveryStatus::Indeterminate => format!(
+                "[session recovery] could not confirm target {target}\nsource: {source} (unchanged)\n{usage_warning}resolve: oh-fx --resume {target}\ninspect: oh-fx doctor\n"
+            ),
+            SessionRecoveryStatus::RecoveredWithUnverifiedArtifacts => format!(
+                "[session recovery] copied {source} to {target}\nhistory_turns: {}\nwarning: legacy command artifacts could not be authenticated\n{usage_warning}resume: oh-fx --resume {target}\n",
+                recovery.history_len
+            ),
+            SessionRecoveryStatus::Recovered => format!(
+                "[session recovery] copied {source} to {target}\nhistory_turns: {}\n{usage_warning}resume: oh-fx --resume {target}\n",
+                recovery.history_len
+            ),
+        }
+    }
+}
+
 fn insert_summary_fields(object: &mut Map<String, Value>, session: &SessionSummary) {
     let fields = [
         ("id", json!(session.id)),
@@ -244,6 +296,18 @@ pub fn session_lookup_message(code: &str) -> Option<&'static str> {
             "record is corrupt; run `oh-fx doctor` for recovery guidance"
         }
         "UnsupportedSessionSchema" => "record uses an unsupported session version",
+        "SessionRecoveryNotNeeded" => {
+            "recovery was refused because the session has a valid commit boundary; resume it normally"
+        }
+        "SessionRecoveryRequiresCurrentSchema" => {
+            "recovery supports conversation logs and schema-v3 event logs; migrate snapshot sessions first"
+        }
+        "SessionRecoveryBoundaryInvalid" => {
+            "no exact trustworthy recovery boundary was found; the source was left unchanged"
+        }
+        "SessionRecoveryIndeterminate" => {
+            "the recovery copy could not be confirmed; the source was left unchanged"
+        }
         "InvalidSessionId" => "invalid session id",
         "SessionBusy" | "SessionLockUnsupported" => {
             "session is busy or the filesystem cannot provide the required lock"

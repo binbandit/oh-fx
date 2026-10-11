@@ -606,5 +606,7 @@ fn resumable(session: WritableSession) -> Result<WritableSession, SessionError> 
     Ok(session)
 }
 
+mod recovery;
+
 #[cfg(test)]
 mod tests;

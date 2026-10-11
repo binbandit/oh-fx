@@ -312,11 +312,17 @@ fn parse_session_migration_args_rejects_missing_repeated_and_mixed_targets() {
 fn parse_session_recovery_args_accepts_exact_ids_and_rejects_ambiguity() {
     assert_eq!(
         parse_session(os(&["recover", "session.v3", "--json"])).unwrap(),
-        session(OutputFormat::Json, SessionAction::Recover)
+        session(
+            OutputFormat::Json,
+            SessionAction::Recover("session.v3".to_owned())
+        )
     );
     assert_eq!(
         parse_session(os(&["recover", "--id", "last"])).unwrap(),
-        session(OutputFormat::Text, SessionAction::Recover)
+        session(
+            OutputFormat::Text,
+            SessionAction::Recover("last".to_owned())
+        )
     );
     for args in [
         &["recover", "--id"][..],
