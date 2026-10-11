@@ -240,6 +240,15 @@ impl Tee {
             broken: false,
         }
     }
+
+    fn unflushed_log_offset(&self) -> u64 {
+        let first = self
+            .appended
+            .partition_point(|frame| frame.file_offset < self.flushed);
+        self.appended
+            .get(first)
+            .map_or(self.covered, |frame| frame.log_offset)
+    }
 }
 
 impl CacheTee<'_> {
@@ -317,7 +326,7 @@ impl CacheTee<'_> {
             trace_log!(
                 SESSION,
                 "history cache append failed offset={} err={}",
-                tee.flushed,
+                tee.unflushed_log_offset(),
                 SessionError::from(error)
             );
             tee.broken = true;
