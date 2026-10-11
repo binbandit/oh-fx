@@ -61,7 +61,7 @@ impl Shared {
             .map(|recovery| ledger.profile.rolling_reports(snapshot_time_ms, &recovery));
         let mut board = self.board();
         board.loading = false;
-        let Some(loaded) = loaded else {
+        let Some(loaded) = loaded.filter(|_| !self.cancel.load(Ordering::SeqCst)) else {
             return;
         };
         let failed = loaded.is_err();
@@ -181,6 +181,9 @@ impl UsageDashboard {
 impl Drop for UsageDashboard {
     fn drop(&mut self) {
         self.shared.cancel.store(true, Ordering::SeqCst);
+        if let Some(ledger) = &self.ledger {
+            ledger.profile.abandon_for_process_exit();
+        }
         if let Some(loader) = self.loader.take() {
             let _ = loader.join();
         }

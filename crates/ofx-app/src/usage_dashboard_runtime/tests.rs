@@ -1,6 +1,8 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::time::{Duration, Instant};
 
+use ofx_config::PrivateDir;
 use ofx_contract::UsageCoverage;
 
 use super::*;
@@ -214,4 +216,40 @@ fn a_finished_load_shows_only_a_rolling_scope_and_a_cancelled_one_shows_nothing(
     shared.load(&ledger, now_ms());
     assert!(shared.board().reports.is_some());
     assert!(watched.updates().is_empty());
+}
+
+#[test]
+fn dropping_the_dashboard_abandons_a_load_waiting_on_the_ledger_lock() {
+    let profile = Profile::with_fact();
+    let data = profile.data();
+    let held = PrivateDir::open_existing(&data)
+        .unwrap()
+        .unwrap()
+        .try_lock("usage.lock")
+        .unwrap()
+        .unwrap();
+    let Watched {
+        mut dashboard,
+        events,
+    } = Watched::new();
+    dashboard.open(Some(&data));
+    thread::sleep(Duration::from_millis(100));
+    let dropping = Instant::now();
+    drop(dashboard);
+    assert!(
+        dropping.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        dropping.elapsed()
+    );
+    let updates: Vec<UiEvent> = events.lock().unwrap().drain(..).collect();
+    assert_eq!(
+        updates,
+        [UiEvent::UsageMenu {
+            update: UsageMenuUpdate::Opened {
+                scope: UsageScope::Days30,
+                report: None
+            }
+        }]
+    );
+    drop(held);
 }
