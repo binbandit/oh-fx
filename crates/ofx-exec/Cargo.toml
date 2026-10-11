@@ -9,7 +9,9 @@ publish.workspace = true
 [dependencies]
 getrandom.workspace = true
 nix = { workspace = true, features = ["user"] }
-rustix = { workspace = true, features = ["event", "process"] }
+rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "termios"] }
+serde.workspace = true
+serde_json.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "sync", "time"] }
