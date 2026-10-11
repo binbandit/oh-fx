@@ -83,7 +83,9 @@ async fn a_failed_partial_reply_closes_before_the_next_request() {
     let mut agent = new_agent(Arc::clone(&provider), Vec::new());
     let (report, _) = run(&mut agent, "first").await;
     assert_eq!(report.outcome, TurnOutcome::Failed);
+    assert_eq!(agent.last_interruption(), Some(&InterruptedTurn::default()));
     run(&mut agent, "next").await;
+    assert_eq!(agent.last_interruption(), None);
     assert_eq!(
         provider.requests()[1].messages,
         [
@@ -102,7 +104,9 @@ async fn clearing_an_interrupted_turn_drops_its_pending_closure() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     agent.run_turn("first", &mut |_| {}, &cancel).await;
+    assert_eq!(agent.last_interruption(), Some(&InterruptedTurn::default()));
     agent.clear_history();
+    assert_eq!(agent.last_interruption(), None);
     run(&mut agent, "next").await;
     assert_eq!(provider.requests()[0].messages, [ChatMessage::user("next")]);
 }

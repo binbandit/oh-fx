@@ -14,7 +14,7 @@ use crate::app_agent_runtime::Emit;
 
 mod report;
 
-pub(crate) use report::TraceFacts;
+pub(crate) use report::{SessionTitleFacts, TraceFacts};
 
 const PATH_ATTEMPTS: usize = 8;
 const RANDOM_BYTES: usize = 6;

@@ -51,8 +51,7 @@ async fn trace_saves_a_private_report_of_the_session_and_offers_it_to_the_clipbo
     assert!(report.contains(
         "\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n"
     ));
-    assert!(report.contains("\n## Context Compaction\n(none recorded)\n"));
-    assert!(report.contains("\n## Network Calls\n(none recorded)\n"));
+    assert!(report.contains("\n## Context Compaction\n(none recorded)\n\n## Session Title\nsetting: true\ntitle: (none)\ngeneration: status=none\n\n## Network Calls\n(none recorded)\n"));
     assert!(report.contains("\n## Tool Calls\n(none recorded)\n"));
     assert!(report.contains("\n## Runtime Context\nTERM: "));
     assert!(server.requests().is_empty());
@@ -74,4 +73,59 @@ async fn a_trace_taken_during_a_turn_says_the_turn_was_still_running() {
     let turn_id = harness.running_turn();
     harness.send(UiCommand::Cancel { turn_id });
     harness.until(finished(TurnOutcome::Interrupted)).await;
+}
+
+#[tokio::test]
+async fn trace_reports_the_interrupted_turn_and_the_tools_it_completed() {
+    let read = json!({"path": "notes.txt"}).to_string();
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events("call_1", "read_file", &read)),
+        Reply::held_sse(&chat_text_events(&["partial\n"])[..2]),
+    ]);
+    let mut harness = Harness::start(&server).await;
+    fs::write(harness.home.path().join("workspace/notes.txt"), "notes\n").unwrap();
+    harness.submit("read it");
+    harness
+        .until(|event| matches!(event, UiEvent::AssistantText { .. }))
+        .await;
+    let turn_id = harness.running_turn();
+    harness.send(UiCommand::Cancel { turn_id });
+    harness.until(finished(TurnOutcome::Interrupted)).await;
+    let report = trace_report(&mut harness).await;
+    assert!(
+        report.contains("\n## Problems\n- interrupted turn completed_tools=1\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("\n## Context Compaction\n(none recorded)\n\n## Interrupted Turn\nlast turn was interrupted by user\n  completed_tools (1): read_file\n\n## Session Title\n"),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn trace_reports_the_session_title_the_background_generation_installed() {
+    let codex = FakeServer::start([
+        codex_text("Fix the renderer"),
+        codex_text("Fix the renderer"),
+    ]);
+    let catalog = codex_catalog(false, 8);
+    let mut harness = Harness::codex_saved(&codex, &catalog, &codex_settings()).await;
+    chat(&mut harness, &["please fix the renderer"]).await;
+    until_titled(&mut harness, "Fix the renderer").await;
+    let report = trace_report(&mut harness).await;
+    let section = report
+        .split("\n## Session Title\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap();
+    let session = saved_sessions(&harness.home)[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let expected = format!(
+        "setting: true\ntitle: Fix the renderer\ngeneration: status=installed session={session} model={CODEX_TITLE_MODEL} elapsed="
+    );
+    assert!(section.starts_with(&expected), "{section}");
+    assert!(section.ends_with("ms\n"), "{section}");
+    assert!(!report.contains("- session title generation"), "{report}");
 }

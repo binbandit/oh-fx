@@ -12,9 +12,15 @@ use crate::worker_runtime::{Boundary, BoundaryKind, Steering, WorkerRuntime};
 const STEERING_HANDOFF: &str = "steering_handoff";
 
 impl Agent {
-    pub(super) fn hold_interruption(&mut self, ending: Ending, start: usize) {
-        if matches!(ending, Ending::Stopped(_)) {
-            self.pending_interruptions.push(start..self.history.len());
+    pub(super) fn hold_interruption(&mut self, ending: Ending, turn: &Turn) {
+        match ending {
+            Ending::Stopped(stop) => {
+                self.pending_interruptions
+                    .push(turn.start..self.history.len());
+                self.last_interruption = Some(turn.trail.interrupted_turn(stop));
+            }
+            Ending::Replied => self.last_interruption = None,
+            Ending::Discarded | Ending::Paused => {}
         }
     }
 

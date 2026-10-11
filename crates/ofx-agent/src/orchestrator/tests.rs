@@ -1422,6 +1422,30 @@ async fn cancelled_tools_that_finish_within_the_grace_period_keep_their_results(
     );
 }
 
+#[tokio::test]
+async fn the_last_interruption_names_the_in_flight_call_and_the_completed_tools() {
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[
+            ("call-1", r#"{"text":"before"}"#),
+            ("call-2", r#"{"wait":true}"#),
+        ]),
+        text_reply("next answer"),
+    ]);
+    let cleaned_up = Arc::new(AtomicBool::new(false));
+    let mut agent = new_agent(provider, vec![echo_tool_with(cleaned_up)]);
+    assert_eq!(agent.last_interruption(), None);
+    run_cancelled_at(&mut agent, "call-2").await;
+    assert_eq!(
+        agent.last_interruption(),
+        Some(&InterruptedTurn {
+            in_flight: Some(echo_call("call-2", r#"{"wait":true}"#)),
+            completed_tools: vec!["echo".to_owned()],
+        })
+    );
+    run(&mut agent, "next").await;
+    assert_eq!(agent.last_interruption(), None);
+}
+
 #[tokio::test(start_paused = true)]
 async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_from_history() {
     let provider = FakeProvider::new(vec![tool_reply(&[

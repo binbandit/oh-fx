@@ -1,9 +1,14 @@
 use std::time::Duration;
 
 use ofx_contract::{
-    ChatMessage, ModelProvider, ModelRequest, ProviderOptions, StreamEvent, ToolChoice,
+    ChatMessage, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind, ProviderOptions,
+    StreamEvent, ToolChoice,
 };
+use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
+
+const SESSION: &str = "session";
+const TIMED_OUT: &str = "Timeout";
 
 const MAX_GENERATED_TITLE_BYTES: usize = 60;
 const MAX_PROMPT_EXCERPT_BYTES: usize = 2048;
@@ -31,6 +36,41 @@ impl TitleGate<'_> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleFailure {
+    Cancelled,
+    TransportError(String),
+    ProviderFailure(&'static str),
+    EmptyContent,
+    Unsanitizable,
+}
+
+impl TitleFailure {
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::TransportError(_) => "transport_error",
+            Self::ProviderFailure(_) => "provider_failure",
+            Self::EmptyContent => "empty_content",
+            Self::Unsanitizable => "unsanitizable",
+        }
+    }
+
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::TransportError(detail) => detail,
+            Self::ProviderFailure(detail) => detail,
+            Self::Cancelled | Self::EmptyContent | Self::Unsanitizable => "",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleOutcome {
+    Generated(String),
+    Unavailable(TitleFailure),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TitleRequest<'a> {
     pub model: &'a str,
@@ -51,9 +91,9 @@ pub async fn generate_title(
     provider: &dyn ModelProvider,
     request: TitleRequest<'_>,
     cancel: &CancellationToken,
-) -> Option<String> {
+) -> TitleOutcome {
     if cancel.is_cancelled() {
-        return None;
+        return TitleOutcome::Unavailable(TitleFailure::Cancelled);
     }
     let instructions = [INSTRUCTIONS];
     let messages = [ChatMessage::user(request.prompt_excerpt)];
@@ -69,12 +109,71 @@ pub async fn generate_title(
     };
     let mut discarded = |_: StreamEvent| {};
     let stream = provider.stream(&model_request, &mut discarded, cancel);
-    let completion = tokio::select! {
+    let streamed = tokio::select! {
         biased;
-        () = cancel.cancelled() => return None,
-        completion = tokio::time::timeout(TIMEOUT, stream) => completion.ok()?.ok()?,
+        () = cancel.cancelled() => return TitleOutcome::Unavailable(TitleFailure::Cancelled),
+        streamed = tokio::time::timeout(TIMEOUT, stream) => streamed,
     };
-    sanitize_generated_title(&completion.content?)
+    let completion = match streamed {
+        Ok(Ok(completion)) if !cancel.is_cancelled() => completion,
+        Ok(Err(error)) if error.kind != ProviderErrorKind::Cancelled && !cancel.is_cancelled() => {
+            return TitleOutcome::Unavailable(failed(&error));
+        }
+        Err(_) => return TitleOutcome::Unavailable(transport_failure(TIMED_OUT.to_owned())),
+        Ok(_) => return TitleOutcome::Unavailable(TitleFailure::Cancelled),
+    };
+    let Some(content) = completion.content else {
+        return TitleOutcome::Unavailable(TitleFailure::EmptyContent);
+    };
+    let Some(title) = sanitize_generated_title(&content) else {
+        trace_log!(
+            SESSION,
+            "event=title_generation result=unavailable reason=unsanitizable"
+        );
+        return TitleOutcome::Unavailable(TitleFailure::Unsanitizable);
+    };
+    trace_log!(
+        SESSION,
+        "event=title_generation result=generated session={}",
+        request.session_id
+    );
+    TitleOutcome::Generated(title)
+}
+
+fn failed(error: &ProviderError) -> TitleFailure {
+    let Some(kind) = failure_kind(error) else {
+        return transport_failure(error.code.clone());
+    };
+    trace_log!(
+        SESSION,
+        "event=title_generation result=unavailable failure_kind={kind}"
+    );
+    TitleFailure::ProviderFailure(kind)
+}
+
+fn transport_failure(name: String) -> TitleFailure {
+    trace_log!(
+        SESSION,
+        "event=title_generation result=unavailable err={name}"
+    );
+    TitleFailure::TransportError(name)
+}
+
+fn failure_kind(error: &ProviderError) -> Option<&'static str> {
+    let http = error.status.is_some();
+    Some(match error.kind {
+        ProviderErrorKind::InvalidRequest if http => "invalid_request",
+        ProviderErrorKind::Unauthorized if http => "unauthorized",
+        ProviderErrorKind::Forbidden if http => "forbidden",
+        ProviderErrorKind::RequestTooLarge if http => "request_too_large",
+        ProviderErrorKind::RateLimited if http => "rate_limited",
+        ProviderErrorKind::ServerError if http => "server_error",
+        ProviderErrorKind::BadGateway if http => "bad_gateway",
+        ProviderErrorKind::Unavailable if http => "unavailable",
+        ProviderErrorKind::GatewayTimeout if http => "gateway_timeout",
+        ProviderErrorKind::ProviderError => "provider_error",
+        _ => return None,
+    })
 }
 
 fn sanitize_generated_title(raw: &str) -> Option<String> {
