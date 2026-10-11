@@ -252,6 +252,45 @@ async fn a_renamed_final_call_is_reconciled_by_equivalent_input() {
 }
 
 #[tokio::test]
+async fn a_final_call_that_reuses_a_reconciled_streamed_id_is_refused_as_a_duplicate() {
+    let reused = consume(&[
+        r#"{"type":"tool-input-start","id":"p","toolName":"read_file"}"#,
+        r#"{"type":"tool-input-delta","id":"p","delta":"{\"path\":\"a\"}"}"#,
+        r#"{"type":"tool-input-end","id":"p"}"#,
+        r#"{"type":"tool-call","toolCallId":"f1","toolName":"read_file","input":{"path":"a"},"providerMetadata":{"vendor":{"signature":"first"}}}"#,
+        r#"{"type":"tool-call","toolCallId":"p","toolName":"read_file","input":{"path":"b"},"providerMetadata":{"vendor":{"signature":"second"}}}"#,
+        TOOL_CALLS,
+    ])
+    .await;
+    let calls = &reused.tools.calls;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].provisional_id.as_deref(), Some("p"));
+    assert_eq!(
+        (calls[1].id.as_str(), calls[1].provisional_id.as_deref()),
+        ("p", None)
+    );
+    assert_eq!(reused.tools.failure, None);
+    assert_eq!(
+        reused.tools.admission(),
+        Err("MalformedAuthoritativeToolIdentity")
+    );
+    let reused_without_input = consume(&[
+        r#"{"type":"tool-input-start","id":"p","toolName":"read_file"}"#,
+        r#"{"type":"tool-input-delta","id":"p","delta":"{\"path\":\"a\"}"}"#,
+        r#"{"type":"tool-input-end","id":"p"}"#,
+        r#"{"type":"tool-call","toolCallId":"f1","toolName":"read_file","input":{"path":"a"}}"#,
+        r#"{"type":"tool-call","toolCallId":"p"}"#,
+        TOOL_CALLS,
+    ])
+    .await;
+    assert_eq!(reused_without_input.tools.calls[1].arguments, "");
+    assert_eq!(
+        reused_without_input.tools.admission(),
+        Err("MalformedAuthoritativeToolIdentity")
+    );
+}
+
+#[tokio::test]
 async fn interleaved_renamed_calls_match_by_structure_and_differing_input_never_aliases() {
     let completion = consume(&[
         r#"{"type":"tool-input-start","id":"provisional_a","toolName":"read_file"}"#,

@@ -202,10 +202,10 @@ impl ToolStream {
             _ => "",
         };
         let duplicate = identity == Identity::Valid
-            && self
-                .calls
-                .iter()
-                .any(|prior| prior.identity == Identity::Valid && prior.id == id);
+            && self.calls.iter().any(|prior| {
+                (prior.identity == Identity::Valid && prior.id == id)
+                    || prior.provisional_id.as_deref() == Some(id)
+            });
         let mut stream_index = (identity == Identity::Valid)
             .then(|| self.streamed.iter().position(|record| record.id == id))
             .flatten();
@@ -359,7 +359,10 @@ impl ToolStream {
             }
         }
         for (index, call) in self.calls.iter().enumerate() {
-            if self.calls[..index].iter().any(|prior| prior.id == call.id) {
+            let claimed = |other: &FinalCall| other.provisional_id.as_deref() == Some(&call.id);
+            if self.calls[..index].iter().any(|prior| prior.id == call.id)
+                || self.calls.iter().any(claimed)
+            {
                 return Err(MALFORMED_IDENTITY);
             }
         }
