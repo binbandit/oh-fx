@@ -6,6 +6,7 @@ use crate::compactor::text_tokens;
 
 const RESPONSES_IMAGE_KEY: &str = "\"image_url\":\"";
 const CHAT_IMAGE_KEY: &str = "\"url\":\"";
+const GATEWAY_IMAGE_KEY: &str = "\"data\":\"";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RequestCost {
@@ -73,6 +74,7 @@ impl RequestCost {
 
 struct ImagePart<'a> {
     kind: &'a str,
+    media_type: &'a str,
     detail: &'a str,
     payload: &'a str,
     key: &'static str,
@@ -80,9 +82,11 @@ struct ImagePart<'a> {
 
 fn measure_images(body: &str) -> Option<RequestCost> {
     let parsed: Value = serde_json::from_str(body).ok()?;
-    let parts = match parsed.get("input") {
-        Some(input) => responses_image_parts(input.as_array()?)?,
-        None => chat_image_parts(parsed.get("messages")?.as_array()?)?,
+    let parts = match (parsed.get("input"), parsed.get("prompt")) {
+        (Some(_), Some(_)) => return None,
+        (Some(input), None) => responses_image_parts(input.as_array()?)?,
+        (None, Some(prompt)) => gateway_image_parts(prompt.as_array()?)?,
+        (None, None) => chat_image_parts(parsed.get("messages")?.as_array()?)?,
     };
     let mut estimator = StreamingEstimator::default();
     let mut identity = Sha256::new();
@@ -91,7 +95,7 @@ fn measure_images(body: &str) -> Option<RequestCost> {
         let offset = payload_offset(body, cursor, part.key, part.payload)?;
         estimator.consume(&body[cursor..offset]);
         cursor = offset + part.payload.len();
-        for value in [part.kind, "", part.detail, part.payload] {
+        for value in [part.kind, part.media_type, part.detail, part.payload] {
             identity.update(value.len().to_ne_bytes());
             identity.update(value);
         }
@@ -122,6 +126,7 @@ fn responses_image_parts(items: &[Value]) -> Option<Vec<ImagePart<'_>>> {
             }
             parts.push(ImagePart {
                 kind: "input_image",
+                media_type: "",
                 detail: part
                     .get("detail")
                     .and_then(Value::as_str)
@@ -152,12 +157,53 @@ fn chat_image_parts(messages: &[Value]) -> Option<Vec<ImagePart<'_>>> {
             let image = part.get("image_url")?;
             parts.push(ImagePart {
                 kind: "image_url",
+                media_type: "",
                 detail: image
                     .get("detail")
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
                 payload: image.get("url")?.as_str()?,
                 key: CHAT_IMAGE_KEY,
+            });
+        }
+    }
+    Some(parts)
+}
+
+fn gateway_image_parts(messages: &[Value]) -> Option<Vec<ImagePart<'_>>> {
+    let mut parts = Vec::new();
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        for part in message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let media_type = part
+                .get("mediaType")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if part.get("type").and_then(Value::as_str) != Some("file")
+                || !media_type.starts_with("image/")
+            {
+                continue;
+            }
+            let data = part.get("data")?;
+            if data.get("type")?.as_str()? != "data" {
+                return None;
+            }
+            parts.push(ImagePart {
+                kind: "file",
+                media_type,
+                detail: part
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                payload: data.get("data")?.as_str()?,
+                key: GATEWAY_IMAGE_KEY,
             });
         }
     }
