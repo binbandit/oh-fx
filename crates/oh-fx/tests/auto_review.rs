@@ -657,3 +657,53 @@ fn a_command_is_shown_while_its_review_is_pending() {
         assert_eq!(server.requests().len(), 3);
     }
 }
+
+fn permission_lines(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter_map(|line| line.split_once(" [permission] event=auto_review_"))
+        .map(|(_, rest)| rest)
+        .collect()
+}
+
+#[test]
+fn a_review_traces_its_start_composition_sends_retries_and_result() {
+    let server = FakeServer::start([
+        run("touch marker"),
+        Reply::sse(&chat_text_events(&["not a decision"])),
+        decision(r#"{"decision":"clear","rationale":"Requested file creation."}"#),
+        Reply::sse(&chat_text_events(&["Made it."])),
+    ]);
+    let home = Home::new(&settings(&server.base_url(), None));
+
+    let output = home.ask("create the marker file");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(home.workspace.join("marker").exists());
+    let log = home.trace_log();
+    let lines = permission_lines(&log);
+    let expected = [
+        "start tool_name=shell action_kind=command call_id=call_1",
+        "compose_start origin=root view=contextual source_model=@openai/gpt-4o reviewer_model=@openai/gpt-4o pending_calls=1 trusted_root_bytes=",
+        "compose_result result=ready payload_bytes=",
+        "send attempt=1 max_attempts=3 target_call_id=call_1",
+        "transport result=completion finish_reason=absent tool_calls=0 content_bytes=0",
+        "format_retry reason=completion_tool_call_count tool_calls=0 content_bytes=0 target_call_id=call_1",
+        "send attempt=2 max_attempts=3 target_call_id=call_1",
+        "transport result=completion finish_reason=tool_calls tool_calls=1 content_bytes=0",
+        "result tool_name=shell decision=clear fallback_reason=none elapsed_ms=",
+    ];
+    assert_eq!(lines.len(), expected.len(), "{log}");
+    for (line, prefix) in lines.iter().zip(expected) {
+        assert!(line.starts_with(prefix), "{prefix}\n{log}");
+    }
+    assert!(
+        lines[8].ends_with(" execution_started=false call_id=call_1"),
+        "{log}"
+    );
+    for secret in ["touch marker", "Requested file creation", PORTKEY_KEY] {
+        assert!(
+            !lines.iter().any(|line| line.contains(secret)),
+            "{secret}\n{log}"
+        );
+    }
+}
