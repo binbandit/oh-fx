@@ -23,6 +23,10 @@ impl RouteCredential {
         Self::derived("ai_gateway_api_key", None)
     }
 
+    pub fn stored_key() -> Self {
+        Self::derived("stored_key", None)
+    }
+
     pub fn host_managed() -> Self {
         Self::derived("host_managed", None)
     }

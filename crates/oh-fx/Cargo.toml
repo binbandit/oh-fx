@@ -22,6 +22,7 @@ ofx-mcp.workspace = true
 ofx-session.workspace = true
 ofx-shell.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 ofx-upgrade.workspace = true
 ofx-vt.workspace = true
 ofx-workspace.workspace = true
@@ -31,6 +32,7 @@ serde_json.workspace = true
 signal-hook.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true

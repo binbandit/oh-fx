@@ -43,7 +43,7 @@ note = "Codex request credentials retain refresh identity, and recovery checkpoi
 upstream = "src/core/auth/credentials.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-app/src/codex_provider.rs"]
-note = "Auth mode, Codex guidance and the Vercel AI Gateway environment sources (VERCEL_OIDC_TOKEN, then AI_GATEWAY_API_KEY, blank values ignored) exist; the fx login and stored-key sources, explicit credential_source preference, catalog access authority, Vercel team context and multi-provider credential-source projection are absent."
+note = "Auth mode, Codex guidance and the Vercel AI Gateway sources VERCEL_OIDC_TOKEN, then AI_GATEWAY_API_KEY (blank values ignored), then the stored key, with the missing and unreadable-store messages, exist; the fx login source, explicit credential_source preference, catalog access authority, Vercel team context and multi-provider credential-source projection are absent."
 
 [[file]]
 upstream = "src/core/auth/grok_oauth.zig"

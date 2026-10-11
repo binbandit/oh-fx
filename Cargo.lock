@@ -1088,6 +1088,7 @@ dependencies = [
  "ofx-shell",
  "ofx-testkit",
  "ofx-text",
+ "ofx-trace",
  "ofx-upgrade",
  "ofx-vt",
  "ofx-workspace",
@@ -1099,6 +1100,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "zeroize",
 ]
 
 [[package]]

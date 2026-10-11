@@ -10,6 +10,7 @@ mod oauth_transport;
 mod provider_catalog;
 mod secret;
 mod session_presence;
+mod stored_key;
 mod subscription_access;
 mod subscription_refresh;
 mod subscription_session;
@@ -29,15 +30,18 @@ pub use chatgpt_oauth::{
     ChatGptSignIn, RefreshMode,
 };
 pub use credentials::{
-    AUTH_MODE_VARIABLE, AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL,
-    GatewayEnvCredential, GatewaySource, HOST_MANAGED_AUTH_MESSAGE,
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE, gateway_env_credential,
+    AUTH_MODE_VARIABLE, AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, GatewayKey,
+    GatewaySource, HOST_MANAGED_AUTH_MESSAGE, MISSING_CHATGPT_CREDENTIAL_MESSAGE,
+    MISSING_GATEWAY_CREDENTIAL_MESSAGE, UNREADABLE_STORED_KEY_MESSAGE, gateway_credential,
     host_managed_auth, is_valid_auth_mode, parse_auth_mode,
 };
 pub use oauth::{
     FormBody, QueryError, loopback_override, percent_encode, pkce_challenge, query_value,
 };
 pub use provider_catalog::{label as provider_route_name, parse as parse_login_provider};
+pub use stored_key::{
+    DISABLE_KEYCHAIN_VARIABLE, STORED_KEY_BACKEND, StoredKeyError, StoredKeyStore,
+};
 pub use subscription_session::DeleteOutcome;
 pub use url_opener::{browser_allowed, open_url, open_url_bounded};
 

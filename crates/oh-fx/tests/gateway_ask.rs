@@ -9,7 +9,7 @@ const API_KEY: &str = "vck-gateway-0123456789abcdef";
 const OIDC_TOKEN: &str = "oidc-token-0123456789abcdef";
 const CHAT_PATH: &str = "/v4/ai/language-model";
 const DEFAULT_MODEL: &str = "spacexai/grok-4.7";
-const MISSING: &str = "oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.";
+const MISSING: &str = "oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.";
 
 struct Home {
     _directory: tempfile::TempDir,

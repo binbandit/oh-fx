@@ -470,6 +470,11 @@ fn gateway_credentials_authorize_by_upstreams_slot_identity() {
             "ac8e2f777f59f8f6922ac24578afe128036a013575d0db94f125401317a5e39e",
             RouteCredential::host_managed(),
         ),
+        (
+            "stored_key",
+            "d1fcd673bcdd12a457bcd59787e84ca8680c1cdc25bceed7d7dadb0eec86b7c2",
+            RouteCredential::stored_key(),
+        ),
     ];
     for (source, identity, credential) in slots {
         let recorded = with_credential(source, &format!("\"{identity}\""), 1, false);
