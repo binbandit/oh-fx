@@ -7,13 +7,13 @@ modules = []
 upstream = "src/core/gateway/model_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/model_catalog.rs", "crates/ofx-gateway/src/vercel_models.rs", "crates/ofx-gateway/src/vercel_models/order.rs"]
-note = "HTTP failure categories and which of them a picker retries, catalog access and its provenance, the single public fallback after a rejected credential with its model_catalog_load trace line, and the catalog order are implemented, leaving out the rank upstream gives one vendor's models by name. The picker projection, the fx login, explicit-source and subscription access states, out-of-memory and runtime failures, and the interactive catalog ownership are absent."
+note = "HTTP failure categories and which of them a picker retries, catalog access and its provenance, the single public fallback after a rejected credential with its model_catalog_load trace line, the catalog order and the picker projection are implemented, leaving out the rules upstream writes for one vendor's model names. The subscription access states, out-of-memory and runtime failures, and the refreshing interactive catalog ownership are absent."
 
 [[file]]
 upstream = "src/core/gateway/model_catalog_metadata.zig"
 status = "partial"
-modules = ["crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-config/src/model_capabilities.rs"]
-note = "Codex capabilities are parsed; Vercel catalog metadata conversion and public catalog capability projection are absent."
+modules = ["crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-config/src/model_capabilities.rs", "crates/ofx-gateway/src/vercel_models.rs"]
+note = "Codex capabilities are parsed, and a Vercel catalog entry converts to its reasoning efforts, Fast mode, context window, output limit and image input; Ultrafast, tool use, file input, web search and caching are not carried into capabilities."
 
 [[file]]
 upstream = "src/core/gateway/provider_set.zig"

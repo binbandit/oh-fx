@@ -10,7 +10,7 @@ use ofx_auth::{
 use ofx_cli::{Command, OutputFormat, TopLevelKind, command_failure_json};
 use ofx_config::{ProviderId, Settings};
 use ofx_gateway::{
-    CatalogAccess, CatalogCredential, CatalogFailure, CatalogFetch, CodexModelCatalog,
+    CatalogAccess, CatalogCredential, CatalogFailure, CatalogFetch, CatalogView, CodexModelCatalog,
     GatewayModelCatalog, PublicOnlyReason,
 };
 use ofx_text::encode_terminal_safe;
@@ -212,7 +212,10 @@ async fn gateway_models(
     )
     .map_err(|_| CatalogFailure::Transport)?;
     let access = gateway_access(profile, preferred, host_managed).await;
-    match catalog.load(&access, &CancellationToken::new()).await {
+    match catalog
+        .load(&access, CatalogView::Full, &CancellationToken::new())
+        .await
+    {
         CatalogFetch::Loaded { models, access, .. } => Ok(Models {
             ids: models.into_iter().map(|model| model.id).collect(),
             source: None,
