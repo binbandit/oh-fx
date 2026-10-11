@@ -351,7 +351,8 @@ impl ControllerState {
         if signed_out || self.sign_in.is_some() {
             self.emit(UiEvent::PromptHeld);
         }
-        let prompt = QueuedPrompt::new(self.received_prompts, text, skills);
+        let prompt = QueuedPrompt::new(self.received_prompts, text, skills)
+            .with_settings(self.fast_mode(), &self.effort);
         self.received_prompts += 1;
         if installing {
             self.pending_install_inputs
@@ -374,7 +375,8 @@ impl ControllerState {
     }
 
     fn receive_recovery(&mut self, recovered: RecoveredTurn) {
-        let prompt = QueuedPrompt::recovery(self.received_prompts, recovered);
+        let prompt = QueuedPrompt::recovery(self.received_prompts, recovered)
+            .with_settings(self.fast_mode(), &self.effort);
         self.received_prompts += 1;
         self.worker.admit(prompt);
     }
@@ -1544,6 +1546,7 @@ async fn run_prompt(
     events: EventSink<'_>,
     cancel: &CancellationToken,
 ) -> TurnReport {
+    agent.trace_turn(prompt.turn_id());
     match prompt.recovered().cloned() {
         Some(recovered) => agent.continue_turn(recovered, events, cancel).await,
         None => {
