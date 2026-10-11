@@ -1053,3 +1053,80 @@ fn committed_file_presentations_reject_what_upstream_rejects() {
         Err(SessionError::InvalidConversationEvent)
     );
 }
+
+#[test]
+fn each_rejected_event_names_upstreams_rule() {
+    let long = "x".repeat(MAX_TEXT_BYTES + 1);
+    let mut tool_result = ToolResultEvent::new(
+        "call_1",
+        "shell",
+        ToolResultStatus::Success,
+        "result.txt",
+        4,
+        ArtifactCompleteness::Complete,
+    );
+    tool_result.created_at_ms = -1;
+    let mut replayed = ToolResultEvent::new(
+        "call_1",
+        "shell",
+        ToolResultStatus::Success,
+        "result.txt",
+        4,
+        ArtifactCompleteness::Complete,
+    );
+    replayed.command_replay_bytes = Some(4);
+    let mut interrupted = InterruptedEvent::new(InterruptReason::Cancelled, None);
+    interrupted.command_replay_ref = Some("replay".to_owned());
+    let cases = [
+        (user(""), "text-empty"),
+        (user(&long), "text-field"),
+        (assistant(&long), "text-field"),
+        (call("", "shell"), "identity"),
+        (
+            ConversationEvent::ToolCall(ToolCallEvent::new(
+                "call_1",
+                "shell",
+                "",
+                ToolArgumentIntegrity::Valid,
+            )),
+            "tool-call-arguments",
+        ),
+        (result("call_1", "shell"), ""),
+        (
+            ConversationEvent::ToolResult(ToolResultEvent::new(
+                "call_1",
+                "shell",
+                ToolResultStatus::Success,
+                "",
+                4,
+                ArtifactCompleteness::Complete,
+            )),
+            "tool-result-artifact-ref",
+        ),
+        (
+            ConversationEvent::ToolResult(tool_result),
+            "tool-result-created-at",
+        ),
+        (
+            ConversationEvent::ToolResult(replayed),
+            "tool-result-command-replay-pair",
+        ),
+        (
+            ConversationEvent::Interrupted(interrupted),
+            "interrupted-command-replay-pair",
+        ),
+        (completed(), ""),
+    ];
+    for (event, rule) in cases {
+        assert_eq!(shape_rule(&event).unwrap_or_default(), rule, "{event:?}");
+        assert_eq!(
+            validate_event_shape(&event).is_err(),
+            !rule.is_empty(),
+            "{event:?}"
+        );
+    }
+    assert_eq!(
+        encode_conversation_frame(0, 1, &user("hello")),
+        Err(SessionError::InvalidConversationEvent)
+    );
+}

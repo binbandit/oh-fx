@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
+use ofx_trace::trace_log;
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
@@ -31,9 +32,11 @@ use crate::session_summary_codec::{
     ResumablePage, ResumeContinuation, SessionSource, SessionSummary, listed_page_from_summaries,
     resumable_page_from_summaries, sort_summaries_newest_first,
 };
+use crate::session_trace::SESSION;
 use crate::usage_recovery_registry::RecoveryRegistry;
 
 pub(crate) const SESSIONS_DIR: &str = "sessions";
+const PRISTINE_DISCARD: &str = "pristine_session_discard";
 const CONTINUE_DIR: &str = "continue";
 const MAX_REMEMBERED_SESSION_BYTES: usize = 256;
 const MAX_LATEST_SELECTION_RETRIES: usize = 3;
@@ -317,9 +320,15 @@ impl SessionStore {
         let owned_here = session.metadata().workspace_root == self.workspace_root;
         match self.writable_sessions() {
             Ok(sessions) if owned_here && session.is_pristine() => {
-                delete_session(sessions, session)
+                delete_session(sessions, session, PRISTINE_DISCARD)
             }
-            _ => SessionDisposal::Retained,
+            _ => {
+                trace_log!(
+                    SESSION,
+                    "event={PRISTINE_DISCARD} disposition=retained reason=guard_failed"
+                );
+                SessionDisposal::Retained
+            }
         }
     }
 
@@ -553,7 +562,13 @@ fn checked_workspace_root(workspace_root: &str) -> Result<String, SessionError> 
 
 fn layout_error(error: ofx_config::DurableError) -> SessionError {
     match SessionError::from(error) {
-        SessionError::Storage(_) => SessionError::DurableLayoutFailed,
+        SessionError::Storage(_) => {
+            trace_log!(
+                SESSION,
+                "event=writable_layout_failed source_error={error} mapped_error=DurableLayoutFailed"
+            );
+            SessionError::DurableLayoutFailed
+        }
         other => other,
     }
 }

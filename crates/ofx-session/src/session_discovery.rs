@@ -2,6 +2,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 
 use ofx_config::PrivateDir;
+use ofx_trace::trace_log;
 use rustix::fs::{self, AtFlags, FileType};
 use serde_json::Value;
 
@@ -20,6 +21,7 @@ use crate::session_migration::{holds_schema_v3, summarize_schema_v3};
 use crate::session_replay::{LineRead, LineReader};
 use crate::session_store_types::{DoctorDiagnostic, DoctorInspection, DoctorIssueKind};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
+use crate::session_trace::SESSION;
 
 const NANOS_PER_MILLI: i64 = 1_000_000;
 const RETIRED_LATEST_DIR: &str = "latest";
@@ -48,7 +50,9 @@ pub(crate) fn classify_session(
         .open_child(id)?
         .ok_or(SessionError::SessionNotFound)?;
     if classification == Classification::Resume && holds_schema_v3(&dir, id)? {
-        return summarize_schema_v3(&dir, id);
+        return summarize_schema_v3(&dir, id).inspect_err(|error| {
+            trace_log!(SESSION, "schema_v3 log replay failed id={id} err={error}");
+        });
     }
     let metadata = read_metadata(&dir, id)?;
     if metadata.subagent_child || has_owner_marker(&dir)? {

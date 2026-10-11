@@ -4,6 +4,7 @@ use ofx_contract::{
     CommandProcessPresentation, ExecutionFailure, ToolArgumentIntegrity, ToolExecutionProvenance,
     ToolResultStatus, TurnSummary, is_captured_command, tool_execution_failure_json,
 };
+use ofx_trace::{TraceContext, trace_event};
 
 use super::legacy_presentation::{
     CancelledCommand, CommandReplay, LegacyPresentation, cancelled_command, command_replay,
@@ -15,8 +16,9 @@ use crate::session_codec::recovery_checkpoint::{
     durable_bytes, durable_text, file_evidence, list, tag,
 };
 use crate::session_event::{
-    FileEvidence, InterruptReason, SavedReplay, ToolCallEvent, saved_replay,
+    FileEvidence, InterruptReason, SavedReplay, ToolCallEvent, WireTag, saved_replay,
 };
+use crate::session_trace::SESSION;
 use crate::{process_presentation, turn_summary};
 
 const NEWEST_EXECUTION_SCHEMA: u64 = 10;
@@ -376,15 +378,29 @@ fn tool_call(value: Json<'_>) -> Option<ToolCallEvent> {
 
 fn interrupted_call(value: Json<'_>) -> Option<ToolCallEvent> {
     let mut call = tool_call(value)?;
-    if call.argument_integrity == ToolArgumentIntegrity::NonObjectJson {
-        if call.provider_result.is_some() {
-            call.provenance = ToolExecutionProvenance::ProviderExecuted;
-        } else {
+    let integrity = call.argument_integrity;
+    if integrity == ToolArgumentIntegrity::NonObjectJson && call.provider_result.is_some() {
+        call.provenance = ToolExecutionProvenance::ProviderExecuted;
+    } else if integrity != ToolArgumentIntegrity::Valid {
+        if integrity == ToolArgumentIntegrity::NonObjectJson {
             "{}".clone_into(&mut call.arguments_json);
         }
+        trace_repair(&call, integrity, false);
     }
     call.argument_integrity = ToolArgumentIntegrity::Valid;
     Some(call)
+}
+
+fn trace_repair(call: &ToolCallEvent, integrity: ToolArgumentIntegrity, paired_result: bool) {
+    trace_event!(
+        SESSION,
+        "persisted_tool_arguments_repaired",
+        TraceContext::default(),
+        "source=schema_v3 call_id={} tool={} failure={} paired_result={paired_result}",
+        call.call_id,
+        call.tool_name,
+        integrity.tag()
+    );
 }
 
 fn repair_arguments(calls: &mut [ToolCallEvent], results: &mut [SavedResult]) -> Option<()> {
@@ -411,9 +427,11 @@ fn repair_arguments(calls: &mut [ToolCallEvent], results: &mut [SavedResult]) ->
                 call.provenance = ToolExecutionProvenance::ProviderExecuted;
             } else {
                 "{}".clone_into(&mut call.arguments_json);
+                trace_repair(call, integrity, true);
             }
         } else {
             refuse_unreadable_arguments(result);
+            trace_repair(call, integrity, true);
         }
         call.argument_integrity = ToolArgumentIntegrity::Valid;
     }
