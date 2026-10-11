@@ -976,38 +976,59 @@ fn session_recover_copies_the_good_turns_of_a_damaged_session() {
     assert!(detail.contains("[user]\nkept turn\n"), "{detail}");
 }
 
-#[test]
-fn session_recover_reports_unauthenticated_artifacts_with_a_failing_status() {
-    let server = FakeServer::start(replies(0));
-    let home = Home::new(&server.base_url());
-    save_in_fx(&home, "fx-replayed", "workspace", "Replayed in fx", &[]);
-    rewrite_fx_log(
-        &home,
-        "fx-replayed",
-        &fx_shell_turn(
-            "\"fx-command-replay-00112233445566778899aabbccddeeff\"",
-            "4",
-        ),
-    );
-    let session = home.root.join(".fx/sessions/fx-replayed");
+const RECOVERED_OUTPUT: &str = "result-shell-0011223344556677-a9ab0f8705989963.txt";
+const AUTHENTICATED_REPLAY: &str = "fx-command-replay-aae1a4c602fd36c8.bin";
+
+fn save_fx_shell_session(
+    home: &Home,
+    id: &str,
+    artifact_ref: &str,
+    replay_ref: &str,
+    artifacts: &[(String, &str)],
+) {
+    save_in_fx(home, id, "workspace", "Replayed in fx", &[]);
+    let turn: Vec<String> = fx_shell_turn(&format!("\"{replay_ref}\""), "4")
+        .into_iter()
+        .map(|event| {
+            event.replace(
+                "result-shell-0011223344556677-8899aabbccddeeff.txt",
+                artifact_ref,
+            )
+        })
+        .collect();
+    rewrite_fx_log(home, id, &turn);
+    let session = home.root.join(".fx/sessions").join(id);
     for directory in ["tool-results", "logs", "logs/commands"] {
         fs::create_dir_all(session.join(directory)).expect("create a side folder");
         private(&session.join(directory), 0o700);
     }
-    for (path, bytes) in [
-        (
-            "tool-results/result-shell-0011223344556677-8899aabbccddeeff.txt",
-            "a.t",
-        ),
-        (
-            "logs/commands/fx-command-replay-00112233445566778899aabbccddeeff",
-            "fx!!",
-        ),
-    ] {
+    for (path, bytes) in artifacts {
         fs::write(session.join(path), bytes).expect("write an artifact");
         private(&session.join(path), 0o600);
     }
     append_to(&session.join("events.jsonl"), b"{\"torn");
+}
+
+fn stored_output(bytes: &'static str) -> (String, &'static str) {
+    (format!("tool-results/{RECOVERED_OUTPUT}"), bytes)
+}
+
+fn command_artifact(handle: &str) -> (String, &'static str) {
+    (format!("logs/commands/{handle}"), "fx!!")
+}
+
+#[test]
+fn session_recover_reports_unauthenticated_artifacts_with_a_failing_status() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    let legacy = "fx-command-replay-legacy.bin";
+    save_fx_shell_session(
+        &home,
+        "fx-replayed",
+        RECOVERED_OUTPUT,
+        legacy,
+        &[stored_output("a.t"), command_artifact(legacy)],
+    );
     let before = fx_tree(&home);
 
     let output = home.session(&["recover", "fx-replayed"], &[]);
@@ -1020,6 +1041,74 @@ fn session_recover_reports_unauthenticated_artifacts_with_a_failing_status() {
             "[session recovery] copied fx-replayed to {copy}\nhistory_turns: 1\nwarning: legacy command artifacts could not be authenticated\nresume: oh-fx --resume {copy}\n"
         )
     );
+    assert_eq!(fx_tree(&home), before);
+}
+
+#[test]
+fn session_recover_checks_each_artifact_against_the_digest_its_name_carries() {
+    let server = FakeServer::start(replies(0));
+    let home = Home::new(&server.base_url());
+    let forged = format!("fx-command-replay-{}.bin", "0".repeat(64));
+    save_fx_shell_session(
+        &home,
+        "fx-verified",
+        RECOVERED_OUTPUT,
+        AUTHENTICATED_REPLAY,
+        &[stored_output("a.t"), command_artifact(AUTHENTICATED_REPLAY)],
+    );
+    save_fx_shell_session(
+        &home,
+        "fx-changed-output",
+        RECOVERED_OUTPUT,
+        AUTHENTICATED_REPLAY,
+        &[stored_output("a.x"), command_artifact(AUTHENTICATED_REPLAY)],
+    );
+    save_fx_shell_session(
+        &home,
+        "fx-forged-replay",
+        RECOVERED_OUTPUT,
+        &forged,
+        &[stored_output("a.t"), command_artifact(&forged)],
+    );
+    save_fx_shell_session(
+        &home,
+        "fx-replay-only",
+        AUTHENTICATED_REPLAY,
+        AUTHENTICATED_REPLAY,
+        &[command_artifact(AUTHENTICATED_REPLAY)],
+    );
+    let before = fx_tree(&home);
+
+    let text = described(&home.session(&["recover", "fx-verified"], &[]));
+    let copy = recovered_id(&text);
+    assert_eq!(
+        text,
+        format!(
+            "[session recovery] copied fx-verified to {copy}\nhistory_turns: 1\nresume: oh-fx --resume {copy}\n"
+        )
+    );
+    for id in ["fx-changed-output", "fx-forged-replay", "fx-replay-only"] {
+        assert_eq!(
+            refused(&home.session(&["recover", id], &[])),
+            (
+                String::new(),
+                "oh-fx session: no exact trustworthy recovery boundary was found; the source was left unchanged\n"
+                    .to_owned()
+            ),
+            "{id}"
+        );
+    }
+    let sessions: Vec<String> = fs::read_dir(home.root.join("data/oh-fx/sessions"))
+        .expect("the sessions directory")
+        .map(|entry| {
+            entry
+                .expect("a session entry")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 name")
+        })
+        .collect();
+    assert_eq!(sessions, [copy]);
     assert_eq!(fx_tree(&home), before);
 }
 

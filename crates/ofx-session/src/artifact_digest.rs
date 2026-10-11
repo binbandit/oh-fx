@@ -1,8 +1,14 @@
+use ofx_text::lowercase_hex;
+
 const DIGEST_HEX_BYTES: usize = 16;
 const BLOB_HEX_BYTES: usize = 64;
 
 pub(crate) fn has_content_digest(handle: &str, suffix: &str) -> bool {
     encoded_digest(handle, suffix).is_some()
+}
+
+pub(crate) fn handle_matches_content_digest(handle: &str, suffix: &str, digest: &[u8; 32]) -> bool {
+    encoded_digest(handle, suffix).is_some_and(|encoded| lowercase_hex(digest).starts_with(encoded))
 }
 
 fn encoded_digest<'a>(handle: &'a str, suffix: &str) -> Option<&'a str> {
@@ -38,5 +44,30 @@ mod tests {
             assert!(!has_content_digest(handle, ".bin"), "{handle}");
         }
         assert!(!has_content_digest(short, ""));
+    }
+
+    #[test]
+    fn a_handle_matches_the_digest_its_name_begins_or_spells_out() {
+        let digest: [u8; 32] = std::array::from_fn(|index| u8::try_from(index).unwrap());
+        let whole = format!("fx-command-replay-{}.bin", lowercase_hex(&digest));
+        assert!(handle_matches_content_digest(&whole, ".bin", &digest));
+        assert!(handle_matches_content_digest(
+            "result-shell-0001020304050607.txt",
+            ".txt",
+            &digest
+        ));
+        let mut changed = digest;
+        changed[31] ^= 1;
+        assert!(!handle_matches_content_digest(&whole, ".bin", &changed));
+        assert!(!handle_matches_content_digest(
+            "result-shell-0001020304050608.txt",
+            ".txt",
+            &digest
+        ));
+        assert!(!handle_matches_content_digest(
+            "fx-command-replay-legacy.bin",
+            ".bin",
+            &digest
+        ));
     }
 }

@@ -11,7 +11,10 @@ use crate::session_store::SessionStore;
 use crate::session_store_types::{SessionRecovery, SessionRecoveryStatus};
 
 const WORKSPACE: &str = "/work";
-const RESULT: &str = "result-shell-0011223344556677-8899aabbccddeeff.txt";
+const SAVED_RESULT: &str = "result-shell-0011223344556677-8899aabbccddeeff.txt";
+const RESULT: &str = "result-shell-0011223344556677-a9ab0f8705989963.txt";
+const LEGACY_REPLAY: &str = "fx-command-replay-legacy.bin";
+const REPLAY: &str = "fx-command-replay-aae1a4c602fd36c8.bin";
 
 fn saved<'a>(id: &'a str, prompts: &'a [&'a str]) -> Saved<'a> {
     Saved {
@@ -120,25 +123,23 @@ fn an_empty_usage_record_is_recovered_with_its_usage_marked_incomplete() {
     assert_eq!(copy.history_len, 1);
 }
 
+fn shell_session(home: &Home, id: &str, replay: &str, output: &[u8]) {
+    let session = saved(id, &[]);
+    let mut events = shell_turn(&format!("\"{replay}\""), "4").replace(SAVED_RESULT, RESULT);
+    events.push_str("{\"torn");
+    session.write_files(&home.own_sessions(), &session.manifest(), &events);
+    let dir = home.own_sessions().join(id);
+    private_dirs(&dir, "tool-results");
+    private_file(&dir.join("tool-results").join(RESULT), output);
+    private_dirs(&dir, "logs/commands");
+    private_file(&dir.join("logs/commands").join(replay), b"fx!!");
+}
+
 #[test]
 fn the_artifacts_kept_turns_name_are_copied_and_unauthenticated_replays_are_reported() {
     let home = Home::new();
     let store = store(&home);
-    let replayed = saved("replayed", &[]);
-    let mut events = shell_turn(
-        "\"fx-command-replay-00112233445566778899aabbccddeeff\"",
-        "4",
-    );
-    events.push_str("{\"torn");
-    replayed.write_files(&home.own_sessions(), &replayed.manifest(), &events);
-    let session = home.own_sessions().join("replayed");
-    private_dirs(&session, "tool-results");
-    private_file(&session.join("tool-results").join(RESULT), b"a.t");
-    private_dirs(&session, "logs/commands");
-    private_file(
-        &session.join("logs/commands/fx-command-replay-00112233445566778899aabbccddeeff"),
-        b"fx!!",
-    );
+    shell_session(&home, "replayed", LEGACY_REPLAY, b"a.t");
 
     let copy = store.recover("replayed").unwrap();
     assert_eq!(
@@ -151,13 +152,28 @@ fn the_artifacts_kept_turns_name_are_copied_and_unauthenticated_replays_are_repo
         b"a.t"
     );
     assert_eq!(
-        fs::read(copied.join("logs/commands/fx-command-replay-00112233445566778899aabbccddeeff"))
-            .unwrap(),
+        fs::read(copied.join("logs/commands").join(LEGACY_REPLAY)).unwrap(),
         b"fx!!"
     );
 
+    shell_session(&home, "authenticated", REPLAY, b"a.t");
+    assert_eq!(
+        store.recover("authenticated").unwrap().status,
+        SessionRecoveryStatus::Recovered
+    );
+    let forged = format!("fx-command-replay-{}.bin", "0".repeat(64));
+    shell_session(&home, "forged-replay", &forged, b"a.t");
+    shell_session(&home, "changed-output", REPLAY, b"a.x");
+    for id in ["forged-replay", "changed-output"] {
+        assert_eq!(
+            store.recover(id),
+            Err(SessionError::SessionRecoveryBoundaryInvalid),
+            "{id}"
+        );
+    }
+
     let plain = saved("missing-output", &[]);
-    let mut events = shell_turn("null", "null");
+    let mut events = shell_turn("null", "null").replace(SAVED_RESULT, RESULT);
     events.push_str("{\"torn");
     plain.write_files(&home.own_sessions(), &plain.manifest(), &events);
     assert_eq!(

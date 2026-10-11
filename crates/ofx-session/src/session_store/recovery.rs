@@ -1,14 +1,16 @@
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
 
 use ofx_config::{AdvisoryLock, PrivateDir};
 use sha2::{Digest, Sha256};
 
 use super::SessionStore;
-use crate::artifact_digest::has_content_digest;
+use crate::artifact_digest::{handle_matches_content_digest, has_content_digest};
 use crate::fx_sessions::{FxSessions, share_lock};
-use crate::result_store::{DIFF_CONTENT_MAX_BYTES, diff_handle_matches_call};
+use crate::result_store::{
+    DIFF_CONTENT_MAX_BYTES, diff_handle_matches_call, diff_pack_matches, stored_text_matches,
+};
 use crate::session_children::has_owner_marker;
 use crate::session_codec::{SessionMetadata, encode_session_metadata};
 use crate::session_discovery::{holds_conversation_metadata, is_managed_name};
@@ -17,7 +19,7 @@ use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{
     Access, create_managed_file, create_private_dir, lock_with_deadline, open_managed_file,
-    publish_dir, remove_created_dir, sync_dir,
+    publish_dir, read_managed_file, remove_created_dir, sync_dir,
 };
 use crate::session_log::{
     ArchivedTurn, ConversationRecovery, MANIFEST_FILE, RecoveredArtifact, RecoveredLog,
@@ -29,6 +31,7 @@ use crate::session_usage::UsageSnapshot;
 use crate::session_usage_sidecar;
 
 const TOOL_RESULTS: [&str; 1] = ["tool-results"];
+const COPY_CHUNK_BYTES: usize = 64 * 1024;
 const COMMAND_ARTIFACTS: [&str; 2] = ["logs", "commands"];
 const REPLAY_PREFIX: &str = "fx-command-replay-";
 const REPLAY_SUFFIX: &str = ".bin";
@@ -215,21 +218,26 @@ fn copy_artifact(
     target: &PrivateDir,
     artifact: &RecoveredArtifact,
 ) -> Result<bool, SessionError> {
-    match artifact {
+    let trusted = match artifact {
         RecoveredArtifact::ToolOutput { handle, bytes } => {
-            copy_managed(source, target, &TOOL_RESULTS, handle, Some(*bytes), None)?;
-            Ok(false)
+            let digest = copy_managed(source, target, &TOOL_RESULTS, handle, Some(*bytes), None)?;
+            stored_text_matches(handle, &digest)
         }
         RecoveredArtifact::DiffContent { handle, call_id } => {
             if !diff_handle_matches_call(handle, call_id) {
                 return Err(SessionError::SessionRecoveryBoundaryInvalid);
             }
             let limit = u64::try_from(DIFF_CONTENT_MAX_BYTES).unwrap_or(u64::MAX);
-            copy_managed(source, target, &TOOL_RESULTS, handle, None, Some(limit))?;
-            Ok(false)
+            let digest = copy_managed(source, target, &TOOL_RESULTS, handle, None, Some(limit))?;
+            let pack = open_route(target, &TOOL_RESULTS)?
+                .map(|dir| read_managed_file(&dir, handle, DIFF_CONTENT_MAX_BYTES))
+                .transpose()?
+                .flatten()
+                .unwrap_or_default();
+            diff_pack_matches(handle, call_id, &digest, &pack)
         }
         RecoveredArtifact::CommandReplay { handle, bytes } => {
-            copy_managed(
+            let digest = copy_managed(
                 source,
                 target,
                 &COMMAND_ARTIFACTS,
@@ -237,21 +245,30 @@ fn copy_artifact(
                 Some(*bytes),
                 None,
             )?;
-            Ok(!authenticated(handle, REPLAY_PREFIX, REPLAY_SUFFIX))
+            command_artifact_matches(handle, REPLAY_PREFIX, REPLAY_SUFFIX, &digest)
         }
         RecoveredArtifact::CommandLog { handle } => {
-            copy_managed(source, target, &COMMAND_ARTIFACTS, handle, None, None)?;
-            Ok(!authenticated(
-                handle,
-                COMMAND_LOG_PREFIX,
-                COMMAND_LOG_SUFFIX,
-            ))
+            let digest = copy_managed(source, target, &COMMAND_ARTIFACTS, handle, None, None)?;
+            command_artifact_matches(handle, COMMAND_LOG_PREFIX, COMMAND_LOG_SUFFIX, &digest)
         }
+    };
+    if !trusted {
+        return Err(SessionError::SessionRecoveryBoundaryInvalid);
     }
+    Ok(match artifact {
+        RecoveredArtifact::CommandReplay { handle, .. } => {
+            !has_content_digest(handle, REPLAY_SUFFIX)
+        }
+        RecoveredArtifact::CommandLog { handle } => !has_content_digest(handle, COMMAND_LOG_SUFFIX),
+        RecoveredArtifact::ToolOutput { .. } | RecoveredArtifact::DiffContent { .. } => false,
+    })
 }
 
-fn authenticated(handle: &str, prefix: &str, suffix: &str) -> bool {
-    handle.starts_with(prefix) && handle.ends_with(suffix) && has_content_digest(handle, suffix)
+fn command_artifact_matches(handle: &str, prefix: &str, suffix: &str, digest: &[u8; 32]) -> bool {
+    handle.starts_with(prefix)
+        && handle.ends_with(suffix)
+        && (!has_content_digest(handle, suffix)
+            || handle_matches_content_digest(handle, suffix, digest))
 }
 
 fn copy_managed(
@@ -261,7 +278,7 @@ fn copy_managed(
     handle: &str,
     expected_bytes: Option<u64>,
     max_bytes: Option<u64>,
-) -> Result<(), SessionError> {
+) -> Result<[u8; 32], SessionError> {
     let invalid = SessionError::SessionRecoveryBoundaryInvalid;
     if !is_managed_name(handle) {
         return Err(invalid);
@@ -275,33 +292,51 @@ fn copy_managed(
         return Err(invalid);
     }
     let target_dir = create_route(target, route)?;
-    match create_managed_file(&target_dir, handle) {
+    let copied = match create_managed_file(&target_dir, handle) {
         Ok(mut output) => {
-            io::copy(&mut input, &mut output)?;
+            let copied = copy_hashed(&mut input, &mut output, size)?;
             output.sync_all()?;
+            copied
         }
         Err(SessionError::SessionAlreadyExists) => {
             let existing =
                 open_managed_file(&target_dir, handle, Access::ReadOnly)?.ok_or(invalid)?;
-            if existing.metadata()?.len() != size || digest(existing)? != digest(input)? {
+            let copied = digest(input, size)?;
+            if existing.metadata()?.len() != size || digest(existing, size)? != copied {
                 return Err(invalid);
             }
+            copied
         }
         Err(error) => return Err(error),
-    }
-    sync_dir(&target_dir)
+    };
+    sync_dir(&target_dir)?;
+    Ok(copied)
 }
 
-fn digest(mut file: File) -> Result<[u8; 32], SessionError> {
+fn copy_hashed(
+    input: &mut File,
+    output: &mut impl Write,
+    size: u64,
+) -> Result<[u8; 32], SessionError> {
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = file.read(&mut buffer)?;
+    let mut buffer = vec![0_u8; COPY_CHUNK_BYTES];
+    let mut remaining = size;
+    while remaining > 0 {
+        let wanted =
+            usize::try_from(remaining).map_or(COPY_CHUNK_BYTES, |left| left.min(COPY_CHUNK_BYTES));
+        let read = input.read(&mut buffer[..wanted])?;
         if read == 0 {
-            return Ok(hasher.finalize().into());
+            return Err(SessionError::SessionRecoveryBoundaryInvalid);
         }
         hasher.update(&buffer[..read]);
+        output.write_all(&buffer[..read])?;
+        remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
     }
+    Ok(hasher.finalize().into())
+}
+
+fn digest(mut file: File, size: u64) -> Result<[u8; 32], SessionError> {
+    copy_hashed(&mut file, &mut io::sink(), size)
 }
 
 fn open_route(session: &PrivateDir, route: &[&str]) -> Result<Option<PrivateDir>, SessionError> {

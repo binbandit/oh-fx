@@ -4,7 +4,8 @@ use ofx_config::PrivateDir;
 use ofx_text::lowercase_hex;
 use sha2::{Digest, Sha256};
 
-use crate::artifact_digest::is_lower_hex;
+use crate::artifact_digest::{handle_matches_content_digest, is_lower_hex};
+use crate::json_fields::{Fields, Json, parse_json};
 use crate::session_error::SessionError;
 use crate::session_log::managed_file::{create_managed_file, sync_dir};
 
@@ -276,6 +277,43 @@ fn is_valid_handle(handle: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
+pub(crate) fn stored_text_matches(handle: &str, digest: &[u8; 32]) -> bool {
+    handle.starts_with(HANDLE_PREFIX)
+        && handle.ends_with(HANDLE_SUFFIX)
+        && handle_matches_content_digest(handle, HANDLE_SUFFIX, digest)
+}
+
+pub(crate) fn diff_pack_matches(
+    handle: &str,
+    tool_call_id: &str,
+    digest: &[u8; 32],
+    pack: &[u8],
+) -> bool {
+    diff_handle_matches_call(handle, tool_call_id)
+        && handle_matches_content_digest(handle, DIFF_HANDLE_SUFFIX, digest)
+        && is_diff_pack(pack)
+}
+
+fn is_diff_pack(pack: &[u8]) -> bool {
+    let content = |value: Json<'_>| match value {
+        Json::Null | Json::String(_) => Some(()),
+        Json::Array(bytes) => bytes
+            .iter()
+            .all(|byte| byte.as_u64().is_some_and(|byte| u8::try_from(byte).is_ok()))
+            .then_some(()),
+        _ => None,
+    };
+    parse_json(pack)
+        .ok()
+        .and_then(Fields::new)
+        .and_then(|mut fields| {
+            fields.or("previous_content", (), content)?;
+            fields.or("after_content", (), content)?;
+            fields.finish(())
+        })
+        .is_some()
+}
+
 pub(crate) fn diff_handle_matches_call(handle: &str, tool_call_id: &str) -> bool {
     let Some(digests) = handle
         .strip_prefix(DIFF_HANDLE_PREFIX)
@@ -544,6 +582,44 @@ mod tests {
             text
         );
         assert!(fits_diff_pack(None, None));
+    }
+
+    #[test]
+    fn a_diff_pack_matches_its_handle_only_with_its_own_bytes_and_shape() {
+        let digest = |bytes: &[u8]| -> [u8; 32] { Sha256::digest(bytes).into() };
+        let (handle, pack) = diff_content_pack("call-1", Some(b"old"), Some(&[0xff])).unwrap();
+        assert!(diff_pack_matches(&handle, "call-1", &digest(&pack), &pack));
+        assert!(!diff_pack_matches(&handle, "call-2", &digest(&pack), &pack));
+        let changed = String::from_utf8(pack.clone())
+            .unwrap()
+            .replace("old", "new");
+        assert!(!diff_pack_matches(
+            &handle,
+            "call-1",
+            &digest(changed.as_bytes()),
+            changed.as_bytes()
+        ));
+        for shape in [
+            &b"{\"previous_content\":\"a\",\"extra\":null}"[..],
+            b"{\"after_content\":[256]}",
+            b"{\"after_content\":1}",
+            b"[]",
+        ] {
+            let (call, _) = handle.split_at(handle.rfind('-').unwrap());
+            let named = format!("{call}-{}.json", lowercase_hex(&digest(shape)[..8]));
+            assert!(!diff_pack_matches(&named, "call-1", &digest(shape), shape));
+        }
+        let empty = b"{}";
+        let (call, _) = handle.split_at(handle.rfind('-').unwrap());
+        let named = format!("{call}-{}.json", lowercase_hex(&digest(empty)[..8]));
+        assert!(diff_pack_matches(&named, "call-1", &digest(empty), empty));
+        let text = make_handle("call-1", "shell", "a.t");
+        assert!(stored_text_matches(&text, &digest(b"a.t")));
+        assert!(!stored_text_matches(&text, &digest(b"a.x")));
+        assert!(!stored_text_matches(
+            &text.replace("result-", "other-"),
+            &digest(b"a.t")
+        ));
     }
 
     #[test]
