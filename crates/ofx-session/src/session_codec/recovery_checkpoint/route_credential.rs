@@ -23,6 +23,10 @@ impl RouteCredential {
         Self::derived("ai_gateway_api_key", None)
     }
 
+    pub fn fx_login() -> Self {
+        Self::derived("fx_login", None)
+    }
+
     pub fn stored_key() -> Self {
         Self::derived("stored_key", None)
     }

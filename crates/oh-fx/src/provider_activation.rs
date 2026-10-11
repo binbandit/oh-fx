@@ -5,10 +5,14 @@ use std::path::{Path, PathBuf};
 
 use ofx_app::SubscriptionEndpoints;
 use ofx_auth::{
-    CHATGPT_SOURCE_LABEL, ChatGptAccess, ChatGptError, ChatGptOAuth, PreparationError,
-    login_failure_detail, prepare_chatgpt_credential,
+    CHATGPT_SOURCE_LABEL, ChatGptAccess, ChatGptError, ChatGptOAuth, GatewayRefusal, GatewaySource,
+    GatewaySources, PreparationError, StoredKeyStore, VercelOAuth, login_failure_detail,
+    prepare_chatgpt_credential, provider_route_name,
 };
-use ofx_config::{ProfilePaths, Settings, save_codex_model};
+use ofx_config::{
+    DEFAULT_GATEWAY_MODEL, ProfilePaths, ProviderId, Settings, save_codex_model,
+    save_provider_credential,
+};
 use ofx_gateway::{CatalogCredential, CodexModelCatalog};
 use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +48,16 @@ impl Profile {
             self.endpoints.chatgpt.clone(),
         )
     }
+    pub(crate) fn vercel_oauth(&self) -> Option<VercelOAuth> {
+        self.paths.as_ref().map(|paths| {
+            VercelOAuth::new(
+                paths.data.clone(),
+                &ofx_app::user_agent(),
+                self.endpoints.vercel.clone(),
+            )
+        })
+    }
+
     pub(crate) fn grok_oauth(&self) -> Result<ofx_auth::GrokOAuth, ofx_auth::GrokError> {
         let paths = self
             .paths
@@ -152,6 +166,53 @@ pub(crate) async fn activate_codex(
         .ok_or_else(|| detail("target model catalog is empty"))?;
     save_selection(paths, model).await?;
     Ok(Activation::Selected { signed_in })
+}
+
+pub(crate) async fn activate_gateway(profile: &Profile) -> Result<(), ActivationFailure> {
+    let workspace = profile
+        .workspace
+        .as_ref()
+        .map_err(|_| ActivationFailure::Fatal("WorkspaceUnavailable"))?;
+    let paths = profile
+        .paths
+        .as_ref()
+        .ok_or_else(|| detail(SETTINGS_UNAVAILABLE))?;
+    let settings = Settings::load(paths, workspace)
+        .ok()
+        .filter(|settings| !settings.profile_is_unusable())
+        .ok_or_else(|| detail(SETTINGS_UNAVAILABLE))?;
+    let store = StoredKeyStore::from_environment(Some(&paths.data), &profile.lookup);
+    let login = profile.vercel_oauth();
+    GatewaySources {
+        lookup: &profile.lookup,
+        store: &store,
+        login: login.as_ref(),
+        preferred: Some(GatewaySource::FxLogin),
+    }
+    .refreshed()
+    .await
+    .prepared()
+    .map_err(|refusal| match refusal {
+        GatewayRefusal::Missing(_) => detail("configure a Gateway credential first"),
+        GatewayRefusal::Preparation(error) => detail(format!(
+            "{}: {}",
+            provider_route_name(&ProviderId::Gateway),
+            error.notice()
+        )),
+    })?;
+    let model = settings
+        .saved_model(&ProviderId::Gateway)
+        .unwrap_or(DEFAULT_GATEWAY_MODEL)
+        .to_owned();
+    let paths = paths.clone();
+    let source = GatewaySource::FxLogin.name();
+    tokio::task::spawn_blocking(move || {
+        save_provider_credential(&paths, &ProviderId::Gateway, &model, source)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .ok_or_else(|| detail("failed to save provider selection"))
 }
 
 fn load_settings(

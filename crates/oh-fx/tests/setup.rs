@@ -134,7 +134,7 @@ fn a_test_home_with_a_user_never_reaches_the_keychain() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "oh-fx ask: oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.\n"
+        "oh-fx ask: oh-fx needs access to Vercel AI Gateway. Run oh-fx login to sign in, oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.\n"
     );
     let output = home.run(&["doctor"], &user);
     assert!(

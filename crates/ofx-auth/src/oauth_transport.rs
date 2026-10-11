@@ -67,7 +67,12 @@ impl Transport {
             .post(url)
             .header(CONTENT_TYPE, method.content_type())
             .body(payload.to_owned());
-        self.execute_request(request).await
+        self.execute_request(request, MAX_RESPONSE_BYTES).await
+    }
+
+    pub(crate) async fn execute_get(&self, url: &str) -> Result<Response, TransportError> {
+        self.execute_request(self.client.get(url), MAX_RESPONSE_BYTES)
+            .await
     }
 
     pub(crate) async fn execute_authorized_get(
@@ -75,13 +80,24 @@ impl Transport {
         url: &str,
         token: &str,
     ) -> Result<Response, TransportError> {
-        self.execute_request(self.client.get(url).bearer_auth(token))
+        self.execute_authorized_get_within(url, token, MAX_RESPONSE_BYTES)
+            .await
+    }
+
+    pub(crate) async fn execute_authorized_get_within(
+        &self,
+        url: &str,
+        token: &str,
+        limit: usize,
+    ) -> Result<Response, TransportError> {
+        self.execute_request(self.client.get(url).bearer_auth(token), limit)
             .await
     }
 
     async fn execute_request(
         &self,
         request: reqwest::RequestBuilder,
+        limit: usize,
     ) -> Result<Response, TransportError> {
         let exchange = async {
             let mut response = request.send().await.map_err(|error| {
@@ -92,13 +108,13 @@ impl Transport {
                 }
             })?;
             let accepted = response.status() == StatusCode::OK;
-            let mut body = Zeroizing::new(Vec::with_capacity(MAX_RESPONSE_BYTES));
+            let mut body = Zeroizing::new(Vec::with_capacity(MAX_RESPONSE_BYTES.min(limit)));
             while let Some(chunk) = response
                 .chunk()
                 .await
                 .map_err(|_| TransportError::ConnectionFailed)?
             {
-                if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                if body.len() + chunk.len() > limit {
                     return Err(TransportError::ResponseTooLarge);
                 }
                 body.extend_from_slice(&chunk);

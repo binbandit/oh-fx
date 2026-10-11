@@ -12,9 +12,9 @@ use ofx_agent::{
     Questions, RuntimeContext, SkillContextProvider,
 };
 use ofx_auth::{
-    CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, GatewaySource, HOST_MANAGED_AUTH_MESSAGE,
-    MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredKeyStore, UNREADABLE_STORED_KEY_MESSAGE,
-    gateway_credential, host_managed_auth,
+    CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, GatewayRefusal, GatewayResolution,
+    GatewaySource, GatewaySources, HOST_MANAGED_AUTH_MESSAGE, PreparationError, StoredKeyStore,
+    VercelEndpoints, VercelOAuth, host_managed_auth,
 };
 use ofx_config::{
     ConfigDiagnostic, ConnectionError, ContextLimitOverride, ContextLimits, ProfilePaths,
@@ -71,6 +71,7 @@ const CONFIGURED_SOURCE_LABEL: &str = "configured provider";
 const CONFIGURED_SOURCE_REPAIR: &str = "Check the configured provider auth environment variable.";
 const CODEX_SOURCE_REPAIR: &str = "Reconnect Codex through /login to repair this source.";
 const GATEWAY_SOURCE_REPAIR: &str = "Run /provider to repair this source.";
+const LOGIN_SOURCE_REPAIR: &str = "Run /login to repair this source.";
 const HOST_MANAGED_SOURCE_LABEL: &str = "host managed";
 
 #[derive(Clone)]
@@ -103,10 +104,10 @@ pub enum ConnectError {
     InvalidConnection(ClientError),
     #[error("{0}")]
     Codex(#[from] CodexUnavailable),
-    #[error("{MISSING_GATEWAY_CREDENTIAL_MESSAGE}")]
-    MissingGatewayCredential,
-    #[error("{UNREADABLE_STORED_KEY_MESSAGE}")]
-    UnreadableStoredKey,
+    #[error("{0}")]
+    MissingGatewayCredential(&'static str),
+    #[error("{}", .0.notice())]
+    GatewayPreparation(PreparationError),
     #[error("InvalidModel")]
     InvalidModel(Vec<u8>),
     #[error("{0}")]
@@ -139,13 +140,14 @@ impl CredentialSource {
     }
 
     pub(crate) const fn refreshable(self) -> bool {
-        matches!(self, Self::Codex)
+        matches!(self, Self::Codex | Self::Gateway(GatewaySource::FxLogin))
     }
 
     pub(crate) const fn repair(self) -> &'static str {
         match self {
             Self::Configured => CONFIGURED_SOURCE_REPAIR,
             Self::Codex => CODEX_SOURCE_REPAIR,
+            Self::Gateway(GatewaySource::FxLogin) => LOGIN_SOURCE_REPAIR,
             Self::Gateway(_) => GATEWAY_SOURCE_REPAIR,
             Self::HostManaged => HOST_MANAGED_AUTH_MESSAGE,
         }
@@ -181,6 +183,7 @@ pub struct AgentSetup {
     connection: Option<ProviderDefinition>,
     source: CredentialSource,
     account_id: Option<String>,
+    team: Option<String>,
     codex_login: Arc<CodexLogin>,
     tools: Vec<Arc<dyn Tool>>,
     delegation: Delegation,
@@ -225,6 +228,7 @@ pub(crate) struct Route {
     configured_model: Option<String>,
     source: CredentialSource,
     account_id: Option<String>,
+    team: Option<String>,
     subscription: Option<Arc<CodexSubscription>>,
     uses_tls: bool,
     login: Login,
@@ -330,11 +334,52 @@ impl Profile {
     }
 
     pub(crate) fn routes(&self, provider: &ProviderId) -> bool {
-        let lookup = |name: &str| env::var(name).ok();
         self.settings.routes(provider)
             || (*provider == ProviderId::Gateway
-                && (host_managed_auth()
-                    || !matches!(gateway_credential(&lookup, &self.stored_key), Ok(None))))
+                && (host_managed_auth() || {
+                    let login = self.vercel_login();
+                    let lookup = |name: &str| env::var(name).ok();
+                    let resolution = self.gateway_sources(&lookup, login.as_ref()).stored();
+                    resolution.key().is_some() || resolution.unreadable()
+                }))
+    }
+
+    pub(crate) fn vercel_login(&self) -> Option<VercelOAuth> {
+        self.paths.as_ref().map(|paths| {
+            VercelOAuth::new(
+                paths.data.clone(),
+                &user_agent(),
+                VercelEndpoints::default(),
+            )
+        })
+    }
+
+    pub(crate) fn gateway_sources<'a>(
+        &'a self,
+        lookup: &'a dyn Fn(&str) -> Option<String>,
+        login: Option<&'a VercelOAuth>,
+    ) -> GatewaySources<'a> {
+        GatewaySources {
+            lookup,
+            store: &self.stored_key,
+            login,
+            preferred: self
+                .settings
+                .credential_source()
+                .and_then(GatewaySource::parse),
+        }
+    }
+
+    async fn gateway_resolution(
+        &self,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> (GatewayResolution, Option<VercelOAuth>) {
+        let login = self.vercel_login();
+        let resolution = self
+            .gateway_sources(lookup, login.as_ref())
+            .refreshed()
+            .await;
+        (resolution, login)
     }
 
     pub fn resume_selection(
@@ -437,6 +482,7 @@ impl Profile {
             connection: route.connection,
             source: route.source,
             account_id: route.account_id,
+            team: route.team,
             codex_login,
             tools,
             delegation: Delegation::new(children),
@@ -575,12 +621,31 @@ impl Profile {
             })?
             .map_err(ConnectError::InvalidModel)?;
             let configured_model = self.settings.selected_gateway_model(None, &lookup);
+            let (credential, source, team) = if host_managed_auth() {
+                (
+                    GatewayCredential::new(None, None),
+                    CredentialSource::HostManaged,
+                    None,
+                )
+            } else {
+                let (resolution, login) = self.gateway_resolution(&lookup).await;
+                let key = resolution.prepared().map_err(|refusal| match refusal {
+                    GatewayRefusal::Missing(message) => {
+                        ConnectError::MissingGatewayCredential(message)
+                    }
+                    GatewayRefusal::Preparation(error) => ConnectError::GatewayPreparation(error),
+                })?;
+                (
+                    crate::gateway_login::gateway_credential(&key, login, refreshes),
+                    CredentialSource::Gateway(key.source),
+                    key.display_team().map(str::to_owned),
+                )
+            };
             return gateway_route(
                 model,
                 configured_model,
                 endpoints.gateway,
-                &lookup,
-                &self.stored_key,
+                (credential, source, team),
             );
         }
         if self.settings.codex_selected(&lookup)? {
@@ -671,6 +736,7 @@ impl Profile {
             configured_model,
             source: CredentialSource::Codex,
             account_id: Some(subscription.account_id.clone()),
+            team: None,
             subscription: Some(Arc::new(subscription)),
             uses_tls,
             login: Login::Ready,
@@ -780,6 +846,7 @@ fn connection_route(
         configured_model,
         source: CredentialSource::Configured,
         account_id: None,
+        team: None,
         subscription: None,
         uses_tls,
         login: Login::Ready,
@@ -790,28 +857,12 @@ fn gateway_route(
     model: String,
     configured_model: String,
     endpoints: GatewayEndpoints,
-    lookup: &dyn Fn(&str) -> Option<String>,
-    store: &StoredKeyStore,
+    (credential, source, team): (GatewayCredential, CredentialSource, Option<String>),
 ) -> Result<Route, ConnectError> {
-    let (source, secret) = if host_managed_auth() {
-        (CredentialSource::HostManaged, None)
-    } else {
-        let credential = gateway_credential(lookup, store)
-            .map_err(|_| ConnectError::UnreadableStoredKey)?
-            .ok_or(ConnectError::MissingGatewayCredential)?;
-        (
-            CredentialSource::Gateway(credential.source),
-            Some(credential.secret.to_string()),
-        )
-    };
     let uses_tls = uses_tls(&endpoints.chat);
     let gateway = Arc::new(
-        GatewayProvider::new(
-            GatewayCredential::new(secret, None),
-            &user_agent(),
-            endpoints,
-        )
-        .map_err(ConnectError::InvalidConnection)?,
+        GatewayProvider::new(credential, &user_agent(), endpoints)
+            .map_err(ConnectError::InvalidConnection)?,
     );
     let reviewer = GatewayReviewTransport::new(Arc::clone(&gateway), None);
     Ok(Route {
@@ -825,6 +876,7 @@ fn gateway_route(
         configured_model: Some(configured_model),
         source,
         account_id: None,
+        team,
         subscription: None,
         uses_tls,
         login: Login::Ready,
@@ -872,6 +924,7 @@ impl AgentSetup {
                 RouteCredential::ai_gateway_api_key()
             }
             CredentialSource::Gateway(GatewaySource::StoredKey) => RouteCredential::stored_key(),
+            CredentialSource::Gateway(GatewaySource::FxLogin) => RouteCredential::fx_login(),
             CredentialSource::HostManaged => RouteCredential::host_managed(),
         }
     }
@@ -943,6 +996,7 @@ impl AgentSetup {
             selection: &self.selection,
             connection: self.connection.as_ref(),
             source: self.source,
+            team: self.team.as_deref(),
             permission_mode: self.permission_mode.get(),
             workspace_root: &self.workspace_root,
             history_turns,

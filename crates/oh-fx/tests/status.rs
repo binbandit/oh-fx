@@ -327,7 +327,7 @@ fn the_default_gateway_reports_its_environment_credential_like_upstream() {
     assert_eq!(
         stdout,
         format!(
-            "[status] model=spacexai/grok-4.7\n[status] model_origin=default\n[status] auth=missing\n[status] auth_refreshable=false\n[status] auth_help=oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.\n{}{MCP_EMPTY_TEXT}",
+            "[status] model=spacexai/grok-4.7\n[status] model_origin=default\n[status] auth=missing\n[status] auth_refreshable=false\n[status] auth_help=oh-fx needs access to Vercel AI Gateway. Run oh-fx login to sign in, oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.\n{}{MCP_EMPTY_TEXT}",
             tail(&workspace)
         )
     );

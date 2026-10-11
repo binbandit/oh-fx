@@ -5,12 +5,10 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 use ofx_auth::{
-    DISABLE_KEYCHAIN_VARIABLE, HOST_MANAGED_AUTH_MESSAGE, StoredKeyStore, host_managed_auth,
+    DISABLE_KEYCHAIN_VARIABLE, HOST_MANAGED_AUTH_MESSAGE, RawInput, StoredKeyStore,
+    host_managed_auth,
 };
 use ofx_config::ProfilePaths;
-use rustix::termios::{
-    self, ControlModes, InputModes, LocalModes, OptionalActions, SpecialCodeIndex, Termios,
-};
 use zeroize::Zeroizing;
 
 const PROMPT: &str = "Paste AI Gateway API key (input hidden): ";
@@ -78,7 +76,7 @@ fn write_stderr(text: &str) -> io::Result<()> {
 }
 
 fn read_masked_key() -> Option<Zeroizing<String>> {
-    let raw = RawInput::enable();
+    let raw = RawInput::enable(rustix::stdio::stdin());
     let _ = write_stderr(PROMPT);
     let _raw = raw.ok()?;
     let mut key = Zeroizing::new(String::new());
@@ -104,42 +102,4 @@ fn read_masked_key() -> Option<Zeroizing<String>> {
         }
     }
     None
-}
-
-struct RawInput {
-    original: Termios,
-}
-
-impl RawInput {
-    fn enable() -> io::Result<Self> {
-        let stdin = rustix::stdio::stdin();
-        let original = termios::tcgetattr(stdin)?;
-        let mut raw = original.clone();
-        raw.input_modes.remove(
-            InputModes::BRKINT
-                | InputModes::ICRNL
-                | InputModes::INPCK
-                | InputModes::ISTRIP
-                | InputModes::IXON
-                | InputModes::IXOFF,
-        );
-        raw.control_modes.remove(ControlModes::CSIZE);
-        raw.control_modes.insert(ControlModes::CS8);
-        raw.local_modes
-            .remove(LocalModes::ECHO | LocalModes::ICANON | LocalModes::IEXTEN | LocalModes::ISIG);
-        raw.special_codes[SpecialCodeIndex::VMIN] = 1;
-        raw.special_codes[SpecialCodeIndex::VTIME] = 0;
-        termios::tcsetattr(stdin, OptionalActions::Flush, &raw)?;
-        Ok(Self { original })
-    }
-}
-
-impl Drop for RawInput {
-    fn drop(&mut self) {
-        let _ = termios::tcsetattr(
-            rustix::stdio::stdin(),
-            OptionalActions::Flush,
-            &self.original,
-        );
-    }
 }

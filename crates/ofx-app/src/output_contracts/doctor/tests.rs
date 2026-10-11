@@ -11,6 +11,7 @@ fn report(checks: Vec<Check>) -> DoctorReport {
         auth: AuthStatus {
             active: Some(Credential::Codex { expired: true }),
             help: None,
+            team: None,
             logins: SavedLogins::default(),
         },
         permission_mode: PermissionMode::Yolo,

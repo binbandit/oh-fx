@@ -119,7 +119,7 @@ impl Collection<'_> {
     }
 
     fn unloaded(&mut self, error: &str) -> Resolved {
-        let auth = self.sources.auth(&ProviderId::Gateway, None);
+        let auth = self.sources.auth(&ProviderId::Gateway, None, None);
         self.push(
             "config",
             CheckStatus::Fail,
@@ -143,7 +143,9 @@ impl Collection<'_> {
     fn loaded(&mut self, settings: &Settings, provider: &ProviderId) -> Resolved {
         let lookup = self.sources.lookup;
         let connection = settings.selected_connection(lookup).ok();
-        let auth = self.sources.auth(provider, connection);
+        let auth = self
+            .sources
+            .auth(provider, connection, settings.credential_source());
         self.config_checks(settings);
         match connection.map(|connection| connection.resolve(lookup, self.sources.home)) {
             Some(Err(error)) => self.push("auth", CheckStatus::Fail, error.to_string()),
@@ -241,11 +243,15 @@ impl Collection<'_> {
         } else {
             CheckStatus::Ok
         };
+        let team = auth
+            .team
+            .as_ref()
+            .map_or_else(String::new, |team| format!("; team={team}"));
         self.push(
             "auth",
             status,
             format!(
-                "{} is configured{expired}; refreshable={}",
+                "{} is configured{expired}; refreshable={}{team}",
                 auth.label(),
                 auth.refreshable()
             ),
