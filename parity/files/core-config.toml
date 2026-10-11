@@ -62,4 +62,4 @@ note = "Categories, search, option cycling, the menu's selection window and the 
 upstream = "src/core/config/settings_store.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/settings_store.rs", "crates/ofx-workspace/src/workspace_commands.rs"]
-note = "Permission/model preference writes, the startup scrollback, status line, session title and prompt history patches, scoped permission-rule add/remove/reset patches, the workspace directory mutation through the workspace entry writer and recovery backups exist; the remaining settings catalog patches and project MCP mutation API remain incomplete."
+note = "Permission/model preference writes, the startup scrollback, status line, session title and prompt history patches, scoped permission-rule add/remove/reset patches, the workspace directory mutation through the workspace entry writer and recovery backups exist, with the config trace lines for each settings operation and for skipped corrupt copies and backup prunes; the remaining settings catalog patches and project MCP mutation API remain incomplete."
