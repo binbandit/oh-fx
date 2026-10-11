@@ -49,7 +49,7 @@ async fn trace_saves_a_private_report_of_the_session_and_offers_it_to_the_clipbo
     );
     assert!(report.contains("\n## Current State\nagent_step_limit: "));
     assert!(report.contains(
-        "\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n"
+        "\n## Problems\n- no obvious errors captured in recent network, tool, compaction, MCP, or model catalog state\n\n## Last Shutdown\n(none recorded)\n"
     ));
     assert!(report.contains("\n## Context Compaction\n(none recorded)\n\n## Session Title\nsetting: true\ntitle: (none)\ngeneration: status=none\n\n## Network Calls\n(none recorded)\n"));
     assert!(report.contains("\n## Tool Calls\n(none recorded)\n"));
@@ -128,4 +128,28 @@ async fn trace_reports_the_session_title_the_background_generation_installed() {
     assert!(section.starts_with(&expected), "{section}");
     assert!(section.ends_with("ms\n"), "{section}");
     assert!(!report.contains("- session title generation"), "{report}");
+}
+
+#[tokio::test]
+async fn trace_reports_the_last_shutdown_the_previous_session_saved() {
+    let server = FakeServer::start([]);
+    let mut harness = Harness::start(&server).await;
+    let diagnostics = harness.home.path().join("state/diagnostics");
+    fs::create_dir_all(&diagnostics).unwrap();
+    fs::write(
+        diagnostics.join("last-shutdown.json"),
+        r#"{"version":1,"recorded_at_ms":1700000000123,"total_ms":12,"stages":[{"name":"terminal_released","step_ms":2,"total_ms":2},{"name":"complete","step_ms":10,"total_ms":12}]}"#,
+    )
+    .unwrap();
+    let report = trace_report(&mut harness).await;
+    assert!(
+        report.contains("\n## Last Shutdown\ntotal_ms=12 recorded=2023-11-14T22:13:20Z\n- terminal_released step_ms=2\n- complete step_ms=10\n\n## Context Compaction\n"),
+        "{report}"
+    );
+    fs::write(diagnostics.join("last-shutdown.json"), "{").unwrap();
+    let report = trace_report(&mut harness).await;
+    assert!(
+        report.contains("\n## Last Shutdown\n(last shutdown report unreadable)\n"),
+        "{report}"
+    );
 }

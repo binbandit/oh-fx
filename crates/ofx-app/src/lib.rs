@@ -28,6 +28,7 @@ mod native;
 mod output_contracts;
 mod prompt_history_runtime;
 mod session_commands;
+mod shutdown_report;
 mod skill_commands;
 mod skill_mention_runtime;
 mod skills;

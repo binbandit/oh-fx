@@ -154,6 +154,11 @@ impl SessionUpgrader {
     pub(crate) fn stop_for_process_exit(&self) {
         self.control.stop_for_process_exit();
     }
+
+    pub(crate) fn stopper(&self) -> Box<dyn Fn() + Send + Sync> {
+        let control = Arc::clone(&self.control);
+        Box::new(move || control.stop_for_process_exit())
+    }
 }
 
 async fn run<P: Fn(String) + Sync>(
