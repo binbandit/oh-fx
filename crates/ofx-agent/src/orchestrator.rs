@@ -90,7 +90,6 @@ use provider_tools::{
 use recovery::{Restart, RestoredReply, recovery_tool_choice};
 use rejection_trace::{Denial, Refusal, Refused};
 use response_language::{Reply, TurnLanguage};
-use tool_images::carries_tool_images;
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
 use turn_trace::ToolTrail;
@@ -918,15 +917,12 @@ impl Agent {
             self.require_image_input(cancel).await?;
             let entered = enter_step(turn, step);
             let step_cancel = self.begin_model_step(turn, events, cancel)?;
-            if self.has_compactable_context(turn) || carries_tool_images(&self.history) {
-                self.resolve_capabilities(cancel).await?;
-            }
+            self.resolve_step_capabilities(turn, events, cancel).await?;
             self.refresh_dynamic_tools(&turn.selected_tools);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
             history_trace::projected(turn.trace, turn.projection.take(), instructions.len());
-            let messages = self.request_messages(turn);
-            let messages = self.project_tool_images(turn, messages, events);
+            let messages = self.step_messages(turn);
             let gateway_messages = instructions.len() + messages.len();
             self.trace_step(turn, (step + 1, entered), gateway_messages);
             let request = self.turn_request(turn, &instructions, &messages, events);

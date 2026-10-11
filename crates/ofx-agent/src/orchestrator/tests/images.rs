@@ -259,3 +259,32 @@ async fn an_unavailable_catalog_explains_withheld_tool_images_once_per_turn() {
             .all(|(_, images)| *images == 0)
     );
 }
+
+#[tokio::test]
+async fn tool_images_stay_out_of_a_request_asked_again_after_a_prefill_rejection() {
+    let mut rejected = http_failure(ProviderErrorKind::InvalidRequest, "BadRequest", 400);
+    rejected.detail = Some("API request failed · HTTP 400 · AI_APICallError: This model does not support assistant message prefill. The conversation must end with a user message.".to_owned());
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"picture":true}"#)]),
+        Script::Fail(Vec::new(), rejected),
+        text_reply("seen"),
+    ]);
+    let mut agent = agent_seeing(&provider, resolved(ImageInputSupport::NonNative));
+
+    let (report, _) = run(&mut agent, "look at shot.png").await;
+
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2].messages.last(),
+        Some(&ChatMessage::user(
+            "Continue from the preceding tool result."
+        ))
+    );
+    for request in &requests[1..] {
+        assert!(request.messages.iter().all(
+            |message| !matches!(message, ChatMessage::Tool { images, .. } if !images.is_empty())
+        ));
+    }
+}
