@@ -42,28 +42,41 @@ pub(super) fn shape(
     ofx_trace::enabled(HISTORY).then(|| HistoryShape::of(history, starts, open))
 }
 
-pub(super) fn projected(context: TraceContext, shape: Option<HistoryShape>, before: usize) {
-    let Some(shape) = shape else {
+pub(super) fn projection_started(
+    context: TraceContext,
+    shape: Option<&HistoryShape>,
+    before: usize,
+) {
+    let Some(HistoryShape {
+        turns,
+        interrupted,
+        kinds,
+        ..
+    }) = shape
+    else {
         return;
     };
-    let context = TraceContext {
-        step_id: 0,
-        ..context
-    };
-    let HistoryShape {
+    trace_event!(
+        HISTORY,
+        "projection_start",
+        unstepped(context),
+        "history_turns={turns} gateway_messages_before={before} interrupted_turns={interrupted} history_turn_kinds={kinds}"
+    );
+}
+
+pub(super) fn projection_ended(context: TraceContext, shape: Option<HistoryShape>, before: usize) {
+    let Some(HistoryShape {
         turns,
         interrupted,
         partial_closures,
         kinds,
         roles,
         messages,
-    } = &shape;
-    trace_event!(
-        HISTORY,
-        "projection_start",
-        context,
-        "history_turns={turns} gateway_messages_before={before} interrupted_turns={interrupted} history_turn_kinds={kinds}"
-    );
+    }) = shape
+    else {
+        return;
+    };
+    let context = unstepped(context);
     trace_event!(
         HISTORY,
         "projection_end",
@@ -71,6 +84,20 @@ pub(super) fn projected(context: TraceContext, shape: Option<HistoryShape>, befo
         "history_turns={turns} gateway_messages={} added_gateway_messages={messages} interrupted_turns={interrupted} history_turn_kinds={kinds} projected_message_roles={roles} partial_interrupted_closures={partial_closures}",
         before + messages
     );
+}
+
+pub(super) fn empty_replay_projected(index: usize, prior_bytes: usize, retained_bytes: usize) {
+    trace_log!(
+        HISTORY,
+        "empty_assistant_replay_projected message_index={index} prior_bytes={prior_bytes} retained_bytes={retained_bytes}"
+    );
+}
+
+const fn unstepped(context: TraceContext) -> TraceContext {
+    TraceContext {
+        step_id: 0,
+        ..context
+    }
 }
 
 pub(super) fn tool_history_projected(messages: usize) {

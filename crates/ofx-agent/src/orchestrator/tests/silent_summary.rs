@@ -44,9 +44,20 @@ fn reply(text: &str, parts: Option<&str>) -> ChatMessage {
 }
 
 fn conversation(tail: impl IntoIterator<Item = ChatMessage>) -> Vec<ChatMessage> {
+    conversation_with("silent", tail)
+}
+
+fn sent_later(tail: impl IntoIterator<Item = ChatMessage>) -> Vec<ChatMessage> {
+    conversation_with("reasoning of silent", tail)
+}
+
+fn conversation_with(
+    silent: &str,
+    tail: impl IntoIterator<Item = ChatMessage>,
+) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage::user("go")];
     messages.extend(tool_steps());
-    messages.push(reply("", Some("silent")));
+    messages.push(reply("", Some(silent)));
     messages.extend(tail);
     messages
 }
@@ -73,9 +84,10 @@ async fn the_request_after_a_silent_tool_turn_leaves_out_its_summary_prompt() {
         requests[3].messages.last(),
         Some(&ChatMessage::user(SUMMARIZE_PROMPT))
     );
-    let mut expected = summarized;
-    expected.push(ChatMessage::user("next"));
-    assert_eq!(requests[4].messages, expected);
+    assert_eq!(
+        requests[4].messages,
+        sent_later([reply("Summary.", None), ChatMessage::user("next")])
+    );
 }
 
 #[tokio::test]
@@ -118,7 +130,7 @@ async fn a_summary_request_that_fails_leaves_out_the_summary_prompt() {
     run(&mut agent, "next").await;
     assert_eq!(
         provider.requests()[4].messages,
-        conversation([ChatMessage::user("next")])
+        sent_later([ChatMessage::user("next")])
     );
 }
 
@@ -152,7 +164,7 @@ async fn an_interrupted_summary_request_closes_the_turn_without_its_summary_prom
     run(&mut agent, "next").await;
     assert_eq!(
         provider.requests()[3].messages,
-        conversation([
+        sent_later([
             ChatMessage::user(INTERRUPTED_TURN_CONTEXT),
             ChatMessage::user("next"),
         ])

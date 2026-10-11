@@ -10,7 +10,8 @@ use ofx_auth::{
 use ofx_config::ProfilePaths;
 use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, Completion, ModelCapabilities, ModelProvider,
-    ModelRequest, ProviderError, ProviderErrorKind, ProviderReplay, StreamSink, ToolCall,
+    ModelRequest, ProviderError, ProviderErrorKind, ProviderReplay, ReplaySource, StreamSink,
+    ToolCall,
 };
 use ofx_gateway::{
     CatalogCredential, CatalogFailure, CodexAccess, CodexCredentials, CodexEndpoints, CodexModel,
@@ -122,6 +123,10 @@ impl ModelProvider for SubscriptionProvider {
                 .project_replay(replay, calls, text, reasoning),
             None => SignedOutProvider.project_replay(replay, calls, text, reasoning),
         }
+    }
+
+    fn replay_source(&self, model: &str) -> Option<ReplaySource> {
+        self.login.current()?.provider.replay_source(model)
     }
 }
 

@@ -532,12 +532,122 @@ fn trace_reports_the_turns_network_calls() {
 
 struct CodexServers {
     auth: FakeServer,
-    _catalog: FakeServer,
+    catalog: FakeServer,
     codex: FakeServer,
 }
 
 fn ask_codex_traced(token: Reply, replies: Vec<Reply>) -> (Traced, CodexServers) {
     ask_codex_traced_with(token, replies, &["--no-save"])
+}
+
+struct CodexTraceHome {
+    _home: tempfile::TempDir,
+    root: PathBuf,
+    servers: CodexServers,
+}
+
+impl CodexTraceHome {
+    fn new(token: Reply, replies: Vec<Reply>, titles: bool) -> Self {
+        let home = tempfile::tempdir().expect("prepare the trace test");
+        let root = home.path().canonicalize().expect("prepare the trace test");
+        let workspace = root.join("workspace");
+        let config = root.join("config/oh-fx");
+        let data = root.join("data/oh-fx");
+        for path in [&workspace, &config, &data] {
+            fs::create_dir_all(path).expect("prepare the trace test");
+        }
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700))
+            .expect("prepare the trace test");
+        fs::write(
+            config.join("settings.json"),
+            json!({"provider": "codex", "models": {"codex": "gpt-5.4"}, "session_titles": titles})
+                .to_string(),
+        )
+        .expect("prepare the trace test");
+        let login = data.join("chatgpt-auth.json");
+        let session = json!({
+            "version": 1,
+            "access_token": SAVED_ACCESS,
+            "refresh_token": SAVED_REFRESH,
+            "expires_at_ms": 4_102_444_800_000_i64,
+            "account_id": "acct_trace",
+        });
+        fs::write(&login, format!("{session}\n")).expect("prepare the trace test");
+        fs::set_permissions(&login, fs::Permissions::from_mode(0o600))
+            .expect("prepare the trace test");
+        let model = json!({
+            "slug": "gpt-5.4",
+            "visibility": "list",
+            "supported_in_api": true,
+            "supported_reasoning_levels": [{"effort": "low"}],
+        });
+        let auth = FakeServer::start([token]);
+        let catalog = FakeServer::start([
+            Reply::status(200, json!({"version": "0.153.1"}).to_string()),
+            Reply::status(200, json!({"models": [model]}).to_string()),
+        ]);
+        let codex = FakeServer::start(replies);
+        Self {
+            _home: home,
+            root,
+            servers: CodexServers {
+                auth,
+                catalog,
+                codex,
+            },
+        }
+    }
+
+    fn ask(&self, args: &[&str]) -> Output {
+        let root = &self.root;
+        let servers = &self.servers;
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .arg("ask")
+            .args(args)
+            .current_dir(root.join("workspace"))
+            .env_clear()
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("OH_FX_TRACE_LOG", root.join("trace.log"))
+            .env(
+                "OH_FX_E2E_CHATGPT_TOKEN_URL",
+                format!("{}/oauth/token", servers.auth.base_url()),
+            )
+            .env(
+                "OH_FX_E2E_OPENAI_CODEX_MODELS_URL",
+                format!("{}/backend-api/codex/models", servers.catalog.base_url()),
+            )
+            .env(
+                "OH_FX_E2E_CODEX_VERSION_URL",
+                format!("{}/@openai/codex/latest", servers.catalog.base_url()),
+            )
+            .env(
+                "OH_FX_E2E_OPENAI_CODEX_RESPONSES_URL",
+                format!("{}/backend-api/codex/responses", servers.codex.base_url()),
+            )
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx ask")
+    }
+
+    fn log(&self) -> String {
+        fs::read_to_string(self.root.join("trace.log")).expect("read the trace log")
+    }
+
+    fn events(&self) -> PathBuf {
+        let sessions = self.root.join("data/oh-fx/sessions");
+        let entry = fs::read_dir(&sessions)
+            .expect("list the saved sessions")
+            .next()
+            .expect("a saved session")
+            .expect("a saved session");
+        entry.path().join("events.jsonl")
+    }
 }
 
 fn ask_codex_traced_with(
@@ -546,84 +656,13 @@ fn ask_codex_traced_with(
     extra: &[&str],
 ) -> (Traced, CodexServers) {
     let saved = !extra.contains(&"--no-save");
-    let home = tempfile::tempdir().expect("prepare the trace test");
-    let root = home.path().canonicalize().expect("prepare the trace test");
-    let workspace = root.join("workspace");
-    let config = root.join("config/oh-fx");
-    let data = root.join("data/oh-fx");
-    for path in [&workspace, &config, &data] {
-        fs::create_dir_all(path).expect("prepare the trace test");
-    }
-    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("prepare the trace test");
-    fs::write(
-        config.join("settings.json"),
-        json!({"provider": "codex", "models": {"codex": "gpt-5.4"}, "session_titles": saved})
-            .to_string(),
-    )
-    .expect("prepare the trace test");
-    let login = data.join("chatgpt-auth.json");
-    let session = json!({
-        "version": 1,
-        "access_token": SAVED_ACCESS,
-        "refresh_token": SAVED_REFRESH,
-        "expires_at_ms": 4_102_444_800_000_i64,
-        "account_id": "acct_trace",
-    });
-    fs::write(&login, format!("{session}\n")).expect("prepare the trace test");
-    fs::set_permissions(&login, fs::Permissions::from_mode(0o600)).expect("prepare the trace test");
-    let model = json!({
-        "slug": "gpt-5.4",
-        "visibility": "list",
-        "supported_in_api": true,
-        "supported_reasoning_levels": [{"effort": "low"}],
-    });
-    let auth = FakeServer::start([token]);
-    let catalog = FakeServer::start([
-        Reply::status(200, json!({"version": "0.153.1"}).to_string()),
-        Reply::status(200, json!({"models": [model]}).to_string()),
-    ]);
-    let codex = FakeServer::start(replies);
-    let log = root.join("trace.log");
-    let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args(["ask", "--json"])
-        .args(extra)
-        .arg("hi")
-        .current_dir(&workspace)
-        .env_clear()
-        .env("HOME", &root)
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("SHELL", "/bin/sh")
-        .env("OH_FX_AUTO_UPGRADE", "0")
-        .env("OH_FX_TRACE_LOG", &log)
-        .env(
-            "OH_FX_E2E_CHATGPT_TOKEN_URL",
-            format!("{}/oauth/token", auth.base_url()),
-        )
-        .env(
-            "OH_FX_E2E_OPENAI_CODEX_MODELS_URL",
-            format!("{}/backend-api/codex/models", catalog.base_url()),
-        )
-        .env(
-            "OH_FX_E2E_CODEX_VERSION_URL",
-            format!("{}/@openai/codex/latest", catalog.base_url()),
-        )
-        .env(
-            "OH_FX_E2E_OPENAI_CODEX_RESPONSES_URL",
-            format!("{}/backend-api/codex/responses", codex.base_url()),
-        )
-        .stdin(Stdio::null())
-        .output()
-        .expect("run oh-fx ask");
-    let log = fs::read_to_string(&log).expect("read the trace log");
-    let servers = CodexServers {
-        auth,
-        _catalog: catalog,
-        codex,
-    };
-    (Traced { output, log }, servers)
+    let home = CodexTraceHome::new(token, replies, saved);
+    let mut args = vec!["--json"];
+    args.extend_from_slice(extra);
+    args.push("hi");
+    let output = home.ask(&args);
+    let log = home.log();
+    (Traced { output, log }, home.servers)
 }
 
 fn codex_rejection() -> Reply {
@@ -649,6 +688,130 @@ fn bearer(request: &ofx_testkit::RecordedRequest) -> Option<&str> {
     request
         .header("authorization")
         .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+fn codex_read_step() -> Reply {
+    Reply::sse(&[
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"opaque-cipher"}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","phase":"commentary"}}),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":"I will read it."}),
+        json!({"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":""}}),
+        json!({"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"path\":\"README.md\"}"}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+    ]
+    .map(|event| event.to_string()))
+}
+
+#[test]
+fn a_resumed_codex_ask_traces_the_empty_step_replay_it_sends_without_its_prose() {
+    let home = CodexTraceHome::new(
+        Reply::status(500, "{}"),
+        vec![
+            codex_read_step(),
+            codex_answer("Done."),
+            codex_answer("Again."),
+        ],
+        false,
+    );
+    fs::write(home.root.join("workspace/README.md"), "# Readme\n").expect("write the readme");
+    let first = home.ask(&["--json", "Read README.md"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let (parts, retained) = blank_saved_reply(&home, "I will read it.");
+
+    let second = home.ask(&["--resume", "last", "--json", "again"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let log = home.log();
+    let projection = [
+        "[history] event=projection_start turn_id=1 history_turns=1 ",
+        "[history] empty_assistant_replay_projected ",
+        "[history] event=projection_end turn_id=1 history_turns=1 ",
+    ];
+    let lines: Vec<&str> = bodies(&log)
+        .into_iter()
+        .filter(|line| projection.iter().any(|prefix| line.starts_with(prefix)))
+        .collect();
+    assert_eq!(lines.len(), 3, "{log}");
+    assert!(lines[0].starts_with(projection[0]), "{log}");
+    assert_eq!(
+        lines[1],
+        format!(
+            "[history] empty_assistant_replay_projected message_index=1 prior_bytes={} retained_bytes={}",
+            parts.len(),
+            retained.len()
+        )
+    );
+    assert!(lines[2].starts_with(projection[2]), "{log}");
+    let requests = home.servers.codex.requests();
+    assert_eq!(requests.len(), 3);
+    let resumed = requests[2].body_text();
+    assert!(resumed.contains("opaque-cipher"), "{resumed}");
+    assert!(!resumed.contains("I will read it."), "{resumed}");
+    assert!(!resumed.contains("commentary"), "{resumed}");
+    assert!(!log.contains("legacy_tool_history_projected"), "{log}");
+}
+
+fn blank_saved_reply(home: &CodexTraceHome, text: &str) -> (String, String) {
+    let events = home.events();
+    let mut frames: Vec<serde_json::Value> = fs::read_to_string(&events)
+        .expect("read the saved session")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a saved frame"))
+        .collect();
+    let reply = frames
+        .iter_mut()
+        .find(|frame| frame["event"]["assistant"]["text"] == text)
+        .expect("the saved reply");
+    reply["event"]["assistant"]["text"] = json!("");
+    let parts: String = reply["event"]["assistant"]["provider_replay"]["parts_json"]
+        .as_str()
+        .expect("the saved reply's replay")
+        .to_owned();
+    let saved: Vec<String> = frames.iter().map(ToString::to_string).collect();
+    fs::write(&events, saved.join("\n") + "\n").expect("save the reply without its text");
+    let reasoning: Vec<serde_json::Value> = serde_json::from_str::<Vec<serde_json::Value>>(&parts)
+        .expect("the replay parts")
+        .into_iter()
+        .filter(|part| part["type"] == "reasoning")
+        .collect();
+    let retained = serde_json::to_string(&reasoning).expect("the reasoning parts");
+    (parts, retained)
+}
+
+fn codex_reasoned_answer(text: &str) -> Reply {
+    Reply::sse(&[
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"opaque-cipher"}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":text}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+    ]
+    .map(|event| event.to_string()))
+}
+
+#[test]
+fn a_resumed_empty_reply_traces_its_replay_projection_but_no_shell_history_projection() {
+    let home = CodexTraceHome::new(
+        Reply::status(500, "{}"),
+        vec![codex_reasoned_answer("Checked."), codex_answer("Again.")],
+        false,
+    );
+    let first = home.ask(&["--json", "Check the notes."]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let (parts, retained) = blank_saved_reply(&home, "Checked.");
+    let second = home.ask(&["--resume", "last", "--json", "again"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let log = home.log();
+    let projected = format!(
+        "[history] empty_assistant_replay_projected message_index=1 prior_bytes={} retained_bytes={}",
+        parts.len(),
+        retained.len()
+    );
+    assert!(bodies(&log).contains(&projected.as_str()), "{log}");
+    assert!(!log.contains("legacy_tool_history_projected"), "{log}");
+    let resumed = home.servers.codex.requests()[1].body_text();
+    assert!(resumed.contains("opaque-cipher"), "{resumed}");
+    assert!(!resumed.contains("Checked."), "{resumed}");
 }
 
 #[test]

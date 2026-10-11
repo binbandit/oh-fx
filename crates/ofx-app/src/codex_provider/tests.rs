@@ -441,9 +441,14 @@ async fn a_subscription_signed_out_sends_nothing_with_its_login() {
     let subscription = fixture.subscription(endpoints).await.expect("subscription");
     let login = Arc::new(CodexLogin::default());
     login.sign_in(Arc::new(subscription));
-    let provider = SubscriptionProvider::new(Arc::clone(&login));
-    let mut agent = fixture.agent_on(Arc::new(provider), agent_config(MODEL, None, false));
+    let provider = Arc::new(SubscriptionProvider::new(Arc::clone(&login)));
+    assert_eq!(
+        provider.replay_source(MODEL).map(|source| source.provider),
+        Some("codex".to_owned())
+    );
+    let mut agent = fixture.agent_on(provider.clone(), agent_config(MODEL, None, false));
     login.sign_out();
+    assert_eq!(provider.replay_source(MODEL), None);
     let (report, _) = run(&mut agent, "Hello").await;
     assert_eq!(report.outcome, TurnOutcome::Failed, "{report:?}");
     assert_eq!(
@@ -722,4 +727,5 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
 }
 
 mod capabilities;
+mod history_replay;
 mod reviews;
