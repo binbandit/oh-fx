@@ -1491,6 +1491,46 @@ async fn cancelled_tools_that_outlive_the_grace_period_are_aborted_and_dropped_f
     );
 }
 
+const REPLAY_TRACE_CHILD: &str = "OFX_AGENT_REPLAY_TRACE_CHILD";
+const REPLAY_TRACE_TEST: &str =
+    "orchestrator::tests::an_interrupted_step_that_loses_a_call_drops_its_replay_with_a_trace_line";
+
+#[tokio::test(start_paused = true)]
+async fn an_interrupted_step_that_loses_a_call_drops_its_replay_with_a_trace_line() {
+    if let Some(root) = std::env::var_os(REPLAY_TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        let provider = FakeProvider::new(vec![with_replay(
+            tool_reply(&[
+                ("call-1", r#"{"text":"before"}"#),
+                ("call-2", r#"{"hang":true}"#),
+            ]),
+            "[]",
+        )]);
+        let mut agent = new_agent(provider, vec![echo_tool()]);
+        let (report, _) = run_cancelled_at(&mut agent, "call-2").await;
+        assert_eq!(report.outcome, TurnOutcome::Interrupted);
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([REPLAY_TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(REPLAY_TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        written.contains(
+            " [session] provider replay omitted reason=interrupted_incomplete_association source_calls=2 completed_calls=1\n"
+        ),
+        "{written}"
+    );
+}
+
 #[tokio::test]
 async fn a_parallel_call_that_finished_before_its_sibling_was_cancelled_settles_as_completed() {
     let finishes = Arc::new(AtomicU64::new(0));

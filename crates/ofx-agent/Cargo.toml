@@ -17,6 +17,7 @@ tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "test-util", "time"] }
 
 [lints]

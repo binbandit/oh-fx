@@ -289,3 +289,37 @@ fn reading_stops_at_a_cached_frame_that_no_longer_decodes() {
     assert!(frames.next().is_none());
     assert_eq!(seqs(&cache, length(&lines[0]), log_len), [2]);
 }
+
+const TRACE_CHILD: &str = "OFX_SESSION_CACHE_TRACE_CHILD";
+const TRACE_TEST: &str =
+    "history_snapshot::tests::a_cache_that_cannot_be_replaced_writes_its_trace_lines";
+
+#[test]
+fn a_cache_that_cannot_be_replaced_writes_its_trace_lines() {
+    if let Some(root) = std::env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.path(HISTORY_CACHE_FILE)).unwrap();
+        fs::write(fixture.path(HISTORY_CACHE_FILE).join("held"), "held").unwrap();
+        assert!(CacheWriter::create(&fixture.dir, "sess-1").is_err());
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    for line in [
+        " [session] history cache delete failed err=",
+        " [session] history cache create failed err=",
+    ] {
+        assert!(written.contains(line), "{line}\n{written}");
+    }
+}
