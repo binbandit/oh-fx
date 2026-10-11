@@ -26,6 +26,7 @@ pub(crate) const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 const MAX_MODEL_PREFERENCES: usize = 35;
 const PROVIDER_VARIABLE: &str = "OH_FX_PROVIDER";
 const MODEL_VARIABLE: &str = "OH_FX_MODEL";
+pub const DEFAULT_GATEWAY_MODEL: &str = "spacexai/grok-4.7";
 const MAX_AGENT_STEPS_VARIABLE: &str = "OH_FX_MAX_AGENT_STEPS";
 const PERMISSION_MODE_VARIABLE: &str = "OH_FX_PERMISSION_MODE";
 const AUTO_COMPACT_PERCENT_VARIABLE: &str = "OH_FX_AUTO_COMPACT_PERCENT";
@@ -766,6 +767,24 @@ impl Settings {
             .ok_or(SelectionError::CodexModelNotSelected)
     }
 
+    pub fn gateway_selected(&self, lookup: EnvironmentLookup<'_>) -> Result<bool, SelectionError> {
+        Ok(self.selected_provider(lookup)? == ProviderId::Gateway)
+    }
+
+    pub fn selected_gateway_model(
+        &self,
+        run_model: Option<&str>,
+        lookup: EnvironmentLookup<'_>,
+    ) -> String {
+        let gateway = ProviderId::Gateway;
+        run_model
+            .map(str::to_owned)
+            .or_else(|| environment_model(lookup))
+            .or_else(|| self.resumed.saved_model(&gateway).map(str::to_owned))
+            .or_else(|| self.saved_model(&gateway).map(str::to_owned))
+            .unwrap_or_else(|| DEFAULT_GATEWAY_MODEL.to_owned())
+    }
+
     pub fn saved_codex_model(&self) -> Option<&str> {
         self.saved_model(&ProviderId::Codex)
     }
@@ -1503,6 +1522,8 @@ mod tests {
             settings.selected_provider(&gateway),
             Ok(ProviderId::Gateway)
         );
+        assert_eq!(settings.gateway_selected(&gateway), Ok(true));
+        assert_eq!(settings.gateway_selected(&no_environment), Ok(false));
         assert!(matches!(
             settings.selected_connection(&gateway),
             Err(SelectionError::ProviderUnavailable(label)) if label == "gateway"
@@ -2464,6 +2485,47 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL"
+        );
+    }
+
+    #[test]
+    fn gateway_model_precedence_runs_from_flag_to_environment_to_settings_to_the_default() {
+        let fixture = fixture(None, None);
+        let json = format!(
+            r#"{{"model":"legacy/model","models":{{"gateway":"global/model"}},"workspaces":{{{}:{{"models":{{"gateway":"workspace/model"}}}}}}}}"#,
+            serde_json::to_string(&fixture.workspace.to_string_lossy()).unwrap()
+        );
+        fs::write(fixture.paths.config.join(SETTINGS_FILE), json).unwrap();
+        let mut settings = load(&fixture).unwrap();
+        let environment = |name: &str| (name == MODEL_VARIABLE).then(|| " env/model ".to_owned());
+        assert_eq!(
+            settings.selected_gateway_model(Some("flag/model"), &environment),
+            "flag/model"
+        );
+        assert_eq!(
+            settings.selected_gateway_model(None, &environment),
+            "env/model"
+        );
+        assert_eq!(
+            settings.selected_gateway_model(None, &no_environment),
+            "workspace/model"
+        );
+        settings
+            .resume_selection(&ProviderId::Gateway, None, "resumed/model", &no_environment)
+            .unwrap();
+        assert_eq!(
+            settings.selected_gateway_model(None, &no_environment),
+            "resumed/model"
+        );
+        assert_eq!(
+            fixture_settings(r#"{"model":"legacy/model"}"#)
+                .selected_gateway_model(None, &no_environment),
+            "legacy/model"
+        );
+        assert_eq!(
+            fixture_settings(r#"{"models":{"codex":"gpt-6.1-sol"}}"#)
+                .selected_gateway_model(None, &no_environment),
+            "spacexai/grok-4.7"
         );
     }
 

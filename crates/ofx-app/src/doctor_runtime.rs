@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ofx_auth::provider_route_name;
 use ofx_cli::OutputFormat;
-use ofx_config::{ProfilePaths, ProviderId, SelectionError, Settings};
+use ofx_config::{DEFAULT_GATEWAY_MODEL, ProfilePaths, ProviderId, SelectionError, Settings};
 use ofx_contract::PermissionMode;
 use ofx_mcp::ProfileConfigDiagnostic;
 use ofx_session::{DoctorDiagnostic, DoctorIssueKind, SessionStore};
@@ -132,7 +132,7 @@ impl Collection<'_> {
             format!("failed to resolve startup settings: {error}"),
         );
         Resolved {
-            model: String::new(),
+            model: DEFAULT_GATEWAY_MODEL.to_owned(),
             model_source: None,
             auth,
             permission_mode: PermissionMode::Auto,
@@ -159,6 +159,9 @@ impl Collection<'_> {
             None if *provider == ProviderId::Codex => settings
                 .selected_codex_model(None, lookup)
                 .map_err(|error| error.to_string()),
+            None if *provider == ProviderId::Gateway => {
+                Ok(settings.selected_gateway_model(None, lookup))
+            }
             None => {
                 Err(SelectionError::ProviderUnavailable(provider.label().to_owned()).to_string())
             }

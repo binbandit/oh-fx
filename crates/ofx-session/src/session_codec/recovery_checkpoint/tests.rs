@@ -453,6 +453,37 @@ fn a_possibly_sent_request_continues_only_under_the_credential_that_sent_it() {
 }
 
 #[test]
+fn gateway_credentials_authorize_by_upstreams_slot_identity() {
+    let slots = [
+        (
+            "ai_gateway_api_key",
+            "3844282c2145ae9856d2b1011be6ac72c4eb3b46a13bb2c2bfdfc81747ce4e94",
+            RouteCredential::ai_gateway_api_key(),
+        ),
+        (
+            "vercel_oidc_token",
+            "70c147ce6aad0aa6b5f0e1ce21fb493d00d6f96adc88febf567a813ccc46dbdd",
+            RouteCredential::vercel_oidc_token(),
+        ),
+        (
+            "host_managed",
+            "ac8e2f777f59f8f6922ac24578afe128036a013575d0db94f125401317a5e39e",
+            RouteCredential::host_managed(),
+        ),
+    ];
+    for (source, identity, credential) in slots {
+        let recorded = with_credential(source, &format!("\"{identity}\""), 1, false);
+        for (_, _, other) in slots {
+            assert_eq!(recorded.authorizes(other), other == credential, "{source}");
+        }
+        assert!(
+            !recorded.authorizes(RouteCredential::configured()),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn the_recovery_strategy_follows_the_saved_tool_state_and_cause() {
     let base = upstream_checkpoint();
     let cases = [

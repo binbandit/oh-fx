@@ -36,14 +36,14 @@ note = "Native token/account parsing, expiry skew, locked durable file mutation 
 [[file]]
 upstream = "src/core/auth/credential_authority.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/codex_provider.rs"]
-note = "Codex request credentials retain refresh identity; upstream common credential/account authority derivation across provider families is absent."
+modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-session/src/session_codec/recovery_checkpoint/route_credential.rs"]
+note = "Codex request credentials retain refresh identity, and recovery checkpoints derive upstream's slot identities for the configured, VERCEL_OIDC_TOKEN, AI_GATEWAY_API_KEY and host-managed sources and account identities for the Codex subscription; the fx login, stored-key and Grok identities come with those sources."
 
 [[file]]
 upstream = "src/core/auth/credentials.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-app/src/codex_provider.rs"]
-note = "Auth mode and Codex guidance exist; catalog access authority, Vercel team context and multi-provider credential-source projection are absent."
+note = "Auth mode, Codex guidance and the Vercel AI Gateway environment sources (VERCEL_OIDC_TOKEN, then AI_GATEWAY_API_KEY, blank values ignored) exist; the fx login and stored-key sources, explicit credential_source preference, catalog access authority, Vercel team context and multi-provider credential-source projection are absent."
 
 [[file]]
 upstream = "src/core/auth/grok_oauth.zig"

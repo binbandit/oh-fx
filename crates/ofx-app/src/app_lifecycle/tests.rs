@@ -228,6 +228,7 @@ fn run_a_codex_session(home: &Path) -> ! {
             client_version: format!("{catalog}/@openai/codex/latest"),
         },
         grok: ofx_auth::GrokEndpoints::default(),
+        gateway: ofx_gateway::GatewayEndpoints::default(),
     };
     let setup = runtime
         .block_on(profile.connect_interactive(
