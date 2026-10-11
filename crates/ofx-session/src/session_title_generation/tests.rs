@@ -101,8 +101,16 @@ const REQUEST: TitleRequest<'static> = TitleRequest {
     prompt_excerpt: "fix the renderer",
 };
 
-async fn generate(provider: &ScriptedProvider) -> Option<String> {
+async fn generate(provider: &ScriptedProvider) -> TitleOutcome {
     generate_title(provider, REQUEST, &CancellationToken::new()).await
+}
+
+fn generated(title: &str) -> TitleOutcome {
+    TitleOutcome::Generated(title.to_owned())
+}
+
+fn unavailable(failure: TitleFailure) -> TitleOutcome {
+    TitleOutcome::Unavailable(failure)
 }
 
 #[test]
@@ -198,10 +206,7 @@ fn generated_titles_stop_at_sixty_bytes_on_a_character_boundary() {
 #[tokio::test]
 async fn the_title_request_sends_only_the_excerpt_to_the_title_model() {
     let provider = ScriptedProvider::replying(Some("\"Fix the renderer\"\n"));
-    assert_eq!(
-        generate(&provider).await.as_deref(),
-        Some("Fix the renderer")
-    );
+    assert_eq!(generate(&provider).await, generated("Fix the renderer"));
     assert_eq!(
         provider.seen(),
         [SeenRequest {
@@ -221,20 +226,34 @@ async fn the_title_request_sends_only_the_excerpt_to_the_title_model() {
 
 #[tokio::test]
 async fn a_failed_empty_or_unusable_reply_leaves_the_session_untitled() {
-    for reply in [
-        Err(ProviderError::new(
-            ProviderErrorKind::RateLimited,
-            "rate_limited",
-        )),
-        Err(ProviderError::new(
-            ProviderErrorKind::ConnectionFailed,
-            "ConnectionRefused",
-        )),
-        Ok(completion(None)),
-        Ok(completion(Some("  \n "))),
+    let rate_limited = ProviderError {
+        status: Some(429),
+        ..ProviderError::new(ProviderErrorKind::RateLimited, "RateLimited")
+    };
+    for (reply, failure) in [
+        (
+            Err(rate_limited),
+            TitleFailure::ProviderFailure("rate_limited"),
+        ),
+        (
+            Err(ProviderError::new(
+                ProviderErrorKind::ProviderError,
+                "ProviderError",
+            )),
+            TitleFailure::ProviderFailure("provider_error"),
+        ),
+        (
+            Err(ProviderError::new(
+                ProviderErrorKind::ConnectionFailed,
+                "ConnectionRefused",
+            )),
+            TitleFailure::TransportError("ConnectionRefused".to_owned()),
+        ),
+        (Ok(completion(None)), TitleFailure::EmptyContent),
+        (Ok(completion(Some("  \n "))), TitleFailure::Unsanitizable),
     ] {
         let provider = ScriptedProvider::new([Scripted::Reply(Box::new(reply))]);
-        assert_eq!(generate(&provider).await, None);
+        assert_eq!(generate(&provider).await, unavailable(failure));
         assert_eq!(provider.seen().len(), 1);
     }
 }
@@ -244,7 +263,10 @@ async fn a_cancelled_generation_sends_nothing() {
     let provider = ScriptedProvider::replying(Some("Fix the renderer"));
     let cancel = CancellationToken::new();
     cancel.cancel();
-    assert_eq!(generate_title(&provider, REQUEST, &cancel).await, None);
+    assert_eq!(
+        generate_title(&provider, REQUEST, &cancel).await,
+        unavailable(TitleFailure::Cancelled)
+    );
     assert!(provider.seen().is_empty());
 }
 
@@ -260,7 +282,7 @@ async fn a_cancellation_during_the_request_drops_its_title() {
         () = tokio::task::yield_now() => {}
     }
     cancel.cancel();
-    assert_eq!(generation.await, None);
+    assert_eq!(generation.await, unavailable(TitleFailure::Cancelled));
     assert_eq!(provider.seen().len(), 1);
 }
 
@@ -268,6 +290,26 @@ async fn a_cancellation_during_the_request_drops_its_title() {
 async fn a_title_request_gives_up_after_fifteen_seconds() {
     let provider = ScriptedProvider::new([Scripted::Hang]);
     let started = tokio::time::Instant::now();
-    assert_eq!(generate(&provider).await, None);
+    assert_eq!(
+        generate(&provider).await,
+        unavailable(TitleFailure::TransportError("Timeout".to_owned()))
+    );
     assert_eq!(started.elapsed(), Duration::from_secs(15));
+    assert_eq!(
+        [
+            TitleFailure::Cancelled,
+            TitleFailure::TransportError(String::new()),
+            TitleFailure::ProviderFailure(""),
+            TitleFailure::EmptyContent,
+            TitleFailure::Unsanitizable,
+        ]
+        .map(|failure| failure.reason()),
+        [
+            "cancelled",
+            "transport_error",
+            "provider_failure",
+            "empty_content",
+            "unsanitizable"
+        ]
+    );
 }

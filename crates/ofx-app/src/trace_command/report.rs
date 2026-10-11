@@ -35,6 +35,7 @@ pub(crate) struct TraceFacts {
     pub(crate) stream_active: bool,
     pub(crate) queued: usize,
     pub(crate) web_searches: Vec<Option<ToolResultStatus>>,
+    pub(crate) session_title: SessionTitleFacts,
     pub(crate) rings: TraceRings,
 }
 
@@ -120,6 +121,7 @@ impl Snapshot {
         self.write_current_state(out)?;
         self.write_problems(out)?;
         self.write_compaction(out)?;
+        session_title::write_section(out, &self.facts.session_title)?;
         network_calls::write_section(out, &self.network)?;
         tool_calls::write_section(out, &self.tool_calls, &self.facts.web_searches)?;
         self.write_runtime_context(out)?;
@@ -196,6 +198,7 @@ impl Snapshot {
                 self.facts.processing, self.facts.stream_active, self.facts.queued
             )?;
         }
+        count += session_title::write_problems(out, &self.facts.session_title)?;
         count += network_calls::write_problems(out, &self.network)?;
         count += tool_calls::write_problems(out, &self.tool_calls)?;
         for event in self
@@ -468,7 +471,10 @@ fn process_memory(pid: u32) -> Option<String> {
 }
 
 mod network_calls;
+mod session_title;
 mod tool_calls;
+
+pub(crate) use session_title::SessionTitleFacts;
 
 #[cfg(test)]
 mod tests;

@@ -535,6 +535,15 @@ struct CodexServers {
 }
 
 fn ask_codex_traced(token: Reply, replies: Vec<Reply>) -> (Traced, CodexServers) {
+    ask_codex_traced_with(token, replies, &["--no-save"])
+}
+
+fn ask_codex_traced_with(
+    token: Reply,
+    replies: Vec<Reply>,
+    extra: &[&str],
+) -> (Traced, CodexServers) {
+    let saved = !extra.contains(&"--no-save");
     let home = tempfile::tempdir().expect("prepare the trace test");
     let root = home.path().canonicalize().expect("prepare the trace test");
     let workspace = root.join("workspace");
@@ -546,7 +555,7 @@ fn ask_codex_traced(token: Reply, replies: Vec<Reply>) -> (Traced, CodexServers)
     fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("prepare the trace test");
     fs::write(
         config.join("settings.json"),
-        json!({"provider": "codex", "models": {"codex": "gpt-5.4"}, "session_titles": false})
+        json!({"provider": "codex", "models": {"codex": "gpt-5.4"}, "session_titles": saved})
             .to_string(),
     )
     .expect("prepare the trace test");
@@ -574,7 +583,9 @@ fn ask_codex_traced(token: Reply, replies: Vec<Reply>) -> (Traced, CodexServers)
     let codex = FakeServer::start(replies);
     let log = root.join("trace.log");
     let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
-        .args(["ask", "--json", "--no-save", "hi"])
+        .args(["ask", "--json"])
+        .args(extra)
+        .arg("hi")
         .current_dir(&workspace)
         .env_clear()
         .env("HOME", &root)
@@ -1004,4 +1015,29 @@ fn a_read_outside_the_workspace_without_a_way_to_approve_it_needs_permission() {
     );
     assert!(!log.contains("event=execution_start"), "{log}");
     assert_eq!(home.server.requests().len(), 1);
+}
+
+#[test]
+fn a_saved_codex_ask_writes_its_title_generation_lines() {
+    let (traced, servers) = ask_codex_traced_with(
+        Reply::status(500, "{}"),
+        vec![
+            codex_answer("Greeting the user"),
+            codex_answer("Greeting the user"),
+        ],
+        &[],
+    );
+    assert_eq!(traced.output.status.code(), Some(0), "{}", traced.log);
+    assert_eq!(servers.codex.requests().len(), 2);
+    let lines = bodies(&traced.log);
+    for prefix in [
+        "[session] event=title_generation result=generated session=",
+        "[session] event=title_generation_apply result=installed session=",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(prefix)),
+            "{prefix}\n{}",
+            traced.log
+        );
+    }
 }

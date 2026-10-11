@@ -913,6 +913,7 @@ dependencies = [
  "ofx-config",
  "ofx-contract",
  "ofx-text",
+ "ofx-trace",
  "rustix",
  "serde",
  "serde_json",

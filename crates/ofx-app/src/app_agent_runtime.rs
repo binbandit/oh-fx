@@ -30,7 +30,7 @@ use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
 use crate::app_session_runtime::{
     Listed, NOT_CONTINUED, PageRequest, Persistence, RECOVERY_TOPIC, RestoredPreferences,
-    SIGN_IN_TO_CONTINUE, SessionListing, SessionTitle,
+    SIGN_IN_TO_CONTINUE, SessionListing, SessionTitle, TitleProgress,
 };
 use crate::app_upgrade_runtime::{ResumeHandoff, UpgradeShortcut};
 use crate::app_workspace_runtime::WorkspaceRuntime;
@@ -44,7 +44,7 @@ use crate::skill_commands::{
     InstallTask, complete_install, finish_install, handle_skills, is_install_command, wait_install,
 };
 use crate::skills::{HostSkills, SkillInstall};
-use crate::trace_command::{TraceFacts, start_trace};
+use crate::trace_command::{SessionTitleFacts, TraceFacts, start_trace};
 use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
@@ -81,6 +81,7 @@ pub(crate) struct ControllerState {
     context_to_compact: bool,
     web_searches: Vec<Option<ToolResultStatus>>,
     session_title: SessionTitle,
+    title_progress: TitleProgress,
     statusline: StatuslineToggles,
     mcp: Option<McpHost>,
     menu_settings: MenuSettings,
@@ -295,6 +296,11 @@ impl ControllerState {
             stream_active: work == Work::Turn,
             queued: self.worker.waiting_texts().len(),
             web_searches: self.web_searches.clone(),
+            session_title: SessionTitleFacts {
+                setting: self.setup.session_titles_enabled(),
+                title: self.session_title.current(),
+                generation: self.title_progress.snapshot(),
+            },
             rings: self.rings,
         };
         start_trace(&self.emit, Arc::clone(&self.clipboard), facts);
@@ -565,6 +571,7 @@ impl Controller {
         let setup_controls = setup.model_controls();
         let state = ControllerState {
             session_title: SessionTitle::new(Arc::clone(&emit)),
+            title_progress: TitleProgress::default(),
             model: setup.model().to_owned(),
             effort: setup.reasoning_effort(),
             permissions: setup.permission_runtime(Arc::clone(&emit)),
@@ -1307,7 +1314,7 @@ impl Controller {
                 &self.state.setup,
                 prompt,
                 untitled,
-                &self.state.session_title,
+                (&self.state.session_title, &self.state.title_progress),
             );
         }
     }

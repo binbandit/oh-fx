@@ -200,6 +200,10 @@ impl WritableSession {
         if let Some(persisted) = &self.metadata.title
             && self.derived_title()?.as_ref() != Some(persisted)
         {
+            ofx_trace::trace_log!(
+                "session",
+                "event=title_generation_apply result=dropped reason=user_title_present"
+            );
             return Ok(false);
         }
         self.rename(title)?;

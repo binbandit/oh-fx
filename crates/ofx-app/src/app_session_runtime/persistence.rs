@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     LaunchOverrides, LiveSession, RenameError, ResumedSession, SessionRoute, SessionTitle,
-    validate_session_title,
+    TitleProgress, validate_session_title,
 };
 use crate::app_bootstrap_runtime::AgentSetup;
 use crate::app_upgrade_runtime::{Relaunch, ResumeHandoff, Unresumable};
@@ -30,6 +30,7 @@ pub(crate) struct Persistence {
     remember_fresh: bool,
     degraded: bool,
     title_task: Option<JoinHandle<()>>,
+    title_progress: Option<TitleProgress>,
     relaunch: Option<Relaunch>,
 }
 
@@ -51,6 +52,7 @@ impl Persistence {
             remember_fresh: false,
             degraded: false,
             title_task: None,
+            title_progress: None,
             relaunch: None,
         }
     }
@@ -213,7 +215,7 @@ impl Persistence {
         setup: &AgentSetup,
         prompt: &str,
         untitled: bool,
-        title: &SessionTitle,
+        (title, progress): (&SessionTitle, &TitleProgress),
     ) {
         let running = self
             .title_task
@@ -224,6 +226,8 @@ impl Persistence {
             .as_ref()
             .and_then(|live| live.title_generation(setup, prompt, untitled, running));
         if let Some(generation) = generation {
+            self.title_progress = Some(progress.clone());
+            let generation = generation.reporting(progress.clone());
             let title = title.clone();
             self.title_task = Some(tokio::spawn(async move {
                 if let Some(generated) = generation.run(&CancellationToken::new()).await {
@@ -265,6 +269,12 @@ impl Persistence {
 
     pub(crate) fn stop_title_generation(&mut self) {
         if let Some(task) = self.title_task.take() {
+            if !task.is_finished() {
+                ofx_trace::trace_log!("session", "event=title_generation_dropped reason=deinit");
+                if let Some(progress) = &self.title_progress {
+                    progress.abandon();
+                }
+            }
             task.abort();
         }
     }
