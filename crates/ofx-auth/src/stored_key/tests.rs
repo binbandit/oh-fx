@@ -16,7 +16,9 @@ fn keychain(program: &Path, account: Option<&str>) -> StoredKeyStore {
     StoredKeyStore {
         backend: Backend::Keychain {
             program: program.to_path_buf(),
-            account: account.map(str::to_owned),
+            account: account
+                .map(str::to_owned)
+                .ok_or(KeychainUnavailable::UserNotSet),
         },
         disabled: false,
     }
@@ -205,23 +207,124 @@ fn saving_to_the_keychain_lets_security_prompt_for_the_key() {
     );
 }
 
+fn home_with_keychains() -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir_all(home.path().join(KEYCHAINS_FOLDER)).unwrap();
+    home
+}
+
+fn environment<'a>(variables: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    move |name: &str| {
+        variables
+            .iter()
+            .find(|(variable, _)| *variable == name)
+            .map(|(_, value)| (*value).to_owned())
+    }
+}
+
 #[test]
 fn the_keychain_account_is_user_then_logname() {
-    let both = |name: &str| match name {
-        "USER" => Some("user-name".to_owned()),
-        "LOGNAME" => Some("log-name".to_owned()),
-        _ => None,
+    let home = home_with_keychains();
+    let home = home.path().to_str().unwrap();
+    assert_eq!(
+        keychain_account(&environment(&[
+            ("USER", "user-name"),
+            ("LOGNAME", "log-name"),
+            ("HOME", home)
+        ])),
+        Ok("user-name".to_owned())
+    );
+    assert_eq!(
+        keychain_account(&environment(&[
+            ("USER", ""),
+            ("LOGNAME", "log-name"),
+            ("HOME", home)
+        ])),
+        Ok("log-name".to_owned())
+    );
+    assert_eq!(
+        keychain_account(&environment(&[("HOME", home)])),
+        Err(KeychainUnavailable::UserNotSet)
+    );
+    let long = "u".repeat(MAX_ACCOUNT_BYTES + 1);
+    assert_eq!(
+        keychain_account(&environment(&[("USER", &long), ("HOME", home)])),
+        Err(KeychainUnavailable::UserNotSet)
+    );
+}
+
+#[test]
+fn a_home_without_a_keychains_folder_never_reaches_security_even_with_a_user() {
+    let scratch = tempfile::tempdir().unwrap();
+    let calls = scratch.path().join("calls");
+    let recording = fake_security(
+        scratch.path(),
+        &format!(
+            "echo \"$@\" >> '{}'\nprintf 'vck-real-keychain\\n'",
+            calls.display()
+        ),
+    );
+    let bare_home = tempfile::tempdir().unwrap();
+    let bare = bare_home.path().to_str().unwrap().to_owned();
+    for variables in [
+        vec![("USER", "someone"), ("HOME", bare.as_str())],
+        vec![("USER", "someone"), ("LOGNAME", "someone")],
+        vec![("USER", "someone"), ("HOME", "relative/home")],
+        vec![("USER", "someone"), ("HOME", "")],
+    ] {
+        let lookup = environment(&variables);
+        let account = keychain_account(&lookup);
+        assert_eq!(
+            account,
+            Err(KeychainUnavailable::NoKeychainsFolder),
+            "{variables:?}"
+        );
+        let store = StoredKeyStore {
+            backend: Backend::Keychain {
+                program: recording.clone(),
+                account,
+            },
+            disabled: false,
+        };
+        assert_eq!(loaded(&store), Ok(None), "{variables:?}");
+        assert_eq!(
+            store.save(|| panic!("the keychain prompts for the key itself")),
+            Err(StoredKeyError::WriteFailed),
+            "{variables:?}"
+        );
+        if cfg!(target_os = "macos") {
+            let real = StoredKeyStore::from_environment(None, &lookup);
+            assert_eq!(
+                real.backend,
+                Backend::Keychain {
+                    program: PathBuf::from(SECURITY_PROGRAM),
+                    account: Err(KeychainUnavailable::NoKeychainsFolder),
+                },
+                "{variables:?}"
+            );
+            assert_eq!(loaded(&real), Ok(None), "{variables:?}");
+        }
+    }
+    assert!(
+        !calls.exists(),
+        "security ran: {:?}",
+        fs::read_to_string(&calls)
+    );
+
+    let home = home_with_keychains();
+    let home = home.path().to_str().unwrap();
+    let store = StoredKeyStore {
+        backend: Backend::Keychain {
+            program: recording,
+            account: keychain_account(&environment(&[("USER", "someone"), ("HOME", home)])),
+        },
+        disabled: false,
     };
-    assert_eq!(keychain_account(&both), Some("user-name".to_owned()));
-    let logname = |name: &str| match name {
-        "USER" => Some(String::new()),
-        "LOGNAME" => Some("log-name".to_owned()),
-        _ => None,
-    };
-    assert_eq!(keychain_account(&logname), Some("log-name".to_owned()));
-    assert_eq!(keychain_account(&|_| None), None);
-    let long = |name: &str| (name == "USER").then(|| "u".repeat(MAX_ACCOUNT_BYTES + 1));
-    assert_eq!(keychain_account(&long), None);
+    assert_eq!(loaded(&store), Ok(Some("vck-real-keychain".to_owned())));
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        "find-generic-password -a someone -s OH_FX_AI_GATEWAY_API_KEY -w\n"
+    );
 }
 
 #[test]

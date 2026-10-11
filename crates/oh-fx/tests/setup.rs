@@ -51,7 +51,11 @@ impl Home {
     }
 
     fn setup_in_terminal(&self) -> PtySession {
-        let session = PtySession::spawn(self.command(&["setup"], &[]), 24, 100)
+        self.setup_in_terminal_with(&[])
+    }
+
+    fn setup_in_terminal_with(&self, environment: &[(&str, &str)]) -> PtySession {
+        let session = PtySession::spawn(self.command(&["setup"], environment), 24, 100)
             .expect("spawn oh-fx setup in a pty");
         session
             .wait_for(WAIT, |screen| screen.contains(PROMPT.trim_end()))
@@ -109,6 +113,48 @@ fn without_an_account_name_the_keychain_is_never_asked() {
             .any(|pair| pair == [PROMPT.trim_end(), "oh-fx setup: API key was not saved"]),
         "{screen}"
     );
+    assert_eq!(
+        session.wait_exit(WAIT).and_then(|status| status.code()),
+        Some(1)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_test_home_with_a_user_never_reaches_the_keychain() {
+    let home = Home::new();
+    let trace = home.root.join("trace.log");
+    let trace_path = trace.to_str().expect("a UTF-8 trace path").to_owned();
+    let user = [
+        ("USER", "someone"),
+        ("LOGNAME", "someone"),
+        ("OH_FX_TRACE_LOG", trace_path.as_str()),
+    ];
+    let output = home.run(&["ask", "hello"], &user);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "oh-fx ask: oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.\n"
+    );
+    let output = home.run(&["doctor"], &user);
+    assert!(
+        text(&output.stdout).contains("\n[doctor] auth=missing\n"),
+        "{}",
+        text(&output.stdout)
+    );
+    let log = fs::read_to_string(&trace).expect("read the trace log");
+    assert!(
+        log.contains("load skipped step=account reason=NoKeychainsFolder"),
+        "{log}"
+    );
+    assert!(!log.contains("load failed step=lookup"), "{log}");
+    assert!(!log.contains("load failed step=spawn"), "{log}");
+
+    let mut session = home.setup_in_terminal_with(&user);
+    let screen = session
+        .wait_for(WAIT, |screen| screen.contains("API key was not saved"))
+        .unwrap_or_else(|screen| panic!("the save fails:\n{screen}"));
+    assert!(!screen.contains("password data for new item"), "{screen}");
     assert_eq!(
         session.wait_exit(WAIT).and_then(|status| status.code()),
         Some(1)

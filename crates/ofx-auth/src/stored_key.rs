@@ -21,6 +21,7 @@ const MAX_KEY_BYTES: usize = 8 * 1024;
 const MAX_ACCOUNT_BYTES: usize = 256;
 const ITEM_NOT_FOUND: &str = "could not be found";
 const KEY_LINE_ENDS: [char; 2] = ['\r', '\n'];
+const KEYCHAINS_FOLDER: &str = "Library/Keychains";
 const KEYCHAIN: &str = "keychain";
 const STORED_KEY: &str = "stored_key";
 
@@ -34,11 +35,26 @@ pub enum StoredKeyError {
     WriteFailed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeychainUnavailable {
+    UserNotSet,
+    NoKeychainsFolder,
+}
+
+impl KeychainUnavailable {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::UserNotSet => "UserNotSet",
+            Self::NoKeychainsFolder => "NoKeychainsFolder",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Backend {
     Keychain {
         program: PathBuf,
-        account: Option<String>,
+        account: Result<String, KeychainUnavailable>,
     },
     ProfileFile {
         directory: Option<PathBuf>,
@@ -102,7 +118,7 @@ impl StoredKeyStore {
         }
         match &self.backend {
             Backend::Keychain { program, account } => {
-                load_from_keychain(program, account.as_deref())
+                load_from_keychain(program, account.as_deref().map_err(|reason| *reason))
             }
             Backend::ProfileFile { directory } => load_from_profile(directory.as_deref()),
         }
@@ -116,7 +132,9 @@ impl StoredKeyStore {
             return Err(StoredKeyError::WriteFailed);
         }
         match &self.backend {
-            Backend::Keychain { program, account } => save_to_keychain(program, account.as_deref()),
+            Backend::Keychain { program, account } => {
+                save_to_keychain(program, account.as_deref().map_err(|reason| *reason))
+            }
             Backend::ProfileFile { directory } => {
                 let key = read_key().ok_or(StoredKeyError::WriteFailed)?;
                 save_to_profile(directory.as_deref(), &key)
@@ -130,20 +148,38 @@ fn keychain_disabled(lookup: &dyn Fn(&str) -> Option<String>) -> bool {
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
-fn keychain_account(lookup: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    ["USER", "LOGNAME"]
+fn keychain_account(
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, KeychainUnavailable> {
+    let account = ["USER", "LOGNAME"]
         .into_iter()
         .filter_map(lookup)
         .find(|name| !name.is_empty() && name.len() <= MAX_ACCOUNT_BYTES)
+        .ok_or(KeychainUnavailable::UserNotSet)?;
+    let keychains = lookup("HOME")
+        .filter(|home| Path::new(home).is_absolute())
+        .is_some_and(|home| Path::new(&home).join(KEYCHAINS_FOLDER).is_dir());
+    if keychains {
+        Ok(account)
+    } else {
+        Err(KeychainUnavailable::NoKeychainsFolder)
+    }
 }
 
 fn load_from_keychain(
     program: &Path,
-    account: Option<&str>,
+    account: Result<&str, KeychainUnavailable>,
 ) -> Result<Option<Zeroizing<String>>, StoredKeyError> {
-    let Some(account) = account else {
-        trace_log!(KEYCHAIN, "load skipped step=account reason=UserNotSet");
-        return Ok(None);
+    let account = match account {
+        Ok(account) => account,
+        Err(reason) => {
+            trace_log!(
+                KEYCHAIN,
+                "load skipped step=account reason={}",
+                reason.name()
+            );
+            return Ok(None);
+        }
     };
     let output = Command::new(program)
         .args([
@@ -212,11 +248,14 @@ fn key_text(bytes: &[u8]) -> Result<Option<Zeroizing<String>>, StoredKeyError> {
     Ok((!key.is_empty()).then(|| Zeroizing::new(key.to_owned())))
 }
 
-fn save_to_keychain(program: &Path, account: Option<&str>) -> Result<(), StoredKeyError> {
-    let Some(account) = account else {
-        trace_log!(KEYCHAIN, "store failed step=account err=UserNotSet");
-        return Err(StoredKeyError::WriteFailed);
-    };
+fn save_to_keychain(
+    program: &Path,
+    account: Result<&str, KeychainUnavailable>,
+) -> Result<(), StoredKeyError> {
+    let account = account.map_err(|reason| {
+        trace_log!(KEYCHAIN, "store failed step=account err={}", reason.name());
+        StoredKeyError::WriteFailed
+    })?;
     let status = Command::new(program)
         .args([
             "add-generic-password",
