@@ -159,7 +159,7 @@ fn safe_path(path: &Path) -> String {
     encode_terminal_safe(path.as_os_str().as_bytes(), usize::MAX).text
 }
 
-fn indent(width: usize) -> usize {
+pub(super) fn indent(width: usize) -> usize {
     if width <= 2 { 0 } else { 2 }
 }
 
@@ -180,7 +180,7 @@ fn summary_value_column(width: usize) -> usize {
     (indent(width) + visible_width(SUMMARY_LABEL) + COLUMN_GAP).min(width)
 }
 
-fn action_row(
+pub(super) fn action_row(
     theme: &Theme,
     label: &str,
     info: &str,

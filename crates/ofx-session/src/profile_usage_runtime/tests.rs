@@ -237,3 +237,19 @@ fn older_recovered_records_extend_coverage_and_unknown_recovery_is_incomplete() 
     assert_eq!(report.coverage_started_at_ms, Some(NOW - 2));
     assert_eq!(report.completeness, UsageCompleteness::Incomplete);
 }
+
+#[test]
+fn one_load_serves_the_three_rolling_scopes_with_the_same_snapshot_time() {
+    let profile = Profile::with_ledger(&[FACT]);
+    let publisher = ProfilePublisher::open(&profile.data()).unwrap();
+    let reports = publisher
+        .rolling_reports(NOW + 1, &UsageRecovery::default())
+        .unwrap();
+    let scopes: Vec<UsageScope> = reports.iter().map(|report| report.scope).collect();
+    assert_eq!(scopes, ROLLING_SCOPES);
+    for report in &reports {
+        assert_eq!(report.snapshot_time_ms, NOW + 1);
+        assert_eq!(report.totals.unwrap().total_tokens, 7);
+        assert_eq!(report.session_activity, None);
+    }
+}

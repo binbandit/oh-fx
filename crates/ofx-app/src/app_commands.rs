@@ -32,11 +32,8 @@ const ULTRAFAST_UNAVAILABLE: &str =
     "Ultra mode is unavailable for this model and may increase cost.";
 const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
-const USAGE_TOPIC: &str = "usage";
 const ALIASES_TOPIC: &str = "aliases";
 const ALIASES_UNAVAILABLE: &str = "Aliases are not yet configurable.";
-const PROFILE_USAGE_UNAVAILABLE: &str =
-    "Durable profile usage is unavailable in this host; active session usage remains in memory.";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
 const SESSION_TOPIC: &str = "session";
@@ -221,9 +218,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
     match kind {
         SlashKind::Quit => state.emit(UiEvent::ExitRequested),
         SlashKind::Help => state.emit(UiEvent::HelpRequested),
-        SlashKind::Usage => {
-            state.notice(NoticeTone::Neutral, USAGE_TOPIC, PROFILE_USAGE_UNAVAILABLE);
-        }
+        SlashKind::Usage => state.open_usage(),
         SlashKind::Status => state.notice(NoticeTone::Neutral, "status", &state.status_body()),
         SlashKind::Stats => state.emit(UiEvent::StatsRequested),
         SlashKind::Settings => {

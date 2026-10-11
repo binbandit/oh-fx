@@ -9,9 +9,11 @@ use ofx_text::lowercase_hex;
 mod accounting;
 mod exact;
 mod publication;
+mod report;
 
 pub(crate) use accounting::{ReserveFailure, Usage};
 pub(crate) use publication::PublicationBatch;
+pub use report::fresh_session_report;
 
 use crate::generation_fact_codec::{self, cost, non_negative};
 use crate::json_fields::push_string;

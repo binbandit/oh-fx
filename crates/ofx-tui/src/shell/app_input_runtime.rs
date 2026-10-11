@@ -98,6 +98,9 @@ impl Shell<'_> {
         if self.statusline_menu.is_some() {
             return self.handle_statusline_menu_input(&event);
         }
+        if self.usage_menu.is_some() {
+            return self.handle_usage_menu_input(&event);
+        }
         if self.workspace_menu.is_some() {
             return self.handle_workspace_menu_input(&event);
         }

@@ -1214,6 +1214,7 @@ impl Presenter {
             | UiEvent::ModelControlsChanged { .. }
             | UiEvent::StatuslineMenuOpened
             | UiEvent::WorkspaceMenuOpened { .. }
+            | UiEvent::UsageMenu { .. }
             | UiEvent::SettingsMenuOpened { .. }
             | UiEvent::SettingsChanged { .. }
             | UiEvent::PromptHistoryChanged { .. }

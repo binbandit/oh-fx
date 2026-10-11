@@ -32,6 +32,8 @@ mod steering_runtime;
 #[cfg(test)]
 mod test_shell;
 mod upgrade_shortcut;
+mod usage_menu;
+mod usage_menu_runtime;
 pub(crate) mod workspace_menu;
 mod workspace_menu_runtime;
 
@@ -69,6 +71,7 @@ use settings_menu_runtime::SettingsMenu;
 use sign_in_runtime::SignInScreen;
 use skills_menu::SkillsMenu;
 use statusline_menu_runtime::StatuslineMenu;
+use usage_menu::UsageMenu;
 use workspace_menu::WorkspaceMenuState;
 
 use crate::composer::{Composer, ComposerStash};
@@ -263,6 +266,7 @@ pub(crate) struct Shell<'a> {
     skills_menu: Option<SkillsMenu>,
     help_menu: Option<HelpMenu>,
     statusline_menu: Option<StatuslineMenu>,
+    usage_menu: Option<UsageMenu>,
     workspace_menu: Option<WorkspaceMenuState>,
     settings_menu: Option<SettingsMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
@@ -496,6 +500,7 @@ impl<'a> Shell<'a> {
             skills_menu: None,
             help_menu: None,
             statusline_menu: None,
+            usage_menu: None,
             workspace_menu: None,
             settings_menu: None,
             skill_catalog,
@@ -790,12 +795,13 @@ impl<'a> Shell<'a> {
     }
 
     fn compact_menu_open(&self) -> bool {
-        self.statusline_menu.is_some() || self.workspace_menu.is_some()
+        self.statusline_menu.is_some() || self.usage_menu.is_some() || self.workspace_menu.is_some()
     }
 
     fn menu_band_and_hint(&self) -> (Option<Vec<Row>>, Row, bool) {
         if let Some((band, hint)) = self
             .statusline_menu_band()
+            .or_else(|| self.usage_menu_band())
             .or_else(|| self.workspace_menu_band())
             .or_else(|| self.settings_menu_band())
         {

@@ -906,9 +906,11 @@ impl AgentSetup {
     }
 
     pub(crate) fn profile_usage(&self) -> Option<ProfilePublisher> {
-        self.preferences
-            .as_ref()
-            .and_then(|paths| ProfilePublisher::open(&paths.data))
+        self.profile_usage_dir().and_then(ProfilePublisher::open)
+    }
+
+    pub(crate) fn profile_usage_dir(&self) -> Option<&Path> {
+        self.preferences.as_ref().map(|paths| paths.data.as_path())
     }
 
     pub fn route_credential(&self) -> RouteCredential {

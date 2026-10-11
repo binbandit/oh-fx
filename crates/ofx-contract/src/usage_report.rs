@@ -5,6 +5,12 @@ use std::fmt;
 
 use crate::types::valid_gateway_generation_id;
 
+mod session;
+
+pub use session::{
+    SessionActivity, SessionModelSource, SessionTotals, SessionUsageSource, build_session_report,
+};
+
 const MAX_MODEL_BYTES: usize = 1024;
 const MAX_MODELS: usize = 128;
 const MS_PER_SECOND: i64 = 1000;
@@ -47,6 +53,24 @@ impl UsageScope {
         [Self::Hours24, Self::Days7, Self::Days30]
             .into_iter()
             .find(|scope| scope.cli_value() == Some(value))
+    }
+
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Session | Self::Hours24 => Self::Session,
+            Self::Days7 => Self::Hours24,
+            Self::Days30 => Self::Days7,
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Session => Self::Hours24,
+            Self::Hours24 => Self::Days7,
+            Self::Days7 | Self::Days30 => Self::Days30,
+        }
     }
 
     const fn duration_ms(self) -> Option<i64> {
@@ -181,6 +205,7 @@ pub struct UsageReport {
     pub completeness: UsageCompleteness,
     pub totals: Option<UsageTotals>,
     pub models: Vec<ModelUsage>,
+    pub session_activity: Option<SessionActivity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +301,7 @@ pub fn build_rolling_report(
         completeness,
         totals: None,
         models: Vec::new(),
+        session_activity: None,
     };
     if coverage == UsageCoverage::NotStarted {
         return Ok(report);

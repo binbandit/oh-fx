@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
-use ofx_contract::{Notice, NoticeTone, ReasoningEffort, RecoveredTurn, TurnOutcome};
-use ofx_session::{SessionError, SessionPreferences, SessionStore};
+use ofx_contract::{Notice, NoticeTone, ReasoningEffort, RecoveredTurn, TurnOutcome, UsageReport};
+use ofx_session::{SessionError, SessionPreferences, SessionStore, fresh_session_report};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -172,6 +172,13 @@ impl Persistence {
     pub(crate) fn observe_prompt(&self, prompt: &str) {
         if let Some(live) = &self.live {
             live.observe_prompt(prompt);
+        }
+    }
+
+    pub(crate) fn usage_report(&self) -> Option<UsageReport> {
+        match &self.live {
+            Some(live) => live.usage_report().ok(),
+            None => fresh_session_report().ok(),
         }
     }
 
