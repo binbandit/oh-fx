@@ -159,11 +159,11 @@ async fn logout_cannot_persist_an_in_flight_refresh() {
     );
     let requesting = Arc::clone(&auth);
     let url = server.url.clone();
-    let request = tokio::spawn(async move { requesting.apply(oauth().get(url)).await.is_ok() });
+    let request = tokio::spawn(async move { requesting.apply(oauth().get(url)).await.err() });
     assert!(server.wait_for(|request| request.path == "/token").await);
     fenced_logout(&state, &profile, &config).await;
     release.notify_one();
-    assert!(request.await.unwrap());
+    assert_eq!(request.await.unwrap(), Some(McpError::McpAuthorityChanged));
     assert!(!profile.file().exists());
     assert!(state.grant().is_none());
     assert_eq!(state.authentication(&config), AuthenticationState::None);
@@ -397,24 +397,11 @@ async fn a_refresh_inside_the_fence_window_neither_saves_nor_installs() {
     );
     let requesting = Arc::clone(&auth);
     let url = server.url.clone();
-    let request = tokio::spawn(async move {
-        requesting
-            .apply(oauth().get(url))
-            .await
-            .unwrap()
-            .build()
-            .unwrap()
-            .headers()
-            .get("authorization")
-            .map(|value| value.to_str().unwrap().to_owned())
-    });
+    let request = tokio::spawn(async move { requesting.apply(oauth().get(url)).await.err() });
     assert!(server.wait_for(|request| request.path == "/token").await);
     let detached = state.begin_logout().await.unwrap();
     release.notify_one();
-    assert_eq!(
-        request.await.unwrap().as_deref(),
-        Some("Bearer stored-access")
-    );
+    assert_eq!(request.await.unwrap(), Some(McpError::McpAuthorityChanged));
     assert!(state.grant().is_none());
     assert_eq!(stored_token(&profile).as_deref(), Some("stored-access"));
     state.restore_after_logout(detached);
