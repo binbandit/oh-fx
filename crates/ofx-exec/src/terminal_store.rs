@@ -392,9 +392,14 @@ impl DurableTerminal {
         let mut next = self.record.clone();
         change(&mut next)?;
         next.updated_at_ms = now_ms;
-        save(&self.directory, &next)?;
-        self.record = next;
-        Ok(())
+        let saved = save(&self.directory, &next);
+        if matches!(
+            saved,
+            Ok(()) | Err(StoreError::Durable(DurableError::PostRenameFailed))
+        ) {
+            self.record = next;
+        }
+        saved
     }
 }
 
@@ -407,6 +412,8 @@ fn transition(lifecycle: Lifecycle, event: LifecycleEvent) -> Result<Lifecycle, 
 fn save(directory: &PrivateDir, record: &TerminalRecord) -> Result<(), StoreError> {
     let bytes = record.encode()?;
     directory.replace(&record_name(&record.session_id), &bytes)?;
+    #[cfg(test)]
+    tests::fail_after_rename()?;
     Ok(())
 }
 

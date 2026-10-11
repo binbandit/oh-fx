@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -7,6 +8,18 @@ use super::*;
 
 const OWNER: &str = "owner-session";
 const NOW: i64 = 1_000_000;
+
+thread_local! {
+    static FAIL_AFTER_RENAME: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(super) fn fail_after_rename() -> Result<(), StoreError> {
+    if FAIL_AFTER_RENAME.replace(false) {
+        Err(DurableError::PostRenameFailed.into())
+    } else {
+        Ok(())
+    }
+}
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -180,6 +193,36 @@ fn a_failed_save_leaves_the_record_and_its_file_unchanged() {
     );
     assert_eq!(terminal.record(), &kept);
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn a_save_that_fails_after_its_rename_keeps_the_record_it_saved() {
+    let fixture = Fixture::new();
+    let mut terminal = fixture.create(None);
+    terminal.mark_started(7, NOW + 1).unwrap();
+    let id = terminal.record().session_id.clone();
+    FAIL_AFTER_RENAME.set(true);
+    assert_eq!(
+        terminal.persist_termination(Termination::Exited(0), NOW + 2),
+        Err(StoreError::Durable(DurableError::PostRenameFailed))
+    );
+    assert_eq!(terminal.record().lifecycle, Lifecycle::Exited);
+    assert_eq!(terminal.termination(), Some(Termination::Exited(0)));
+    assert_eq!(
+        fixture.store.open(OWNER, &id).unwrap().record(),
+        terminal.record()
+    );
+    terminal.persist_lost(NOW + 3).unwrap();
+    let reopened = fixture.store.open(OWNER, &id).unwrap();
+    assert_eq!(reopened.record().lifecycle, Lifecycle::Exited);
+    assert_eq!(reopened.termination(), Some(Termination::Exited(0)));
+    FAIL_AFTER_RENAME.set(true);
+    assert_eq!(
+        terminal.close(NOW + 4),
+        Err(StoreError::Durable(DurableError::PostRenameFailed))
+    );
+    assert_eq!(terminal.record().lifecycle, Lifecycle::Closed);
+    assert_eq!(terminal.close(NOW + 5), Err(StoreError::InvalidLifecycle));
 }
 
 #[test]
