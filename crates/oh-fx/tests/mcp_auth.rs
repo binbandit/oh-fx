@@ -2,17 +2,19 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ofx_testkit::{FakeServer, Reply, chat_text_events};
+use ofx_testkit::{FakeServer, PtySession, Reply, chat_text_events};
 use serde_json::{Value, json};
 
 const ACCESS: &str = "granted-access-token";
 const REFRESH: &str = "granted-refresh-token";
+const SHELL_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 struct Seen {
@@ -285,8 +287,13 @@ impl Home {
         .expect("profile settings");
     }
 
-    fn ask(&self, model: &FakeServer) -> std::process::Output {
+    fn use_model(&self, model: &FakeServer) {
+        self.use_model_in(model, &json!({}));
+    }
+
+    fn use_model_in(&self, model: &FakeServer, workspaces: &Value) {
         self.settings(&json!({
+            "workspaces": workspaces,
             "permission_mode": "ask",
             "provider": "local",
             "model": "local-model",
@@ -297,9 +304,54 @@ impl Home {
                 "models": ["local-model"],
             }},
         }));
+    }
+
+    fn ask(&self, model: &FakeServer) -> std::process::Output {
+        self.use_model(model);
         self.command(&["ask", "hi"])
             .output()
             .expect("run oh-fx ask")
+    }
+
+    fn opened(&self) -> PathBuf {
+        self.root.join("opened")
+    }
+
+    fn shell(&self, model: &FakeServer, workspaces: &Value) -> PtySession {
+        self.use_model_in(model, workspaces);
+        let bin = self.root.join("bin");
+        fs::create_dir_all(&bin).expect("test step");
+        for launcher in ["open", "xdg-open"] {
+            let path = bin.join(launcher);
+            fs::write(
+                &path,
+                "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$OPENED.part\" && mv \"$OPENED.part\" \"$OPENED\"\n",
+            )
+            .expect("test step");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("test step");
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
+            .current_dir(self.root.join("workspace"))
+            .env_clear()
+            .env("HOME", &self.root)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .env("XDG_DATA_HOME", self.root.join("data"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .env("TERM", "xterm-256color")
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("OPENED", self.opened())
+            .process_group(0);
+        let session = PtySession::spawn(command, 40, 200).expect("spawn oh-fx in a pty");
+        session
+            .wait_for(SHELL_WAIT, |screen| {
+                screen.contains("Run /help for commands")
+            })
+            .expect("the shell starts");
+        session
     }
 
     fn store(&self) -> PathBuf {
@@ -604,4 +656,118 @@ fn authorizing_again_after_discovery_changes_keeps_one_grant_that_connects() {
             "{sent:?}"
         );
     }
+}
+
+fn shown(session: &PtySession, needle: &str) -> String {
+    session
+        .wait_for(SHELL_WAIT, |screen| screen.contains(needle))
+        .unwrap_or_else(|screen| panic!("expected {needle:?} on screen:\n{screen}"))
+}
+
+fn listed_once_settled(session: &PtySession, command: &[u8], expected: &str) {
+    for _ in 0..50 {
+        session.send(command);
+        if session
+            .wait_for(Duration::from_millis(300), |screen| {
+                screen.contains(expected)
+            })
+            .is_ok()
+        {
+            return;
+        }
+    }
+    panic!("expected {expected:?} on screen:\n{}", session.screen());
+}
+
+fn wait_for_file(path: &Path) -> String {
+    let started = Instant::now();
+    while started.elapsed() < SHELL_WAIT {
+        if let Ok(text) = fs::read_to_string(path) {
+            return text;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("{} was never written", path.display());
+}
+
+#[test]
+fn mcp_auth_in_the_shell_confirms_opens_the_browser_and_reconnects_the_server() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let model = FakeServer::start([]);
+    let session = home.shell(&model, &json!({}));
+    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    session.send(b"/mcp auth fixture\r");
+    shown(
+        &session,
+        "Run /mcp auth fixture --open to confirm opening your browser.",
+    );
+    assert!(!home.opened().exists());
+    session.send(b"/mcp auth fixture --open\r");
+    shown(
+        &session,
+        "Waiting for MCP authentication for 'fixture'. You can continue using oh-fx while the browser flow completes.",
+    );
+    let url = wait_for_file(&home.opened()).trim().to_owned();
+    assert!(
+        url.starts_with(&format!("{}/authorize?", authority.origin)),
+        "{url}"
+    );
+    let page = visit(&format!(
+        "{}?code=browser-code&state={}",
+        query(&url, "redirect_uri"),
+        query(&url, "state")
+    ));
+    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+    shown(&session, "Authenticated MCP server 'fixture'.");
+    listed_once_settled(
+        &session,
+        b"/mcp list\r",
+        "state=ready auth=authenticated status=ready",
+    );
+    let screen = session.screen();
+    for secret in [ACCESS, REFRESH, "browser-code", "authorize?"] {
+        assert!(!screen.contains(secret), "{screen}");
+    }
+    assert!(
+        authority
+            .mcp_authorizations()
+            .iter()
+            .any(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str()))
+    );
+    assert_eq!(mode(&home.store()), 0o600);
+}
+
+#[test]
+fn a_project_server_authenticated_in_the_shell_uses_its_grant_for_the_session() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    home.servers(&json!({}));
+    fs::write(
+        home.workspace().join(".mcp.json"),
+        json!({"mcpServers": {"project": {"type": "http", "url": format!("{}/mcp", authority.origin)}}})
+            .to_string(),
+    )
+    .expect("project servers");
+    let model = FakeServer::start([]);
+    let session = home.shell(
+        &model,
+        &json!({home.workspace().display().to_string(): {"enabledMcpjsonServers": ["project"]}}),
+    );
+    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    session.send(b"/mcp auth project --open\r");
+    shown(&session, "Waiting for MCP authentication for 'project'.");
+    let url = wait_for_file(&home.opened()).trim().to_owned();
+    let page = visit(&format!(
+        "{}?code=browser-code&state={}",
+        query(&url, "redirect_uri"),
+        query(&url, "state")
+    ));
+    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+    shown(&session, "Authenticated MCP server 'project'.");
+    listed_once_settled(
+        &session,
+        b"/mcp list\r",
+        "state=ready auth=authenticated status=ready",
+    );
 }
