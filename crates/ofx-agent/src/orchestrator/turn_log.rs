@@ -33,6 +33,7 @@ impl Agent {
 
     pub fn restore(&mut self, restored: RestoredHistory) {
         self.pending_interruptions.clear();
+        self.last_interruption = None;
         let RestoredHistory {
             checkpoint,
             compaction_count,

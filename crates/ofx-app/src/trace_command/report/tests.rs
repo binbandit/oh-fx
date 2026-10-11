@@ -19,6 +19,7 @@ fn facts() -> TraceFacts {
         stream_active: false,
         queued: 0,
         web_searches: Vec::new(),
+        interrupted_turn: None,
         session_title: SessionTitleFacts::default(),
         rings: TraceRings::process(),
     }

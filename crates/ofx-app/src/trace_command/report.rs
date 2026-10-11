@@ -6,7 +6,7 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ofx_agent::{CompactionEvent, ToolCallTrace, TraceRings};
+use ofx_agent::{CompactionEvent, InterruptedTurn, ToolCallTrace, TraceRings};
 use ofx_contract::{PermissionMode, ReasoningEffort, ToolResultStatus, is_provider_search_alias};
 use ofx_text::mask_secrets;
 use ofx_trace::{NetworkTrace, Sequenced};
@@ -35,6 +35,7 @@ pub(crate) struct TraceFacts {
     pub(crate) stream_active: bool,
     pub(crate) queued: usize,
     pub(crate) web_searches: Vec<Option<ToolResultStatus>>,
+    pub(crate) interrupted_turn: Option<InterruptedTurn>,
     pub(crate) session_title: SessionTitleFacts,
     pub(crate) rings: TraceRings,
 }
@@ -121,6 +122,7 @@ impl Snapshot {
         self.write_current_state(out)?;
         self.write_problems(out)?;
         self.write_compaction(out)?;
+        interrupted_turn::write_section(out, self.facts.interrupted_turn.as_ref())?;
         session_title::write_section(out, &self.facts.session_title)?;
         network_calls::write_section(out, &self.network)?;
         tool_calls::write_section(out, &self.tool_calls, &self.facts.web_searches)?;
@@ -198,6 +200,7 @@ impl Snapshot {
                 self.facts.processing, self.facts.stream_active, self.facts.queued
             )?;
         }
+        count += interrupted_turn::write_problems(out, self.facts.interrupted_turn.as_ref())?;
         count += session_title::write_problems(out, &self.facts.session_title)?;
         count += network_calls::write_problems(out, &self.network)?;
         count += tool_calls::write_problems(out, &self.tool_calls)?;
@@ -377,6 +380,14 @@ fn write_limited_line(out: &mut String, line: &str) {
     }
 }
 
+fn tool_display_name(name: &str) -> &str {
+    if is_provider_search_alias(name) {
+        SEARCH_NAME
+    } else {
+        name
+    }
+}
+
 fn cut(text: &str, limit: usize) -> &str {
     &text[..text.floor_char_boundary(limit)]
 }
@@ -470,6 +481,7 @@ fn process_memory(pid: u32) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+mod interrupted_turn;
 mod network_calls;
 mod session_title;
 mod tool_calls;

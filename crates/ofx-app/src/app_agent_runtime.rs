@@ -4,8 +4,8 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{
-    Agent, Compaction, CompactionError, EventSink, QuestionRequests, QueuedPrompt, TraceRings,
-    TurnFailure, TurnReport, WorkerRuntime,
+    Agent, Compaction, CompactionError, EventSink, InterruptedTurn, QuestionRequests, QueuedPrompt,
+    TraceRings, TurnFailure, TurnReport, WorkerRuntime,
 };
 use ofx_auth::ChatGptError;
 use ofx_config::save_model_preference;
@@ -80,6 +80,7 @@ pub(crate) struct ControllerState {
     history_turns: usize,
     context_to_compact: bool,
     web_searches: Vec<Option<ToolResultStatus>>,
+    interrupted_turn: Option<InterruptedTurn>,
     session_title: SessionTitle,
     title_progress: TitleProgress,
     statusline: StatuslineToggles,
@@ -296,6 +297,7 @@ impl ControllerState {
             stream_active: work == Work::Turn,
             queued: self.worker.waiting_texts().len(),
             web_searches: self.web_searches.clone(),
+            interrupted_turn: self.interrupted_turn.clone(),
             session_title: SessionTitleFacts {
                 setting: self.setup.session_titles_enabled(),
                 title: self.session_title.current(),
@@ -596,6 +598,7 @@ impl Controller {
             history_turns: 0,
             context_to_compact: false,
             web_searches: Vec::new(),
+            interrupted_turn: None,
             mcp,
             shown_controls: setup_controls,
             sign_in: None,
@@ -1087,6 +1090,7 @@ impl Controller {
         self.state.history_turns = self.agent.history_turns();
         self.state.context_to_compact = self.agent.has_context_to_compact();
         self.state.web_searches = self.agent.retained_web_searches();
+        self.state.interrupted_turn = self.agent.last_interruption().cloned();
     }
 
     fn forget_tracked_changes(&self) {

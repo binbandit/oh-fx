@@ -1,10 +1,10 @@
 use std::fmt::{self, Write as _};
 
 use ofx_agent::{ToolCallMetric, ToolCallOutcome, ToolCallTrace};
-use ofx_contract::{ToolResultStatus, is_provider_search_alias};
+use ofx_contract::ToolResultStatus;
 use ofx_text::mask_secrets;
 
-use super::{SEARCH_NAME, Timestamp};
+use super::{SEARCH_NAME, Timestamp, tool_display_name};
 
 const TOOL_PROBLEMS: usize = 5;
 const PREVIEW_BYTES: usize = 180;
@@ -125,11 +125,7 @@ fn write_local(out: &mut String, trace: &ToolCallTrace) -> fmt::Result {
 }
 
 fn write_compact(out: &mut String, call: &ToolCallMetric) -> fmt::Result {
-    let name = if is_provider_search_alias(&call.name) {
-        SEARCH_NAME
-    } else {
-        &call.name
-    };
+    let name = tool_display_name(&call.name);
     write!(
         out,
         "{} name={name} outcome={} duration={}ms",

@@ -40,6 +40,7 @@ use crate::assistant_stream::normalize_assistant_text_for_display;
 use crate::compactor::{CompactionError, CompactionEvent, Payload};
 use crate::execution_memory::{EarlierEvidence, partial_view, steering_text};
 use crate::gateway_step::Meter;
+use crate::interrupted_turn::InterruptedTurn;
 use crate::lifecycle::{LifecycleContext, ToolPreparation};
 use request_usage::RequestUsage;
 
@@ -334,6 +335,7 @@ pub struct Agent {
     request_fixed_tokens: Option<usize>,
     turns: u64,
     last_reply: Option<LastReply>,
+    last_interruption: Option<InterruptedTurn>,
     steering: Option<Arc<WorkerRuntime>>,
     recovery_pause: RecoveryPause,
     lifecycle: Option<LifecycleContext>,
@@ -389,6 +391,7 @@ impl Agent {
             request_fixed_tokens: None,
             turns: 0,
             last_reply: None,
+            last_interruption: None,
             steering: None,
             recovery_pause: RecoveryPause::default(),
             lifecycle: None,
@@ -536,6 +539,7 @@ impl Agent {
         self.compactions = 0;
         self.calibration = None;
         self.last_reply = None;
+        self.last_interruption = None;
         self.permissions.forget_approvals();
         if let Some(project) = &mut self.project {
             project.deltas.clear();
@@ -719,7 +723,7 @@ impl Agent {
         }
         self.forget_summary_prompt(&turn);
         self.forget_stop_continuation(&turn);
-        self.hold_interruption(ending, turn.start);
+        self.hold_interruption(ending, &turn);
         events(UiEvent::TurnFinished {
             turn_id: id,
             outcome,
@@ -875,6 +879,10 @@ impl Agent {
 
     pub fn retained_web_searches(&self) -> Vec<Option<ToolResultStatus>> {
         provider_tools::retained_web_searches(&self.history)
+    }
+
+    pub fn last_interruption(&self) -> Option<&InterruptedTurn> {
+        self.last_interruption.as_ref()
     }
 
     pub fn last_assistant_reply(&self) -> Option<Arc<str>> {
