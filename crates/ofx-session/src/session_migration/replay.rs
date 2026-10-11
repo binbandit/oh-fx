@@ -194,6 +194,7 @@ impl LegacySession {
             turns: Vec::new(),
             context_history_start: 0,
             recovery: None,
+            archived_recovery: false,
             usage: started.usage.map(|usage| *usage),
         }
     }
@@ -211,6 +212,7 @@ impl LegacySession {
             turns: state.turns,
             context_history_start: state.context_history_start,
             recovery: None,
+            archived_recovery: false,
             usage: state.usage,
         }
     }

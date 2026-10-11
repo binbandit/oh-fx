@@ -12,6 +12,7 @@ use ofx_contract::{
     ModelRecoveryCause, ProviderReplay, RecoveryStrategy, RecoveryToolState, StepResult,
     ToolArgumentIntegrity, ToolCall, ToolResultStatus, TurnEnd, TurnStop, TurnSummary,
 };
+use ofx_trace::trace_log;
 
 use crate::fixed_field::{False, FixedField, NoItems, Null};
 use crate::json_fields::{Fields, Json, parse_json};
@@ -19,6 +20,7 @@ use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_
 use crate::session_codec::{SavedProvider, parse_saved_provider};
 use crate::session_error::SessionError;
 use crate::session_event::{FileEvidence, WireTag, are_valid_files, saved_replay};
+use crate::session_trace::SESSION;
 use crate::{process_presentation, turn_summary};
 
 pub(crate) use encode::{CheckpointSource, SavedOutput, encode_recovery_file};
@@ -263,8 +265,13 @@ impl SavedToolResult {
                 self.stored_output_bytes,
             )
         } else {
-            read_for_replay(dir, handle, self.stored_output_bytes)
-                .unwrap_or_else(|| RESULT_UNAVAILABLE.to_owned())
+            read_for_replay(dir, handle, self.stored_output_bytes).unwrap_or_else(|error| {
+                trace_log!(
+                    SESSION,
+                    "event=context_result_unavailable handle={handle} err={error}; marking content unavailable"
+                );
+                RESULT_UNAVAILABLE.to_owned()
+            })
         };
     }
 }

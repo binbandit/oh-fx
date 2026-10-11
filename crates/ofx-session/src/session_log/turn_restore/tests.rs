@@ -1616,3 +1616,54 @@ fn an_interrupted_turn_restores_its_file_evidence_before_its_closing_messages() 
         ]
     );
 }
+
+const TRACE_CHILD: &str = "OFX_SESSION_RESTORE_TRACE_CHILD";
+const TRACE_TEST: &str =
+    "session_log::turn_restore::tests::a_restored_result_that_cannot_be_read_writes_its_trace_line";
+
+#[test]
+fn a_restored_result_that_cannot_be_read_writes_its_trace_line() {
+    if let Some(root) = std::env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        let fixture = Fixture::new();
+        let mut session = fixture.start();
+        let calls = [call("call-1", "shell")];
+        let large = "z".repeat(5000);
+        let turn = HistoryTurn {
+            user: "run",
+            steps: vec![step(
+                "",
+                &calls,
+                vec![result(&calls[0], &large, ToolResultStatus::Success)],
+            )],
+            steering: Vec::new(),
+            files: &[],
+            end: replied("ok"),
+        };
+        session.record_turn(&turn, &gateway()).unwrap();
+        drop(session);
+        for entry in fs::read_dir(fixture.dir().join("tool-results")).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        fixture.resumed();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        written.contains(" [session] event=context_result_unavailable handle=result-shell-")
+            && written.contains(" err=FileNotFound; marking content unavailable\n"),
+        "{written}"
+    );
+    assert!(!written.contains(&"z".repeat(64)), "{written}");
+}

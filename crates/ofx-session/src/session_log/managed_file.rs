@@ -5,12 +5,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
+use ofx_trace::trace_log;
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, RenameFlags, Stat};
 use rustix::io::Errno;
 use rustix::path::Arg;
 
 use crate::session_error::SessionError;
 use crate::session_layout::is_valid_session_id;
+use crate::session_trace::SESSION;
 
 const LOCK_RETRY: Duration = Duration::from_millis(10);
 const MAX_TREE_DEPTH: usize = 2;
@@ -114,7 +116,14 @@ pub(crate) fn publish_dir(
     )
     .map_err(|errno| match errno {
         Errno::EXIST | Errno::NOTEMPTY => SessionError::SessionAlreadyExists,
-        _ => SessionError::SessionStartFailed,
+        _ => {
+            trace_log!(
+                SESSION,
+                "session directory publication failed errno={}",
+                SessionError::from(errno)
+            );
+            SessionError::SessionStartFailed
+        }
     })
 }
 

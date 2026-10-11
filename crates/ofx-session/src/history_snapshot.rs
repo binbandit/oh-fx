@@ -4,12 +4,15 @@ use std::os::unix::fs::FileExt;
 use std::slice;
 
 use ofx_config::PrivateDir;
+use ofx_trace::trace_log;
 
+use crate::session_error::SessionError;
 use crate::session_event::{
     CONVERSATION_SCHEMA_VERSION, ConversationEnvelope, decode_history_envelope,
     encode_history_envelope,
 };
 use crate::session_log::managed_file::{Access, create_managed_file, open_managed_file};
+use crate::session_trace::SESSION;
 
 pub(crate) const HISTORY_CACHE_FILE: &str = "history-cache.bin";
 const MAGIC: &[u8; 18] = b"fx-history-cache\x1a\n";
@@ -79,6 +82,26 @@ pub(crate) struct CachedFrame {
     pub(crate) envelope: ConversationEnvelope,
 }
 
+fn opened(dir: &PrivateDir, session_id: &str, access: Access) -> Option<File> {
+    match open_managed_file(dir, HISTORY_CACHE_FILE, access) {
+        Ok(file) => file,
+        Err(error) => {
+            trace_log!(
+                SESSION,
+                "history cache verify failed id={session_id} err={error}"
+            );
+            None
+        }
+    }
+}
+
+fn trimmed(file: &File, len: u64) -> Result<(), SessionError> {
+    if file.metadata()?.len() != len {
+        file.set_len(len)?;
+    }
+    Ok(())
+}
+
 impl HistoryCache {
     pub(crate) fn open(
         dir: &PrivateDir,
@@ -86,7 +109,7 @@ impl HistoryCache {
         log: &File,
         log_len: u64,
     ) -> Option<Self> {
-        let file = open_managed_file(dir, HISTORY_CACHE_FILE, Access::ReadOnly).ok()??;
+        let file = opened(dir, session_id, Access::ReadOnly)?;
         let (frames, _) = verify(&file, session_id, log, log_len)?;
         Some(Self { file, frames })
     }
@@ -111,10 +134,14 @@ impl CacheWriter {
         log: &File,
         log_len: u64,
     ) -> Option<Self> {
-        let file = open_managed_file(dir, HISTORY_CACHE_FILE, Access::Writable).ok()??;
+        let file = opened(dir, session_id, Access::Writable)?;
         let (frames, len) = verify(&file, session_id, log, log_len)?;
-        if file.metadata().ok()?.len() != len {
-            file.set_len(len).ok()?;
+        if let Err(error) = trimmed(&file, len) {
+            trace_log!(
+                SESSION,
+                "history cache append-open failed id={session_id} err={error}"
+            );
+            return None;
         }
         let covered = frames.last().map_or(0, FrameMeta::log_end);
         let tee = Tee::new(len, covered, MAX_FRAMES - frames.len());
@@ -124,15 +151,15 @@ impl CacheWriter {
         })
     }
 
-    pub(crate) fn create(dir: &PrivateDir, session_id: &str) -> Option<Self> {
+    pub(crate) fn create(dir: &PrivateDir, session_id: &str) -> Result<Self, SessionError> {
         let _ = dir.remove(HISTORY_CACHE_FILE);
-        let file = create_managed_file(dir, HISTORY_CACHE_FILE).ok()?;
+        let file = create_managed_file(dir, HISTORY_CACHE_FILE)?;
         let mut tee = Tee::new(0, 0, MAX_FRAMES);
         tee.pending.extend_from_slice(MAGIC);
         tee.pending.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         tee.pending
             .extend_from_slice(&u64::from(CONVERSATION_SCHEMA_VERSION).to_le_bytes());
-        let id_len = u32::try_from(session_id.len()).ok()?;
+        let id_len = u32::try_from(session_id.len()).map_err(|_| SessionError::InvalidSessionId)?;
         tee.pending
             .extend_from_slice(&u64::from(id_len).to_le_bytes());
         tee.pending.extend_from_slice(session_id.as_bytes());
@@ -140,7 +167,7 @@ impl CacheWriter {
             file,
             frames: Vec::new(),
         };
-        Some(Self { cache, tee })
+        Ok(Self { cache, tee })
     }
 
     pub(crate) fn tee(&mut self) -> CacheTee<'_> {

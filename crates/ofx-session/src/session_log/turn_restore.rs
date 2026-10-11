@@ -5,6 +5,7 @@ use ofx_contract::{
     ChatMessage, INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, RestoredHistory,
     ToolCall, ToolCallId, ToolResultStatus, file_evidence_context,
 };
+use ofx_trace::trace_log;
 
 use crate::result_store::{RESULT_UNAVAILABLE, format_stored_result_output, read_for_replay};
 use crate::session_error::SessionError;
@@ -13,6 +14,7 @@ use crate::session_event::{
     ToolCallEvent, ToolResultEvent,
 };
 use crate::session_log::conversation_history::SavedHistory;
+use crate::session_trace::SESSION;
 
 const ABORTED_TOOL_OUTPUT: &str = "aborted by user";
 
@@ -83,7 +85,12 @@ impl TurnBuilder {
                     self.finish_standalone()?;
                 }
                 self.pending_assistant = None;
-                self.pending_replay = None;
+                if self.pending_replay.take().is_some() {
+                    trace_log!(
+                        SESSION,
+                        "provider replay omitted reason=interrupted_association"
+                    );
+                }
                 self.files = interrupted.files;
                 return Ok(Some(Ending::Stopped {
                     partial: interrupted.partial_text,
@@ -334,6 +341,17 @@ fn result_body(result: &ToolResultEvent, dir: &PrivateDir) -> String {
     complete_result_output(result, dir).unwrap_or_else(|| RESULT_UNAVAILABLE.to_owned())
 }
 
+fn replayed(dir: &PrivateDir, handle: &str, stored_bytes: u64) -> Option<String> {
+    read_for_replay(dir, handle, stored_bytes)
+        .inspect_err(|error| {
+            trace_log!(
+                SESSION,
+                "event=context_result_unavailable handle={handle} err={error}; marking content unavailable"
+            );
+        })
+        .ok()
+}
+
 pub(crate) fn complete_result_output(result: &ToolResultEvent, dir: &PrivateDir) -> Option<String> {
     if result.completeness != ArtifactCompleteness::Complete {
         return None;
@@ -342,7 +360,7 @@ pub(crate) fn complete_result_output(result: &ToolResultEvent, dir: &PrivateDir)
     if u64::try_from(preview.len()).is_ok_and(|length| length == result.stored_bytes) {
         return Some(preview.to_owned());
     }
-    read_for_replay(dir, &result.artifact_ref, result.stored_bytes)
+    replayed(dir, &result.artifact_ref, result.stored_bytes)
 }
 
 fn tool_call(call: ToolCallEvent) -> ToolCall {

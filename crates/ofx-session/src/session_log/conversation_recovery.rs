@@ -1,6 +1,7 @@
 use std::io::{self, Read, Write};
 
 use ofx_config::PrivateDir;
+use ofx_trace::trace_log;
 
 use super::conversation_archive::ArchiveBuilder;
 use super::managed_file::{Access, create_managed_file, open_managed_file};
@@ -11,6 +12,7 @@ use crate::session_event::{
     decode_conversation_frame, encode_conversation_frame,
 };
 use crate::session_replay::{History, LineRead, LineReader};
+use crate::session_trace::SESSION;
 use crate::session_usage_sidecar::has_recoverable_corruption;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -90,6 +92,12 @@ fn scan_conversation_recovery(dir: &PrivateDir) -> Result<(RecoveryBoundary, boo
     if !complete && boundary.bytes == 0 {
         return Err(SessionError::SessionRecoveryBoundaryInvalid);
     }
+    trace_log!(
+        SESSION,
+        "event=conversation_recovery_boundary source_bytes={length} retained_bytes={} through_seq={}",
+        boundary.bytes,
+        boundary.seq
+    );
     Ok((boundary, complete))
 }
 
@@ -158,6 +166,13 @@ pub(crate) fn copy_conversation_recovery_prefix(
         )?)?;
     }
     output.sync_all()?;
+    trace_log!(
+        SESSION,
+        "event=conversation_recovery_prefix bytes={} through_seq={} interrupted={}",
+        boundary.bytes,
+        boundary.seq,
+        boundary.turn_open
+    );
     Ok(())
 }
 

@@ -13,6 +13,7 @@ use crate::session_event::{
     ArtifactCompleteness, AssistantEvent, ContextCheckpointEvent, InterruptReason,
     InterruptedEvent, ToolCallEvent, ToolResultEvent, TurnCompletedEvent, UserEvent,
 };
+use crate::session_log::managed_file::remove_created_dir;
 use crate::spawn_gate::make_fifo;
 
 struct Fixture {
