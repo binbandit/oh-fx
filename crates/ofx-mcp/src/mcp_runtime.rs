@@ -588,6 +588,7 @@ impl McpRuntime {
         authenticate(
             &server.config,
             &self.options,
+            &server.auth.pending(),
             open_url,
             cancel,
             &|variable| std::env::var(variable).ok(),
@@ -651,10 +652,15 @@ fn required_failure(servers: &[Arc<Server>]) -> Option<String> {
     servers
         .iter()
         .filter(|server| server.config.required)
-        .map(|server| snapshot_server(server))
-        .find(|snapshot| snapshot.connection != ConnectionState::Ready)
-        .map(|snapshot| {
-            let failure = health_failure(true, snapshot.connection, snapshot.failure);
+        .map(|server| (server, snapshot_server(server)))
+        .find(|(_, snapshot)| snapshot.connection != ConnectionState::Ready)
+        .map(|(server, snapshot)| {
+            let failure = health_failure(
+                &server.config,
+                snapshot.connection,
+                snapshot.authentication,
+                snapshot.failure,
+            );
             format!(
                 "Required MCP server '{}' failed to start: {}",
                 snapshot.configured_name,
@@ -843,6 +849,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(test)]
+mod oauth_tests;
+
+#[cfg(test)]
 mod tests {
     use std::path::Path;
 
@@ -945,7 +954,11 @@ done
             .await
     }
 
-    async fn call(runtime: &McpRuntime, name: &str, arguments: &str) -> ofx_contract::ToolOutput {
+    pub(super) async fn call(
+        runtime: &McpRuntime,
+        name: &str,
+        arguments: &str,
+    ) -> ofx_contract::ToolOutput {
         execute(prepare(runtime, name, arguments)).await
     }
 

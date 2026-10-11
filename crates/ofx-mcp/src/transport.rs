@@ -7,6 +7,7 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_http_sse::{LegacySseClient, SseShared};
 use crate::legacy_streamable_http::{HttpShared, LegacyHttpClient};
+use crate::server_auth::HttpAuth;
 use crate::stdio_dispatcher::{Shared as StdioShared, StdioDispatcher};
 use crate::timing::spawn_on;
 
@@ -98,6 +99,28 @@ pub(crate) enum Transport {
 }
 
 impl Transport {
+    pub(crate) fn http_auth(&self) -> Option<&HttpAuth> {
+        match self {
+            Self::Stdio(_) => None,
+            Self::Http(transport) => Some(transport.auth()),
+            Self::Sse(transport) => Some(transport.auth()),
+        }
+    }
+
+    pub(crate) fn lost_authentication(&self, error: &McpError) -> bool {
+        match error {
+            McpError::McpAuthenticationRequired => true,
+            McpError::Cancelled | McpError::McpRequestTimedOut => false,
+            _ => self
+                .http_auth()
+                .is_some_and(|auth| auth.failure().is_some()),
+        }
+    }
+
+    pub(crate) fn stream_rejected_authentication(&self) -> bool {
+        self.http_auth().is_some_and(HttpAuth::stream_rejected)
+    }
+
     pub(crate) fn listening(&self) -> bool {
         match self {
             Self::Stdio(_) => true,

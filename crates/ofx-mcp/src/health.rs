@@ -5,6 +5,7 @@ use ofx_text::encode_terminal_safe;
 use crate::mcp_contract::{ConfigScope, ConfigSource, TransportType, WorkspaceAdmission};
 
 const MAX_PENDING_SUMMARY_NAMES: usize = 4;
+const STARTUP_NAME_BYTES: usize = 128;
 const SUMMARY_NAME_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,8 @@ pub(crate) fn observed_connection(
 pub(crate) enum AuthenticationState {
     None,
     Configured,
+    Authenticated,
+    Required,
 }
 
 impl AuthenticationState {
@@ -49,6 +52,8 @@ impl AuthenticationState {
         match self {
             Self::None => "none",
             Self::Configured => "configured",
+            Self::Authenticated => "authenticated",
+            Self::Required => "required",
         }
     }
 }
@@ -58,6 +63,7 @@ pub(crate) enum Status {
     Disabled,
     Connecting,
     Ready,
+    NeedsAuth,
     Failed,
     Unavailable,
 }
@@ -68,15 +74,17 @@ impl Status {
             Self::Disabled => "disabled",
             Self::Connecting => "connecting",
             Self::Ready => "ready",
+            Self::NeedsAuth => "needs_auth",
             Self::Failed => "failed",
             Self::Unavailable => "unavailable",
         }
     }
 }
 
-pub(crate) fn classify(connection: ConnectionState) -> Status {
+pub(crate) fn classify(connection: ConnectionState, authentication: AuthenticationState) -> Status {
     match connection {
         ConnectionState::Disabled => Status::Disabled,
+        _ if authentication == AuthenticationState::Required => Status::NeedsAuth,
         ConnectionState::Connecting => Status::Connecting,
         ConnectionState::Ready => Status::Ready,
         ConnectionState::Failed => Status::Failed,
@@ -165,7 +173,7 @@ pub(crate) struct ServerSnapshot {
 
 impl ServerSnapshot {
     pub(crate) fn status(&self) -> Status {
-        classify(self.connection)
+        classify(self.connection, self.authentication)
     }
 }
 
@@ -293,7 +301,9 @@ pub(crate) fn render_summary(snapshot: &Snapshot) -> String {
     }
     let mut ready = 0;
     let mut connecting = 0;
+    let mut needs_auth = 0;
     let mut failed = 0;
+    let mut first_auth = None;
     let mut pending = Vec::new();
     for server in &snapshot.servers {
         if server.source == ConfigSource::Workspace
@@ -304,15 +314,22 @@ pub(crate) fn render_summary(snapshot: &Snapshot) -> String {
         match server.status() {
             Status::Ready => ready += 1,
             Status::Connecting => connecting += 1,
+            Status::NeedsAuth => {
+                needs_auth += 1;
+                first_auth.get_or_insert(server.configured_name.as_str());
+            }
             Status::Failed => failed += 1,
             Status::Disabled | Status::Unavailable => {}
         }
     }
     let count = snapshot.servers.len();
     let mut out = format!(
-        "MCP: {count} {} — {ready} ready, {connecting} connecting, 0 needs auth, {failed} failed.",
+        "MCP: {count} {} — {ready} ready, {connecting} connecting, {needs_auth} needs auth, {failed} failed.",
         plural(count, "server", "servers")
     );
+    if let Some(name) = first_auth {
+        let _ = write!(out, " Run /mcp auth {name} --open.");
+    }
     if !pending.is_empty() {
         out.push_str(" Pending approval: ");
         let shown = pending.len().min(MAX_PENDING_SUMMARY_NAMES);
@@ -335,22 +352,44 @@ pub(crate) fn render_summary(snapshot: &Snapshot) -> String {
 }
 
 pub(crate) fn render_startup_notice(snapshot: &Snapshot) -> Option<String> {
-    let failed = snapshot
-        .servers
-        .iter()
-        .filter(|server| server.status() == Status::Failed)
-        .count();
-    if failed == 0 {
+    let status = |wanted| {
+        snapshot
+            .servers
+            .iter()
+            .filter(move |server| server.status() == wanted)
+    };
+    let needs_auth = status(Status::NeedsAuth).count();
+    let failed = status(Status::Failed).count();
+    let attention = needs_auth + failed;
+    if attention == 0 {
         return None;
     }
-    let (noun, verb) = if failed == 1 {
+    let (noun, verb) = if attention == 1 {
         ("server", "needs")
     } else {
         ("servers", "need")
     };
-    Some(format!(
-        "MCP startup: {failed} {noun} {verb} attention, {failed} failed. Use /mcp list for details."
-    ))
+    let mut out = format!("MCP startup: {attention} {noun} {verb} attention");
+    if needs_auth > 0 {
+        let _ = write!(
+            out,
+            ", {needs_auth} {} authentication",
+            plural(needs_auth, "needs", "need")
+        );
+    }
+    if failed > 0 {
+        let _ = write!(out, ", {failed} failed");
+    }
+    out.push('.');
+    if let Some(server) = status(Status::NeedsAuth).next() {
+        let _ = write!(
+            out,
+            " Run /mcp auth {} --open.",
+            encode_terminal_safe(server.configured_name.as_bytes(), STARTUP_NAME_BYTES).text
+        );
+    }
+    out.push_str(" Use /mcp list for details.");
+    Some(out)
 }
 
 fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
@@ -598,6 +637,103 @@ mod tests {
         assert_eq!(
             render_startup_notice(&snapshot(vec![broken.clone(), broken])).as_deref(),
             Some("MCP startup: 2 servers need attention, 2 failed. Use /mcp list for details.")
+        );
+    }
+
+    #[test]
+    fn classify_applies_one_precedence_rule_for_every_surface() {
+        use AuthenticationState::{Authenticated, Configured, Required};
+        for connection in [
+            ConnectionState::Connecting,
+            ConnectionState::Ready,
+            ConnectionState::Failed,
+            ConnectionState::Disconnected,
+        ] {
+            assert_eq!(classify(connection, Required), Status::NeedsAuth);
+        }
+        assert_eq!(
+            classify(ConnectionState::Disabled, Required),
+            Status::Disabled
+        );
+        assert_eq!(
+            classify(ConnectionState::Ready, Authenticated),
+            Status::Ready
+        );
+        assert_eq!(
+            classify(ConnectionState::Failed, Configured),
+            Status::Failed
+        );
+    }
+
+    #[test]
+    fn servers_that_need_authentication_block_when_required() {
+        let mut locked = server("locked");
+        locked.connection = ConnectionState::Ready;
+        locked.authentication = AuthenticationState::Required;
+        assert_eq!(
+            startup_decision(std::slice::from_ref(&locked)),
+            StartupDecision::Degraded
+        );
+        locked.required = true;
+        assert_eq!(startup_decision(&[locked]), StartupDecision::Blocked);
+    }
+
+    #[test]
+    fn health_prints_the_authentication_axis_and_its_status() {
+        let mut locked = server("locked");
+        locked.transport = TransportType::Http;
+        locked.connection = ConnectionState::Failed;
+        locked.authentication = AuthenticationState::Required;
+        let mut granted = server("granted");
+        granted.transport = TransportType::Http;
+        granted.connection = ConnectionState::Ready;
+        granted.authentication = AuthenticationState::Authenticated;
+        let rendered = render(&snapshot(vec![locked, granted]));
+        assert!(
+            rendered.contains("state=failed auth=required status=needs_auth"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("state=ready auth=authenticated status=ready"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn the_summary_counts_and_names_servers_that_need_authentication() {
+        let mut ready = server("ready");
+        ready.connection = ConnectionState::Ready;
+        let mut connecting = server("connecting");
+        connecting.connection = ConnectionState::Connecting;
+        let mut plain = server("plain");
+        plain.connection = ConnectionState::Failed;
+        plain.authentication = AuthenticationState::Required;
+        let mut failed = server("failed");
+        failed.connection = ConnectionState::Failed;
+        assert_eq!(
+            render_summary(&snapshot(vec![ready, connecting, plain, failed])),
+            "MCP: 4 servers — 1 ready, 1 connecting, 1 needs auth, 1 failed. Run /mcp auth plain --open. Use /mcp list for details."
+        );
+    }
+
+    #[test]
+    fn the_startup_notice_names_a_server_that_needs_authentication() {
+        let mut linear = server("linear");
+        linear.connection = ConnectionState::Failed;
+        linear.authentication = AuthenticationState::Required;
+        let mut broken = server("down");
+        broken.connection = ConnectionState::Failed;
+        assert_eq!(
+            render_startup_notice(&snapshot(vec![linear.clone(), broken])).as_deref(),
+            Some(
+                "MCP startup: 2 servers need attention, 1 needs authentication, 1 failed. Run /mcp auth linear --open. Use /mcp list for details."
+            )
+        );
+        assert_eq!(
+            render_startup_notice(&snapshot(vec![linear.clone(), linear])).as_deref(),
+            Some(
+                "MCP startup: 2 servers need attention, 2 need authentication. Run /mcp auth linear --open. Use /mcp list for details."
+            )
         );
     }
 }

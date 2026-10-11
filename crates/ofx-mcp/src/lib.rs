@@ -1,3 +1,4 @@
+mod auth_state;
 mod catalog_freshness;
 mod catalog_refresh;
 mod command_provider;
@@ -63,6 +64,7 @@ pub use features::prompts::{
 pub use local_inspection::{
     ConfiguredServer, LocalConfigInspection, ProfileConfigDiagnostic, inspect_local_config,
 };
+pub use mcp_auth::{IssuerMismatch, IssuerMismatchSource};
 pub use mcp_contract::{
     ConfigScope, ConfigSource, DEFAULT_OPERATION_TIMEOUT_MS, DEFAULT_RESTART_LIMIT,
     DEFAULT_STARTUP_TIMEOUT_MS, EnvVar, HttpHeader, HttpHeaderEnv, InvalidServerConfig,

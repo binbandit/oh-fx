@@ -13,10 +13,11 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
+use super::challenge::Challenge;
 use super::metadata::{
-    AuthorizationMetadata, MetadataOutcome, contains, discover_authorization_metadata,
-    discover_resource_metadata, validate_authorization_metadata_urls,
-    validate_oauth_url_for_resource,
+    AuthorizationMetadata, IssuerMismatch, IssuerMismatchSource, MetadataOutcome, contains,
+    discover_authorization_metadata, discover_resource_metadata,
+    validate_authorization_metadata_urls, validate_oauth_url_for_resource,
 };
 use super::{
     Credentials, Payload, now_ms, optional_secret, optional_string, parse_json, request,
@@ -46,7 +47,7 @@ pub(crate) struct ClientConfig<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthorizationResult {
     Credentials(Box<Credentials>),
-    IssuerMismatch,
+    IssuerMismatch(IssuerMismatch),
 }
 
 struct ClientRegistration {
@@ -75,6 +76,7 @@ pub(crate) async fn authorize_interactive(
     http: &reqwest::Client,
     endpoint: &str,
     config: &ClientConfig<'_>,
+    challenge: &Challenge,
     previous_scope: Option<&str>,
     open_url: &(dyn Fn(&str) -> bool + Sync),
     cancel: &CancellationToken,
@@ -91,7 +93,8 @@ pub(crate) async fn authorize_interactive(
         Some(configured) => canonical_resource(configured)?,
         None => endpoint.clone(),
     };
-    let protected = discover_resource_metadata(http, &resource).await?;
+    let protected =
+        discover_resource_metadata(http, &resource, challenge.resource_metadata.as_deref()).await?;
     if resource != protected.resource {
         resource.clone_from(&protected.resource);
     }
@@ -101,7 +104,9 @@ pub(crate) async fn authorize_interactive(
     validate_oauth_url_for_resource(issuer, &resource)?;
     let metadata = match discover_authorization_metadata(http, issuer).await? {
         MetadataOutcome::Metadata(metadata) => *metadata,
-        MetadataOutcome::IssuerMismatch => return Ok(AuthorizationResult::IssuerMismatch),
+        MetadataOutcome::IssuerMismatch(mismatch) => {
+            return Ok(AuthorizationResult::IssuerMismatch(mismatch));
+        }
     };
     validate_authorization_metadata_urls(&metadata, &resource)?;
     if !metadata.supports_s256() {
@@ -111,6 +116,7 @@ pub(crate) async fn authorize_interactive(
         resolve_client_registration(http, &metadata, &resource, config, &redirect_uri).await?;
     let scope = requested_scope(
         config.scopes,
+        challenge.scope.as_deref(),
         &protected.scopes_supported,
         previous_scope,
         contains(&metadata.scopes_supported, "offline_access"),
@@ -134,14 +140,17 @@ pub(crate) async fn authorize_interactive(
         return Err(McpError::McpAuthorizationBrowserOpenFailed);
     }
     let callback = wait_for_callback(&listener, cancel).await?;
-    if validate_authorization_response(
+    if let Some(returned) = validate_authorization_response(
         &state,
         &metadata.issuer,
         metadata.authorization_response_iss_parameter_supported,
         &callback,
-    )? == IssuerCheck::Mismatch
-    {
-        return Ok(AuthorizationResult::IssuerMismatch);
+    )? {
+        return Ok(AuthorizationResult::IssuerMismatch(IssuerMismatch {
+            source: IssuerMismatchSource::AuthorizationResponse,
+            expected: metadata.issuer,
+            returned,
+        }));
     }
     exchange_authorization_code(
         http,
@@ -262,19 +271,24 @@ fn token_endpoint_auth_method(
 
 fn requested_scope(
     configured: &[String],
+    challenge_scope: Option<&str>,
     metadata_scopes: &[String],
     previous_scope: Option<&str>,
     request_offline_access: bool,
 ) -> Result<Option<String>, McpError> {
     let mut tokens: Vec<&str> = Vec::new();
     append_scope_tokens(&mut tokens, previous_scope)?;
-    let chosen = if configured.is_empty() {
-        metadata_scopes
+    if challenge_scope.is_some() {
+        append_scope_tokens(&mut tokens, challenge_scope)?;
     } else {
-        configured
-    };
-    for scope in chosen {
-        append_scope_tokens(&mut tokens, Some(scope))?;
+        let chosen = if configured.is_empty() {
+            metadata_scopes
+        } else {
+            configured
+        };
+        for scope in chosen {
+            append_scope_tokens(&mut tokens, Some(scope))?;
+        }
     }
     if request_offline_access {
         append_unique(&mut tokens, "offline_access")?;
@@ -392,25 +406,19 @@ fn query_error(error: QueryError) -> McpError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IssuerCheck {
-    Matched,
-    Mismatch,
-}
-
 fn validate_authorization_response(
     expected_state: &str,
     expected_issuer: &str,
     issuer_required: bool,
     response: &AuthorizationResponse,
-) -> Result<IssuerCheck, McpError> {
+) -> Result<Option<String>, McpError> {
     if expected_state != response.state.as_str() {
         return Err(McpError::OAuthStateMismatch);
     }
     match &response.issuer {
         None if issuer_required => Err(McpError::AuthorizationResponseIssuerMissing),
-        Some(issuer) if issuer != expected_issuer => Ok(IssuerCheck::Mismatch),
-        _ => Ok(IssuerCheck::Matched),
+        Some(issuer) if issuer != expected_issuer => Ok(Some(issuer.clone())),
+        _ => Ok(None),
     }
 }
 
