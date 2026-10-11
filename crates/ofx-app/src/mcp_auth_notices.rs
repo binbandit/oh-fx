@@ -18,6 +18,10 @@ pub(crate) fn waiting(name: &str) -> String {
     )
 }
 
+pub(crate) fn failed(name: &str, error: &McpError) -> String {
+    format!("MCP authentication for '{name}' failed: {error}.")
+}
+
 pub(crate) fn busy(name: &str) -> String {
     format!(
         "MCP authentication for '{name}' is already in progress or MCP configuration is reloading."
@@ -164,7 +168,7 @@ mod tests {
         let (tone, metadata) = body(mismatch(IssuerMismatchSource::AuthorizationMetadata), None);
         assert_eq!(tone, NoticeTone::Warning);
         let returned = quoted("https://evil.example/\u{1b}[2J\"x");
-        assert!(!returned.contains('\u{1b}'), "{returned}");
+        assert_eq!(returned, r#""https://evil.example/\\x1b[2J\"x""#);
         assert_eq!(
             metadata,
             format!(

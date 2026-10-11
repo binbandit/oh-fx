@@ -131,3 +131,6 @@ pub(crate) async fn authenticate(
         repaired_entries: result.repaired_entries,
     })
 }
+
+#[cfg(test)]
+mod tests;

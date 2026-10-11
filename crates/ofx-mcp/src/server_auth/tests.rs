@@ -640,6 +640,48 @@ mod stored {
     }
 
     #[tokio::test]
+    async fn a_stale_connections_refresh_never_replaces_the_session_grant() {
+        let fixture = Fixture::start(RENEWED).await;
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let state = Arc::new(AuthState::default());
+        let old = HttpAuth::resolve(
+            &fixture.config(),
+            Some(fixture.store()),
+            &state,
+            || Ok(oauth_client()),
+            &|_| None,
+        )
+        .await
+        .ok()
+        .unwrap();
+        let mut authorized = fixture.credentials(i64::MAX, None);
+        authorized.access_token = Zeroizing::new("authorized-token".to_owned());
+        state.authenticated(authorized);
+        let builder = old
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization(builder).as_deref(),
+            Some("Bearer stored-token")
+        );
+        assert_eq!(token_requests(&fixture), 1);
+        assert_eq!(
+            state
+                .grant()
+                .map(|grant| grant.access_token.as_str().to_owned())
+                .as_deref(),
+            Some("authorized-token")
+        );
+    }
+
+    #[tokio::test]
     async fn a_challenge_wins_over_a_remembered_refresh_failure() {
         let server = FakeServer::start(|request| match request.path.as_str() {
             "/token" => Reply::json(r#"{"error":"temporarily_unavailable"}"#).with_status(400),

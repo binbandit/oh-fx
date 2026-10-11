@@ -14,6 +14,7 @@ use ofx_text::{encode_terminal_safe, mask_secrets};
 
 use crate::app_agent_runtime::ControllerState;
 use crate::app_mcp_runtime::{McpHost, RECONNECTING, TOPIC};
+use crate::mcp_auth_notices;
 
 const TRIMMED: [char; 2] = [' ', '\t'];
 const USAGE: &str = "usage: /mcp [list|resource|prompt|add|remove|path|reload|auth|logout|trust]";
@@ -437,7 +438,7 @@ fn auth(rest: &str, runtime: &McpRuntime) -> Outcome {
         return show(AUTH_USAGE);
     }
     if let Err(error) = runtime.validate_authentication_server(name) {
-        return Outcome::Show(authentication_failed(name, &error));
+        return Outcome::Show(mcp_auth_notices::failed(name, &error));
     }
     if confirmation.is_none() {
         return Outcome::Show(format!(
@@ -447,10 +448,6 @@ fn auth(rest: &str, runtime: &McpRuntime) -> Outcome {
     Outcome::Authenticate {
         server: name.to_owned(),
     }
-}
-
-pub(crate) fn authentication_failed(name: &str, error: &McpError) -> String {
-    format!("MCP authentication for '{name}' failed: {error}.")
 }
 
 fn remove(config_path: &Path, name: &str) -> Outcome {

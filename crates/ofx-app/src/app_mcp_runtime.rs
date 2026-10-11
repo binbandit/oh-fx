@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use crate::app_agent_runtime::Emit;
 use crate::mcp_auth_notices;
 use crate::mcp_commands::{
-    Completion, authentication_failed, render_completions, render_prompt_get,
-    render_prompt_listing, render_resource_listing, render_resource_read,
+    Completion, render_completions, render_prompt_get, render_prompt_listing,
+    render_resource_listing, render_resource_read,
 };
 
 pub(crate) const TOPIC: &str = "mcp";
@@ -270,7 +270,7 @@ impl McpHost {
             return mcp_auth_notices::busy(&server);
         }
         if let Err(error) = self.runtime.validate_authentication_server(&server) {
-            return authentication_failed(&server, &error);
+            return mcp_auth_notices::failed(&server, &error);
         }
         let cancel = CancellationToken::new();
         let runtime = Arc::clone(&self.runtime);
@@ -546,11 +546,21 @@ mod tests {
 
     #[tokio::test]
     async fn one_authentication_runs_at_a_time_and_a_reload_discards_it_silently() {
-        let (host, events, _listener, _data) = hanging_host();
+        let (host, events, listener, _data) = hanging_host();
+        listener.set_nonblocking(true).unwrap();
         assert_eq!(
             host.begin_authentication("docs".to_owned()),
             mcp_auth_notices::waiting("docs")
         );
+        let mut parked = None;
+        for _ in 0..500 {
+            if let Ok((stream, _)) = listener.accept() {
+                parked = Some(stream);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(parked.is_some(), "the authentication reached discovery");
         assert_eq!(
             host.begin_authentication("docs".to_owned()),
             mcp_auth_notices::busy("docs")
@@ -568,7 +578,11 @@ mod tests {
     #[tokio::test]
     async fn an_authentication_that_fails_reports_once() {
         let (host, events, listener, _data) = hanging_host();
-        drop(listener);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
         assert_eq!(
             host.begin_authentication("docs".to_owned()),
             mcp_auth_notices::waiting("docs")
