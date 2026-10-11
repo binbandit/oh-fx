@@ -8,9 +8,16 @@ use crate::session_log::read_checkpoint;
 const IDENTITY: &str = "abababababababababababababababababababababababababababababababab";
 
 fn checkpoint_007(output: &str) -> String {
+    checkpoint_with_007(&command_result_007(output))
+}
+
+pub(crate) fn checkpoint_frame_007(result: &str) -> String {
+    set(&checkpoint_with_007(result))
+}
+
+fn checkpoint_with_007(result: &str) -> String {
     format!(
-        "{{\"version\":2,\"turn_id\":2,\"user\":{{\"text\":\"run the tests\",\"images\":[]}},\"assistant_source\":\"Running them now.\",\"execution\":{{\"schema_version\":4,\"tool_steps\":[{{\"assistant\":\"Checking.\",\"tool_calls\":[{{\"id\":\"call_1\",\"name\":\"run_command\",\"arguments_json\":\"{{\\\"command\\\":\\\"cargo test\\\"}}\",\"provider_result\":null}}],\"tool_results\":[{}]}}],\"files\":[]}},\"cause\":\"network_interrupted\",\"action\":\"retrying_request\",\"tool_state\":\"none\",\"authority\":{{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"credential_source\":\"ai_gateway_api_key\",\"credential_identity\":\"{IDENTITY}\"}},\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":1,\"outstanding_reservation\":false}}",
-        command_result_007(output)
+        "{{\"version\":2,\"turn_id\":2,\"user\":{{\"text\":\"run the tests\",\"images\":[]}},\"assistant_source\":\"Running them now.\",\"execution\":{{\"schema_version\":4,\"tool_steps\":[{{\"assistant\":\"Checking.\",\"tool_calls\":[{{\"id\":\"call_1\",\"name\":\"run_command\",\"arguments_json\":\"{{\\\"command\\\":\\\"cargo test\\\"}}\",\"provider_result\":null}}],\"tool_results\":[{result}]}}],\"files\":[]}},\"cause\":\"network_interrupted\",\"action\":\"retrying_request\",\"tool_state\":\"none\",\"authority\":{{\"provider\":\"gateway\",\"model\":\"openai/gpt-5\",\"credential_source\":\"ai_gateway_api_key\",\"credential_identity\":\"{IDENTITY}\"}},\"requested_fast_mode\":false,\"fast_mode\":false,\"max_provider_attempts\":3,\"consumed_provider_attempts\":1,\"outstanding_reservation\":false}}"
     )
 }
 
