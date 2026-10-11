@@ -8,12 +8,13 @@ use tokio_util::sync::CancellationToken;
 use crate::chatgpt_oauth::{ChatGptAccess, ChatGptError, ChatGptOAuth, RefreshMode};
 use crate::chatgpt_session::SessionStore;
 use crate::grok_session;
+use crate::login_flow::VercelError;
 use crate::provider_catalog;
 use crate::session_presence::Presence;
 use crate::subscription_access::now_ms;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CredentialFailureReason {
+pub(crate) enum CredentialFailureReason {
     TemporaryUnavailable,
     InvalidCredential,
     InvalidStorage,
@@ -96,10 +97,55 @@ fn classify_grok_credential_failure(
     }
 }
 
+pub(crate) fn classify_vercel_failure(error: VercelError) -> CredentialFailureReason {
+    match error {
+        VercelError::InvalidGrant
+        | VercelError::AccessDenied
+        | VercelError::ExpiredToken
+        | VercelError::InvalidClient
+        | VercelError::NoRefreshToken => CredentialFailureReason::InvalidCredential,
+        VercelError::InvalidAuthSession
+        | VercelError::CredentialStorageUnavailable
+        | VercelError::DurablePathUnsafe
+        | VercelError::InsecureAuthFile
+        | VercelError::PrivateStatePermissionsUnsupported => {
+            CredentialFailureReason::InvalidStorage
+        }
+        VercelError::OAuthSessionCleanupUncertain
+        | VercelError::CredentialPersistenceFailed
+        | VercelError::DurableReplacePreRenameFailed
+        | VercelError::DurableReplacePostRenameFailed => {
+            CredentialFailureReason::PersistenceUncertain
+        }
+        _ => CredentialFailureReason::TemporaryUnavailable,
+    }
+}
+
+pub fn vercel_login_failure_detail(error: VercelError) -> String {
+    trace_log!(AUTH, "provider sign-in failed provider=gateway err={error}");
+    let reason = classify_vercel_failure(error);
+    match reason {
+        CredentialFailureReason::InvalidStorage | CredentialFailureReason::PersistenceUncertain => {
+            let label = provider_catalog::label(&ProviderId::Gateway);
+            preparation_error(reason).map_or_else(
+                || format!("{label} requires a new sign-in."),
+                |normalized| format!("{label}: {}", normalized.notice()),
+            )
+        }
+        _ => match error {
+            VercelError::AccessDenied => "authorization denied".to_owned(),
+            VercelError::ExpiredToken | VercelError::LoginTimedOut => {
+                "authorization expired; run oh-fx login again".to_owned()
+            }
+            _ => "failed to sign in".to_owned(),
+        },
+    }
+}
+
 const AUTH: &str = "auth";
 const CHATGPT_SOURCE: &str = "chatgpt_subscription";
 
-const fn preparation_error(reason: CredentialFailureReason) -> Option<PreparationError> {
+pub(crate) const fn preparation_error(reason: CredentialFailureReason) -> Option<PreparationError> {
     match reason {
         CredentialFailureReason::InvalidCredential => None,
         CredentialFailureReason::InvalidStorage => {

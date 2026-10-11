@@ -231,7 +231,7 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         (&["--provider", "local"], "--provider"),
         (&["--sessions-v2"], "--sessions-v2"),
         (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
-        (&["login", "vercel"], "login"),
+        (&["logout", "vercel"], "logout"),
         (&["balance"], "credits"),
         (&["mcp", "list"], "mcp"),
     ] {

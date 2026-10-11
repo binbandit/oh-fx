@@ -36,11 +36,13 @@ pub(crate) enum SessionError {
 
 pub(crate) trait SessionPolicy {
     type Error;
-    const LABEL: &'static str;
+    type Session;
+    const TRACE_PREFIX: &'static str;
     const AUTH_FILE_NAME: &'static str;
     const LOCK_FILE_NAME: &'static str;
-    const VALIDATE_ACCOUNT_ON_WRITE: bool;
     fn error(error: SessionError) -> Self::Error;
+    fn parse(bytes: &[u8]) -> Result<Self::Session, SessionError>;
+    fn encode(session: &Self::Session) -> Result<Zeroizing<String>, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,13 +88,13 @@ impl<P: SessionPolicy> Mutation<P> {
             .map_err(|_| P::error(SessionError::CredentialStorageUnavailable))
     }
 
-    pub(crate) fn load(&self) -> Result<Option<Session>, P::Error> {
+    pub(crate) fn load(&self) -> Result<Option<P::Session>, P::Error> {
         load_from_dir::<P>(&self.directory)
     }
 
-    pub(crate) fn save(&self, session: &Session) -> Result<(), P::Error> {
+    pub(crate) fn save(&self, session: &P::Session) -> Result<(), P::Error> {
         self.directory
-            .replace(P::AUTH_FILE_NAME, encode::<P>(session)?.as_bytes())
+            .replace(P::AUTH_FILE_NAME, P::encode(session)?.as_bytes())
             .map_err(durable_error::<P>)
     }
 
@@ -143,14 +145,14 @@ impl<P: SessionPolicy> SessionStore<P> {
         .map_err(|_| P::error(SessionError::CredentialStorageUnavailable))
     }
 
-    pub(crate) async fn save_new_session(&self, session: &Session) -> Result<(), P::Error> {
+    pub(crate) async fn save_new_session(&self, session: &P::Session) -> Result<(), P::Error> {
         let mutation = self.begin_mutation().await?;
         mutation.save(session)
     }
 
     pub(crate) async fn save_new_session_cancellable(
         &self,
-        session: &Session,
+        session: &P::Session,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(), P::Error> {
         let mutation = tokio::select! {
@@ -164,7 +166,7 @@ impl<P: SessionPolicy> SessionStore<P> {
         mutation.save(session)
     }
 
-    pub(crate) fn load_unlocked(&self) -> Result<Option<Session>, P::Error> {
+    pub(crate) fn load_unlocked(&self) -> Result<Option<P::Session>, P::Error> {
         match self.open_existing()? {
             Some(directory) => load_from_dir::<P>(&directory),
             None => Ok(None),
@@ -182,8 +184,8 @@ impl<P: SessionPolicy> SessionStore<P> {
         PrivateDir::open_existing_private(&self.directory).map_err(|error| {
             trace_log!(
                 AUTH,
-                "{} session load failed step=open_profile err={error}",
-                P::LABEL
+                "{}session load failed step=open_profile err={error}",
+                P::TRACE_PREFIX
             );
             storage_error::<P>(error)
         })
@@ -215,33 +217,33 @@ async fn lock_mutation<P: SessionPolicy>(directory: PrivateDir) -> Result<Mutati
     }
 }
 
-fn load_from_dir<P: SessionPolicy>(directory: &PrivateDir) -> Result<Option<Session>, P::Error> {
+fn load_from_dir<P: SessionPolicy>(directory: &PrivateDir) -> Result<Option<P::Session>, P::Error> {
     let bytes = match directory.read_private(P::AUTH_FILE_NAME, MAX_AUTH_FILE_BYTES) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return Ok(None),
         Err(DurableError::InsecureFile) => {
             trace_log!(
                 AUTH,
-                "{} session load failed step=permissions err=InsecureAuthFile",
-                P::LABEL
+                "{}session load failed step=permissions err=InsecureAuthFile",
+                P::TRACE_PREFIX
             );
             return Err(P::error(SessionError::InsecureAuthFile));
         }
         Err(error) => {
             trace_log!(
                 AUTH,
-                "{} session load failed step=open_file err={error}",
-                P::LABEL
+                "{}session load failed step=open_file err={error}",
+                P::TRACE_PREFIX
             );
             return Err(storage_error::<P>(error));
         }
     };
-    parse(&bytes)
+    P::parse(&bytes)
         .map_err(|error| {
             trace_log!(
                 AUTH,
-                "{} session load failed step=parse err={error:?}",
-                P::LABEL
+                "{}session load failed step=parse err={error:?}",
+                P::TRACE_PREFIX
             );
             P::error(error)
         })
@@ -320,9 +322,12 @@ fn required_string(object: &Map<String, Value>, key: &str) -> Result<Secret, Ses
     }
 }
 
-pub(crate) fn encode<P: SessionPolicy>(session: &Session) -> Result<Zeroizing<String>, P::Error> {
-    if P::VALIDATE_ACCOUNT_ON_WRITE && !valid_credential_account_id(&session.account_id) {
-        return Err(P::error(SessionError::InvalidSession));
+pub(crate) fn encode(
+    session: &Session,
+    validate_account: bool,
+) -> Result<Zeroizing<String>, SessionError> {
+    if validate_account && !valid_credential_account_id(&session.account_id) {
+        return Err(SessionError::InvalidSession);
     }
     Ok(stringify(session))
 }

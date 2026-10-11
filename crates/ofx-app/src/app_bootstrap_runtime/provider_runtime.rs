@@ -225,6 +225,7 @@ impl AgentSetup {
         self.connection = route.connection;
         self.source = route.source;
         self.account_id = route.account_id;
+        self.team = route.team;
         if let Some(subscription) = route.subscription {
             self.codex_login.sign_in(subscription);
         }
@@ -255,6 +256,7 @@ impl Route {
             configured_model,
             source: CredentialSource::Codex,
             account_id: None,
+            team: None,
             subscription: None,
             uses_tls: false,
             login: Login::Missing,

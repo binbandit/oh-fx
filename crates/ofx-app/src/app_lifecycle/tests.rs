@@ -249,6 +249,7 @@ fn run_a_codex_session(home: &Path) -> ! {
         },
         grok: ofx_auth::GrokEndpoints::default(),
         gateway: ofx_gateway::GatewayEndpoints::default(),
+        vercel: ofx_auth::VercelEndpoints::default(),
     };
     let setup = runtime
         .block_on(profile.connect_interactive(

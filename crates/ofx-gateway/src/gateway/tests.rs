@@ -654,3 +654,213 @@ async fn tool_images_reach_the_gateway_in_a_follow_up_user_message_unless_denied
     assert_eq!(sent.body_text().matches(&encoded).count(), 1);
     assert_eq!(measured.as_deref(), Some(&*sent.body_text()));
 }
+
+struct ScriptedRefresh {
+    answer: Mutex<Option<Result<Option<GatewayAccess>, String>>>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedRefresh {
+    fn new(answer: Result<Option<GatewayAccess>, String>) -> Arc<Self> {
+        Arc::new(Self {
+            answer: Mutex::new(Some(answer)),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl GatewayRefresh for ScriptedRefresh {
+    fn refresh<'a>(
+        &'a self,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let answer = lock(&self.answer).take().unwrap_or(Ok(None));
+        Box::pin(async move { answer })
+    }
+}
+
+struct StalledRefresh;
+
+impl GatewayRefresh for StalledRefresh {
+    fn refresh<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        Box::pin(async move {
+            cancel.cancelled().await;
+            Ok(None)
+        })
+    }
+}
+
+#[derive(Default)]
+struct SavingRefresh {
+    saved: std::sync::atomic::AtomicBool,
+}
+
+impl GatewayRefresh for SavingRefresh {
+    fn refresh<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        Box::pin(async move {
+            cancel.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.saved.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(GatewayAccess::new(
+                "login-new-token".to_owned(),
+                Some("team_1".to_owned()),
+                i64::MAX,
+            )))
+        })
+    }
+}
+
+fn signed_in(
+    server: &FakeServer,
+    refresh_after_ms: i64,
+    refresh: Arc<dyn GatewayRefresh>,
+) -> GatewayProvider {
+    GatewayProvider::new(
+        GatewayCredential::new(
+            Some("login-old-token".to_owned()),
+            Some("team_1".to_owned()),
+        )
+        .refreshed_by(refresh_after_ms, refresh),
+        USER_AGENT,
+        GatewayEndpoints {
+            chat: chat_url(server),
+        },
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_due_login_token_is_refreshed_before_the_request_and_both_tokens_stay_masked() {
+    let server = FakeServer::start([
+        Reply::sse(&[STOP]),
+        Reply::status(400, "login-old-token login-new-token"),
+    ]);
+    let refresh = ScriptedRefresh::new(Ok(Some(GatewayAccess::new(
+        "login-new-token".to_owned(),
+        Some("team_1".to_owned()),
+        i64::MAX,
+    ))));
+    let gateway = signed_in(&server, 0, Arc::<ScriptedRefresh>::clone(&refresh));
+    let (result, events) = run(&gateway, None).await;
+    result.unwrap();
+    assert!(events.contains(&StreamEvent::CredentialRefreshed {
+        source: "fx_login",
+        forced: false
+    }));
+    let request = only_request(&server);
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer login-new-token")
+    );
+    assert_eq!(request.header("x-vercel-ai-gateway-team"), Some("team_1"));
+    let (failed, _) = run(&gateway, None).await;
+    let shown = format!("{:?}", failed.unwrap_err());
+    assert!(!shown.contains("login-old-token"), "{shown}");
+    assert!(!shown.contains("login-new-token"), "{shown}");
+    assert_eq!(refresh.calls(), 1);
+}
+
+#[tokio::test]
+async fn a_refresh_that_fails_or_moves_the_team_keeps_the_current_token() {
+    for (answer, error) in [
+        (Err("ConnectionFailed".to_owned()), "ConnectionFailed"),
+        (
+            Ok(Some(GatewayAccess::new(
+                "login-new-token".to_owned(),
+                Some("team_2".to_owned()),
+                i64::MAX,
+            ))),
+            "CredentialAuthorityChanged",
+        ),
+    ] {
+        let server = FakeServer::start([Reply::sse(&[STOP])]);
+        let refresh = ScriptedRefresh::new(answer);
+        let gateway = signed_in(&server, 0, refresh);
+        let (result, events) = run(&gateway, None).await;
+        result.unwrap();
+        assert!(events.contains(&StreamEvent::CredentialRefreshFailed {
+            source: "fx_login",
+            forced: false,
+            error: error.to_owned(),
+        }));
+        let request = only_request(&server);
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer login-old-token")
+        );
+        assert_eq!(request.header("x-vercel-ai-gateway-team"), Some("team_1"));
+    }
+}
+
+#[tokio::test]
+async fn a_login_token_that_is_not_due_is_sent_without_a_refresh() {
+    let server = FakeServer::start([Reply::sse(&[STOP])]);
+    let refresh = ScriptedRefresh::new(Ok(None));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    run(&gateway, None).await.0.unwrap();
+    assert_eq!(refresh.calls(), 0);
+    assert_eq!(
+        only_request(&server).header("authorization"),
+        Some("Bearer login-old-token")
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_turn_stops_a_pending_login_refresh_without_sending() {
+    let server = FakeServer::start([]);
+    let gateway = signed_in(&server, 0, Arc::new(StalledRefresh));
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let cancel = CancellationToken::new();
+    let stopper = cancel.clone();
+    let stopping = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stopper.cancel();
+    });
+    let mut sink = |_: StreamEvent| {};
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        gateway.stream(&request, &mut sink, &cancel),
+    )
+    .await
+    .expect("the cancelled turn ends while the refresh is still pending")
+    .unwrap_err();
+    stopping.await.unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_waits_for_a_refresh_that_is_saving_and_then_sends_nothing() {
+    let server = FakeServer::start([]);
+    let refresh = Arc::new(SavingRefresh::default());
+    let gateway = signed_in(&server, 0, Arc::<SavingRefresh>::clone(&refresh));
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let cancel = CancellationToken::new();
+    let stopper = cancel.clone();
+    let stopping = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        stopper.cancel();
+    });
+    let mut sink = |_: StreamEvent| {};
+    let error = gateway
+        .stream(&request, &mut sink, &cancel)
+        .await
+        .unwrap_err();
+    stopping.await.unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(refresh.saved.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(server.requests().is_empty());
+}

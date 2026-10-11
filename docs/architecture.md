@@ -90,7 +90,7 @@ Each file in [`differences/`](differences/) records the deliberate differences f
 
 - [Agent turn loop](differences/agent.md): the turn context, tool results and panics, the response language, and prompts submitted during a turn.
 - [`oh-fx ask`](differences/ask.md): its output, flags, model lookups, and session start.
-- [Logins and credentials](differences/auth.md): ChatGPT and Grok sign-in, credential storage, and refresh.
+- [Logins and credentials](differences/auth.md): ChatGPT, Grok, and Vercel sign-in, credential storage, and refresh.
 - [Auto-mode review](differences/auto-mode.md): what auto mode admits on its own and how the reviewer decides.
 - [Command line and help](differences/cli.md): commands, top-level help, and commands that are not available yet.
 - [Codex](differences/codex.md): the Codex transport and its model catalog.

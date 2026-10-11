@@ -7,6 +7,8 @@ use zeroize::Zeroizing;
 
 use crate::secret::Secret;
 
+pub(crate) mod device;
+
 const SECRET_ENTROPY_BYTES: usize = 32;
 const MILLISECONDS_PER_SECOND: i64 = 1000;
 const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";

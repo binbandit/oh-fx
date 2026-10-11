@@ -195,7 +195,8 @@ An HTTP error from the gateway is reported differently. It prints one `oh-fx ask
 
 | Message | Cause |
 | --- | --- |
-| `oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.` | No `provider` is selected, so oh-fx uses the Vercel AI Gateway, and it found no credential. Run `oh-fx setup`, set `AI_GATEWAY_API_KEY`, run `oh-fx login codex`, or add a connection and select it. |
+| `oh-fx needs access to Vercel AI Gateway. Run oh-fx login to sign in, oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.` | No `provider` is selected, so oh-fx uses the Vercel AI Gateway, and it found no credential, or the Vercel sign-in was revoked or has no team. Run `oh-fx login`, run `oh-fx setup`, set `AI_GATEWAY_API_KEY`, run `oh-fx login codex`, or add a connection and select it. |
+| `oh-fx login is selected but unavailable. Run oh-fx login to reconnect; no other credential was selected.` | `oh-fx login` chose the Vercel sign-in as the gateway credential, and no usable sign-in is saved. oh-fx does not fall back to another credential then. |
 | `oh-fx could not read the stored API key from ...` | A stored key exists but could not be read: the Keychain refused, or the key file is not private or is larger than 8 KiB. Set `OH_FX_TRACE_LOG` and retry to see the failing step, or set `AI_GATEWAY_API_KEY`. |
 | `AI_GATEWAY_API_KEY authentication failed · HTTP 401` | The Vercel AI Gateway rejected the key. `VERCEL_OIDC_TOKEN` is named instead when that variable supplied the token. |
 | `oh-fx: UnknownConfiguredProvider` | `provider` or `OH_FX_PROVIDER` names a connection that is not under `providers`. |
@@ -217,6 +218,7 @@ With no `provider` selected, or `"provider": "gateway"`, oh-fx sends requests to
 | --- | --- |
 | `VERCEL_OIDC_TOKEN` | A Vercel OIDC token. |
 | `AI_GATEWAY_API_KEY` | An AI Gateway API key. |
+| `oh-fx login` | The Vercel sign-in `oh-fx login` saved, with its team. |
 | Stored API key | The key `oh-fx setup` saved. |
 
 A variable that is empty or holds only whitespace counts as unset. With `OH_FX_AUTH_MODE=host-managed`, oh-fx sends no `Authorization` header, for a host that adds its own.
@@ -225,6 +227,29 @@ A variable that is empty or holds only whitespace counts as unset. With `OH_FX_A
 export AI_GATEWAY_API_KEY=...
 oh-fx ask "summarize this repository"
 ```
+
+### Sign in with Vercel
+
+`oh-fx login` (or `oh-fx login vercel`) signs in with your Vercel account through a device code:
+
+```text
+$ oh-fx login
+Open https://vercel.com/oauth/device?user_code=ABCD-EFGH
+Code: ABCD-EFGH
+
+Waiting for authentication...
+```
+
+Open the link, confirm the code, and approve. On macOS, pressing Enter in the terminal opens the link for you. When your account has more than one team, oh-fx asks which team model requests should use; in a terminal, pick one with the arrow keys and Enter, or type its number. oh-fx then saves the sign-in, selects the gateway with this sign-in as its credential (`"provider": "gateway"` and `"credential_source": "fx_login"` in `settings.json`, keeping your saved gateway model or the default), and prints:
+
+```text
+Signed in to Vercel.
+AI Gateway access may still require billing or API setup for the selected account.
+```
+
+The sign-in lives in `$XDG_DATA_HOME/oh-fx/auth.json` (default `~/.local/share/oh-fx/auth.json`) in upstream fx's format, next to an `auth.lock` file, with mode `0600` in a `0700` folder. oh-fx refreshes its access token a minute before it expires, and sends the selected team in the `x-vercel-ai-gateway-team` header. If Vercel rejects the refresh, oh-fx removes the saved sign-in and asks you to sign in again. A sign-in without a team, which happens when the team list cannot be loaded, is saved, but `oh-fx login` then stops with `oh-fx login: configure a Gateway credential first` and selects nothing.
+
+`oh-fx login` reports `authorization denied` when the sign-in is denied, `authorization expired; run oh-fx login again` when the code expires first, and `failed to sign in` when Vercel cannot be reached.
 
 ### Store an API key
 
@@ -242,7 +267,7 @@ The default model is `spacexai/grok-4.7`. `--model`, `OH_FX_MODEL`, and `models.
 
 Requests go to `https://ai-gateway.vercel.sh/v4/ai/language-model`. `OH_FX_GATEWAY_CHAT_URL` sends them to a local test server instead. Only a loopback `http://` URL with a port is used, and anything else is ignored, because that URL receives the key and the whole request.
 
-`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY` or `auth=stored API key (profile file)`, and never print its value. Signing in with Vercel, the model list and credits are not available in oh-fx yet.
+`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`. Choosing another team, signing out of Vercel, the model list and credits are not available in oh-fx yet. Until `oh-fx logout vercel` is, remove `"credential_source"` from `settings.json` to let oh-fx choose among the other credentials again.
 
 ## ChatGPT subscription
 

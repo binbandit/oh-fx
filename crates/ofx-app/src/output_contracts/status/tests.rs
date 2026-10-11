@@ -40,6 +40,7 @@ fn missing() -> AuthStatus {
     AuthStatus {
         active: None,
         help: Some("sign in".to_owned()),
+        team: None,
         logins: SavedLogins::default(),
     }
 }
@@ -67,6 +68,7 @@ fn the_json_snapshot_keeps_raw_values_and_wire_labels() {
     let auth = AuthStatus {
         active: Some(Credential::Codex { expired: true }),
         help: None,
+        team: None,
         logins: SavedLogins {
             codex: true,
             ..SavedLogins::default()
@@ -88,6 +90,7 @@ fn an_active_connection_is_listed_before_the_codex_login() {
     let auth = AuthStatus {
         active: Some(Credential::Connection),
         help: None,
+        team: None,
         logins: SavedLogins {
             codex: true,
             ..SavedLogins::default()
@@ -111,6 +114,7 @@ fn the_gateway_lists_before_the_codex_login_and_its_own_route_names_neither_line
     let auth = AuthStatus {
         active: Some(Credential::Codex { expired: false }),
         help: None,
+        team: None,
         logins: SavedLogins {
             gateway: true,
             codex: true,
@@ -131,8 +135,12 @@ fn the_gateway_lists_before_the_codex_login_and_its_own_route_names_neither_line
     status.model_source = None;
     status.connection = None;
     status.auth = AuthStatus {
-        active: Some(Credential::Gateway(GatewaySource::AiGatewayApiKey)),
+        active: Some(Credential::Gateway {
+            source: GatewaySource::AiGatewayApiKey,
+            expired: false,
+        }),
         help: None,
+        team: None,
         logins: SavedLogins::default(),
     };
     let text = status.render(OutputFormat::Text);
@@ -143,6 +151,34 @@ fn the_gateway_lists_before_the_codex_login_and_its_own_route_names_neither_line
     let json = status.render(OutputFormat::Json);
     assert!(
         json.starts_with("{\"kind\":\"status\",\"model\":\"model-a\",\"model_origin\":\"default\",\"auth\":\"AI_GATEWAY_API_KEY\",\"auth_refreshable\":false,"),
+        "{json}"
+    );
+}
+
+#[test]
+fn an_oh_fx_login_reports_its_refresh_state_and_team_in_upstreams_order() {
+    let mut status = report(
+        AuthStatus {
+            active: Some(Credential::Gateway {
+                source: GatewaySource::FxLogin,
+                expired: true,
+            }),
+            help: None,
+            team: Some("team-slug".to_owned()),
+            logins: SavedLogins::default(),
+        },
+        inspection(ProfileConfigDiagnostic::Clear),
+    );
+    status.model_source = None;
+    status.connection = None;
+    let text = status.render(OutputFormat::Text);
+    assert!(
+        text.contains("\n[status] auth=oh-fx login\n[status] auth_refreshable=true\n[status] auth_expired=true\n[status] team=team-slug\n[status] permission_mode="),
+        "{text}"
+    );
+    let json = status.render(OutputFormat::Json);
+    assert!(
+        json.contains(",\"auth\":\"oh-fx login\",\"auth_refreshable\":true,\"auth_expired\":true,\"team\":\"team-slug\",\"permission_mode\":"),
         "{json}"
     );
 }

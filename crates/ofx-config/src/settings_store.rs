@@ -231,6 +231,11 @@ type WorkspaceEdit<'a> = &'a dyn Fn(&mut Value) -> Result<bool, SettingsWriteErr
 enum Patch<'a> {
     CodexModel(&'a str),
     ProviderModel(&'a ProviderId, &'a str),
+    ProviderCredential {
+        provider: &'a ProviderId,
+        model: &'a str,
+        credential_source: &'a str,
+    },
     ModelPreference {
         provider: &'a ProviderId,
         model: &'a str,
@@ -323,6 +328,25 @@ pub fn save_provider_model(
     commit(paths, Patch::ProviderModel(provider, model), &mut || {})
         .map(drop)
         .map_err(|failure| failure.error)
+}
+
+pub fn save_provider_credential(
+    paths: &ProfilePaths,
+    provider: &ProviderId,
+    model: &str,
+    credential_source: &str,
+) -> Result<(), SettingsWriteError> {
+    commit(
+        paths,
+        Patch::ProviderCredential {
+            provider,
+            model,
+            credential_source,
+        },
+        &mut || {},
+    )
+    .map(drop)
+    .map_err(|failure| failure.error)
 }
 
 pub fn save_model_preference(
@@ -661,6 +685,14 @@ fn apply(
         }
         Patch::ProviderModel(provider, model) => {
             application.changed |= apply_provider_model(root, provider, model)?;
+        }
+        Patch::ProviderCredential {
+            provider,
+            model,
+            credential_source,
+        } => {
+            application.changed |= apply_provider_model(root, provider, model)?;
+            application.changed |= put_string(root, "credential_source", credential_source);
         }
         Patch::ModelPreference {
             provider,

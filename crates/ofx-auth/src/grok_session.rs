@@ -10,10 +10,16 @@ const MUTATION_LOCK_FILE_NAME: &str = "grok-auth.lock";
 pub(crate) struct GrokPolicy;
 impl SessionPolicy for GrokPolicy {
     type Error = GrokError;
-    const LABEL: &'static str = "Grok";
+    type Session = Session;
+    const TRACE_PREFIX: &'static str = "Grok ";
     const AUTH_FILE_NAME: &'static str = AUTH_FILE_NAME;
     const LOCK_FILE_NAME: &'static str = "grok-auth.lock";
-    const VALIDATE_ACCOUNT_ON_WRITE: bool = true;
+    fn parse(bytes: &[u8]) -> Result<Session, SessionError> {
+        subscription_session::parse(bytes)
+    }
+    fn encode(session: &Session) -> Result<zeroize::Zeroizing<String>, GrokError> {
+        subscription_session::encode(session, true).map_err(Self::error)
+    }
     fn error(error: SessionError) -> Self::Error {
         match error {
             SessionError::CredentialStorageUnavailable => GrokError::CredentialStorageUnavailable,
@@ -48,7 +54,7 @@ pub(crate) fn valid_account_id(account_id: &str) -> bool {
 const MAX_AUTH_FILE_BYTES: usize = 64 * 1024;
 #[cfg(test)]
 fn stringify(session: &Session) -> Result<zeroize::Zeroizing<String>, GrokError> {
-    subscription_session::encode::<GrokPolicy>(session)
+    GrokPolicy::encode(session)
 }
 
 #[cfg(test)]

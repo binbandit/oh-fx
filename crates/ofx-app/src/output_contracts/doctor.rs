@@ -85,6 +85,9 @@ impl DoctorReport {
         if self.auth.expired() {
             line(format_args!("auth_expired=true"));
         }
+        if let Some(team) = &self.auth.team {
+            line(format_args!("team={}", safe(team)));
+        }
         line(format_args!(
             "permission_mode={}",
             self.permission_mode.display_label()
@@ -130,6 +133,9 @@ impl DoctorReport {
         );
         if self.auth.expired() {
             object.insert("auth_expired".to_owned(), json!(true));
+        }
+        if let Some(team) = &self.auth.team {
+            object.insert("team".to_owned(), json!(team));
         }
         object.insert(
             "permission_mode".to_owned(),
