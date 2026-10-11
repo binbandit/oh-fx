@@ -400,7 +400,7 @@ fn expect_gateway_outcomes(
     for (result, expected) in cases {
         let shown = format!("{result:?}");
         let outcome = match result {
-            Ok(completion) => ReviewTransportOutcome::Completion(completion),
+            Ok(completion) => ReviewTransportOutcome::Completion(Box::new(completion)),
             Err(error) => gateway_failure(&error),
         };
         assert_eq!(outcome, expected, "{shown}");
@@ -449,7 +449,7 @@ fn gateway_review_http_failures_retry_only_upstreams_transient_statuses() {
 
 #[test]
 fn gateway_review_stream_failures_follow_upstreams_gateway_reviewer() {
-    let undecided = || ReviewTransportOutcome::Completion(undecided());
+    let undecided = || ReviewTransportOutcome::Completion(Box::new(undecided()));
     let transient = ReviewTransportOutcome::TransientFailure;
     let permanent = ReviewTransportOutcome::PermanentFailure;
     expect_gateway_outcomes([
@@ -545,6 +545,7 @@ fn reviewed(decision: &str) -> Completion {
         )],
         finish_reason: FinishReason::ToolCalls,
         usage: Usage::default(),
+        billing: None,
         provider_replay: None,
     }
 }
@@ -575,7 +576,7 @@ async fn a_complete_decision_is_kept_whatever_finish_follows_it() {
         let transport = gateway(&server, None);
         assert_eq!(
             send(&transport, "openai/gpt-5.6-luna").await,
-            ReviewTransportOutcome::Completion(reviewed("caution")),
+            ReviewTransportOutcome::Completion(Box::new(reviewed("caution"))),
             "{ending:?}"
         );
     }
@@ -586,14 +587,14 @@ async fn gateway_review_finishes_that_carry_no_decision_follow_upstream() {
     let cases = [
         (
             vec![r#"{"type":"finish","finishReason":{"unified":"length"}}"#],
-            ReviewTransportOutcome::Completion(undecided()),
+            ReviewTransportOutcome::Completion(Box::new(undecided())),
         ),
         (
             vec![r#"{"type":"text-delta","delta":"thinking"}"#],
-            ReviewTransportOutcome::Completion(Completion {
+            ReviewTransportOutcome::Completion(Box::new(Completion {
                 content: Some("thinking".to_owned()),
                 ..undecided()
-            }),
+            })),
         ),
         (
             vec![

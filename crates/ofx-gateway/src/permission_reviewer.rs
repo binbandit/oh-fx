@@ -148,7 +148,7 @@ impl ReviewTransport for GatewayReviewTransport {
     ) -> BoxFuture<'a, ReviewTransportOutcome> {
         Box::pin(async move {
             match self.provider.review(request, body, cancel).await {
-                Ok(completion) => ReviewTransportOutcome::Completion(completion),
+                Ok(completion) => ReviewTransportOutcome::Completion(Box::new(completion)),
                 Err(error) => gateway_failure(&error),
             }
         })
@@ -169,7 +169,7 @@ fn gateway_failure(error: &ProviderError) -> ReviewTransportOutcome {
         (_, CONTENT_FILTERED) => ReviewTransportOutcome::PermanentFailure,
         (_, PROVIDER_ERROR | REQUEST_FAILED) => ReviewTransportOutcome::TransientFailure,
         (_, code) if GATEWAY_COMPLETIONS.contains(&code) => {
-            ReviewTransportOutcome::Completion(undecided())
+            ReviewTransportOutcome::Completion(Box::new(undecided()))
         }
         _ => ReviewTransportOutcome::PermanentFailure,
     }

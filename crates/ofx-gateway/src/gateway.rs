@@ -244,6 +244,7 @@ fn into_review_completion(
         },
         tool_calls,
         usage,
+        billing: None,
         provider_replay: None,
     })
 }
