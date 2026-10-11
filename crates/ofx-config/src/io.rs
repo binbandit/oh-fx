@@ -280,7 +280,7 @@ impl PrivateDir {
         read_limited(fd, &stat, max_bytes).map(Some)
     }
 
-    pub(crate) fn names(&self) -> Result<Vec<String>, DurableError> {
+    pub fn names(&self) -> Result<Vec<String>, DurableError> {
         let directory = fs::Dir::read_from(&self.fd).map_err(|_| DurableError::Failed)?;
         let mut names = Vec::new();
         for entry in directory {
