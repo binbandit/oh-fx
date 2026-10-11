@@ -480,6 +480,100 @@ fn no_sequence_of_saves_and_refreshes_makes_a_saved_lookup_ambiguous() {
 }
 
 #[test]
+fn a_delete_removes_every_grant_of_the_server_and_endpoint() {
+    let home = Home::new();
+    let store = home.store();
+    let endpoint = "https://mcp.example/a";
+    let mut enclosing = credentials(endpoint, "enclosing");
+    enclosing.resource = "https://mcp.example/".to_owned();
+    let mut other_issuer = credentials(endpoint, "other issuer");
+    other_issuer.issuer = "https://other.example".to_owned();
+    for (identity, grant) in [
+        ("one", credentials(endpoint, "first")),
+        ("one", enclosing),
+        ("one", other_issuer),
+        ("one", credentials("https://mcp.example/b", "elsewhere")),
+        ("two", credentials(endpoint, "other server")),
+    ] {
+        save_for(&store, identity, &grant).unwrap();
+    }
+    let lookup = lookup("one", endpoint, None, None);
+    assert_eq!(
+        store.delete(&lookup),
+        Ok(DeleteResult {
+            removed: 3,
+            repaired_entries: 0
+        })
+    );
+    assert_eq!(
+        tokens(&home),
+        [
+            ("one".to_owned(), "elsewhere".to_owned()),
+            ("two".to_owned(), "other server".to_owned())
+        ]
+    );
+    assert_eq!(store.load(&lookup), Ok(None));
+    let before = fs::read(home.file()).unwrap();
+    assert_eq!(store.delete(&lookup), Ok(DeleteResult::default()));
+    assert_eq!(fs::read(home.file()).unwrap(), before);
+}
+
+#[test]
+fn deleting_the_last_grant_removes_the_file_and_keeps_the_directory() {
+    let home = Home::new();
+    let store = home.store();
+    let endpoint = "https://mcp.example/a";
+    save_for(&store, "one", &credentials(endpoint, "only")).unwrap();
+    assert_eq!(
+        store.delete(&lookup("one", endpoint, None, None)),
+        Ok(DeleteResult {
+            removed: 1,
+            repaired_entries: 0
+        })
+    );
+    assert!(!home.file().exists());
+    assert_eq!(mode(&home.directory()), 0o700);
+}
+
+#[test]
+fn a_delete_sanitizes_a_store_holding_only_unreadable_entries() {
+    let home = Home::new();
+    home.write(r#"{"version":1,"credentials":[{}]}"#);
+    assert_eq!(
+        home.store()
+            .delete(&lookup("one", "https://mcp.example/a", None, None)),
+        Ok(DeleteResult {
+            removed: 0,
+            repaired_entries: 1
+        })
+    );
+    assert!(!home.file().exists());
+}
+
+#[test]
+fn a_delete_without_a_store_writes_nothing_and_refuses_an_unsafe_file() {
+    let home = Home::new();
+    let lookup = lookup("one", "https://mcp.example/a", None, None);
+    assert_eq!(home.store().delete(&lookup), Ok(DeleteResult::default()));
+    assert!(!home.data().exists());
+    home.write("{");
+    assert_eq!(
+        home.store().delete(&lookup),
+        Err(McpError::UnexpectedEndOfInput)
+    );
+    assert_eq!(fs::read_to_string(home.file()).unwrap(), "{");
+    home.write(&store_json(&[ONE]));
+    fs::set_permissions(home.file(), fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        home.store().delete(&lookup),
+        Err(McpError::Durable(DurableError::PermissionsUnsupported))
+    );
+    let held = home.store().open_existing().unwrap().unwrap();
+    assert_eq!(home.store().delete(&lookup), Err(McpError::LockBusy));
+    drop(held);
+}
+
+#[test]
 fn a_save_drops_rejected_entries_and_reports_the_repair() {
     let home = Home::new();
     home.write(r#"{"version":1,"credentials":[{}]}"#);

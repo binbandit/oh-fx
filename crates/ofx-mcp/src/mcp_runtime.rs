@@ -828,6 +828,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod authentication;
 
 #[cfg(test)]
+mod logout_tests;
+
+#[cfg(test)]
 mod oauth_tests;
 
 #[cfg(test)]

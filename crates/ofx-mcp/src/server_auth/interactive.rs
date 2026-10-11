@@ -35,6 +35,15 @@ pub fn authentication_error_message(error: &McpError) -> Cow<'static, str> {
     }
 }
 
+pub(crate) fn oauth_client(options: &ConnectOptions) -> Result<reqwest::Client, McpError> {
+    ofx_http::build_connection_client(&ConnectionOptions {
+        user_agent: options.user_agent.clone(),
+        follow_redirects: false,
+        ..ConnectionOptions::default()
+    })
+    .map_err(|_| McpError::HttpClientUnavailable)
+}
+
 pub(crate) fn authentication_target(config: &McpServerConfig) -> Result<(), McpError> {
     if config.transport == TransportType::Stdio {
         return Err(McpError::McpAuthenticationNotRemote);
@@ -81,12 +90,7 @@ pub(crate) async fn authenticate(
                 .ok_or(McpError::McpClientSecretEnvironmentMissing)
         })
         .transpose()?;
-    let http = ofx_http::build_connection_client(&ConnectionOptions {
-        user_agent: options.user_agent.clone(),
-        follow_redirects: false,
-        ..ConnectionOptions::default()
-    })
-    .map_err(|_| McpError::HttpClientUnavailable)?;
+    let http = oauth_client(options)?;
     let client = ClientConfig {
         resource: auth.resource.as_deref(),
         issuer: auth.issuer.as_deref(),
@@ -99,7 +103,7 @@ pub(crate) async fn authenticate(
     let previous_scope = previous
         .as_ref()
         .map(|credentials| credentials.scope.as_str());
-    let generation = state.generation();
+    let generation = state.current_generation()?;
     let challenge = state.pending();
     let credentials = match authorize_interactive(
         &http,

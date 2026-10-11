@@ -7,23 +7,32 @@ use crate::health::AuthenticationState;
 use crate::mcp_auth::{Challenge, Credentials};
 use crate::mcp_contract::McpServerConfig;
 
+mod logout;
+
 #[derive(Debug, Default)]
 pub(crate) struct AuthState {
     inner: Mutex<AuthInner>,
+    publication: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Default)]
 struct AuthInner {
     generation: u64,
+    logout_epoch: u64,
+    logging_out: bool,
     pending: Option<Challenge>,
     challenge_present: bool,
     credentials_present: bool,
     grant: Option<Credentials>,
+    discarded: Vec<Credentials>,
 }
 
 impl AuthState {
     pub(crate) fn store_pending(&self, challenge: Challenge) {
         let mut inner = self.lock();
+        if inner.logging_out {
+            return;
+        }
         inner.generation = inner.generation.saturating_add(1);
         inner.pending = Some(challenge);
         inner.challenge_present = true;
@@ -41,7 +50,7 @@ impl AuthState {
 
     pub(crate) fn refreshed(&self, expected_generation: u64, credentials: &Credentials) -> bool {
         let mut inner = self.lock();
-        if inner.generation != expected_generation {
+        if inner.logging_out || inner.generation != expected_generation {
             return false;
         }
         inner.credentials_present = true;
@@ -61,7 +70,7 @@ impl AuthState {
         if cancel.is_cancelled() {
             return Err(McpError::Cancelled);
         }
-        if inner.generation != generation {
+        if inner.logging_out || inner.generation != generation {
             return Err(McpError::McpAuthorityChanged);
         }
         let saved = save(&credentials)?;
@@ -77,19 +86,77 @@ impl AuthState {
         self.lock().grant.clone()
     }
 
-    pub(crate) fn set_credentials_loaded(&self, loaded: bool) -> u64 {
+    pub(crate) fn check_authority(&self) -> Result<(), McpError> {
+        if self.lock().logging_out {
+            Err(McpError::McpAuthorityChanged)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn current_generation(&self) -> Result<u64, McpError> {
+        let inner = self.lock();
+        if inner.logging_out {
+            Err(McpError::McpAuthorityChanged)
+        } else {
+            Ok(inner.generation)
+        }
+    }
+
+    pub(crate) async fn publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.publication.lock().await
+    }
+
+    pub(crate) fn publishable(&self, generation: u64) -> bool {
+        let inner = self.lock();
+        !inner.logging_out && inner.generation == generation
+    }
+
+    pub(crate) fn begin_connection(&self) -> Result<u64, McpError> {
+        let inner = self.lock();
+        if inner.logging_out {
+            Err(McpError::McpAuthorityChanged)
+        } else {
+            Ok(inner.logout_epoch)
+        }
+    }
+
+    pub(crate) fn credentials_loaded(&self, epoch: u64, loaded: bool) -> Result<u64, McpError> {
         let mut inner = self.lock();
+        if inner.logging_out || inner.logout_epoch != epoch {
+            return Err(McpError::McpAuthorityChanged);
+        }
         if loaded {
             inner.generation = inner.generation.saturating_add(1);
         }
         inner.credentials_present = loaded;
-        inner.generation
+        Ok(inner.generation)
+    }
+
+    pub(crate) fn bound_to(&self, epoch: u64) -> bool {
+        self.lock().logout_epoch == epoch
+    }
+
+    pub(crate) fn discard_refreshed(
+        &self,
+        epoch: u64,
+        refreshed: Credentials,
+    ) -> Option<Credentials> {
+        let mut inner = self.lock();
+        if inner.logout_epoch != epoch {
+            return Some(refreshed);
+        }
+        if inner.logging_out {
+            inner.discarded.push(refreshed);
+        }
+        None
     }
 
     pub(crate) fn pending(&self) -> Challenge {
         self.lock().pending.clone().unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
         self.lock().generation
     }
@@ -157,7 +224,7 @@ mod tests {
             state.authentication(&config(true)),
             AuthenticationState::Configured
         );
-        state.set_credentials_loaded(true);
+        state.credentials_loaded(0, true).unwrap();
         assert_eq!(
             state.authentication(&config(false)),
             AuthenticationState::Authenticated
@@ -181,7 +248,7 @@ mod tests {
     #[test]
     fn rejected_credentials_mark_reauthentication_required() {
         let state = AuthState::default();
-        state.set_credentials_loaded(true);
+        state.credentials_loaded(0, true).unwrap();
         let generation = state.generation();
         state.mark_reauthentication_required(generation);
         assert_eq!(
@@ -194,7 +261,7 @@ mod tests {
     #[test]
     fn a_refresh_keeps_the_generation_and_a_newer_one_fences_stale_results() {
         let state = AuthState::default();
-        state.set_credentials_loaded(true);
+        state.credentials_loaded(0, true).unwrap();
         let earlier = state.generation();
         assert!(state.refreshed(earlier, &grant()));
         assert_eq!(state.generation(), earlier);
@@ -208,6 +275,99 @@ mod tests {
         state.mark_reauthentication_required(earlier);
         assert_eq!(
             state.authentication(&config(true)),
+            AuthenticationState::Authenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn a_logout_fence_refuses_publication_until_rollback() {
+        let state = AuthState::default();
+        let epoch = state.begin_connection().unwrap();
+        state.credentials_loaded(epoch, true).unwrap();
+        state
+            .publish(
+                state.generation(),
+                &CancellationToken::new(),
+                grant(),
+                |_| Ok(()),
+            )
+            .unwrap();
+        state.store_pending(Challenge {
+            scope: Some("tools.call".to_owned()),
+            ..Challenge::default()
+        });
+        let generation = state.generation();
+        let detached = state.begin_logout().await.unwrap();
+        assert_eq!(
+            detached.grant().map(|grant| grant.client_id.as_str()),
+            Some("client")
+        );
+        assert!(state.grant().is_none());
+        assert_eq!(state.generation(), generation);
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::None
+        );
+        assert_eq!(state.check_authority(), Err(McpError::McpAuthorityChanged));
+        assert_eq!(
+            state.current_generation(),
+            Err(McpError::McpAuthorityChanged)
+        );
+        assert_eq!(state.begin_connection(), Err(McpError::McpAuthorityChanged));
+        assert_eq!(
+            state.credentials_loaded(epoch, true),
+            Err(McpError::McpAuthorityChanged)
+        );
+        assert!(!state.publishable(generation));
+        assert!(!state.refreshed(generation, &grant()));
+        state.store_pending(Challenge::default());
+        assert_eq!(state.generation(), generation);
+        assert!(state.begin_logout().await.is_err());
+        state.restore_after_logout(detached);
+        assert_eq!(state.generation(), generation);
+        assert_eq!(state.check_authority(), Ok(()));
+        assert!(state.grant().is_some());
+        assert_eq!(state.pending().scope.as_deref(), Some("tools.call"));
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::Required
+        );
+        assert!(state.bound_to(epoch));
+    }
+
+    #[tokio::test]
+    async fn a_committed_logout_moves_the_generation_and_the_epoch() {
+        let state = AuthState::default();
+        let epoch = state.begin_connection().unwrap();
+        let generation = state.credentials_loaded(epoch, true).unwrap();
+        let detached = state.begin_logout().await.unwrap();
+        drop(detached);
+        state.commit_logout();
+        state.finish_logout();
+        assert!(!state.bound_to(epoch));
+        assert!(state.generation() > generation);
+        assert_eq!(
+            state.credentials_loaded(epoch, true),
+            Err(McpError::McpAuthorityChanged)
+        );
+        let fresh = state.begin_connection().unwrap();
+        assert!(state.credentials_loaded(fresh, false).is_ok());
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restore_keeps_presence_flags_without_a_grant() {
+        let state = AuthState::default();
+        state.credentials_loaded(0, true).unwrap();
+        let detached = state.begin_logout().await.unwrap();
+        assert!(detached.grant().is_none());
+        state.restore_after_logout(detached);
+        assert!(state.grant().is_none());
+        assert_eq!(
+            state.authentication(&config(false)),
             AuthenticationState::Authenticated
         );
     }

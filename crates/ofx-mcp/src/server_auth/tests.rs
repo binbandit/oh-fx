@@ -554,7 +554,7 @@ mod stored {
         let replacing = Arc::clone(&state);
         let server = FakeServer::start(move |request| {
             if request.path == "/token" {
-                replacing.set_credentials_loaded(true);
+                replacing.credentials_loaded(0, true).ok();
                 return Reply::json(r#"{"error":"invalid_grant"}"#).with_status(400);
             }
             reply(request, RENEWED)
