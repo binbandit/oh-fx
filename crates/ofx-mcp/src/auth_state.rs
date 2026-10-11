@@ -1,7 +1,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::health::AuthenticationState;
-use crate::mcp_auth::Challenge;
+use crate::mcp_auth::{Challenge, Credentials};
 use crate::mcp_contract::McpServerConfig;
 
 #[derive(Debug, Default)]
@@ -15,6 +15,7 @@ struct AuthInner {
     pending: Option<Challenge>,
     challenge_present: bool,
     credentials_present: bool,
+    grant: Option<Credentials>,
 }
 
 impl AuthState {
@@ -35,14 +36,28 @@ impl AuthState {
         inner.credentials_present = false;
     }
 
-    pub(crate) fn refreshed(&self, expected_generation: u64) -> bool {
+    pub(crate) fn refreshed(&self, expected_generation: u64, credentials: &Credentials) -> bool {
         let mut inner = self.lock();
         if inner.generation != expected_generation {
             return false;
         }
         inner.credentials_present = true;
         inner.challenge_present = false;
+        inner.grant = Some(credentials.clone());
         true
+    }
+
+    pub(crate) fn authenticated(&self, credentials: Credentials) {
+        let mut inner = self.lock();
+        inner.generation = inner.generation.saturating_add(1);
+        inner.pending = None;
+        inner.challenge_present = false;
+        inner.credentials_present = true;
+        inner.grant = Some(credentials);
+    }
+
+    pub(crate) fn grant(&self) -> Option<Credentials> {
+        self.lock().grant.clone()
     }
 
     pub(crate) fn set_credentials_loaded(&self, loaded: bool) -> u64 {
@@ -88,6 +103,25 @@ mod tests {
     use super::*;
     use crate::mcp_contract::{McpAuthConfig, TransportType};
 
+    fn grant() -> Credentials {
+        Credentials {
+            endpoint: "https://mcp.example/mcp".to_owned(),
+            resource: "https://mcp.example/mcp".to_owned(),
+            issuer: "https://issuer.example".to_owned(),
+            client_id: "client".to_owned(),
+            client_secret: None,
+            access_token: zeroize::Zeroizing::new("access".to_owned()),
+            refresh_token: None,
+            scope: String::new(),
+            token_type: "Bearer".to_owned(),
+            token_endpoint_auth_method: "none".to_owned(),
+            expires_at_ms: i64::MAX,
+            authorization_endpoint: "https://issuer.example/authorize".to_owned(),
+            token_endpoint: "https://issuer.example/token".to_owned(),
+            revocation_endpoint: None,
+        }
+    }
+
     fn config(auth: bool) -> McpServerConfig {
         McpServerConfig {
             auth: auth.then(McpAuthConfig::default),
@@ -120,7 +154,7 @@ mod tests {
             AuthenticationState::Required
         );
         assert_eq!(state.pending().scope.as_deref(), Some("tools.call"));
-        assert!(state.refreshed(state.generation()));
+        assert!(state.refreshed(state.generation(), &grant()));
         assert_eq!(
             state.authentication(&config(false)),
             AuthenticationState::Authenticated
@@ -145,15 +179,15 @@ mod tests {
         let state = AuthState::default();
         state.set_credentials_loaded(true);
         let earlier = state.generation();
-        assert!(state.refreshed(earlier));
+        assert!(state.refreshed(earlier, &grant()));
         assert_eq!(state.generation(), earlier);
         state.store_pending(Challenge::default());
-        assert!(!state.refreshed(earlier));
+        assert!(!state.refreshed(earlier, &grant()));
         assert_eq!(
             state.authentication(&config(true)),
             AuthenticationState::Required
         );
-        assert!(state.refreshed(state.generation()));
+        assert!(state.refreshed(state.generation(), &grant()));
         state.mark_reauthentication_required(earlier);
         assert_eq!(
             state.authentication(&config(true)),

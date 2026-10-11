@@ -379,6 +379,29 @@ impl Server {
             .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))
     }
 
+    pub(crate) async fn reconnect(self: &Arc<Self>) -> Result<(), McpError> {
+        let deadline = startup_deadline(&self.config);
+        let _recovering = timeout_at(deadline, self.recovery.lock())
+            .await
+            .map_err(|_| McpError::McpRequestTimedOut)?;
+        self.connect(Box::pin(McpClient::connect_until(
+            &self.config,
+            &self.options,
+            deadline,
+            &self.auth,
+        )))
+        .await
+        .map_err(|failure| failure.error)?;
+        ofx_trace::log(
+            "mcp",
+            format_args!(
+                "reconnected server with refreshed credentials server={} transport=negotiated",
+                self.config.name
+            ),
+        );
+        Ok(())
+    }
+
     pub(crate) fn publish_catalog<T: FeatureCatalog>(
         &self,
         client: &Arc<McpClient>,

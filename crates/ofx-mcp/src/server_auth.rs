@@ -1,25 +1,18 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StateMutex, PoisonError};
 
-use ofx_http::ConnectionOptions;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tokio_util::sync::CancellationToken;
-use zeroize::Zeroizing;
 
 use crate::auth_state::AuthState;
 use crate::error::McpError;
 use crate::mcp_auth::{
-    AuthorizationResult, Challenge, ClientConfig, Credentials, IssuerMismatch,
-    authorize_interactive, collect_authenticate_header, now_ms, parse_challenge,
-    refresh_credentials,
+    Credentials, collect_authenticate_header, now_ms, parse_challenge, refresh_credentials,
 };
 use crate::mcp_auth_store::{CredentialStore, GrantLookup};
-use crate::mcp_contract::{
-    ConfigSource, HttpHeader, McpServerConfig, TransportType, WorkspaceAdmission,
-};
-use crate::server_transport::{ConnectOptions, StartupFailure};
+use crate::mcp_contract::{HttpHeader, McpServerConfig};
+use crate::server_transport::StartupFailure;
 use crate::streamable_http::{HeaderError, validate_header_value, validate_static_headers};
 
 const CREDENTIALS_EXPIRED: &str = "MCP credentials expired.";
@@ -58,8 +51,9 @@ impl HttpAuth {
         oauth_client: impl FnOnce() -> Result<reqwest::Client, McpError>,
         environment: &(dyn Fn(&str) -> Option<String> + Sync),
     ) -> Result<Self, StartupFailure> {
-        let loaded = match store {
-            Some(store) if config.allow_stored_credentials => {
+        let loaded = match (store, state.grant()) {
+            (Some(store), Some(credentials)) => Some((store, credentials)),
+            (Some(store), None) if config.allow_stored_credentials => {
                 let lookup = GrantLookup::for_server(config)
                     .map_err(|error| unreadable_store(&config.name, error))?;
                 load_stored(lookup, &store)
@@ -197,7 +191,7 @@ fn unreadable_store(server: &str, error: McpError) -> StartupFailure {
     StartupFailure::explained(error, Some(UNREADABLE_STORE.to_owned()))
 }
 
-async fn load_stored(
+pub(crate) async fn load_stored(
     lookup: GrantLookup,
     store: &CredentialStore,
 ) -> Result<Option<Credentials>, McpError> {
@@ -290,7 +284,7 @@ impl Installing {
             trace_store_repair("refresh", &self.server, saved.repaired_entries);
         }
         let header = bearer_header(&refreshed)?;
-        if !self.state.refreshed(self.generation) {
+        if !self.state.refreshed(self.generation, &refreshed) {
             return Ok(self.current_bearer());
         }
         *credentials = refreshed;
@@ -358,89 +352,10 @@ fn resolve_headers(
     Ok(headers)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthenticationOutcome {
-    Authenticated { repaired_entries: usize },
-    IssuerMismatch(IssuerMismatch),
-}
+mod interactive;
 
-pub(crate) async fn authenticate(
-    config: &McpServerConfig,
-    options: &ConnectOptions,
-    challenge: &Challenge,
-    open_url: &(dyn Fn(&str) -> bool + Sync),
-    cancel: &CancellationToken,
-    environment: &(dyn Fn(&str) -> Option<String> + Sync),
-) -> Result<AuthenticationOutcome, McpError> {
-    if config.transport == TransportType::Stdio {
-        return Err(McpError::McpAuthenticationNotRemote);
-    }
-    if config.source == ConfigSource::Workspace
-        && config.workspace_admission != Some(WorkspaceAdmission::Approved)
-    {
-        return Err(McpError::McpWorkspaceApprovalRequired);
-    }
-    if !config.allow_stored_credentials {
-        return Err(McpError::McpStoredCredentialsNotAllowed);
-    }
-    let store = options
-        .profile_data
-        .as_deref()
-        .map(CredentialStore::new)
-        .ok_or(McpError::HomeNotSet)?;
-    let lookup = GrantLookup::for_server(config)?;
-    let previous = load_stored(lookup.clone(), &store).await?;
-    let auth = config.auth.clone().unwrap_or_default();
-    let client_secret = auth
-        .client_secret_env
-        .as_deref()
-        .map(|name| {
-            environment(name)
-                .map(Zeroizing::new)
-                .ok_or(McpError::McpClientSecretEnvironmentMissing)
-        })
-        .transpose()?;
-    let http = ofx_http::build_connection_client(&ConnectionOptions {
-        user_agent: options.user_agent.clone(),
-        follow_redirects: false,
-        ..ConnectionOptions::default()
-    })
-    .map_err(|_| McpError::HttpClientUnavailable)?;
-    let client = ClientConfig {
-        resource: auth.resource.as_deref(),
-        issuer: auth.issuer.as_deref(),
-        client_id: auth.client_id.as_deref(),
-        client_secret: client_secret.as_deref().map(String::as_str),
-        client_metadata_url: auth.client_metadata_url.as_deref(),
-        scopes: &auth.scopes,
-        callback_port: auth.callback_port,
-    };
-    let previous_scope = previous
-        .as_ref()
-        .map(|credentials| credentials.scope.as_str());
-    let credentials = match authorize_interactive(
-        &http,
-        config.remote_url()?,
-        &client,
-        challenge,
-        previous_scope,
-        open_url,
-        cancel,
-    )
-    .await?
-    {
-        AuthorizationResult::Credentials(credentials) => credentials,
-        AuthorizationResult::IssuerMismatch(mismatch) => {
-            return Ok(AuthenticationOutcome::IssuerMismatch(mismatch));
-        }
-    };
-    let saved = tokio::task::spawn_blocking(move || store.save(&lookup, &credentials))
-        .await
-        .map_err(|_| McpError::Cancelled)??;
-    Ok(AuthenticationOutcome::Authenticated {
-        repaired_entries: saved.repaired_entries,
-    })
-}
+pub use interactive::{AuthenticationOutcome, authentication_error_message};
+pub(crate) use interactive::{GrantUse, authenticate, authentication_target};
 
 #[cfg(test)]
 mod capture_tests;

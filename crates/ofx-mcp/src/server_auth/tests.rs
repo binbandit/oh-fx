@@ -1,5 +1,10 @@
+use ofx_http::ConnectionOptions;
+use tokio_util::sync::CancellationToken;
+
 use super::*;
-use crate::mcp_contract::{HttpHeaderEnv, TransportType};
+use crate::mcp_auth::Challenge;
+use crate::mcp_contract::{ConfigSource, HttpHeaderEnv, TransportType, WorkspaceAdmission};
+use crate::server_transport::ConnectOptions;
 use crate::streamable_http::HeaderError;
 
 fn config() -> McpServerConfig {
@@ -853,7 +858,8 @@ mod authenticating {
         let result = authenticate(
             config,
             options,
-            &Challenge::default(),
+            &AuthState::default(),
+            GrantUse::LaterSessions,
             &open,
             &CancellationToken::new(),
             environment,

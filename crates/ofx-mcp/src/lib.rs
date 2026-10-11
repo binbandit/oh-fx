@@ -88,7 +88,7 @@ pub use project_config::{
     expand_approved_workspace_configs, merge_native, parse_profile_document,
     parse_workspace_document, render_workspace_diagnostic,
 };
-pub use server_auth::AuthenticationOutcome;
+pub use server_auth::{AuthenticationOutcome, authentication_error_message};
 pub use server_transport::ConnectOptions;
 pub use settings_choices::{ProjectMcpSettingsChange, apply_project_mcp_action_to_entry};
 pub use startup_admission::{StartupDecision, StartupPhase, decide_startup};
