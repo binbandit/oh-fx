@@ -71,7 +71,7 @@ note = "Bounded Codex npm release lookup exists with its failed, rejected and in
 upstream = "src/gateway/responses_permission_reviewer.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/permission_reviewer.rs"]
-note = "Codex permission-review transport is implemented; shared reviewer routing to Grok and other Responses providers is absent."
+note = "Codex permission-review transport is implemented with its transport trace lines; shared reviewer routing to Grok and other Responses providers is absent."
 
 [[file]]
 upstream = "src/gateway/responses_protocol.zig"
