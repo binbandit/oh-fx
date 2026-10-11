@@ -59,6 +59,7 @@ impl ElicitationCapabilities {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Answer {
     AcceptForm(Vec<(String, String)>),
+    AcceptUrl,
     Decline,
     Cancel,
 }
@@ -74,6 +75,7 @@ impl Answer {
                     .join(",");
                 format!("{{\"action\":\"accept\",\"content\":{{{fields}}}}}")
             }
+            Self::AcceptUrl => "{\"action\":\"accept\"}".to_owned(),
             Self::Decline => "{\"action\":\"decline\"}".to_owned(),
             Self::Cancel => "{\"action\":\"cancel\"}".to_owned(),
         }
@@ -83,7 +85,33 @@ impl Answer {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RequestKind {
     Form(FormSchema),
-    Url,
+    Url(UrlRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UrlRequest {
+    pub(crate) url: String,
+    pub(crate) host: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostClassification {
+    Ordinary,
+    Punycode,
+    NonAscii,
+}
+
+pub(crate) fn classify_host(host: &[u8]) -> HostClassification {
+    if host
+        .split(|byte| *byte == b'.')
+        .any(|label| label.len() >= 4 && label[..4].eq_ignore_ascii_case(b"xn--"))
+    {
+        return HostClassification::Punycode;
+    }
+    if host.iter().any(|byte| *byte >= 0x80) {
+        return HostClassification::NonAscii;
+    }
+    HostClassification::Ordinary
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,7 +124,7 @@ impl Request {
     pub(crate) fn mode(&self) -> Mode {
         match self.kind {
             RequestKind::Form(_) => Mode::Form,
-            RequestKind::Url => Mode::Url,
+            RequestKind::Url(_) => Mode::Url,
         }
     }
 }
@@ -129,7 +157,7 @@ pub(crate) fn parse_request(wire: ElicitationWire, params: &Value) -> Outcome<Re
                 MAX_STRING_BYTES,
                 ElicitationError::InvalidRequest,
             )?;
-            uri::classify_url(url)?;
+            let host = uri::classify_url(url)?;
             if wire == ElicitationWire::LegacyMcp2025_11 {
                 bounded_string(
                     object.get("elicitationId"),
@@ -139,7 +167,10 @@ pub(crate) fn parse_request(wire: ElicitationWire, params: &Value) -> Outcome<Re
             } else if object.contains_key("elicitationId") {
                 return Err(ElicitationError::InvalidRequest);
             }
-            RequestKind::Url
+            RequestKind::Url(UrlRequest {
+                url: url.to_owned(),
+                host,
+            })
         }
     };
     Ok(Request { message, kind })
@@ -164,9 +195,10 @@ pub(crate) fn validate_answer(request: &Request, answer: &Answer) -> Outcome<()>
         return Err(ElicitationError::LimitExceeded);
     }
     match (answer, &request.kind) {
-        (Answer::Decline | Answer::Cancel, _) => Ok(()),
+        (Answer::Decline | Answer::Cancel, _) | (Answer::AcceptUrl, RequestKind::Url(_)) => Ok(()),
         (Answer::AcceptForm(content), RequestKind::Form(form)) => form.validate_answers(content),
-        (Answer::AcceptForm(_), RequestKind::Url) => Err(ElicitationError::InvalidResponse),
+        (Answer::AcceptForm(_), RequestKind::Url(_))
+        | (Answer::AcceptUrl, RequestKind::Form(_)) => Err(ElicitationError::InvalidResponse),
     }
 }
 

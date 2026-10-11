@@ -31,7 +31,10 @@ fn answering(
     let context = ElicitationContext::new(
         wire,
         OperationElicitation {
-            responder: InputResponder::new(Arc::new(Answers(Mutex::new(answers)))),
+            responder: InputResponder::new(
+                Arc::new(Answers(Mutex::new(answers))),
+                Arc::new(|_: &str| true),
+            ),
             server_name: "fixture".to_owned(),
             owner: Box::new(Owner(Arc::clone(&current))),
         },
@@ -87,7 +90,7 @@ async fn requests_are_refused_in_upstream_order_and_bounded() {
     let url = br#"{"jsonrpc":"2.0","id":2,"method":"elicitation/create","params":{"mode":"url","message":"Open","url":"https://example.test/","elicitationId":"e"}}"#;
     assert_eq!(
         context.respond(url).await.unwrap(),
-        "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32602,\"message\":\"Unsupported elicitation mode\"}}"
+        r#"{"jsonrpc":"2.0","id":2,"result":{"action":"cancel"}}"#
     );
     for params in [
         r#"{"message":"hi"}"#,
@@ -182,7 +185,7 @@ async fn a_finished_operation_cancels_its_open_question() {
     let context = ElicitationContext::new(
         ElicitationWire::LegacyMcp2025_11,
         OperationElicitation {
-            responder: InputResponder::new(Arc::new(Silent)),
+            responder: InputResponder::new(Arc::new(Silent), Arc::new(|_: &str| true)),
             server_name: "fixture".to_owned(),
             owner: Box::new(Owner(Arc::new(AtomicBool::new(true)))),
         },
@@ -263,7 +266,10 @@ fn desk_context(desk: &Arc<Desk>) -> Arc<ElicitationContext> {
         ElicitationContext::new(
             ElicitationWire::LegacyMcp2025_11,
             OperationElicitation {
-                responder: InputResponder::new(Arc::clone(desk) as Arc<dyn QuestionAsker>),
+                responder: InputResponder::new(
+                    Arc::clone(desk) as Arc<dyn QuestionAsker>,
+                    Arc::new(|_: &str| true),
+                ),
                 server_name: "fixture".to_owned(),
                 owner: Box::new(Owner(Arc::new(AtomicBool::new(true)))),
             },

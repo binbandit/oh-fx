@@ -53,13 +53,13 @@ note = "Launch preparation, the private cidfile, and cleanup match upstream, inc
 upstream = "src/core/mcp/elicitation.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/elicitation.rs", "crates/ofx-mcp/src/elicitation/form.rs", "crates/ofx-mcp/src/elicitation/secret.rs", "crates/ofx-mcp/src/elicitation/uri.rs", "crates/ofx-mcp/src/fmt_int.rs"]
-note = "Capabilities, request parsing for the 2025-06-18 and 2025-11-25 wires, form schemas with their limits, patterns, exact number bounds, formats and defaults, secret-field refusal, URL classification and response validation exist; URL-required errors and completion correlation are missing. The ACP projection and wire, the modern capability fallback and canonicalResponse, which only ACP uses, belong to the ACP and 2026-07-28 protocol work."
+note = "Capabilities, request parsing for the 2025-06-18 and 2025-11-25 wires, form schemas with their limits, patterns, exact number bounds, formats and defaults, secret-field refusal, URL and host classification and response validation exist; URL-required errors and completion correlation are missing. The ACP projection and wire, the modern capability fallback and canonicalResponse, which only ACP uses, belong to the ACP and 2026-07-28 protocol work."
 
 [[file]]
 upstream = "src/core/mcp/elicitation_interaction.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/elicitation_interaction.rs"]
-note = "The form questions, fill choices, kept values, multi-select, the review, compact single-choice forms, bounded retries and the input deadline exist, asked through a QuestionAsker; URL consent, the browser and legacy URL completion are missing."
+note = "The form questions, fill choices, kept values, multi-select, the review, compact single-choice forms, bounded retries, the input deadline, URL consent with host warnings and the browser with its manual and retry choices exist, asked through a QuestionAsker; legacy URL completion is missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog.zig"

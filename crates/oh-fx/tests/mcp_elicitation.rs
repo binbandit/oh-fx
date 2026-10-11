@@ -37,6 +37,10 @@ while IFS= read -r line; do
 done
 "#;
 
+const LAUNCHER: &str = "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$MCP_STATE/opened\"\n";
+
+const CONNECT_URL: &str = r#"{"mode":"url","message":"Connect your account","url":"https://example.test/connect?state=opaque","elicitationId":"connect-1"}"#;
+
 const NAME_FORM: &str = r#"{"message":"Who are you?","requestedSchema":{"type":"object","properties":{"name":{"type":"string","title":"Name"}},"required":["name"]}}"#;
 
 struct Home {
@@ -81,6 +85,14 @@ impl Home {
             settings.to_string(),
         )
         .expect("write settings");
+        let launchers = root.join("bin");
+        fs::create_dir_all(&launchers).expect("create the launcher directory");
+        for name in ["open", "xdg-open"] {
+            let launcher = launchers.join(name);
+            fs::write(&launcher, LAUNCHER).expect("write the browser launcher");
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
+                .expect("make it executable");
+        }
         let script = root.join("eliciting.sh");
         fs::write(&script, ELICITING_SERVER).expect("write the server script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
@@ -109,7 +121,10 @@ impl Home {
             .current_dir(self.root.join("workspace"))
             .env_clear()
             .env("HOME", &self.root)
-            .env("PATH", "/usr/bin:/bin")
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
+            )
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_DATA_HOME", self.root.join("data"))
@@ -181,7 +196,7 @@ fn a_terminal_ask_answers_an_mcp_form_on_stderr() {
     assert_eq!(status, Some(0), "{}", session.screen());
     assert!(
         home.state("initialize")
-            .contains(r#""capabilities":{"elicitation":{"form":{}}}"#)
+            .contains(r#""capabilities":{"elicitation":{"form":{},"url":{}}}"#)
     );
     assert_eq!(
         home.state("answer"),
@@ -295,7 +310,7 @@ fn the_shell_asks_for_an_mcp_form_in_its_question_panel() {
     );
     assert!(
         home.state("initialize")
-            .contains(r#""capabilities":{"elicitation":{"form":{}}}"#)
+            .contains(r#""capabilities":{"elicitation":{"form":{},"url":{}}}"#)
     );
     exit(session);
 }
@@ -327,4 +342,54 @@ fn the_shell_submits_a_short_single_choice_form_from_one_panel() {
         "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"result\":{\"action\":\"accept\",\"content\":{\"color\":\"blue\"}}}\n"
     );
     exit(session);
+}
+
+#[test]
+fn the_shell_opens_a_consented_url_with_the_platform_launcher() {
+    let server = provider();
+    let home = Home::with(&server, "yolo", CONNECT_URL);
+    let session = shell(&home);
+    let screen = wait(
+        &session,
+        "Open it? oh-fx will not fetch this URL or see browser contents.",
+    );
+    for line in [
+        "  MCP server fixture requests an external browser action. Target host: example.test\n",
+        "  Complete URL: https://example.test/connect?state=opaque\n",
+        "    1) Open URL",
+        "    2) Decline",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    session.send(b"1");
+    wait(&session, "done");
+    assert_eq!(
+        home.state("opened"),
+        "https://example.test/connect?state=opaque\n"
+    );
+    assert_eq!(
+        home.state("answer"),
+        "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"result\":{\"action\":\"accept\"}}\n"
+    );
+    exit(session);
+}
+
+#[test]
+fn a_terminal_ask_declines_a_url_without_opening_it() {
+    let server = provider();
+    let home = Home::with(&server, "ask", CONNECT_URL);
+    let mut session = PtySession::spawn(home.command(), 40, 200).expect("spawn oh-fx in a pty");
+    let screen = wait(&session, "Choose a number or enter a value:");
+    assert!(
+        screen.contains("Complete URL: https://example.test/connect?state=opaque\nOpen it? oh-fx will not fetch this URL or see browser contents.\n  1. Open URL\n  2. Decline\nChoose a number or enter a value:"),
+        "{screen}"
+    );
+    session.send(b"2\r");
+    let status = session.wait_exit(WAIT).and_then(|status| status.code());
+    assert_eq!(status, Some(0), "{}", session.screen());
+    assert_eq!(
+        home.state("answer"),
+        "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"result\":{\"action\":\"decline\"}}\n"
+    );
+    assert!(!home.state.join("opened").exists());
 }
