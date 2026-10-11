@@ -69,6 +69,9 @@ pub(crate) enum Outcome {
     },
     CompletePrompt(Completion),
     CompleteResource(Completion),
+    Authenticate {
+        server: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +118,7 @@ pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRunti
         return trust(rest);
     }
     if command == "auth" || command.starts_with("auth ") {
-        return show(auth(&command["auth".len()..]));
+        return auth(&command["auth".len()..], runtime);
     }
     if let Some(name) = command.strip_prefix("logout ") {
         let name = name.trim_matches(TRIMMED);
@@ -160,6 +163,10 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
         } => host.get_prompt(server, name, arguments),
         Outcome::CompletePrompt(completion) => host.complete_prompt(completion),
         Outcome::CompleteResource(completion) => host.complete_resource(completion),
+        Outcome::Authenticate { server } => {
+            let body = host.begin_authentication(server);
+            state.notice(NoticeTone::Neutral, TOPIC, &body);
+        }
     }
 }
 
@@ -421,17 +428,29 @@ fn trust(rest: &str) -> Outcome {
     Outcome::Trust { body, action }
 }
 
-fn auth(rest: &str) -> &'static str {
+fn auth(rest: &str, runtime: &McpRuntime) -> Outcome {
     let mut tokens = rest.split(TRIMMED).filter(|token| !token.is_empty());
-    let name = tokens.next();
-    let confirmation = tokens.next();
-    if name.is_none()
-        || tokens.next().is_some()
-        || confirmation.is_some_and(|value| value != "--open")
-    {
-        return AUTH_USAGE;
+    let (Some(name), confirmation) = (tokens.next(), tokens.next()) else {
+        return show(AUTH_USAGE);
+    };
+    if tokens.next().is_some() || confirmation.is_some_and(|value| value != "--open") {
+        return show(AUTH_USAGE);
     }
-    "Interactive MCP authentication is not available yet."
+    if let Err(error) = runtime.validate_authentication_server(name) {
+        return Outcome::Show(authentication_failed(name, &error));
+    }
+    if confirmation.is_none() {
+        return Outcome::Show(format!(
+            "Run /mcp auth {name} --open to confirm opening your browser."
+        ));
+    }
+    Outcome::Authenticate {
+        server: name.to_owned(),
+    }
+}
+
+pub(crate) fn authentication_failed(name: &str, error: &McpError) -> String {
+    format!("MCP authentication for '{name}' failed: {error}.")
 }
 
 fn remove(config_path: &Path, name: &str) -> Outcome {
@@ -606,8 +625,8 @@ mod tests {
 
     use ofx_config::ContextLimits;
     use ofx_mcp::{
-        ConnectOptions, NativeConfigLoad, PromptArgument, PromptContentKind, PromptMessage,
-        PromptRole,
+        ConfigSource, ConnectOptions, McpServerConfig, NativeConfigLoad, PromptArgument,
+        PromptContentKind, PromptMessage, PromptRole, TransportType, WorkspaceAdmission,
     };
 
     use super::*;
@@ -785,22 +804,81 @@ mod tests {
         assert_eq!(shown("remove", Some(&path)), USAGE);
     }
 
+    fn authenticating_runtime() -> McpRuntime {
+        McpRuntime::new(
+            NativeConfigLoad {
+                configs: vec![
+                    McpServerConfig::remote("docs", TransportType::Http, "https://mcp.example/mcp"),
+                    McpServerConfig::stdio("local", "/bin/true", Vec::new()),
+                    McpServerConfig {
+                        source: ConfigSource::Workspace,
+                        workspace_admission: Some(WorkspaceAdmission::Pending),
+                        ..McpServerConfig::remote(
+                            "project",
+                            TransportType::Http,
+                            "https://mcp.example/project",
+                        )
+                    },
+                ],
+                ..NativeConfigLoad::default()
+            },
+            ConnectOptions::default(),
+            Vec::new(),
+            ContextLimits::default(),
+        )
+    }
+
+    #[test]
+    fn mcp_auth_checks_its_arguments_and_the_server_before_it_asks_to_confirm() {
+        let (_home, path) = profile();
+        let runtime = authenticating_runtime();
+        let respond_to = |command: &str| respond(command, Some(path.as_path()), &runtime);
+        for (command, expected) in [
+            ("auth", AUTH_USAGE.to_owned()),
+            ("auth docs extra", AUTH_USAGE.to_owned()),
+            ("auth docs --close", AUTH_USAGE.to_owned()),
+            ("auth --open docs", AUTH_USAGE.to_owned()),
+            ("authx docs", USAGE.to_owned()),
+            (
+                "auth docs",
+                "Run /mcp auth docs --open to confirm opening your browser.".to_owned(),
+            ),
+            (
+                "auth absent --open",
+                "MCP authentication for 'absent' failed: McpServerNotFound.".to_owned(),
+            ),
+            (
+                "auth local",
+                "MCP authentication for 'local' failed: McpAuthenticationNotRemote.".to_owned(),
+            ),
+            (
+                "auth project --open",
+                "MCP authentication for 'project' failed: McpWorkspaceApprovalRequired.".to_owned(),
+            ),
+            (
+                "auth --open",
+                "MCP authentication for '--open' failed: McpServerNotFound.".to_owned(),
+            ),
+        ] {
+            assert_eq!(respond_to(command), Outcome::Show(expected), "{command}");
+        }
+        assert_eq!(
+            respond_to(" auth \t docs \t --open "),
+            Outcome::Authenticate {
+                server: "docs".to_owned()
+            }
+        );
+        assert_eq!(
+            respond("auth docs --open", None, &runtime),
+            Outcome::Show(HOME_UNAVAILABLE.to_owned())
+        );
+    }
+
     #[test]
     fn unported_features_check_their_arguments_then_say_they_are_not_available_yet() {
         let (_home, path) = profile();
         let path = Some(path.as_path());
         for (command, expected) in [
-            ("auth", AUTH_USAGE),
-            ("auth docs extra", AUTH_USAGE),
-            ("auth docs --close", AUTH_USAGE),
-            (
-                "auth docs",
-                "Interactive MCP authentication is not available yet.",
-            ),
-            (
-                "auth docs --open",
-                "Interactive MCP authentication is not available yet.",
-            ),
             ("logout docs db", LOGOUT_USAGE),
             ("logout docs", "MCP logout is not available yet."),
             ("logout", USAGE),

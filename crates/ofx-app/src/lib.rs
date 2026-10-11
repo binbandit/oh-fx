@@ -19,6 +19,7 @@ mod feedback_command;
 mod file_mention_runtime;
 mod herdr;
 mod hooks;
+mod mcp_auth_notices;
 mod mcp_commands;
 mod mcp_model_catalog;
 mod model_cache_runtime;
