@@ -22,6 +22,7 @@ impl Shell<'_> {
         self.help_menu = None;
         self.settings_menu = None;
         self.statusline_menu = None;
+        self.usage_menu = None;
         self.model_menu = None;
         self.close_picker();
         self.workspace_menu = Some(WorkspaceMenuState::open(menu));

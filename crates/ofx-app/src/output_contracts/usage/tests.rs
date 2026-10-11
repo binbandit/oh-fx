@@ -25,6 +25,7 @@ fn report(coverage: UsageCoverage, completeness: UsageCompleteness) -> UsageRepo
         completeness,
         totals: (coverage != UsageCoverage::NotStarted).then(|| totals(12, 0.25)),
         models: Vec::new(),
+        session_activity: None,
     }
 }
 

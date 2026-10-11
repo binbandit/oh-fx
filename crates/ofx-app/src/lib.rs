@@ -36,6 +36,7 @@ mod skill_mention_runtime;
 mod skills;
 mod tool_set;
 mod trace_command;
+mod usage_dashboard_runtime;
 mod user_settings;
 mod workspace_commands;
 
