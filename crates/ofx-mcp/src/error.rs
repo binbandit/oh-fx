@@ -2,6 +2,7 @@ use std::io;
 use std::sync::Arc;
 
 use ofx_config::DurableError;
+use ofx_images::ImageError;
 use ofx_jsonrpc::RpcError;
 
 use crate::mcp_contract::InvalidServerConfig;
@@ -233,6 +234,8 @@ pub enum McpError {
     Endpoint(#[from] EndpointError),
     #[error(transparent)]
     Header(#[from] HeaderError),
+    #[error(transparent)]
+    Image(#[from] ImageError),
     #[error("InvalidEnvelope")]
     InvalidEnvelope,
     #[error("ProtocolFailure")]

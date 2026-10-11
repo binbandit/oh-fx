@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use ofx_contract::{
     BoxFuture, CallDescription, CallPresentation, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES,
-    PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec,
+    PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect, ToolImage, ToolOutput, ToolSpec,
     format_plain_action, format_tool_execution_error_json, parse_strict_json_value,
     parse_tool_args_object,
 };
@@ -119,7 +119,7 @@ impl PreparedCall for FeatureCall {
                 .await
             {
                 None => failure(&McpError::Cancelled),
-                Some(Ok(output)) => ToolOutput::success(output),
+                Some(Ok(output)) => output,
                 Some(Err(error)) => failure(&error),
             }
         })
@@ -247,8 +247,9 @@ fn context_arguments(
     Some(arguments)
 }
 
-async fn call(runtime: &McpRuntime, request: &Request) -> Result<String, McpError> {
-    let output = match model_output(runtime, request).await {
+async fn call(runtime: &McpRuntime, request: &Request) -> Result<ToolOutput, McpError> {
+    let mut images = Vec::new();
+    let output = match model_output(runtime, request, &mut images).await {
         Err(McpError::McpResourcesUnsupported | McpError::McpPromptsUnsupported) => {
             feature_result::unsupported(request.action, &request.server)
         }
@@ -257,10 +258,14 @@ async fn call(runtime: &McpRuntime, request: &Request) -> Result<String, McpErro
     if output.len() > DEFAULT_MAX_TOOL_RESULT_BYTES {
         return Err(McpError::McpFeatureOutputLimitExceeded);
     }
-    Ok(output)
+    Ok(ToolOutput::success(output).with_images(images))
 }
 
-async fn model_output(runtime: &McpRuntime, request: &Request) -> Result<String, McpError> {
+async fn model_output(
+    runtime: &McpRuntime,
+    request: &Request,
+    images: &mut Vec<ToolImage>,
+) -> Result<String, McpError> {
     let server = request.server.as_str();
     match request.action {
         FeatureAction::ResourceList | FeatureAction::ResourceTemplates => {
@@ -274,11 +279,14 @@ async fn model_output(runtime: &McpRuntime, request: &Request) -> Result<String,
         }
         FeatureAction::ResourceRead => {
             match runtime.read_resource(server, &request.identity).await {
-                Ok(contents) => Ok(feature_result::resource_read(
-                    server,
-                    &request.identity,
-                    &contents,
-                )),
+                Ok(contents) => {
+                    *images = feature_result::resource_images(&contents)?;
+                    Ok(feature_result::resource_read(
+                        server,
+                        &request.identity,
+                        &contents,
+                    ))
+                }
                 Err(failure) => diagnostic(failure),
             }
         }
@@ -291,11 +299,14 @@ async fn model_output(runtime: &McpRuntime, request: &Request) -> Result<String,
                 .get_prompt(server, &request.identity, &request.arguments_json)
                 .await
             {
-                Ok(result) => Ok(feature_result::prompt_get(
-                    server,
-                    &request.identity,
-                    &result,
-                )),
+                Ok(result) => {
+                    *images = feature_result::prompt_images(&result)?;
+                    Ok(feature_result::prompt_get(
+                        server,
+                        &request.identity,
+                        &result,
+                    ))
+                }
                 Err(failure) => diagnostic(failure),
             }
         }

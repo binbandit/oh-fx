@@ -873,6 +873,7 @@ dependencies = [
  "ofx-config",
  "ofx-contract",
  "ofx-http",
+ "ofx-images",
  "ofx-jsonrpc",
  "ofx-text",
  "ofx-trace",
