@@ -36,6 +36,11 @@ fn launch(clipboard_exit: i32) -> (tempfile::TempDir, Launched) {
 fn launch_with(clipboard_exit: i32, replies: Vec<Reply>) -> (tempfile::TempDir, Launched) {
     let home = tempfile::tempdir().expect("prepare the trace test");
     let root = home.path().canonicalize().expect("prepare the trace test");
+    let launched = launch_in(&root, clipboard_exit, replies);
+    (home, launched)
+}
+
+fn launch_in(root: &Path, clipboard_exit: i32, replies: Vec<Reply>) -> Launched {
     let workspace = root.join("workspace");
     let config = root.join("config/oh-fx");
     let bin = root.join("bin");
@@ -75,7 +80,7 @@ fn launch_with(clipboard_exit: i32, replies: Vec<Reply>) -> (tempfile::TempDir, 
     command
         .current_dir(&workspace)
         .env_clear()
-        .env("HOME", &root)
+        .env("HOME", root)
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_DATA_HOME", root.join("data"))
@@ -92,16 +97,13 @@ fn launch_with(clipboard_exit: i32, replies: Vec<Reply>) -> (tempfile::TempDir, 
     session
         .wait_for(WAIT, |screen| screen.contains("Run /help for commands"))
         .expect("prepare the trace test");
-    (
-        home,
-        Launched {
-            workspace,
-            reports,
-            copied,
-            session,
-            server,
-        },
-    )
+    Launched {
+        workspace,
+        reports,
+        copied,
+        session,
+        server,
+    }
 }
 
 fn saved_report(reports: &Path) -> PathBuf {
@@ -1040,4 +1042,82 @@ fn a_saved_codex_ask_writes_its_title_generation_lines() {
             traced.log
         );
     }
+}
+
+fn mode(path: &Path) -> u32 {
+    fs::metadata(path)
+        .expect("read the mode")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+#[test]
+fn quitting_saves_the_shutdown_stages_that_the_next_trace_reports() {
+    const STAGES: [&str; 8] = [
+        "terminal_released",
+        "background_stops_requested",
+        "persistence_finalized",
+        "mcp_children_terminated",
+        "terminals_ended",
+        "credentials_saved",
+        "worker_thread_joined",
+        "complete",
+    ];
+    let (home, mut launched) = launch(0);
+    quit(&mut launched);
+    let root = home.path().canonicalize().expect("prepare the trace test");
+    let state = root.join("state/oh-fx");
+    let saved = state.join("diagnostics/last-shutdown.json");
+    assert_eq!(mode(&state), 0o700);
+    assert_eq!(mode(&state.join("diagnostics")), 0o700);
+    assert_eq!(mode(&saved), 0o600);
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&saved).expect("read the shutdown report"))
+            .expect("parse the shutdown report");
+    assert_eq!(report["version"], 1);
+    assert!(report["recorded_at_ms"].as_i64().is_some_and(|ms| ms > 0));
+    let names: Vec<&str> = report["stages"]
+        .as_array()
+        .expect("the stages")
+        .iter()
+        .map(|stage| stage["name"].as_str().expect("a stage name"))
+        .collect();
+    assert_eq!(names.len(), STAGES.len(), "{report}");
+    assert_eq!(names.last(), Some(&"complete"), "{report}");
+    let log = fs::read_to_string(launched.workspace.join("trace.log")).expect("read the log");
+    for stage in STAGES {
+        assert!(names.contains(&stage), "{stage}\n{report}");
+        assert!(
+            log.contains(&format!("[shutdown] stage name={stage} step_ms=")),
+            "{stage}\n{log}"
+        );
+    }
+
+    let mut relaunched = launch_in(&root, 0, Vec::new());
+    relaunched.session.send(b"/trace\r");
+    relaunched
+        .session
+        .wait_for(WAIT, |screen| {
+            screen.contains(&format!("Trace copied to clipboard. {REVIEW}"))
+        })
+        .expect("the trace is copied");
+    let traced = fs::read_to_string(&relaunched.copied).expect("read the copied report");
+    let section = traced
+        .split("\n## Last Shutdown\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("the Last Shutdown section");
+    assert!(
+        section.starts_with(&format!("total_ms={} recorded=", report["total_ms"])),
+        "{section}"
+    );
+    let listed: Vec<&str> = section
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.strip_prefix("- "))
+        .filter_map(|line| line.split(" step_ms=").next())
+        .collect();
+    assert_eq!(listed, names, "{section}");
+    quit(&mut relaunched);
 }

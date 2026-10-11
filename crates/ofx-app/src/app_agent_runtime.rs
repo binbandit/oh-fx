@@ -302,6 +302,7 @@ impl ControllerState {
                 title: self.session_title.current(),
                 generation: self.title_progress.snapshot(),
             },
+            state_directory: self.setup.preferences().map(|paths| paths.state.clone()),
             rings: self.rings,
         };
         start_trace(&self.emit, Arc::clone(&self.clipboard), facts);

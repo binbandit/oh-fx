@@ -322,9 +322,7 @@ fn run_a_worker_that_panics() -> ! {
         shell_options(),
         events,
         receiver,
-        None,
-        None,
-        None,
+        Leaving::default(),
         |events, mut commands| {
             let _ = commands.blocking_recv();
             assert!(panic::catch_unwind(|| panic!("tool exploded")).is_err());
@@ -395,9 +393,7 @@ fn run_a_shell_that_copies(directory: &Path) -> ! {
         shell_options(),
         events,
         receiver,
-        None,
-        None,
-        None,
+        Leaving::default(),
         move |_, mut commands| {
             while commands.blocking_recv().is_some() {}
             fs::write(stopped, "").unwrap();
@@ -709,9 +705,10 @@ fn run_a_shell_while_an_install_is_held(directory: &Path) -> ! {
         shell_options(),
         events,
         receiver,
-        None,
-        None,
-        Some(&upgrader),
+        Leaving {
+            upgrader: Some(&upgrader),
+            ..Leaving::default()
+        },
         |_, mut commands| while commands.blocking_recv().is_some() {},
     );
     process::exit(i32::from(outcome.is_err()));

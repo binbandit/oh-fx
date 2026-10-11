@@ -47,6 +47,7 @@ use crate::herdr::{Herdr, HerdrObserver};
 use crate::hooks;
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
+use crate::shutdown_report::ShutdownTrace;
 use crate::skill_mention_runtime::SkillMentions;
 use crate::skills::Installations;
 use startup_resume::open_requested;
@@ -338,12 +339,14 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
     let installations = session.setup.skills().installations();
+    let state = session.profile.paths().map(|paths| paths.state.clone());
+    let shutdown = ShutdownTrace::default();
     let agent = agent_work(
         session.setup,
         (session.persistence, picking, session.ultrafast_requested),
         session.executions,
         steering,
-        runtime,
+        (runtime, shutdown.clone()),
         (lifecycle, hooks),
         upgrade.shortcut(),
     );
@@ -351,12 +354,35 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         options,
         sender,
         receiver,
-        refreshes.as_deref(),
-        Some(&installations),
-        upgrade.upgrader(),
+        Leaving {
+            refreshes: refreshes.as_deref(),
+            installations: Some(&installations),
+            upgrader: upgrade.upgrader(),
+            shutdown: Some(&shutdown),
+        },
         agent,
     )?;
+    shutdown.mark("complete");
+    if let Some(state) = state {
+        shutdown.save(&state, ofx_trace::timestamp_ms());
+    }
     upgrade.relaunch().map_err(SessionError::Relaunch)
+}
+
+#[derive(Clone, Copy, Default)]
+struct Leaving<'a> {
+    refreshes: Option<&'a DetachedRefreshes>,
+    installations: Option<&'a Installations>,
+    upgrader: Option<&'a SessionUpgrader>,
+    shutdown: Option<&'a ShutdownTrace>,
+}
+
+impl Leaving<'_> {
+    fn mark(&self, stage: &'static str) {
+        if let Some(shutdown) = self.shutdown {
+            shutdown.mark(stage);
+        }
+    }
 }
 
 fn agent_work(
@@ -364,7 +390,7 @@ fn agent_work(
     (persistence, pick_at_start, ultrafast_requested): (Option<Persistence>, bool, bool),
     executions: ManagedExecutions,
     steering: Arc<WorkerRuntime>,
-    runtime: Runtime,
+    (runtime, shutdown): (Runtime, ShutdownTrace),
     (herdr, hooks): (Option<Arc<Herdr>>, HookView),
     upgrade: UpgradeShortcut,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
@@ -388,16 +414,20 @@ fn agent_work(
                 tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
             });
             Box::pin(controller.run(commands)).await;
+            shutdown.mark("persistence_finalized");
             if let Some(discovery) = discovery {
                 discovery.abort();
             }
             if let Some(mcp) = &mcp {
                 mcp.shutdown(ShutdownMode::Immediate).await;
             }
+            shutdown.mark("mcp_children_terminated");
             executions.shutdown().await;
+            shutdown.mark("terminals_ended");
             if let Some(refreshes) = refreshes {
                 refreshes.settle().await;
             }
+            shutdown.mark("credentials_saved");
         });
         runtime.shutdown_timeout(Duration::from_millis(100));
     }
@@ -435,13 +465,11 @@ fn host(
     options: ShellOptions,
     events: UiEventSender,
     receiver: UiEventReceiver,
-    refreshes: Option<&DetachedRefreshes>,
-    installations: Option<&Installations>,
-    upgrader: Option<&SessionUpgrader>,
+    leaving: Leaving<'_>,
     work: impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static,
 ) -> Result<(), SessionError> {
     let stop_upgrader = || {
-        if let Some(upgrader) = upgrader {
+        if let Some(upgrader) = leaving.upgrader {
             upgrader.stop_for_process_exit();
         }
     };
@@ -465,8 +493,11 @@ fn host(
             )
         })
         .unwrap_or_else(|payload| panic::resume_unwind(payload));
+    leaving.mark("terminal_released");
     stop_upgrader();
-    worker.finish(refreshes, installations, &panics)?;
+    leaving.mark("background_stops_requested");
+    worker.finish(leaving.refreshes, leaving.installations, &panics)?;
+    leaving.mark("worker_thread_joined");
     Ok(result?)
 }
 
