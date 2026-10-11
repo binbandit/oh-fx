@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use nix::sys::signal::{SigSet, SigmaskHow, Signal as NixSignal};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::Mode;
 use rustix::io::Errno;
@@ -172,6 +173,15 @@ fn release_terminal() {
 }
 
 fn restore_echo(terminal: &OwnedFd) -> io::Result<()> {
+    let mut stops = SigSet::empty();
+    stops.add(NixSignal::SIGTTOU);
+    let previous = stops.thread_swap_mask(SigmaskHow::SIG_BLOCK)?;
+    let restored = enable_echo(terminal);
+    previous.thread_set_mask()?;
+    restored
+}
+
+fn enable_echo(terminal: &OwnedFd) -> io::Result<()> {
     let mut modes = tcgetattr(terminal)?;
     modes.local_modes.insert(LocalModes::ECHO);
     tcsetattr(terminal, OptionalActions::Now, &modes)?;
