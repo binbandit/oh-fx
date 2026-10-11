@@ -9,10 +9,16 @@ const MUTATION_LOCK_FILE_NAME: &str = "chatgpt-auth.lock";
 pub(crate) struct ChatGptPolicy;
 impl SessionPolicy for ChatGptPolicy {
     type Error = ChatGptError;
-    const LABEL: &'static str = "ChatGPT";
+    type Session = Session;
+    const TRACE_PREFIX: &'static str = "ChatGPT ";
     const AUTH_FILE_NAME: &'static str = AUTH_FILE_NAME;
     const LOCK_FILE_NAME: &'static str = "chatgpt-auth.lock";
-    const VALIDATE_ACCOUNT_ON_WRITE: bool = false;
+    fn parse(bytes: &[u8]) -> Result<Session, SessionError> {
+        subscription_session::parse(bytes)
+    }
+    fn encode(session: &Session) -> Result<zeroize::Zeroizing<String>, ChatGptError> {
+        subscription_session::encode(session, false).map_err(Self::error)
+    }
     fn error(error: SessionError) -> Self::Error {
         match error {
             SessionError::CredentialStorageUnavailable => {
@@ -47,7 +53,7 @@ fn parse(bytes: &[u8]) -> Result<Session, ChatGptError> {
 }
 #[cfg(test)]
 fn stringify(session: &Session) -> zeroize::Zeroizing<String> {
-    subscription_session::encode::<ChatGptPolicy>(session).expect("ChatGPT session encoding")
+    ChatGptPolicy::encode(session).expect("ChatGPT session encoding")
 }
 #[cfg(test)]
 mod tests {

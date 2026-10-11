@@ -1,4 +1,6 @@
 use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
     BoxFuture, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
@@ -18,6 +20,8 @@ use crate::vercel_protocol::{
 pub const GATEWAY_TITLE_MODEL: &str = "openai/gpt-5.6-luna";
 const CHAT_URL: &str = "https://ai-gateway.vercel.sh/v4/ai/language-model";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
+const REFRESHED_SOURCE: &str = "fx_login";
+const AUTHORITY_CHANGED: &str = "CredentialAuthorityChanged";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayEndpoints {
@@ -32,9 +36,41 @@ impl Default for GatewayEndpoints {
     }
 }
 
+pub struct GatewayAccess {
+    token: Zeroizing<String>,
+    team: Option<String>,
+    refresh_after_ms: i64,
+}
+
+impl GatewayAccess {
+    pub fn new(token: String, team: Option<String>, refresh_after_ms: i64) -> Self {
+        Self {
+            token: Zeroizing::new(token),
+            team,
+            refresh_after_ms,
+        }
+    }
+}
+
+impl fmt::Debug for GatewayAccess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GatewayAccess")
+            .field("token", &"<redacted>")
+            .field("team", &self.team)
+            .field("refresh_after_ms", &self.refresh_after_ms)
+            .finish()
+    }
+}
+
+pub trait GatewayRefresh: Send + Sync {
+    fn refresh(&self) -> BoxFuture<'_, Result<Option<GatewayAccess>, String>>;
+}
+
 pub struct GatewayCredential {
     secret: Option<Zeroizing<String>>,
     team: Option<String>,
+    refresh: Option<(i64, Arc<dyn GatewayRefresh>)>,
 }
 
 impl GatewayCredential {
@@ -42,7 +78,14 @@ impl GatewayCredential {
         Self {
             secret: secret.map(Zeroizing::new),
             team,
+            refresh: None,
         }
+    }
+
+    #[must_use]
+    pub fn refreshed_by(mut self, refresh_after_ms: i64, refresh: Arc<dyn GatewayRefresh>) -> Self {
+        self.refresh = Some((refresh_after_ms, refresh));
+        self
     }
 }
 
@@ -52,15 +95,23 @@ impl fmt::Debug for GatewayCredential {
             .debug_struct("GatewayCredential")
             .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
             .field("team", &self.team)
+            .field("refreshable", &self.refresh.is_some())
             .finish()
     }
+}
+
+struct Current {
+    secret: Option<Zeroizing<String>>,
+    team: Option<String>,
+    refresh_after_ms: Option<i64>,
 }
 
 pub struct GatewayProvider {
     client: reqwest::Client,
     chat_url: String,
-    secrets: Zeroizing<Vec<String>>,
-    team: Option<String>,
+    current: Mutex<Current>,
+    secrets: Mutex<Zeroizing<Vec<String>>>,
+    refresh: Option<Arc<dyn GatewayRefresh>>,
     user_agent: String,
     attachments: AttachmentDimensionCache,
 }
@@ -85,20 +136,85 @@ impl GatewayProvider {
             follow_redirects: false,
             ..ConnectionOptions::default()
         })?;
-        let GatewayCredential { secret, team } = credential;
+        let GatewayCredential {
+            secret,
+            team,
+            refresh,
+        } = credential;
+        let secret = secret.filter(|secret| !secret.is_empty());
         let secrets = secret
-            .filter(|secret| !secret.is_empty())
+            .iter()
             .map(|secret| secret.to_string())
-            .into_iter()
-            .collect();
+            .collect::<Vec<_>>();
+        let (refresh_after_ms, refresh) = refresh.unzip();
         Ok(Self {
             client,
             chat_url: endpoints.chat,
-            secrets: Zeroizing::new(secrets),
-            team,
+            current: Mutex::new(Current {
+                secret,
+                team,
+                refresh_after_ms,
+            }),
+            secrets: Mutex::new(Zeroizing::new(secrets)),
+            refresh,
             user_agent: user_agent.to_owned(),
             attachments: AttachmentDimensionCache::default(),
         })
+    }
+
+    fn masked(&self) -> Zeroizing<Vec<String>> {
+        lock(&self.secrets).clone()
+    }
+
+    async fn refresh_if_due(&self, sink: &mut dyn StreamSink) {
+        let Some(refresh) = &self.refresh else {
+            return;
+        };
+        let (due, team) = {
+            let current = lock(&self.current);
+            (
+                current
+                    .refresh_after_ms
+                    .is_some_and(|refresh_after| refresh_after <= now_ms()),
+                current.team.clone(),
+            )
+        };
+        if !due {
+            return;
+        }
+        let fresh = match refresh.refresh().await {
+            Ok(Some(fresh)) if fresh.team == team => fresh,
+            Ok(None) => return,
+            Ok(Some(_)) => {
+                return sink.emit(StreamEvent::CredentialRefreshFailed {
+                    source: REFRESHED_SOURCE,
+                    forced: false,
+                    error: AUTHORITY_CHANGED.to_owned(),
+                });
+            }
+            Err(error) => {
+                return sink.emit(StreamEvent::CredentialRefreshFailed {
+                    source: REFRESHED_SOURCE,
+                    forced: false,
+                    error,
+                });
+            }
+        };
+        let token = fresh.token.to_string();
+        let mut secrets = lock(&self.secrets);
+        if !token.is_empty() && !secrets.contains(&token) {
+            secrets.push(token);
+        }
+        drop(secrets);
+        *lock(&self.current) = Current {
+            secret: Some(fresh.token).filter(|secret| !secret.is_empty()),
+            team: fresh.team,
+            refresh_after_ms: Some(fresh.refresh_after_ms),
+        };
+        sink.emit(StreamEvent::CredentialRefreshed {
+            source: REFRESHED_SOURCE,
+            forced: false,
+        });
     }
 
     fn build(&self, request: &ModelRequest<'_>) -> Result<String, RequestError> {
@@ -128,7 +244,7 @@ impl GatewayProvider {
         let completion = self
             .attempt(request, Some(body), &mut discarded, cancel)
             .await?;
-        into_review_completion(completion, request.model, &self.secrets)
+        into_review_completion(completion, request.model, &self.masked())
     }
 
     async fn complete(
@@ -139,7 +255,7 @@ impl GatewayProvider {
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
         let completion = self.attempt(request, body, sink, cancel).await?;
-        into_completion(completion, request.model, &self.secrets)
+        into_completion(completion, request.model, &self.masked())
     }
 
     async fn attempt(
@@ -156,14 +272,20 @@ impl GatewayProvider {
             Some(body) => body,
             None => self.build(request).map_err(request_failure)?,
         };
+        self.refresh_if_due(sink).await;
+        let (secret, team) = {
+            let current = lock(&self.current);
+            (current.secret.clone(), current.team.clone())
+        };
+        let secrets = self.masked();
         let attempt = GatewayAttempt {
             client: &self.client,
             url: &self.chat_url,
-            api_key: self.secrets.first().map(String::as_str),
-            team: self.team.as_deref(),
+            api_key: secret.as_deref().map(String::as_str),
+            team: team.as_deref(),
             session_id: request.session_id,
             model: request.model,
-            secrets: &self.secrets,
+            secrets: &secrets,
         };
         attempt.stream(payload, sink, cancel).await
     }
@@ -202,6 +324,18 @@ impl ModelProvider for GatewayProvider {
     ) -> Result<Option<ProviderReplay>, ProviderError> {
         select_replay_parts(replay, calls, text, reasoning).map_err(request_failure)
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn request_failure(error: RequestError) -> ProviderError {

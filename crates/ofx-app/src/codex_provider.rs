@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use ofx_auth::{
     CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, GrokEndpoints,
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, loopback_override,
-    prepare_chatgpt_credential, refresh_chatgpt_credential,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, VercelEndpoints,
+    loopback_override, prepare_chatgpt_credential, refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
 use ofx_contract::{
@@ -28,6 +28,7 @@ pub struct SubscriptionEndpoints {
     pub models: CodexModelsEndpoints,
     pub grok: GrokEndpoints,
     pub gateway: GatewayEndpoints,
+    pub vercel: VercelEndpoints,
 }
 
 pub(crate) struct SignedOutProvider;
@@ -149,6 +150,7 @@ impl SubscriptionEndpoints {
     pub fn from_environment() -> Self {
         let mut endpoints = Self {
             chatgpt: ChatGptEndpoints::from_environment(),
+            vercel: VercelEndpoints::from_environment(),
             ..Self::default()
         };
         if let Some(url) = loopback_override(RESPONSES_OVERRIDE) {

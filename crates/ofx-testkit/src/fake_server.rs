@@ -247,19 +247,23 @@ pub struct FakeServer {
 
 impl FakeServer {
     pub fn start(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self::serve_on_loopback(|_| replies, None)
+    }
+
+    pub fn start_at_origin<R: IntoIterator<Item = Reply>>(replies: impl FnOnce(&str) -> R) -> Self {
         Self::serve_on_loopback(replies, None)
     }
 
     pub fn start_tls(replies: impl IntoIterator<Item = Reply>) -> Self {
         Self::serve_on_loopback(
-            replies,
+            |_| replies,
             Some(server_config(TEST_SERVER_CERTIFICATE_PEM, SERVER_KEY_PEM)),
         )
     }
 
     pub fn start_web_tls(replies: impl IntoIterator<Item = Reply>) -> Self {
         Self::serve_on_loopback(
-            replies,
+            |_| replies,
             Some(server_config(
                 WEB_SERVER_CERTIFICATE_PEM,
                 WEB_SERVER_KEY_PEM,
@@ -267,8 +271,8 @@ impl FakeServer {
         )
     }
 
-    fn serve_on_loopback(
-        replies: impl IntoIterator<Item = Reply>,
+    fn serve_on_loopback<R: IntoIterator<Item = Reply>>(
+        replies: impl FnOnce(&str) -> R,
         tls: Option<Arc<ServerConfig>>,
     ) -> Self {
         let scheme = if tls.is_some() { "https" } else { "http" };
@@ -278,7 +282,9 @@ impl FakeServer {
             .expect("make the listener non-blocking");
         let address = listener.local_addr().expect("read the bound address");
         let state = Arc::new(Mutex::new(State {
-            replies: replies.into_iter().collect(),
+            replies: replies(&format!("{scheme}://{address}"))
+                .into_iter()
+                .collect(),
             ..State::default()
         }));
         let (shutdown, signal) = watch::channel(false);

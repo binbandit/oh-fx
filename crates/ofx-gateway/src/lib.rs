@@ -19,7 +19,10 @@ mod vercel_model_policy;
 mod vercel_protocol;
 
 pub use chat_completions::ChatCompletionsProvider;
-pub use gateway::{GATEWAY_TITLE_MODEL, GatewayCredential, GatewayEndpoints, GatewayProvider};
+pub use gateway::{
+    GATEWAY_TITLE_MODEL, GatewayAccess, GatewayCredential, GatewayEndpoints, GatewayProvider,
+    GatewayRefresh,
+};
 pub use model_catalog::CatalogFailure;
 pub use openai_codex::{
     CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh,
