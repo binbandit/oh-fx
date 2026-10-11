@@ -5,6 +5,7 @@ use ofx_contract::{
     ProviderErrorKind, StreamSink,
 };
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
+use ofx_images::AttachmentDimensionCache;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -58,6 +59,7 @@ pub struct GatewayProvider {
     secrets: Zeroizing<Vec<String>>,
     team: Option<String>,
     user_agent: String,
+    attachments: AttachmentDimensionCache,
 }
 
 impl fmt::Debug for GatewayProvider {
@@ -92,7 +94,24 @@ impl GatewayProvider {
             secrets: Zeroizing::new(secrets),
             team,
             user_agent: user_agent.to_owned(),
+            attachments: AttachmentDimensionCache::default(),
         })
+    }
+
+    fn build(&self, request: &ModelRequest<'_>) -> Result<String, RequestError> {
+        match self
+            .attachments
+            .withhold_oversized_attachments(request.messages)
+        {
+            Some(messages) => build_request(
+                &ModelRequest {
+                    messages: &messages,
+                    ..*request
+                },
+                &self.user_agent,
+            ),
+            None => build_request(request, &self.user_agent),
+        }
     }
 
     async fn complete(
@@ -107,7 +126,7 @@ impl GatewayProvider {
         }
         let payload = match body {
             Some(body) => body,
-            None => build_request(request, &self.user_agent).map_err(request_failure)?,
+            None => self.build(request).map_err(request_failure)?,
         };
         let attempt = GatewayAttempt {
             client: &self.client,
@@ -134,7 +153,7 @@ impl ModelProvider for GatewayProvider {
     }
 
     fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
-        build_request(request, &self.user_agent).ok()
+        self.build(request).ok()
     }
 
     fn stream_body<'a>(
