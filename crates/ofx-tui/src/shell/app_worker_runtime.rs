@@ -559,7 +559,10 @@ impl Shell<'_> {
         };
         self.outstanding[index].turn_id = Some(turn_id);
         match self.outstanding[index].state {
-            SubmissionState::Cancelled => self.send(UiCommand::Cancel { turn_id }),
+            SubmissionState::Cancelled | SubmissionState::Withdrawn => {
+                self.outstanding[index].state = SubmissionState::Cancelled;
+                self.send(UiCommand::Cancel { turn_id });
+            }
             SubmissionState::Active => {
                 if let Some(turn) = &mut self.turn
                     && turn.turn_id.is_none()
@@ -728,11 +731,12 @@ impl Shell<'_> {
             return;
         }
         let now_ms = self.now_ms();
-        let Some(submission) = self
-            .outstanding
-            .iter_mut()
-            .find(|submission| submission.state != SubmissionState::Cancelled)
-        else {
+        let Some(submission) = self.outstanding.iter_mut().find(|submission| {
+            !matches!(
+                submission.state,
+                SubmissionState::Cancelled | SubmissionState::Withdrawn
+            )
+        }) else {
             return;
         };
         if submission.state != SubmissionState::Queued {
