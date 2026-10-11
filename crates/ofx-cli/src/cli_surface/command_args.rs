@@ -291,7 +291,7 @@ pub enum SessionTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionAction {
     Detail(SessionTarget),
-    Migrate,
+    Migrate(String),
     Recover,
 }
 
@@ -324,7 +324,7 @@ impl SessionVerb {
                 SessionAction::Detail(SessionTarget::Last)
             }
             Self::Detail => SessionAction::Detail(SessionTarget::Id(operand.value)),
-            Self::Migrate => SessionAction::Migrate,
+            Self::Migrate => SessionAction::Migrate(operand.value),
             Self::Recover => SessionAction::Recover,
         }
     }
