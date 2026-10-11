@@ -91,6 +91,7 @@ fn write_turn_text(out: &mut String, turn: &ArchivedTurn) {
             user,
             assistant,
             tool_call,
+            completed_tool_names,
             execution,
         } => {
             write_user_text(out, user);
@@ -106,6 +107,11 @@ fn write_turn_text(out: &mut String, turn: &ArchivedTurn) {
                     let _ = writeln!(out, "tool_name: {}", safe(&call.tool_name));
                 }
                 None => out.push_str("tool: (none)\n"),
+            }
+            if !completed_tool_names.is_empty() {
+                let names: Vec<String> =
+                    completed_tool_names.iter().map(|name| safe(name)).collect();
+                let _ = writeln!(out, "completed_tools: {}", names.join(", "));
             }
         }
     }
@@ -145,7 +151,7 @@ fn write_execution_text(out: &mut String, execution: &TurnExecution) {
                 result.status.label()
             );
             out.push_str("output:\n");
-            write_text_block(out, result.output());
+            write_text_block(out, &result.output);
         }
     }
     for file in &execution.files {
@@ -197,6 +203,7 @@ fn turn_json(turn: &ArchivedTurn) -> Value {
             user,
             assistant,
             tool_call,
+            completed_tool_names,
             execution,
         } => {
             let mut object = json!({
@@ -208,7 +215,7 @@ fn turn_json(turn: &ArchivedTurn) -> Value {
                     "name": call.tool_name,
                     "arguments_json": call.arguments_json,
                 })),
-                "completed_tool_names": [],
+                "completed_tool_names": completed_tool_names,
             });
             if let (false, Some(fields)) = (execution.is_empty(), object.as_object_mut()) {
                 fields.insert("execution".to_owned(), execution.presentation_json());

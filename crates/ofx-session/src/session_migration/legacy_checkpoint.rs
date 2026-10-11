@@ -107,6 +107,7 @@ pub(super) fn legacy_checkpoint(value: Json<'_>) -> Option<LegacyCheckpoint> {
                 reason: InterruptReason::Failed,
                 partial,
                 pending: None,
+                completed: Vec::new(),
                 cancelled: None,
             },
         };

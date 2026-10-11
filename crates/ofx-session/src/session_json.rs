@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 use crate::session_event::{
     ArtifactCompleteness, CommittedFilePresentation, ToolCallEvent, ToolResultEvent, WireTag,
 };
-use crate::session_log::{ArchivedSteering, ExecutedStep, TurnExecution};
+use crate::session_log::{ArchivedResult, ArchivedSteering, ExecutedStep, TurnExecution};
 
 const PRESENTATION_SCHEMA_VERSION: u64 = 3;
 
@@ -19,9 +19,26 @@ impl TurnExecution {
     }
 }
 
-impl ToolResultEvent {
-    pub fn output(&self) -> &str {
-        self.preview.as_deref().unwrap_or_default()
+impl ArchivedResult {
+    pub(crate) fn from_event(result: ToolResultEvent) -> Self {
+        Self {
+            output: result.preview.clone().unwrap_or_default(),
+            output_handle: Some(result.artifact_ref),
+            output_bytes: result.output_bytes.unwrap_or(result.stored_bytes),
+            stored_output_bytes: result.stored_bytes,
+            truncated: result.completeness != ArtifactCompleteness::Complete,
+            presentation: result
+                .committed_file_presentation
+                .as_deref()
+                .map(presentation_json),
+            call_id: result.call_id,
+            tool_name: result.tool_name,
+            status: result.status,
+            preview: result.preview,
+            provider_native: result.provider_native,
+            created_at_ms: result.created_at_ms,
+            permission_feedback: result.permission_feedback,
+        }
     }
 }
 
@@ -42,7 +59,7 @@ fn call_json(call: &ToolCallEvent) -> Value {
     })
 }
 
-fn result_json(result: &ToolResultEvent) -> Value {
+fn result_json(result: &ArchivedResult) -> Value {
     let mut object = Map::new();
     let mut insert = |key: &str, value: Value| {
         object.insert(key.to_owned(), value);
@@ -50,33 +67,26 @@ fn result_json(result: &ToolResultEvent) -> Value {
     insert("tool_call_id", json!(result.call_id));
     insert("tool_name", json!(result.tool_name));
     insert("status", json!(result.status.label()));
-    insert("output", json!(result.output()));
-    insert("output_handle", json!(result.artifact_ref));
+    insert("output", json!(result.output));
+    if let Some(handle) = &result.output_handle {
+        insert("output_handle", json!(handle));
+    }
     if let Some(preview) = &result.preview {
         insert("preview", json!(preview));
     }
-    insert(
-        "output_bytes",
-        json!(result.output_bytes.unwrap_or(result.stored_bytes)),
-    );
-    insert("stored_output_bytes", json!(result.stored_bytes));
-    insert(
-        "truncated",
-        json!(result.completeness != ArtifactCompleteness::Complete),
-    );
+    insert("output_bytes", json!(result.output_bytes));
+    insert("stored_output_bytes", json!(result.stored_output_bytes));
+    insert("truncated", json!(result.truncated));
     insert("provider_native", json!(result.provider_native));
     insert("created_at_ms", json!(result.created_at_ms));
     insert("permission_feedback", json!(result.permission_feedback));
-    if let Some(presentation) = &result.committed_file_presentation {
-        insert(
-            "committed_file_presentation",
-            presentation_json(presentation),
-        );
+    if let Some(presentation) = &result.presentation {
+        insert("committed_file_presentation", presentation.clone());
     }
     Value::Object(object)
 }
 
-fn presentation_json(presentation: &CommittedFilePresentation) -> Value {
+pub(crate) fn presentation_json(presentation: &CommittedFilePresentation) -> Value {
     let lines: Vec<Value> = presentation
         .lines
         .iter()

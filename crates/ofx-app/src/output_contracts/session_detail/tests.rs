@@ -1,8 +1,5 @@
 use ofx_contract::{FileEvidence, FileEvidenceAction, ToolArgumentIntegrity, ToolResultStatus};
-use ofx_session::{
-    ArtifactCompleteness, CompactedHistory, ExecutedStep, SessionSource, ToolCallEvent,
-    ToolResultEvent,
-};
+use ofx_session::{ArchivedResult, CompactedHistory, ExecutedStep, SessionSource, ToolCallEvent};
 
 use super::*;
 
@@ -14,6 +11,24 @@ fn archive(id: &str, conversation_language: &str, turns: Vec<ArchivedTurn>) -> S
         conversation_language: conversation_language.to_owned(),
         turns,
         source: SessionSource::OhFx,
+    }
+}
+
+fn stored_result(call_id: &str, tool_name: &str, handle: &str, preview: &str) -> ArchivedResult {
+    ArchivedResult {
+        call_id: call_id.to_owned(),
+        tool_name: tool_name.to_owned(),
+        status: ToolResultStatus::Success,
+        output: preview.to_owned(),
+        output_handle: Some(handle.to_owned()),
+        preview: Some(preview.to_owned()),
+        output_bytes: 48,
+        stored_output_bytes: 48,
+        truncated: false,
+        provider_native: false,
+        created_at_ms: 0,
+        permission_feedback: Vec::new(),
+        presentation: None,
     }
 }
 
@@ -81,6 +96,7 @@ fn core_session_detail_snapshot_preserves_history_variant_shapes() {
                 user: "inspect".to_owned(),
                 assistant: Some("I inspected the entry point.".to_owned()),
                 tool_call: None,
+                completed_tool_names: Vec::new(),
                 execution: with_files(),
             },
         ],
@@ -106,15 +122,12 @@ fn core_session_detail_snapshot_preserves_history_variant_shapes() {
 
 #[test]
 fn core_session_detail_json_includes_assistant_execution_memory() {
-    let mut result = ToolResultEvent::new(
+    let result = stored_result(
         "fetch_1",
         "web_fetch",
-        ToolResultStatus::Success,
         "result-web.txt",
-        48,
-        ArtifactCompleteness::Complete,
+        "<artifact_handle>artifact-file.pdf</artifact_handle>",
     );
-    result.preview = Some("<artifact_handle>artifact-file.pdf</artifact_handle>".to_owned());
     let call = ToolCallEvent::new(
         "fetch_1",
         "web_fetch",
@@ -171,6 +184,7 @@ fn interruptions_name_the_call_they_cut_short_and_empty_text_says_so() {
                 user: String::new(),
                 assistant: None,
                 tool_call: Some(call),
+                completed_tool_names: Vec::new(),
                 execution: TurnExecution::default(),
             },
             ArchivedTurn::Compacted(CompactedHistory {
@@ -207,6 +221,28 @@ fn interruptions_name_the_call_they_cut_short_and_empty_text_says_so() {
 }
 
 #[test]
+fn an_interruption_lists_the_tools_that_finished_before_it() {
+    let stopped = archive(
+        "sess-stopped",
+        "en",
+        vec![ArchivedTurn::Interrupted {
+            user: "stop".to_owned(),
+            assistant: Some("partial".to_owned()),
+            tool_call: None,
+            completed_tool_names: vec!["read_file".to_owned(), "list_files".to_owned()],
+            execution: TurnExecution::default(),
+        }],
+    );
+    assert_eq!(
+        rendered(&stopped),
+        (
+            "[session] sess-stopped\ncreated_at_ms: 1\nupdated_at_ms: 2\nlanguage: en\nhistory_len: 1\n\n[turn 1]\n[user]\nstop\n[assistant]\npartial\n[interrupted]\ntool: (none)\ncompleted_tools: read_file, list_files\n".to_owned(),
+            "{\"kind\":\"session_detail\",\"id\":\"sess-stopped\",\"created_at_ms\":1,\"updated_at_ms\":2,\"history_len\":1,\"conversation_language\":\"en\",\"history\":[{\"kind\":\"interrupted\",\"user\":{\"text\":\"stop\",\"images\":[]},\"assistant\":\"partial\",\"tool_call\":null,\"completed_tool_names\":[\"read_file\",\"list_files\"]}]}\n".to_owned(),
+        )
+    );
+}
+
+#[test]
 fn a_session_fx_saved_carries_its_marker_after_upstreams_fields() {
     let mut saved_by_fx = archive("fx-one", "en", Vec::new());
     saved_by_fx.source = SessionSource::Fx;
@@ -228,15 +264,7 @@ fn stored_text_reaches_the_terminal_escaped_and_json_keeps_it() {
         hostile,
         ToolArgumentIntegrity::Valid,
     );
-    let mut result = ToolResultEvent::new(
-        "call\u{1b}",
-        "shell\u{9b}",
-        ToolResultStatus::Success,
-        "result.txt",
-        3,
-        ArtifactCompleteness::Complete,
-    );
-    result.preview = Some(hostile.to_owned());
+    let result = stored_result("call\u{1b}", "shell\u{9b}", "result.txt", hostile);
     let mut evidence = read_evidence();
     evidence.path = "src/\u{202e}evil.rs".to_owned();
     let cut = archive(
@@ -260,6 +288,7 @@ fn stored_text_reaches_the_terminal_escaped_and_json_keeps_it() {
                 user: "u".to_owned(),
                 assistant: None,
                 tool_call: Some(call),
+                completed_tool_names: vec!["read\u{1b}".to_owned(), "list\u{202e}".to_owned()],
                 execution: TurnExecution::default(),
             },
             ArchivedTurn::Compacted(CompactedHistory {
@@ -280,7 +309,7 @@ fn stored_text_reaches_the_terminal_escaped_and_json_keeps_it() {
                 "tool_call: call\\x1b shell\\u{{009b}}\narguments:\n{block}",
                 "tool_result: call\\x1b shell\\u{{009b}} success\noutput:\n{block}",
                 "file: read success src/\\u{{202e}}evil.rs\n[assistant]\n{block}",
-                "\n[turn 2]\n[user]\nu\n[interrupted]\ntool_call_id: call\\x1b\ntool_name: shell\\u{{009b}}\n",
+                "\n[turn 2]\n[user]\nu\n[interrupted]\ntool_call_id: call\\x1b\ntool_name: shell\\u{{009b}}\ncompleted_tools: read\\x1b, list\\u{{202e}}\n",
                 "\n[turn 3]\n[compacted] removed_turns=1 compactions=1\n{block}",
             ),
             block = block
