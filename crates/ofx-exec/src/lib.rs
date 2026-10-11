@@ -20,8 +20,10 @@ pub use managed_execution::{
     ExecutionError, ManagedExecutions, Snapshot, SnapshotState, StartCaptured,
 };
 pub use native_session::{
-    is_terminal_control_invocation, is_terminal_launcher_invocation, run_terminal_control,
-    run_terminal_launcher,
+    ControlFrame, ControlKind, LaunchError, LaunchedTerminal, Liveness, StartupFailure,
+    TerminalLaunch, is_terminal_control_invocation, is_terminal_launcher_invocation,
+    launch_terminal, read_control_frame, run_terminal_control, run_terminal_launcher,
 };
 pub use output_echo::OutputEcho;
 pub use shell_resolver::{ResolveError, configured_login_shell, environment};
+pub use terminal_contracts::Dimensions;

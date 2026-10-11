@@ -33,8 +33,8 @@ modules = []
 [[file]]
 upstream = "src/core/terminal/native_session.zig"
 status = "partial"
-modules = ["crates/ofx-exec/src/native_session.rs", "crates/ofx-exec/src/native_session/control.rs", "crates/ofx-exec/src/native_session/launcher.rs", "crates/ofx-exec/src/native_session/marker.rs"]
-note = "The launcher and control-marker process modes (--oh-fx-internal-terminal-launcher and --oh-fx-internal-terminal-control) are ported with upstream's configuration, frames, markers, echo restore and watchdog. A launcher whose shell ends while it waits for the command's release stops waiting at once, and the echo restore blocks SIGTTOU so it takes effect where upstream's fails with EIO, as docs/differences/tool-shell.md records. Commandless terminals, which no caller starts at the pin, are not ported. The launch that starts them, the session registry, output, waits, writes, signals and closes arrive next (OH-19)."
+modules = ["crates/ofx-exec/src/native_session.rs", "crates/ofx-exec/src/native_session/control.rs", "crates/ofx-exec/src/native_session/launch.rs", "crates/ofx-exec/src/native_session/launcher.rs", "crates/ofx-exec/src/native_session/marker.rs"]
+note = "The launcher and control-marker process modes (--oh-fx-internal-terminal-launcher and --oh-fx-internal-terminal-control) and the launch that starts a command's shell on a PTY through them are ported with upstream's frames, markers, bootstrap, echo restore and watchdog; the private files are /tmp/oh-fx-terminal-<hex>.* and the bootstrap's variables oh_fx_terminal_command and oh_fx_terminal_status. A launcher whose shell ends while it waits for the command's release stops waiting at once, and the echo restore blocks SIGTTOU so it takes effect where upstream's fails with EIO, as docs/differences/tool-shell.md records. Commandless terminals, which no caller starts at the pin, are not ported. The session registry, output, waits, writes, signals and closes arrive next (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/operation.zig"
@@ -50,7 +50,7 @@ modules = []
 upstream = "src/core/terminal/shell_resolver.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/shell_resolver.rs"]
-note = "Captured invocation, login-shell fallback and clean/user environment selection exist; interactive resolve and bootstrap/source command construction are missing. #1137's snapshot invocation, capture scripts and replay arrive with the startup snapshot."
+note = "Captured invocation, login-shell fallback and clean/user environment selection exist, and a terminal's executable shell resolves to upstream's interactive argv with its bootstrap and source commands; resolving a user-login shell spec, profileShell and environmentForShellSpec arrive with the terminal sessions (OH-19). #1137's snapshot invocation, capture scripts and replay arrive with the startup snapshot."
 
 [[file]]
 upstream = "src/core/terminal/shell_snapshot.zig"
