@@ -118,6 +118,17 @@ impl PublishedUsage {
 }
 
 impl WritableSession {
+    pub(crate) fn forget_usage_recovery(&self) {
+        let mut writer = self.usage_checkpoints.writer();
+        let cleared = writer
+            .registry
+            .as_ref()
+            .is_some_and(|registry| registry.clear(&self.metadata.id).is_ok());
+        if cleared {
+            writer.marked = false;
+        }
+    }
+
     pub(crate) fn track_usage_recovery(&mut self, registry: RecoveryRegistry) {
         let marked = self.usage.snapshot(now_ms()).needs_profile_recovery();
         let mut writer = self.usage_checkpoints.writer();

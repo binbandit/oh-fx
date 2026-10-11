@@ -13,6 +13,8 @@ pub(crate) const USAGE_RECOVERY_DIR: &str = "usage-recovery";
 const MARKER_PREFIX: &str = "v1 ";
 const MAX_MARKER_BYTES: usize = MARKER_PREFIX.len() + 20 + 1;
 const MAX_MARKED_SESSIONS: usize = 512;
+const STAGED_SUFFIX: &str = ".tmp.";
+const STAGED_SUFFIX_HEX: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MarkedSession {
@@ -45,6 +47,7 @@ impl RecoveryRegistry {
             return Ok(());
         }
         let bytes = format!("{MARKER_PREFIX}{protected_updated_at_ms}\n");
+        remove_staged(&recovery, id)?;
         Ok(recovery.replace(id, bytes.as_bytes())?)
     }
 
@@ -55,6 +58,7 @@ impl RecoveryRegistry {
         let Some(recovery) = recovery_dir(&self.data)? else {
             return Ok(());
         };
+        remove_staged(&recovery, id)?;
         if marker(&recovery, id)?.is_none() {
             return Ok(());
         }
@@ -75,7 +79,7 @@ pub(crate) fn marked_sessions(data: &PrivateDir) -> Result<Vec<MarkedSession>, S
     for entry in entries {
         let entry = entry.map_err(|_| invalid)?;
         let name = entry.file_name().to_str().map_err(|_| invalid)?;
-        if name == "." || name == ".." {
+        if name == "." || name == ".." || staged_marker(name).is_some() {
             continue;
         }
         if marked.len() == MAX_MARKED_SESSIONS || !is_valid_session_id(name) {
@@ -90,6 +94,29 @@ pub(crate) fn marked_sessions(data: &PrivateDir) -> Result<Vec<MarkedSession>, S
     }
     marked.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(marked)
+}
+
+fn staged_marker(name: &str) -> Option<&str> {
+    let (id, suffix) = name.strip_prefix('.')?.rsplit_once(STAGED_SUFFIX)?;
+    let hex = suffix.len() == STAGED_SUFFIX_HEX
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    (hex && is_valid_session_id(id)).then_some(id)
+}
+
+fn remove_staged(recovery: &PrivateDir, id: &str) -> Result<(), SessionError> {
+    let invalid = SessionError::InvalidUsageRecoveryIndex;
+    let entries = fs::Dir::read_from(recovery.as_fd()).map_err(|_| invalid)?;
+    let staged: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| staged_marker(name) == Some(id))
+        .collect();
+    for name in staged {
+        recovery.remove(&name)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn modified_at_ns(stat: &Stat) -> i128 {

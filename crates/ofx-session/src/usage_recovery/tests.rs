@@ -8,7 +8,7 @@ use ofx_contract::{DeliveryOutcome, ProviderBilling, ReasoningEffort};
 
 use super::*;
 use crate::session_codec::{SavedProvider, SessionPreferences};
-use crate::session_log::WritableSession;
+use crate::session_log::{SessionDisposal, WritableSession};
 use crate::session_store::SessionStore;
 use crate::session_usage::PendingGeneration;
 use crate::session_usage_sidecar;
@@ -135,16 +135,24 @@ fn a_marker_newer_than_its_checkpoint_leaves_the_usage_unknown() {
 #[test]
 fn a_marked_session_that_cannot_be_read_leaves_the_usage_unknown() {
     let profile = Profile::new();
-    drop(profile.start());
-    let data = PrivateDir::open_existing(&profile.data()).unwrap().unwrap();
-    RecoveryRegistry::new(data)
-        .mark("vanished", 1, true)
-        .unwrap();
+    let mut session = profile.start();
+    exact(&mut session, "resp_owed");
+    let id = session.id().to_owned();
+    drop(session);
+    fs::write(
+        profile
+            .data()
+            .join(SESSIONS_DIR)
+            .join(&id)
+            .join("session.json"),
+        "{}",
+    )
+    .unwrap();
     let recovery = profile.collect();
     assert!(recovery.unknown_pending);
     assert!(recovery.facts.is_empty());
 
-    fs::write(profile.marker("vanished"), "v9 1\n").unwrap();
+    fs::write(profile.marker(&id), "v9 1\n").unwrap();
     assert_eq!(
         profile.collect(),
         UsageRecovery {
@@ -152,6 +160,43 @@ fn a_marked_session_that_cannot_be_read_leaves_the_usage_unknown() {
             ..UsageRecovery::default()
         }
     );
+}
+
+#[test]
+fn a_marker_naming_a_vanished_session_heals() {
+    let profile = Profile::new();
+    drop(profile.start());
+    let data = PrivateDir::open_existing(&profile.data()).unwrap().unwrap();
+    RecoveryRegistry::new(data)
+        .mark("vanished", 1, true)
+        .unwrap();
+    assert_eq!(profile.collect(), UsageRecovery::default());
+    assert!(!profile.marker("vanished").exists());
+}
+
+#[test]
+fn discarding_a_pristine_session_whose_first_save_failed_clears_its_marker() {
+    let profile = Profile::new();
+    let store = SessionStore::open(&profile.data(), WORKSPACE).unwrap();
+    let mut session = profile.start();
+    let sidecar = profile
+        .data()
+        .join(SESSIONS_DIR)
+        .join(session.id())
+        .join(SIDECAR_FILE);
+    fs::remove_file(&sidecar).unwrap();
+    fs::create_dir(&sidecar).unwrap();
+    assert!(session.begin_request().is_err());
+    assert!(profile.marker(session.id()).exists());
+
+    assert_eq!(store.discard_pristine(session), SessionDisposal::Discarded);
+    assert!(
+        fs::read_dir(profile.data().join(USAGE_RECOVERY_DIR))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert_eq!(profile.collect(), UsageRecovery::default());
 }
 
 #[test]

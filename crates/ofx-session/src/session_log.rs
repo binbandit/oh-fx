@@ -813,6 +813,9 @@ pub(crate) fn delete_session(sessions: &PrivateDir, session: WritableSession) ->
     }
     drop(named);
     let removed = remove_session_dir(sessions, &id);
+    if removed.is_ok() {
+        session.forget_usage_recovery();
+    }
     drop(session);
     match removed {
         Ok(()) => SessionDisposal::Discarded,

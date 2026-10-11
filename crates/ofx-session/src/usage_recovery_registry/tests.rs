@@ -151,3 +151,37 @@ fn the_index_holds_at_most_512_sessions() {
         Err(SessionError::InvalidUsageRecoveryIndex)
     );
 }
+
+#[test]
+fn a_staged_marker_left_by_an_interrupted_write_is_ignored_then_removed() {
+    let profile = Profile::new();
+    let registry = profile.registry();
+    registry.mark("kept-marker", 3, true).unwrap();
+    let suffix = "0123456789abcdef0123456789abcdef";
+    for (id, bytes) in [("staged-empty", ""), ("staged-complete", "v1 1\n")] {
+        let staged = profile.markers().join(format!(".{id}.tmp.{suffix}"));
+        fs::write(&staged, bytes).unwrap();
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let listed = profile.listed().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "kept-marker");
+
+    registry.mark("staged-empty", 5, true).unwrap();
+    registry.clear("staged-complete").unwrap();
+    let mut names: Vec<String> = fs::read_dir(profile.markers())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["kept-marker", "staged-empty"]);
+
+    let foreign = profile
+        .markers()
+        .join(format!(".kept-marker.tmp.{}", "Z".repeat(32)));
+    fs::write(&foreign, "v1 1\n").unwrap();
+    assert_eq!(
+        profile.listed(),
+        Err(SessionError::InvalidUsageRecoveryIndex)
+    );
+}
