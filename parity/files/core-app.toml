@@ -72,7 +72,7 @@ modules = []
 upstream = "src/core/app/app_permission_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_permission_runtime.rs", "crates/ofx-tui/src/shell/app_permission_runtime.rs"]
-note = "Permission mode, approval prompts and review gating exist; upstream approval diff preview and full settings/menu integration are absent."
+note = "Permission mode, approval prompts and review gating exist, with the permission mode and full-access acknowledgment trace lines; upstream approval diff preview and full settings/menu integration are absent."
 
 [[file]]
 upstream = "src/core/app/app_process_runtime.zig"
@@ -120,7 +120,7 @@ note = "Native workspace file mentions/completion exist, the launch applies addi
 upstream = "src/core/app/input_approval_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/approval_runtime.rs"]
-note = "Approval keyboard actions, feedback draft editing and left and right choice moves exist with documented safety gating; upstream file-diff preview and queued submission integration are incomplete."
+note = "Approval keyboard actions, feedback draft editing and left and right choice moves exist with documented safety gating and the approval response trace line; upstream file-diff preview and queued submission integration are incomplete."
 
 [[file]]
 upstream = "src/core/app/input_completion_runtime.zig"

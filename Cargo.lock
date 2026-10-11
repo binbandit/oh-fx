@@ -896,6 +896,7 @@ dependencies = [
  "ofx-markdown",
  "ofx-shell",
  "ofx-text",
+ "ofx-trace",
  "ofx-workspace",
  "serde_json",
  "sha2",

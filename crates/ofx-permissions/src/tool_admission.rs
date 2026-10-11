@@ -19,6 +19,7 @@ use crate::auto_classifier::Reviewer;
 use crate::auto_classifier_context::build_canonical_root_user_context;
 use crate::command_admission::{command_admission, undescribed_shell_call_admission};
 use crate::permissions::{applicable_target, external_path_target, interactive_body};
+use crate::review_trace;
 use crate::session_permission_state::{SessionGrants, TreePermission, command_grant};
 
 const SENSITIVE_AUTO_WRITE_TARGETS: [&[&str]; 26] = [
@@ -279,10 +280,13 @@ impl PermissionGate for PermissionPolicy {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Option<Reviewed>> {
         Box::pin(async move {
+            let call = request.call;
             let Some(reviewer) = self.reviewer() else {
+                review_trace::unavailable_before_review(call, ReviewFailure::ReviewerUnconfigured);
                 return Some(Reviewed::unavailable(ReviewFailure::ReviewerUnconfigured));
             };
             if !request.attempt_available {
+                review_trace::budget_exhausted(call);
                 return Some(Reviewed::unavailable(
                     ReviewFailure::TurnReviewBudgetExhausted,
                 ));
@@ -292,13 +296,16 @@ impl PermissionGate for PermissionPolicy {
                 request.earlier_requests,
                 request.compacted_turns,
             );
-            match review_request::review_subject(&request, &trusted_root_context) {
+            let review = review_trace::Review::start(call, request.action);
+            let outcome = match review_request::review_subject(&request, &trusted_root_context) {
                 Some(subject) => reviewer.review(&subject, cancel).await,
                 None => Some(Reviewed {
                     verdict: ReviewVerdict::EvidenceIncomplete,
                     usage: Usage::default(),
                 }),
-            }
+            };
+            review.finish(outcome.as_ref());
+            outcome
         })
     }
 }

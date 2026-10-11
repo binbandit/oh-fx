@@ -57,8 +57,13 @@ impl Home {
             .env("PATH", "/usr/bin:/bin")
             .env("TERM", "xterm-256color")
             .env("OH_FX_AUTO_UPGRADE", "0")
+            .env("OH_FX_TRACE_LOG", self.root.join("trace.log"))
             .process_group(0);
         command
+    }
+
+    fn trace_log(&self) -> String {
+        fs::read_to_string(self.root.join("trace.log")).expect("read the trace log")
     }
 
     fn shell(&self, rows: u16, cols: u16) -> PtySession {
@@ -172,6 +177,13 @@ fn reads_outside_the_workspace_wait_for_approval_in_the_footer() {
     thread::sleep(APPROVAL_ARMING);
     session.send(b"2");
     wait(&session, "Read it.");
+    let log = home.trace_log();
+    assert!(
+        log.lines().any(|line| line
+            .contains(" [permission] approval response submitted request_id=")
+            && line.ends_with(" decision=always")),
+        "{log}"
+    );
     session.send(b"again\r");
     wait(&session, "Read it again.");
     let screen = session.screen();
@@ -326,6 +338,25 @@ fn shift_tab_cycles_the_permission_mode_and_the_next_tool_call_follows_it() {
     wait_saved(&home, "permission_mode", &json!("yolo"));
     session.send(b"\x04");
     assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    let log = home.trace_log();
+    let permission: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once(" [permission] interactive_"))
+        .map(|(_, rest)| rest)
+        .collect();
+    assert_eq!(
+        permission,
+        [
+            "permission_mode_persisted mode=yolo outcome=committed",
+            "permission_mode_selected mode=yolo",
+            "yolo_acknowledgment_persisted outcome=committed",
+            "permission_mode_persisted mode=ask outcome=committed",
+            "permission_mode_selected mode=ask",
+            "permission_mode_persisted mode=yolo outcome=committed",
+            "permission_mode_selected mode=yolo",
+        ],
+        "{log}"
+    );
 }
 
 #[test]

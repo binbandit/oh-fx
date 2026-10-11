@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, symlink};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
@@ -364,14 +365,16 @@ fn streamed_or_malformed_verdicts_are_retried_once_and_then_hold_the_command() {
 
 #[test]
 fn reviewer_failures_hold_the_command_without_retrying_a_custom_connection() {
-    for (reply, cause) in [
+    for (reply, cause, transport) in [
         (
             Reply::status(500, r#"{"error":{"message":"reviewer down"}}"#),
             "transport_permanent",
+            "transport result=permanent_failure reason=provider_failure failure_kind=server_error",
         ),
         (
             Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
             "transport_permanent",
+            "transport result=permanent_failure reason=provider_failure failure_kind=rate_limited",
         ),
         (
             Reply::sse(&chat_tool_call_events(
@@ -380,6 +383,7 @@ fn reviewer_failures_hold_the_command_without_retrying_a_custom_connection() {
                 r#"{"decision":"clear"}"#,
             )),
             "transport_permanent",
+            "transport result=permanent_failure reason=transport_error error=InvalidToolName",
         ),
     ] {
         let server = FakeServer::start([
@@ -398,6 +402,19 @@ fn reviewer_failures_hold_the_command_without_retrying_a_custom_connection() {
         assert_eq!(
             last_tool_result(&requests[2]),
             unavailable(cause, UNAVAILABLE, UNAVAILABLE_SUGGESTION)
+        );
+        let log = home.trace_log();
+        let lines = permission_lines(&log);
+        assert!(lines.contains(&transport), "{transport}\n{log}");
+        assert!(
+            lines.iter().any(|line| line.starts_with(&format!(
+                "result tool_name=shell decision=unavailable fallback_reason={cause} recovery=agent_replan elapsed_ms="
+            ))),
+            "{log}"
+        );
+        assert!(
+            !log.contains("reviewer down") && !log.contains("slow down"),
+            "{log}"
         );
     }
 }
@@ -656,4 +673,101 @@ fn a_command_is_shown_while_its_review_is_pending() {
         assert_eq!(home.workspace.join("marker").exists(), runs, "{verdict}");
         assert_eq!(server.requests().len(), 3);
     }
+}
+
+fn permission_lines(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter_map(|line| line.split_once(" [permission] event=auto_review_"))
+        .map(|(_, rest)| rest)
+        .collect()
+}
+
+#[test]
+fn a_review_traces_its_start_composition_sends_retries_and_result() {
+    let server = FakeServer::start([
+        run("touch marker"),
+        Reply::sse(&chat_text_events(&["not a decision"])),
+        decision(r#"{"decision":"clear","rationale":"Requested file creation."}"#),
+        Reply::sse(&chat_text_events(&["Made it."])),
+    ]);
+    let home = Home::new(&settings(&server.base_url(), None));
+
+    let output = home.ask("create the marker file");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(home.workspace.join("marker").exists());
+    let log = home.trace_log();
+    let lines = permission_lines(&log);
+    let expected = [
+        "start tool_name=shell action_kind=command call_id=call_1",
+        "compose_start origin=root view=contextual source_model=@openai/gpt-4o reviewer_model=@openai/gpt-4o pending_calls=1 trusted_root_bytes=",
+        "compose_result result=ready payload_bytes=",
+        "send attempt=1 max_attempts=3 target_call_id=call_1",
+        "transport result=completion finish_reason=absent tool_calls=0 content_bytes=0",
+        "format_retry reason=completion_tool_call_count tool_calls=0 content_bytes=0 target_call_id=call_1",
+        "send attempt=2 max_attempts=3 target_call_id=call_1",
+        "transport result=completion finish_reason=tool_calls tool_calls=1 content_bytes=0",
+        "result tool_name=shell decision=clear fallback_reason=none elapsed_ms=",
+    ];
+    assert_eq!(lines.len(), expected.len(), "{log}");
+    for (line, prefix) in lines.iter().zip(expected) {
+        assert!(line.starts_with(prefix), "{prefix}\n{log}");
+    }
+    assert!(
+        lines[8].ends_with(" execution_started=false call_id=call_1"),
+        "{log}"
+    );
+    for secret in ["touch marker", "Requested file creation", PORTKEY_KEY] {
+        assert!(
+            !lines.iter().any(|line| line.contains(secret)),
+            "{secret}\n{log}"
+        );
+    }
+}
+
+#[test]
+fn a_review_cancelled_while_pending_traces_its_cancelled_result() {
+    let gate = Gate::default();
+    let server = FakeServer::start([
+        run("touch marker"),
+        decision(r#"{"decision":"clear"}"#).after(&gate),
+    ]);
+    let home = Home::new(&settings(&server.base_url(), None));
+    let running = home.start("create the marker file");
+    wait_until(|| server.requests().len() == 2, "the review never started");
+    let interrupted = Command::new("kill")
+        .args(["-INT", &running.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    assert!(interrupted.success());
+    let output = running.wait_with_output().expect("wait for oh-fx");
+    gate.open();
+
+    assert_eq!(output.status.signal(), Some(2), "{}", stderr(&output));
+    assert!(!home.workspace.join("marker").exists());
+    let log = home.trace_log();
+    let lines = permission_lines(&log);
+    let expected = [
+        "start tool_name=shell action_kind=command call_id=call_1",
+        "compose_start origin=root ",
+        "compose_result result=ready ",
+        "send attempt=1 max_attempts=3 target_call_id=call_1",
+        "result tool_name=shell decision=cancelled_or_error fallback_reason=Cancelled elapsed_ms=",
+    ];
+    assert_eq!(lines.len(), expected.len(), "{log}");
+    for (line, prefix) in lines.iter().zip(expected) {
+        assert!(line.starts_with(prefix), "{prefix}\n{log}");
+    }
+    assert!(
+        lines[4].ends_with(" execution_started=false call_id=call_1"),
+        "{log}"
+    );
+    let result = log
+        .find("event=auto_review_result")
+        .expect("the review result");
+    let cancelled = log
+        .find("event=permission_error")
+        .expect("the cancelled permission");
+    assert!(result < cancelled, "{log}");
+    assert_eq!(server.requests().len(), 2);
 }
