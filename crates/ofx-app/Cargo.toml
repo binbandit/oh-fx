@@ -39,6 +39,7 @@ ofx-testkit.workspace = true
 rustix = { workspace = true, features = ["termios"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["time"] }
+zeroize.workspace = true
 
 [lints]
 workspace = true

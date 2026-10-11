@@ -15,7 +15,8 @@ use ofx_contract::{
 };
 use ofx_gateway::{
     CatalogCredential, CatalogFailure, CodexAccess, CodexCredentials, CodexEndpoints, CodexModel,
-    CodexModelCatalog, CodexModelsEndpoints, CodexProvider, CodexRefresh, GatewayEndpoints,
+    CodexModelCatalog, CodexModelsEndpoints, CodexProvider, CodexRefresh, GATEWAY_MODELS_PATH,
+    GatewayEndpoints, GatewayModelsEndpoints,
 };
 use ofx_http::ClientError;
 use tokio::sync::{Notify, oneshot};
@@ -29,6 +30,7 @@ pub struct SubscriptionEndpoints {
     pub grok: GrokEndpoints,
     pub gateway: GatewayEndpoints,
     pub vercel: VercelEndpoints,
+    pub gateway_models: GatewayModelsEndpoints,
 }
 
 pub(crate) struct SignedOutProvider;
@@ -145,6 +147,8 @@ const MODELS_OVERRIDE: &str = "OH_FX_E2E_OPENAI_CODEX_MODELS_URL";
 const VERSION_OVERRIDE: &str = "OH_FX_E2E_CODEX_VERSION_URL";
 const GATEWAY_E2E_OVERRIDE: &str = "OH_FX_E2E_GATEWAY_CHAT_URL";
 const GATEWAY_OVERRIDE: &str = "OH_FX_GATEWAY_CHAT_URL";
+const GATEWAY_BASE_OVERRIDE: &str = "OH_FX_GATEWAY_BASE_URL";
+const GATEWAY_MODELS_E2E_OVERRIDE: &str = "OH_FX_E2E_GATEWAY_MODELS_URL";
 
 impl SubscriptionEndpoints {
     pub fn from_environment() -> Self {
@@ -167,6 +171,12 @@ impl SubscriptionEndpoints {
             .find_map(loopback_override)
         {
             endpoints.gateway.chat = url;
+        }
+        if let Some(base) = loopback_override(GATEWAY_BASE_OVERRIDE) {
+            endpoints.gateway_models.models = format!("{base}{GATEWAY_MODELS_PATH}");
+        }
+        if let Some(url) = loopback_override(GATEWAY_MODELS_E2E_OVERRIDE) {
+            endpoints.gateway_models.models = url;
         }
         endpoints
     }
