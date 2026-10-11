@@ -136,6 +136,11 @@ impl AuthState {
         self.lock().logout_epoch == epoch
     }
 
+    pub(crate) fn logged_out_since(&self, epoch: u64) -> bool {
+        let inner = self.lock();
+        inner.logging_out || inner.logout_epoch != epoch
+    }
+
     pub(crate) fn pending(&self) -> Challenge {
         self.lock().pending.clone().unwrap_or_default()
     }

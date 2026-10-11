@@ -482,3 +482,89 @@ async fn an_authorization_inside_the_fence_window_is_refused() {
     assert!(state.grant().is_none());
     assert_eq!(state.check_authority(), Ok(()));
 }
+
+async fn refreshing_behind(release: &Arc<Notify>) -> FakeServer {
+    let held = Arc::clone(release);
+    FakeServer::start(move |request| match request.path.as_str() {
+        "/token" => Reply::json(RENEWED).released_by(&held),
+        "/revoke" => Reply::status(200),
+        _ => mcp_reply(request),
+    })
+    .await
+}
+
+async fn waiting_request(
+    server: &FakeServer,
+    profile: &Profile,
+    config: &McpServerConfig,
+    state: &Arc<AuthState>,
+) -> tokio::task::JoinHandle<Result<(), McpError>> {
+    let mut expiring = grant(&server.url, 1);
+    expiring.revocation_endpoint = Some(server.url.replace("/mcp", "/revoke"));
+    profile
+        .store()
+        .save(&GrantLookup::for_server(config).unwrap(), &expiring)
+        .unwrap();
+    let auth = HttpAuth::resolve(
+        config,
+        Some(profile.store()),
+        state,
+        || Ok(oauth()),
+        &|_| None,
+    )
+    .await
+    .ok()
+    .unwrap();
+    let url = server.url.clone();
+    let request = tokio::spawn(async move { auth.apply(oauth().get(url)).await.map(drop) });
+    assert!(server.wait_for(|request| request.path == "/token").await);
+    request
+}
+
+#[tokio::test]
+async fn a_request_waiting_on_a_refresh_never_sends_after_a_logout() {
+    let release = Arc::new(Notify::new());
+    let server = refreshing_behind(&release).await;
+    let profile = Profile::new();
+    let config = config(&server.url);
+    let state = Arc::new(AuthState::default());
+    let request = waiting_request(&server, &profile, &config, &state).await;
+    fenced_logout(&state, &profile, &config).await;
+    release.notify_one();
+    assert_eq!(request.await.unwrap(), Err(McpError::McpAuthorityChanged));
+    assert!(state.grant().is_none());
+}
+
+#[tokio::test]
+async fn a_refresh_discarded_by_a_logout_revokes_the_rotated_grant() {
+    let release = Arc::new(Notify::new());
+    let server = refreshing_behind(&release).await;
+    let profile = Profile::new();
+    let config = config(&server.url);
+    let state = Arc::new(AuthState::default());
+    let request = waiting_request(&server, &profile, &config, &state).await;
+    let detached = state.begin_logout().await.unwrap();
+    release.notify_one();
+    assert_eq!(request.await.unwrap(), Err(McpError::McpAuthorityChanged));
+    assert!(
+        server
+            .wait_for(|request| request.body.starts_with("token=renewed-access"))
+            .await
+    );
+    let revoked: Vec<String> = server
+        .requests()
+        .iter()
+        .filter(|request| request.path == "/revoke")
+        .map(|request| request.body.clone())
+        .collect();
+    assert_eq!(
+        revoked,
+        [
+            "token=renewed-refresh&token_type_hint=refresh_token&client_id=client",
+            "token=renewed-access&token_type_hint=access_token&client_id=client",
+        ]
+    );
+    assert!(state.grant().is_none());
+    assert_eq!(stored_token(&profile).as_deref(), Some("stored-access"));
+    state.restore_after_logout(detached);
+}
