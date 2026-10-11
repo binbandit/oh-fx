@@ -28,11 +28,13 @@ struct Seen {
 struct Shape {
     protected_resource: &'static str,
     issuer_suffix: &'static str,
+    revocation: &'static str,
 }
 
 const PLAIN: Shape = Shape {
     protected_resource: "/mcp",
     issuer_suffix: "",
+    revocation: "200 OK",
 };
 
 struct Authority {
@@ -80,6 +82,26 @@ impl Authority {
             .expect("recorded requests")
             .iter()
             .map(|seen| format!("{} {}", seen.method, seen.path))
+            .collect()
+    }
+
+    fn revocations(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .expect("recorded requests")
+            .iter()
+            .filter(|seen| seen.method == "POST" && seen.path == "/revoke")
+            .map(|seen| seen.body.clone())
+            .collect()
+    }
+
+    fn closings(&self) -> Vec<Option<String>> {
+        self.seen
+            .lock()
+            .expect("recorded requests")
+            .iter()
+            .filter(|seen| seen.method == "DELETE" && seen.path == "/mcp")
+            .map(|seen| seen.authorization.clone())
             .collect()
     }
 
@@ -163,6 +185,7 @@ fn answer(mut stream: TcpStream, origin: &str, shape: Shape, seen: &Mutex<Vec<Se
                 "authorization_endpoint": format!("{origin}/authorize"),
                 "token_endpoint": format!("{origin}/token"),
                 "registration_endpoint": format!("{origin}/register"),
+                "revocation_endpoint": format!("{origin}/revoke"),
                 "code_challenge_methods_supported": ["S256"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": ["none"],
@@ -177,6 +200,7 @@ fn answer(mut stream: TcpStream, origin: &str, shape: Shape, seen: &Mutex<Vec<Se
         ),
         ("POST", "/mcp") => mcp_answer(&body, authorization.as_deref(), origin),
         ("DELETE", "/mcp") => Answer::empty("200 OK"),
+        ("POST", "/revoke") => Answer::empty(shape.revocation),
         ("GET", "/mcp") => Answer::empty("405 Method Not Allowed"),
         _ => Answer::json("404 Not Found", &json!({})),
     };
@@ -214,10 +238,16 @@ fn mcp_answer(body: &str, authorization: Option<&str>, origin: &str) -> Answer {
         Some("tools/list") => json!({"tools": []}),
         _ => json!({}),
     };
-    Answer::json(
+    let mut answer = Answer::json(
         "200 OK",
         &json!({"jsonrpc": "2.0", "id": id, "result": result}),
-    )
+    );
+    if message["method"] == "initialize" {
+        answer
+            .headers
+            .push("Mcp-Session-Id: fixture-session".to_owned());
+    }
+    answer
 }
 
 struct Home {
@@ -523,10 +553,12 @@ fn a_granted_server_connects_with_its_bearer_whatever_identity_discovery_accepte
     let enclosing = Shape {
         protected_resource: "/",
         issuer_suffix: "",
+        revocation: "200 OK",
     };
     let slashed = Shape {
         protected_resource: "/mcp",
         issuer_suffix: "/",
+        revocation: "200 OK",
     };
     for (shape, oauth) in [
         (PLAIN, None),
@@ -610,10 +642,12 @@ fn authorizing_again_after_discovery_changes_keeps_one_grant_that_connects() {
     let slashed = Shape {
         protected_resource: "/mcp",
         issuer_suffix: "/",
+        revocation: "200 OK",
     };
     let enclosing = Shape {
         protected_resource: "/",
         issuer_suffix: "",
+        revocation: "200 OK",
     };
     for (first, second) in [(slashed, PLAIN), (PLAIN, enclosing)] {
         let authority = Authority::shaped(first);
@@ -770,4 +804,260 @@ fn a_project_server_authenticated_in_the_shell_uses_its_grant_for_the_session() 
         b"/mcp list\r",
         "state=ready auth=authenticated status=ready",
     );
+}
+
+fn logout(home: &Home) -> std::process::Output {
+    home.command(&["mcp", "logout", "fixture"])
+        .env("OH_FX_TRACE_LOG", home.root.join("trace.log"))
+        .env("OH_FX_TRACE_SCOPES", "mcp")
+        .output()
+        .expect("test step")
+}
+
+fn assert_secret_free(home: &Home, output: &std::process::Output) {
+    let trace = fs::read_to_string(home.root.join("trace.log")).unwrap_or_default();
+    for text in [
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        trace,
+    ] {
+        for secret in [ACCESS, REFRESH, "browser-code"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+    }
+}
+
+#[test]
+fn mcp_logout_revokes_and_deletes_the_grant() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let (granted, _, _) = authorize(&home, "fixture");
+    assert!(granted.status.success());
+    let output = logout(&home);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Logged out of MCP server 'fixture'.\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    assert!(!home.store().exists());
+    let revocations = authority.revocations();
+    assert_eq!(revocations.len(), 2);
+    assert_eq!(
+        revocations[0],
+        format!("token={REFRESH}&token_type_hint=refresh_token&client_id=registered-client")
+    );
+    assert_eq!(
+        revocations[1],
+        format!("token={ACCESS}&token_type_hint=access_token&client_id=registered-client")
+    );
+    assert_secret_free(&home, &output);
+    let again = logout(&home);
+    assert_eq!(again.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout),
+        "No stored MCP credentials found for 'fixture'.\n"
+    );
+    assert_eq!(authority.revocations().len(), 2);
+}
+
+#[test]
+fn mcp_logout_reports_a_failed_revocation_and_ignores_repairs() {
+    let authority = Authority::shaped(Shape {
+        revocation: "400 Bad Request",
+        ..PLAIN
+    });
+    let home = Home::new(&authority.origin);
+    let (granted, _, _) = authorize(&home, "fixture");
+    assert!(granted.status.success());
+    let mut stored: Value =
+        serde_json::from_str(&fs::read_to_string(home.store()).expect("test step"))
+            .expect("test step");
+    stored["credentials"]
+        .as_array_mut()
+        .expect("test step")
+        .push(json!({}));
+    fs::write(home.store(), stored.to_string()).expect("test step");
+    let output = logout(&home);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Logged out of MCP server 'fixture' locally; remote revocation failed.\n"
+    );
+    assert!(!home.store().exists());
+    assert_secret_free(&home, &output);
+}
+
+#[test]
+fn mcp_logout_of_an_unapproved_project_server_stays_local() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let endpoint = format!("{}/mcp", authority.origin);
+    fs::write(
+        home.workspace().join(".mcp.json"),
+        json!({"mcpServers": {"project": {"type": "http", "url": endpoint}}}).to_string(),
+    )
+    .expect("project servers");
+    let directory = home.root.join("data/oh-fx/mcp-credentials");
+    fs::create_dir_all(&directory).expect("test step");
+    for path in [home.root.join("data/oh-fx"), directory.clone()] {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("test step");
+    }
+    fs::write(
+        home.store(),
+        json!({"version": 1, "credentials": [{
+            "server_identity": "project",
+            "endpoint": endpoint,
+            "resource": endpoint,
+            "issuer": authority.origin,
+            "client_id": "registered-client",
+            "client_secret": null,
+            "access_token": ACCESS,
+            "refresh_token": REFRESH,
+            "scope": "",
+            "token_type": "Bearer",
+            "token_endpoint_auth_method": "none",
+            "expires_at_ms": null,
+            "authorization_endpoint": format!("{}/authorize", authority.origin),
+            "token_endpoint": format!("{}/token", authority.origin),
+            "revocation_endpoint": format!("{}/revoke", authority.origin),
+        }]})
+        .to_string(),
+    )
+    .expect("test step");
+    fs::set_permissions(home.store(), fs::Permissions::from_mode(0o600)).expect("test step");
+    let output = home
+        .command(&["mcp", "logout", "project"])
+        .output()
+        .expect("test step");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "",
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Logged out of MCP server 'project' locally.\n"
+    );
+    assert!(!home.store().exists());
+    assert!(authority.paths().is_empty());
+}
+
+#[test]
+fn mcp_logout_refuses_unknown_and_local_servers_and_bad_usage() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    for (name, failure) in [
+        ("absent", "oh-fx mcp logout failed: McpServerNotFound.\n"),
+        (
+            "local",
+            "oh-fx mcp logout failed: McpAuthenticationNotRemote.\n",
+        ),
+    ] {
+        let output = home
+            .command(&["mcp", "logout", name])
+            .output()
+            .expect("test step");
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), failure);
+        assert!(output.stdout.is_empty());
+    }
+    for args in [
+        &["mcp", "logout"][..],
+        &["mcp", "logout", "a", "b"],
+        &["mcp", "logout", ""],
+    ] {
+        let output = home.command(args).output().expect("test step");
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "usage: oh-fx mcp <command> ...\n",
+            "{args:?}"
+        );
+    }
+    assert!(authority.paths().is_empty());
+}
+
+#[test]
+fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let model = FakeServer::start([]);
+    let session = home.shell(&model, &json!({}));
+    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    session.send(b"/mcp auth fixture --open\r");
+    let url = wait_for_file(&home.opened()).trim().to_owned();
+    fs::remove_file(home.opened()).expect("test step");
+    visit(&format!(
+        "{}?code=browser-code&state={}",
+        query(&url, "redirect_uri"),
+        query(&url, "state")
+    ));
+    shown(&session, "Authenticated MCP server 'fixture'.");
+    listed_once_settled(
+        &session,
+        b"/mcp list\r",
+        "state=ready auth=authenticated status=ready",
+    );
+    let mut stored: Value =
+        serde_json::from_str(&fs::read_to_string(home.store()).expect("test step"))
+            .expect("test step");
+    stored["credentials"]
+        .as_array_mut()
+        .expect("test step")
+        .push(json!({}));
+    fs::write(home.store(), stored.to_string()).expect("test step");
+    session.send(b"/mcp logout fixture\r");
+    shown(
+        &session,
+        "Logged out of MCP server 'fixture'. Removed 1 unreadable MCP credential entry.",
+    );
+    listed_once_settled(
+        &session,
+        b"/mcp list\r",
+        "state=disconnected auth=none status=unavailable",
+    );
+    assert!(!home.store().exists());
+    assert_eq!(authority.revocations().len(), 2);
+    assert!(
+        authority
+            .closings()
+            .iter()
+            .any(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str()))
+    );
+    session.send(b"/mcp auth fixture --open\r");
+    let url = wait_for_file(&home.opened()).trim().to_owned();
+    visit(&format!(
+        "{}?code=browser-code&state={}",
+        query(&url, "redirect_uri"),
+        query(&url, "state")
+    ));
+    listed_once_settled(
+        &session,
+        b"/mcp list\r",
+        "state=ready auth=authenticated status=ready",
+    );
+    let screen = session.screen();
+    for secret in [ACCESS, REFRESH, "browser-code", "token="] {
+        assert!(!screen.contains(secret), "{screen}");
+    }
+}
+
+#[test]
+fn mcp_logout_in_the_shell_waits_for_a_pending_authentication() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let model = FakeServer::start([]);
+    let session = home.shell(&model, &json!({}));
+    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    session.send(b"/mcp auth fixture --open\r");
+    wait_for_file(&home.opened());
+    session.send(b"/mcp logout fixture\r");
+    shown(
+        &session,
+        "MCP authentication for 'fixture' is still in progress. Wait for it to finish before logging out.",
+    );
+    assert!(!home.store().exists());
+    assert!(authority.revocations().is_empty());
 }

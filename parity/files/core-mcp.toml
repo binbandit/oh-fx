@@ -31,7 +31,7 @@ note = "The resource read cache entry exists in feature_catalog.rs, and the tool
 upstream = "src/core/mcp/command_provider.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/command_provider.rs"]
-note = "Add-command parsing exists, and /mcp auth's parsing and replies live in ofx-app's mcp_commands.rs; resource listing, server summaries, logout and delegate execution are missing."
+note = "Add-command parsing exists, and /mcp auth's and /mcp logout's parsing and replies live in ofx-app's mcp_commands.rs and mcp_auth_notices.rs, with LogoutResult in server_auth/logout.rs; resource listing, server summaries and delegate execution are missing."
 
 [[file]]
 upstream = "src/core/mcp/connection_control.zig"
