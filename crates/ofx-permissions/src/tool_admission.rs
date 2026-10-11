@@ -9,8 +9,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalScope, BoxFuture, CommandRequest, FileMutation,
     FileMutationState, GatedAction, LiveAdditionalRoots, LivePermissionMode, PathAccess,
-    PermissionGate, PermissionMode, ReviewFailure, ReviewRequest, ReviewVerdict, Reviewed,
-    SessionGrant, ToolCall, Usage,
+    PermissionGate, PermissionMode, PermissionTraceFacts, ReviewFailure, ReviewRequest,
+    ReviewVerdict, Reviewed, SessionGrant, ToolCall, Usage,
 };
 use ofx_workspace::path_inside;
 use tokio_util::sync::CancellationToken;
@@ -135,6 +135,29 @@ impl PermissionPolicy {
 }
 
 impl PermissionGate for PermissionPolicy {
+    fn trace_facts(&self, action: GatedAction<'_>) -> PermissionTraceFacts {
+        let outside = |path: &Path| {
+            if path_inside(&self.workspace_root, path) {
+                "false"
+            } else {
+                "true"
+            }
+        };
+        let outside_workspace = match action {
+            GatedAction::FileMutation(_) => "unknown",
+            GatedAction::Command(CommandRequest::Run { cwd, .. }) => outside(cwd),
+            GatedAction::Call(call) => external_path_target(&self.workspace_root, call)
+                .as_deref()
+                .map_or("not_path", outside),
+            GatedAction::McpTool(_) | GatedAction::Command(_) => "not_path",
+        };
+        PermissionTraceFacts {
+            mode: self.mode.get(),
+            local_grants: self.grant_sets().map(SessionGrants::count).sum(),
+            outside_workspace,
+        }
+    }
+
     fn admit(&self, call: &ToolCall) -> Admission {
         let mode = self.mode.get();
         if mode == PermissionMode::Yolo {

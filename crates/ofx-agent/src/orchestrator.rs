@@ -16,9 +16,9 @@ use ofx_contract::{
     FinishReason, GatedAction, HookScope, HookView, ImageAttachment, ImageInputSupport, LogFailure,
     McpServersCatalog, McpServersSection, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
     ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProviderError, ProviderErrorKind, ProviderOptions,
-    RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure, ReviewHold,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
+    PermissionGate, PermissionTraceFacts, PreparedCall, ProviderError, ProviderErrorKind,
+    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure,
+    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
     RouteRecoveryStatus, SkillBinding, StopOutcome, StreamEvent, SubagentStatus,
     SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
     ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
@@ -62,6 +62,7 @@ mod gateway_trace;
 mod history_trace;
 mod mode_policy;
 mod paused;
+mod permission_trace;
 mod project_gate;
 mod provider_tools;
 mod recovery;
@@ -79,6 +80,7 @@ use dynamic_tools::{DynamicToolSet, SelectedTools, not_selected};
 use gateway_trace::Recovering;
 use mode_policy::{Offer, denial, offer};
 use paused::{Pause, paused_required_action};
+use permission_trace::{Asked, Granted};
 use project_gate::GatedGroup;
 use provider_tools::{
     ends_with_provider_results, joins_parallel_groups, malformed_provider_calls,
@@ -2656,6 +2658,23 @@ struct Judged<'a> {
     action: GatedAction<'a>,
     description: &'a CallDescription,
     evidence: &'a ReviewEvidence<'a>,
+    trace: TraceContext,
+    facts: PermissionTraceFacts,
+}
+
+impl Judged<'_> {
+    fn decided(&self, decision: Granted) {
+        permission_trace::decided(&self.asked(), decision);
+    }
+
+    fn asked(&self) -> Asked<'_> {
+        Asked {
+            context: self.trace,
+            call: self.call,
+            action: self.action,
+            facts: self.facts,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -2708,6 +2727,7 @@ async fn judge(
         }
         Admission::ReviewRequired => {
             let Some(verdict) = review(gate, reviewing, &judged, cancel).await else {
+                permission_trace::cancelled(&judged.asked());
                 return (Verdict::Interrupted, None);
             };
             let call = judged.call;
@@ -2733,6 +2753,11 @@ async fn judge(
             }
         }
     };
+    judged.decided(if matches!(verdict, Verdict::Run(_)) {
+        Granted::Once
+    } else {
+        Granted::Deny
+    });
     (verdict, None)
 }
 
@@ -2744,6 +2769,7 @@ async fn review(
 ) -> Option<ReviewVerdict> {
     let call = judged.call;
     if let Some(verdict) = reviewing.reviews.cached(call) {
+        permission_trace::denial_preserved(judged.trace, call);
         return Some(verdict);
     }
     let attempt_available = reviewing.reviews.attempt_available(call);
@@ -2847,6 +2873,7 @@ async fn ask_approval(
     cancel: &CancellationToken,
 ) -> (Verdict, Option<String>) {
     let Some(approvals) = gate.approvals else {
+        judged.decided(Granted::PermissionRequired);
         return (Verdict::Blocked, None);
     };
     let scope = gate.permissions.approval_scope(judged.action);
@@ -2869,6 +2896,12 @@ async fn ask_approval(
         None | Some(ApprovalDecision::Deny) => Verdict::Denied,
         Some(ApprovalDecision::Once | ApprovalDecision::Always) => Verdict::Run(scope.access),
     };
+    match (&verdict, decision) {
+        (Verdict::Interrupted, _) => permission_trace::cancelled(&judged.asked()),
+        (Verdict::Run(_), Some(ApprovalDecision::Always)) => judged.decided(Granted::Always),
+        (Verdict::Run(_), _) => judged.decided(Granted::Once),
+        _ => judged.decided(Granted::Deny),
+    }
     let feedback = answer
         .and_then(|answer| answer.feedback)
         .filter(|text| !text.is_empty());
@@ -2941,6 +2974,7 @@ async fn run_group<'c>(
             Prepared::Ready(prepared, mut description, mutation, command) => {
                 let action = gated_action(call, mutation.as_ref(), command.as_ref(), &*prepared);
                 let delegates = description.activity == ToolActivity::Subagent;
+                let facts = permission_trace::requested(trace, call, gate.permissions, action);
                 let (admission, evidence) = admission(gate, action, &description, &*prepared);
                 let shown_while_reviewed =
                     admission == Admission::ReviewRequired && mutation.is_none();
@@ -2952,6 +2986,8 @@ async fn run_group<'c>(
                     action,
                     description: &description,
                     evidence: &evidence,
+                    trace,
+                    facts,
                 };
                 let (verdict, feedback) = judge(
                     gate,

@@ -320,6 +320,15 @@ impl TraceHome {
     fn log(&self) -> String {
         fs::read_to_string(self.root.join("trace.log")).expect("read the trace log")
     }
+
+    fn set_permission_mode(&self, mode: &str) {
+        let path = self.root.join("config/oh-fx/settings.json");
+        let mut settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read settings.json"))
+                .expect("parse settings.json");
+        settings["permission_mode"] = json!(mode);
+        fs::write(&path, settings.to_string()).expect("write settings.json");
+    }
 }
 
 fn ask_traced(replies: Vec<Reply>, extra: &[&str]) -> Traced {
@@ -747,6 +756,16 @@ fn a_resumed_ask_writes_its_history_projection_and_the_projected_shell_calls() {
         ],
     );
     assert_eq!(log.matches("event=projection_start").count(), 2, "{log}");
+    assert_in_order(
+        &log,
+        &[
+            "[permission] event=before_permission_wait turn_id=1 step_id=1 call_id=call_1 tool_name=shell permission_mode=yolo local_grants=0 outside_workspace=false",
+            "[permission] event=permission_requested turn_id=1 step_id=1 call_id=call_1 tool_name=shell permission_mode=yolo outside_workspace=false",
+            "[permission] event=after_permission_decision turn_id=1 step_id=1 call_id=call_1 tool_name=shell permission_mode=yolo decision=once approval_source=yolo outside_workspace=false",
+            "[permission] event=permission_decision turn_id=1 step_id=1 call_id=call_1 tool_name=shell permission_mode=yolo decision=once approval_source=yolo outside_workspace=false",
+            "[tool] event=execution_start turn_id=1 step_id=1 call_id=call_1 name=shell",
+        ],
+    );
     assert_eq!(
         log.matches("legacy_tool_history_projected").count(),
         2,
@@ -953,4 +972,36 @@ fn a_steered_turn_keeps_the_turn_id_its_prompt_was_queued_with() {
             .expect("the shell exits")
             .success()
     );
+}
+
+#[test]
+fn a_read_outside_the_workspace_without_a_way_to_approve_it_needs_permission() {
+    let read = json!({"path": "../outside.txt"}).to_string();
+    let home = TraceHome::new(vec![
+        Reply::sse(&chat_tool_call_events("call_1", "read_file", &read)),
+        Reply::sse(&chat_text_events(&["must not be requested"])),
+    ]);
+    fs::write(home.root.join("outside.txt"), "outside\n").expect("write the outside file");
+    home.set_permission_mode("ask");
+    let output = home.ask(&["--json", "--no-save", "read it"]);
+    assert_eq!(output.status.code(), Some(1));
+    let call = "turn_id=1 step_id=1 call_id=call_1 tool_name=read_file permission_mode=ask";
+    let log = home.log();
+    assert_in_order(
+        &log,
+        &[
+            &format!(
+                "[permission] event=before_permission_wait {call} local_grants=0 outside_workspace=true"
+            ),
+            &format!("[permission] event=permission_requested {call} outside_workspace=true"),
+            &format!(
+                "[permission] event=after_permission_decision {call} decision=permission_required approval_source=denied outside_workspace=true"
+            ),
+            &format!(
+                "[permission] event=permission_decision {call} decision=permission_required approval_source=denied outside_workspace=true"
+            ),
+        ],
+    );
+    assert!(!log.contains("event=execution_start"), "{log}");
+    assert_eq!(home.server.requests().len(), 1);
 }
