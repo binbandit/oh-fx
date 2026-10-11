@@ -38,7 +38,7 @@ use crate::session_usage::{Usage, UsageSnapshot};
 use crate::session_usage_sidecar;
 
 pub use conversation_archive::{
-    ArchivedSteering, ArchivedTurn, ExecutedStep, SessionArchive, TurnExecution,
+    ArchivedResult, ArchivedSteering, ArchivedTurn, ExecutedStep, SessionArchive, TurnExecution,
 };
 pub(crate) use conversation_archive::{check_conversation, load_archive};
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
