@@ -46,7 +46,7 @@ modules = []
 upstream = "src/core/terminal/recovery.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/terminal_recovery.rs"]
-note = "The record decision is ported: final lifecycles stay, a saved termination finalizes as exited, a terminal of this process instance stays live, and any other live terminal is lost. Checkpoint and screen evidence are not, because oh-fx saves no terminal journals or checkpoints (OH-19)."
+note = "The record decision is ported: final lifecycles stay, a saved termination finalizes as exited, and any other live terminal of another process is lost. Records of this process are left untouched, records that do not decode are skipped rather than isolated, and the unavailable disposition (no process evidence) does not exist because oh-fx checks no process liveness. Checkpoint and screen evidence are not ported, because oh-fx saves no terminal journals or checkpoints (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/shell_resolver.zig"
@@ -64,7 +64,7 @@ note = "#1137: user-profile commands capture the login shell's startup state onc
 upstream = "src/core/terminal/store.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/terminal_store.rs"]
-note = "Terminal records are ported: private per-owner folders with record-<id>.json in upstream's field names for the fields kept, lifecycle, start, deadline, termination, loss and close updates, owner identities, and owner reconciliation. Journals, checkpoints, events, authority and proof files, close transactions and quota eviction are not, because terminals end with the process that started them and only this process acts on them; docs/differences/tool-shell.md records it (OH-19)."
+note = "Terminal records are ported: private per-owner folders with record-<id>.json in upstream's field names for the fields kept, lifecycle, start, deadline, termination, loss and close updates, rollback of an unreleased start, owner identities, lookup of a terminal across owners, and owner reconciliation. Journals, checkpoints, events, authority and proof files, close transactions, quota eviction, resident tracking, process liveness checks, and the backend, backend_identity and process_token fields are not, because terminals end with the process that started them and only this process acts on them; docs/differences/tool-shell.md records it (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/ui_projection.zig"

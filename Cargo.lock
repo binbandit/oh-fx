@@ -780,6 +780,7 @@ dependencies = [
  "getrandom 0.4.3",
  "nix",
  "ofx-config",
+ "ofx-contract",
  "rustix",
  "serde",
  "serde_json",
