@@ -85,7 +85,7 @@ use provider_tools::{
     may_run_at_provider, provider_executed,
 };
 use recovery::{Restart, RestoredReply, recovery_tool_choice};
-use rejection_trace::{Denial, Refused};
+use rejection_trace::{Denial, Refusal, Refused};
 use response_language::{Reply, TurnLanguage};
 use turn_ledger::TurnLedger;
 use turn_log::Ending;
@@ -1721,6 +1721,7 @@ impl Agent {
             review_hold,
             feedback: given,
             ran,
+            refusal,
         } in outcomes
         {
             feedback.extend(given.map(|text| (call.id.clone(), text)));
@@ -1764,6 +1765,9 @@ impl Agent {
                     ran.panicked,
                     model_output.len(),
                 );
+            }
+            if let Some(refusal) = refusal {
+                rejection_trace::refused(turn.trace, call, refusal, model_output.len());
             }
             turn.raw_outputs.push(RecordedOutput {
                 call_id: call.id.clone(),
@@ -2553,6 +2557,7 @@ struct Settled<'c> {
     review_hold: bool,
     feedback: Option<String>,
     ran: Option<Ran>,
+    refusal: Option<Refusal>,
 }
 
 #[derive(Clone, Copy)]
@@ -3031,9 +3036,10 @@ async fn settle_group<'c>(
     let mut outcomes = Vec::with_capacity(dispatched.len());
     for (call, dispatched, feedback) in dispatched {
         let mut ran = None;
+        let mut refusal = None;
         let (output, escalates, executed, review_hold) = match dispatched {
             Dispatched::Rejected(output, reason, refused) => {
-                rejection_trace::rejected(trace, call, refused, output.content.len());
+                refusal = Some(Refusal::Refused(refused));
                 report_context_notices(turn_id, &output, events);
                 (
                     Some(output),
@@ -3043,7 +3049,7 @@ async fn settle_group<'c>(
                 )
             }
             Dispatched::Held(output, denial) => {
-                rejection_trace::denied(trace, call, denial, output.content.len());
+                refusal = Some(Refusal::Denied(denial));
                 events(tool_finished(turn_id, call, Some(&output)));
                 (Some(output), true, false, denial != Denial::User)
             }
@@ -3089,6 +3095,7 @@ async fn settle_group<'c>(
             review_hold,
             feedback,
             ran,
+            refusal,
         });
     }
     outcomes

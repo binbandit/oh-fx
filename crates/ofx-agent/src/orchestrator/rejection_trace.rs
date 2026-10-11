@@ -16,6 +16,12 @@ pub(super) enum Refused {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Refusal {
+    Refused(Refused),
+    Denied(Denial),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Denial {
     User,
     ReviewCaution,
@@ -42,7 +48,14 @@ const fn integrity_name(integrity: ToolArgumentIntegrity) -> &'static str {
     }
 }
 
-pub(super) fn rejected(context: TraceContext, call: &ToolCall, refused: Refused, bytes: usize) {
+pub(super) fn refused(context: TraceContext, call: &ToolCall, refusal: Refusal, bytes: usize) {
+    match refusal {
+        Refusal::Refused(refused) => rejected(context, call, refused, bytes),
+        Refusal::Denied(denial) => denied(context, call, denial, bytes),
+    }
+}
+
+fn rejected(context: TraceContext, call: &ToolCall, refused: Refused, bytes: usize) {
     let (id, name) = (call.id.as_str(), &call.name);
     match refused {
         Refused::Malformed(integrity) => {
@@ -86,7 +99,7 @@ pub(super) fn rejected(context: TraceContext, call: &ToolCall, refused: Refused,
     }
 }
 
-pub(super) fn denied(context: TraceContext, call: &ToolCall, denial: Denial, bytes: usize) {
+fn denied(context: TraceContext, call: &ToolCall, denial: Denial, bytes: usize) {
     trace_event!(
         TOOL,
         "execution_result",

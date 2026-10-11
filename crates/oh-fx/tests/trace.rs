@@ -852,3 +852,31 @@ fn a_shell_call_refused_by_validation_writes_its_validation_failure() {
     );
     assert!(!log.contains("event=execution_start"), "{log}");
 }
+
+#[test]
+fn a_refused_call_traces_the_bytes_the_model_receives() {
+    let arguments = json!({"url": "https://example.com", "x".repeat(70_000): true}).to_string();
+    let home = TraceHome::new(vec![
+        Reply::sse(&chat_tool_call_events("call_1", "web_fetch", &arguments)),
+        Reply::sse(&chat_text_events(&["Noted."])),
+    ]);
+    let output = home.ask(&["--yolo", "--json", "--no-save", "go"]);
+    assert_eq!(output.status.code(), Some(0));
+    let sent = home.server.requests()[1].json();
+    let result = sent["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .and_then(|message| message["content"].as_str())
+        .expect("the refused call's result")
+        .len();
+    assert!(result <= 65_536, "{result}");
+    let line = result_line(&home.log(), "call_1");
+    assert_eq!(
+        line,
+        format!(
+            "[tool] event=execution_result turn_id=1 step_id=1 call_id=call_1 name=web_fetch result_kind=validation_failure model_output_bytes={result}"
+        )
+    );
+}
