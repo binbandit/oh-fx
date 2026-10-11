@@ -31,8 +31,12 @@ pub(crate) struct HttpAuth {
     state: Arc<AuthState>,
     headers: Vec<HttpHeader>,
     stored: Option<StoredAuth>,
-    challenge: StateMutex<Option<String>>,
+    rejection: StateMutex<Option<Rejection>>,
     stream_rejected: AtomicBool,
+}
+
+struct Rejection {
+    header: Option<String>,
 }
 
 struct StoredAuth {
@@ -87,7 +91,7 @@ impl HttpAuth {
             state: Arc::clone(state),
             headers,
             stored,
-            challenge: StateMutex::new(None),
+            rejection: StateMutex::new(None),
             stream_rejected: AtomicBool::new(false),
         })
     }
@@ -102,9 +106,9 @@ impl HttpAuth {
             || (status == StatusCode::FORBIDDEN && header.is_some())
         {
             *self
-                .challenge
+                .rejection
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = header;
+                .unwrap_or_else(PoisonError::into_inner) = Some(Rejection { header });
             return Err(McpError::McpAuthenticationRequired);
         }
         Ok(())
@@ -119,15 +123,18 @@ impl HttpAuth {
     }
 
     pub(crate) fn capture(&self) -> String {
-        if let Some(failure) = self.failure() {
-            return failure;
-        }
-        let header = self
-            .challenge
+        let rejection = self
+            .rejection
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let challenge = header
+            .take();
+        if rejection.is_none()
+            && let Some(failure) = self.failure()
+        {
+            return failure;
+        }
+        let challenge = rejection
+            .and_then(|rejection| rejection.header)
             .as_deref()
             .and_then(parse_challenge)
             .unwrap_or_default();

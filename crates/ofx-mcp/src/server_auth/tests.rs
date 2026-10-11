@@ -544,6 +544,114 @@ mod stored {
     }
 
     #[tokio::test]
+    async fn a_replacement_load_fences_an_older_connections_rejected_refresh() {
+        let state = Arc::new(AuthState::default());
+        let replacing = Arc::clone(&state);
+        let server = FakeServer::start(move |request| {
+            if request.path == "/token" {
+                replacing.set_credentials_loaded(true);
+                return Reply::json(r#"{"error":"invalid_grant"}"#).with_status(400);
+            }
+            reply(request, RENEWED)
+        })
+        .await;
+        let fixture = Fixture {
+            server,
+            data: tempfile::tempdir().unwrap(),
+        };
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let old = HttpAuth::resolve(
+            &fixture.config(),
+            Some(fixture.store()),
+            &state,
+            || Ok(oauth_client()),
+            &|_| None,
+        )
+        .await
+        .ok()
+        .unwrap();
+        assert_eq!(
+            old.apply(oauth_client().get(&fixture.server.url))
+                .await
+                .err(),
+            Some(McpError::McpRefreshRejected)
+        );
+        assert_eq!(token_requests(&fixture), 1);
+        assert_eq!(
+            state.authentication(&fixture.config()),
+            crate::health::AuthenticationState::Authenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn a_challenge_wins_over_a_remembered_refresh_failure() {
+        let server = FakeServer::start(|request| match request.path.as_str() {
+            "/token" => Reply::json(r#"{"error":"temporarily_unavailable"}"#).with_status(400),
+            "/challenged" => Reply::status(401).header(
+                "WWW-Authenticate",
+                r#"Bearer scope="tools.admin", resource_metadata="https://auth.example/prm""#,
+            ),
+            _ => reply(request, RENEWED),
+        })
+        .await;
+        let fixture = Fixture {
+            server,
+            data: tempfile::tempdir().unwrap(),
+        };
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let state = Arc::new(AuthState::default());
+        let auth = HttpAuth::resolve(
+            &fixture.config(),
+            Some(fixture.store()),
+            &state,
+            || Ok(oauth_client()),
+            &|_| None,
+        )
+        .await
+        .ok()
+        .unwrap();
+        let http = oauth_client();
+        assert_eq!(
+            auth.apply(http.get(&fixture.server.url)).await.err(),
+            Some(McpError::McpRefreshUnavailable)
+        );
+        assert_eq!(
+            auth.capture(),
+            "MCP credential refresh failed. Run /mcp auth remote --open."
+        );
+        let challenged = http
+            .get(fixture.server.url.replace("/mcp", "/challenged"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            auth.reject(&challenged),
+            Err(McpError::McpAuthenticationRequired)
+        );
+        assert_eq!(
+            auth.capture(),
+            "Authentication required. Run /mcp auth remote --open, or configure bearer_token_env."
+        );
+        assert_eq!(state.pending().scope.as_deref(), Some("tools.admin"));
+        assert_eq!(
+            state.authentication(&fixture.config()),
+            crate::health::AuthenticationState::Required
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_requests_share_one_refresh() {
         let fixture = Fixture::start(RENEWED).await;
         fixture
