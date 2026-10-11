@@ -4,7 +4,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ofx_app::Profile;
-use ofx_mcp::{AuthenticationOutcome, McpError, McpRuntime, authentication_error_message};
+use ofx_mcp::{
+    AuthenticationOutcome, LogoutResult, McpError, McpRuntime, authentication_error_message,
+};
 use ofx_text::encode_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
@@ -14,13 +16,13 @@ pub(crate) fn auth(name: &str) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
     let runtime = match load_runtime() {
         Ok(runtime) => runtime,
-        Err(error) => return failed(&error),
+        Err(error) => return failed("auth", &error),
     };
     let Ok(tokio) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
-        return failed("RuntimeUnavailable");
+        return failed("auth", "RuntimeUnavailable");
     };
     let open = |url: &str| {
         let shown = encode_terminal_safe(url.as_bytes(), usize::MAX).text;
@@ -54,10 +56,11 @@ pub(crate) fn auth(name: &str) -> ExitCode {
                 Err(_) => crate::write_failed(),
             }
         }
-        Ok(AuthenticationOutcome::IssuerMismatch(_)) => {
-            failed(&McpError::McpAuthorizationIssuerMismatch.to_string())
-        }
-        Err(error) => failed(&authentication_error_message(&error)),
+        Ok(AuthenticationOutcome::IssuerMismatch(_)) => failed(
+            "auth",
+            &McpError::McpAuthorizationIssuerMismatch.to_string(),
+        ),
+        Err(error) => failed("auth", &authentication_error_message(&error)),
     }
 }
 
@@ -74,7 +77,94 @@ fn load_runtime() -> Result<Arc<McpRuntime>, String> {
     runtime.ok_or_else(|| McpError::McpServerNotFound.to_string())
 }
 
-fn failed(message: &str) -> ExitCode {
-    let _ = writeln!(io::stderr(), "oh-fx mcp auth failed: {message}.");
+pub(crate) fn logout(name: &str) -> ExitCode {
+    crate::auto_upgrade::announce_and_schedule();
+    let runtime = match load_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => return failed("logout", &error),
+    };
+    let Ok(tokio) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return failed("logout", "RuntimeUnavailable");
+    };
+    match tokio.block_on(runtime.logout_server(name)) {
+        Ok(result) => match crate::write_stdout(&logged_out(name, result)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => crate::write_failed(),
+        },
+        Err(error) => failed("logout", &authentication_error_message(&error)),
+    }
+}
+
+fn logged_out(name: &str, result: LogoutResult) -> String {
+    let shown = encode_terminal_safe(name.as_bytes(), NAME_BYTES).text;
+    if !result.removed {
+        format!("No stored MCP credentials found for '{shown}'.\n")
+    } else if result.local_only {
+        format!("Logged out of MCP server '{shown}' locally.\n")
+    } else if result.revocation_failed {
+        format!("Logged out of MCP server '{shown}' locally; remote revocation failed.\n")
+    } else {
+        format!("Logged out of MCP server '{shown}'.\n")
+    }
+}
+
+fn failed(operation: &str, message: &str) -> ExitCode {
+    let _ = writeln!(io::stderr(), "oh-fx mcp {operation} failed: {message}.");
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logout_lines_follow_upstreams_precedence_with_a_terminal_safe_name() {
+        let removed = LogoutResult {
+            removed: true,
+            ..LogoutResult::default()
+        };
+        assert_eq!(
+            logged_out("docs", LogoutResult::default()),
+            "No stored MCP credentials found for 'docs'.\n"
+        );
+        assert_eq!(
+            logged_out(
+                "docs",
+                LogoutResult {
+                    local_only: true,
+                    revocation_failed: true,
+                    repaired_entries: 2,
+                    ..removed
+                }
+            ),
+            "Logged out of MCP server 'docs' locally.\n"
+        );
+        assert_eq!(
+            logged_out(
+                "docs",
+                LogoutResult {
+                    revocation_failed: true,
+                    ..removed
+                }
+            ),
+            "Logged out of MCP server 'docs' locally; remote revocation failed.\n"
+        );
+        assert_eq!(
+            logged_out(
+                "docs",
+                LogoutResult {
+                    repaired_entries: 3,
+                    ..removed
+                }
+            ),
+            "Logged out of MCP server 'docs'.\n"
+        );
+        let unsafe_name = logged_out("a\u{1b}[2Jb", removed);
+        assert!(!unsafe_name.contains('\u{1b}'), "{unsafe_name}");
+        let long = logged_out(&"x".repeat(200), removed);
+        assert!(long.len() < 200, "{long}");
+    }
 }

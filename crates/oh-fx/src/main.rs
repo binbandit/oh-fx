@@ -122,6 +122,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Pr(args) => github_workflow::run(Workflow::PullRequest, &args, &modifiers),
             Command::Issue(args) => github_workflow::run(Workflow::Issue, &args, &modifiers),
             Command::Mcp(McpOperation::Auth(name)) => mcp_command::auth(&name),
+            Command::Mcp(McpOperation::Logout(name)) => mcp_command::logout(&name),
             Command::Setup => setup_command::run(),
             other => unavailable_command(&other),
         },
