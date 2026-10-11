@@ -251,6 +251,10 @@ impl Persistence {
         route: SessionRoute,
         model: &str,
     ) -> Result<(), SessionError> {
+        let route = SessionRoute {
+            profile: self.route.profile.clone().or(route.profile),
+            ..route
+        };
         let provider = route.provider.clone();
         self.preferences.provider = provider.clone();
         model.clone_into(&mut self.preferences.model);

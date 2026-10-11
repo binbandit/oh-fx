@@ -221,8 +221,8 @@ impl LiveSession {
     }
 
     pub(crate) fn abandon_profile_ledger(&self) {
-        if let Some(profile) = &self.route.profile {
-            profile.abandon_for_process_exit();
+        if let Some(publisher) = &self.publisher {
+            publisher.abandon_for_process_exit();
         }
     }
 
@@ -407,3 +407,6 @@ pub fn configured_preferences(
         ultrafast_mode: false,
     }
 }
+
+#[cfg(test)]
+mod tests;

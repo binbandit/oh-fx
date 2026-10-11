@@ -54,6 +54,10 @@ impl UsagePublisher {
         self.shared.schedule();
     }
 
+    pub fn abandon_for_process_exit(&self) {
+        self.shared.profile.abandon_for_process_exit();
+    }
+
     pub fn finish_before_shutdown(&self) {
         let shared = &self.shared;
         if shared.finished.swap(true, Ordering::SeqCst) {

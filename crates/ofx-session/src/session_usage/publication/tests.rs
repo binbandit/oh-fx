@@ -186,3 +186,62 @@ fn a_batch_dates_restored_pending_generations_and_published_incidents_leave() {
     assert!(snapshot.incidents.is_empty());
     assert!(!snapshot.publication_batch(NOW).checkpoint_changed);
 }
+
+fn sized_model(prefix: &str, bytes: usize) -> String {
+    format!(
+        "codex/{prefix}{}",
+        "m".repeat(bytes - "codex/".len() - prefix.len())
+    )
+}
+
+#[test]
+fn a_new_model_is_budgeted_after_its_backlog_record_retires() {
+    let mut usage = Usage::fresh();
+    for index in 0..8 {
+        exact(
+            &mut usage,
+            &format!("response-{index}"),
+            &sized_model(&index.to_string(), 1_000),
+        );
+        publish_all(&mut usage);
+    }
+    let settled = usage.snapshot(NOW);
+    assert_eq!(settled.billing, Availability::Complete);
+    assert_eq!(settled.models.len(), 8);
+    assert_eq!(settled.request_count, Some(8));
+    assert!(settled.pending.is_empty());
+    assert!(settled.publication_backlog.is_empty());
+    assert_eq!(settled.identifier_bytes(), 8_000);
+    assert_eq!(settled.validate(), Ok(()));
+
+    for (model_bytes, settles) in [(192, true), (193, false)] {
+        let mut staged = Usage::fresh();
+        exact(
+            &mut staged,
+            "response-extra",
+            &sized_model("x", model_bytes),
+        );
+        let staged = staged.snapshot(NOW);
+        let fact = staged.publication_backlog[0].clone();
+        let mut pending = staged.pending[0].clone();
+        let mut snapshot = settled.clone();
+        pending.sequence = snapshot.next_sequence;
+        snapshot.next_sequence += 1;
+        snapshot.pending.push(pending);
+        snapshot.publication_backlog.push(fact.clone());
+        snapshot.billing = Availability::Pending;
+        snapshot.settle_published(&fact);
+        assert!(snapshot.publication_backlog.is_empty(), "{model_bytes}");
+        if settles {
+            assert_eq!(snapshot.billing, Availability::Complete);
+            assert_eq!(snapshot.models.len(), 9);
+            assert_eq!(snapshot.identifier_bytes(), MAX_IDENTIFIER_BYTES);
+            assert_eq!(snapshot.validate(), Ok(()));
+        } else {
+            assert_eq!(snapshot.billing, Availability::Incomplete);
+            assert_eq!(snapshot.models.len(), 8);
+            assert_eq!(snapshot.pending.len(), 1);
+            assert!(snapshot.identifier_bytes() <= MAX_IDENTIFIER_BYTES);
+        }
+    }
+}

@@ -46,12 +46,25 @@ impl CheckpointWriter {
         id: &str,
         snapshot: &UsageSnapshot,
     ) -> Result<(), SessionError> {
+        self.save(sequence, || session_usage_sidecar::write(dir, id, snapshot))
+    }
+
+    fn save(
+        &mut self,
+        sequence: u64,
+        write: impl FnOnce() -> Result<(), SessionError>,
+    ) -> Result<(), SessionError> {
         if self.written > sequence {
             return Ok(());
         }
-        session_usage_sidecar::write(dir, id, snapshot)?;
-        self.written = sequence;
-        Ok(())
+        let saved = write();
+        if matches!(
+            saved,
+            Ok(()) | Err(SessionError::Storage(DurableError::PostRenameFailed))
+        ) {
+            self.written = sequence;
+        }
+        saved
     }
 }
 
@@ -179,3 +192,6 @@ impl WritableSession {
 fn elapsed_ms(ticket: RequestTicket) -> u64 {
     u64::try_from(ticket.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+mod tests;

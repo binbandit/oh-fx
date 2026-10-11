@@ -113,11 +113,17 @@ impl UsageSnapshot {
             .position(|model| model.model == fact.model);
         if model_index.is_none() {
             let resolved = &self.pending[pending_index];
+            let retired = self
+                .publication_backlog
+                .iter()
+                .find(|staged| staged.id == fact.id);
             let released = [
                 resolved.id.len(),
                 resolved.origin.len(),
                 resolved.team.as_ref().map_or(0, String::len),
                 resolved.account_id.as_ref().map_or(0, String::len),
+                retired.map_or(0, |staged| staged.id.len()),
+                retired.map_or(0, |staged| staged.model.len()),
             ]
             .into_iter()
             .fold(0, usize::saturating_add);
