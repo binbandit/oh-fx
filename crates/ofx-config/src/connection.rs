@@ -13,6 +13,7 @@ pub(crate) const REDACTED: &str = "[redacted]";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedConnection {
+    pub id: String,
     pub chat_url: String,
     pub bearer_token: Option<String>,
     pub headers: Vec<(String, String)>,
@@ -32,6 +33,7 @@ impl fmt::Debug for ResolvedConnection {
             .collect();
         formatter
             .debug_struct("ResolvedConnection")
+            .field("id", &self.id)
             .field("chat_url", &self.chat_url)
             .field(
                 "bearer_token",
@@ -136,6 +138,7 @@ impl ProviderDefinition {
             }
         }
         Ok(ResolvedConnection {
+            id: self.id().to_owned(),
             chat_url: self.chat_url(),
             bearer_token,
             headers,
@@ -192,6 +195,7 @@ mod tests {
     #[test]
     fn debug_output_redacts_credentials_headers_and_proxy() {
         let connection = ResolvedConnection {
+            id: "portkey".to_owned(),
             chat_url: "https://gateway.example/v1/chat/completions".to_owned(),
             bearer_token: Some("sk-live-token".to_owned()),
             headers: vec![("x-portkey-api-key".to_owned(), "pk-live-secret".to_owned())],

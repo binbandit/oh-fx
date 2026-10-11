@@ -22,7 +22,7 @@ pub(super) struct TurnLanguage {
 }
 
 pub(super) enum Reply {
-    Accepted(Completion),
+    Accepted(Box<Completion>),
     Steered,
     Rejected,
 }
@@ -152,7 +152,7 @@ impl Agent {
         if self.steered_after_reply(Some(reply), step_cancel, cancel)? {
             return Ok(Reply::Steered);
         }
-        Ok(Reply::Accepted(completion))
+        Ok(Reply::Accepted(Box::new(completion)))
     }
 
     fn judge_language(

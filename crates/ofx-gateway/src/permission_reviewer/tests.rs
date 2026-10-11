@@ -71,6 +71,7 @@ fn decision() -> Completion {
             input_tokens: Some(9),
             output_tokens: Some(4),
         },
+        billing: None,
         provider_replay: None,
     }
 }
@@ -163,7 +164,7 @@ async fn reviews_return_the_structured_completion_and_never_the_streamed_text() 
     let transport = CodexReviewTransport::new(provider.clone());
     assert_eq!(
         send(&transport, "gpt-5.6-luna").await,
-        ReviewTransportOutcome::Completion(decision())
+        ReviewTransportOutcome::Completion(Box::new(decision()))
     );
     assert_eq!(
         provider.sent.lock().unwrap()[..],
@@ -178,7 +179,7 @@ async fn reviews_return_the_structured_completion_and_never_the_streamed_text() 
 async fn codex_review_failures_follow_the_responses_reviewer() {
     use ProviderErrorKind as Kind;
     use ReviewTransportOutcome as Outcome;
-    let undecided = Outcome::Completion(undecided());
+    let undecided = Outcome::Completion(Box::new(undecided()));
     for (result, expected) in [
         (failure(Kind::Cancelled, "Cancelled"), Outcome::Cancelled),
         (failure(Kind::Timeout, "Timeout"), Outcome::TimedOut),
@@ -265,7 +266,7 @@ async fn custom_connection_review_failures_are_permanent_except_timeouts_and_mis
         (failure(Kind::Timeout, "Timeout"), Outcome::TimedOut),
         (
             failure(Kind::Protocol, "RequiredToolMissing"),
-            Outcome::Completion(undecided()),
+            Outcome::Completion(Box::new(undecided())),
         ),
         (
             failure(Kind::RateLimited, "RateLimited"),

@@ -2,8 +2,8 @@ use std::sync::Mutex;
 
 use ofx_contract::{
     CommandProcessPresentation, DeliveryOutcome, FileChangeStats, HistoryCut, HistoryTurn,
-    RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress, RecoveryStrategy,
-    RequestTicket,
+    ProviderBilling, RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress,
+    RecoveryStrategy, RequestTicket,
 };
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
@@ -512,6 +512,7 @@ impl ConversationLog for SavedArguments {
     fn clear_recovery(&self) -> Result<(), LogFailure> {
         Ok(())
     }
+
     fn begin_request(&self) -> Result<RequestTicket, LogFailure> {
         Ok(RequestTicket {
             sequence: 1,
@@ -523,6 +524,14 @@ impl ConversationLog for SavedArguments {
         &self,
         _ticket: RequestTicket,
         _outcome: DeliveryOutcome,
+    ) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn finish_exact_request(
+        &self,
+        _ticket: RequestTicket,
+        _billing: &ProviderBilling,
     ) -> Result<(), LogFailure> {
         Ok(())
     }

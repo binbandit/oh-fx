@@ -552,6 +552,7 @@ fn completion(
             input_tokens: Some(10),
             output_tokens: Some(2),
         },
+        billing: None,
         provider_replay: None,
     }
 }

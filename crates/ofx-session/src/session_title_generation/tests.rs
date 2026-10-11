@@ -20,7 +20,7 @@ struct SeenRequest {
 }
 
 enum Scripted {
-    Reply(Result<Completion, ProviderError>),
+    Reply(Box<Result<Completion, ProviderError>>),
     Hang,
 }
 
@@ -38,7 +38,7 @@ impl ScriptedProvider {
     }
 
     fn replying(content: Option<&str>) -> Self {
-        Self::new([Scripted::Reply(Ok(completion(content)))])
+        Self::new([Scripted::Reply(Box::new(Ok(completion(content))))])
     }
 
     fn seen(&self) -> Vec<SeenRequest> {
@@ -73,7 +73,7 @@ impl ModelProvider for ScriptedProvider {
         let next = self.replies.lock().unwrap().pop_front();
         Box::pin(async move {
             match next {
-                Some(Scripted::Reply(reply)) => reply,
+                Some(Scripted::Reply(reply)) => *reply,
                 Some(Scripted::Hang) => std::future::pending().await,
                 None => Err(ProviderError::new(
                     ProviderErrorKind::Protocol,
@@ -90,6 +90,7 @@ fn completion(content: Option<&str>) -> Completion {
         tool_calls: Vec::new(),
         finish_reason: FinishReason::Stop,
         usage: Usage::default(),
+        billing: None,
         provider_replay: None,
     }
 }
@@ -232,7 +233,7 @@ async fn a_failed_empty_or_unusable_reply_leaves_the_session_untitled() {
         Ok(completion(None)),
         Ok(completion(Some("  \n "))),
     ] {
-        let provider = ScriptedProvider::new([Scripted::Reply(reply)]);
+        let provider = ScriptedProvider::new([Scripted::Reply(Box::new(reply))]);
         assert_eq!(generate(&provider).await, None);
         assert_eq!(provider.seen().len(), 1);
     }
