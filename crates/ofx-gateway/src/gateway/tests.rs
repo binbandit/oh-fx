@@ -681,10 +681,18 @@ impl GatewayRefresh for ScriptedRefresh {
     }
 }
 
+struct StalledRefresh;
+
+impl GatewayRefresh for StalledRefresh {
+    fn refresh(&self) -> BoxFuture<'_, Result<Option<GatewayAccess>, String>> {
+        Box::pin(std::future::pending())
+    }
+}
+
 fn signed_in(
     server: &FakeServer,
     refresh_after_ms: i64,
-    refresh: Arc<ScriptedRefresh>,
+    refresh: Arc<dyn GatewayRefresh>,
 ) -> GatewayProvider {
     GatewayProvider::new(
         GatewayCredential::new(
@@ -711,7 +719,7 @@ async fn a_due_login_token_is_refreshed_before_the_request_and_both_tokens_stay_
         Some("team_1".to_owned()),
         i64::MAX,
     ))));
-    let gateway = signed_in(&server, 0, Arc::clone(&refresh));
+    let gateway = signed_in(&server, 0, Arc::<ScriptedRefresh>::clone(&refresh));
     let (result, events) = run(&gateway, None).await;
     result.unwrap();
     assert!(events.contains(&StreamEvent::CredentialRefreshed {
@@ -767,11 +775,36 @@ async fn a_refresh_that_fails_or_moves_the_team_keeps_the_current_token() {
 async fn a_login_token_that_is_not_due_is_sent_without_a_refresh() {
     let server = FakeServer::start([Reply::sse(&[STOP])]);
     let refresh = ScriptedRefresh::new(Ok(None));
-    let gateway = signed_in(&server, i64::MAX, Arc::clone(&refresh));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
     run(&gateway, None).await.0.unwrap();
     assert_eq!(refresh.calls(), 0);
     assert_eq!(
         only_request(&server).header("authorization"),
         Some("Bearer login-old-token")
     );
+}
+
+#[tokio::test]
+async fn cancelling_a_turn_stops_a_pending_login_refresh_without_sending() {
+    let server = FakeServer::start([]);
+    let gateway = signed_in(&server, 0, Arc::new(StalledRefresh));
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let cancel = CancellationToken::new();
+    let stopper = cancel.clone();
+    let stopping = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stopper.cancel();
+    });
+    let mut sink = |_: StreamEvent| {};
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        gateway.stream(&request, &mut sink, &cancel),
+    )
+    .await
+    .expect("the cancelled turn ends while the refresh is still pending")
+    .unwrap_err();
+    stopping.await.unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(server.requests().is_empty());
 }

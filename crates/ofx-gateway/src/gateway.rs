@@ -272,7 +272,11 @@ impl GatewayProvider {
             Some(body) => body,
             None => self.build(request).map_err(request_failure)?,
         };
-        self.refresh_if_due(sink).await;
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ProviderError::cancelled()),
+            () = self.refresh_if_due(sink) => {}
+        }
         let (secret, team) = {
             let current = lock(&self.current);
             (current.secret.clone(), current.team.clone())

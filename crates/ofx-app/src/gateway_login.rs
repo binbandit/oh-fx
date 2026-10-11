@@ -6,6 +6,7 @@ use ofx_gateway::{GatewayAccess, GatewayCredential, GatewayRefresh};
 use ofx_trace::trace_log;
 
 const AUTH: &str = "auth";
+const STOPPED: &str = "RefreshStopped";
 
 struct LoginRefresh {
     login: VercelOAuth,
@@ -13,8 +14,13 @@ struct LoginRefresh {
 
 impl GatewayRefresh for LoginRefresh {
     fn refresh(&self) -> BoxFuture<'_, Result<Option<GatewayAccess>, String>> {
+        let login = self.login.clone();
+        let loading = tokio::spawn(async move { login.load_credential().await });
         Box::pin(async move {
-            match self.login.load_credential().await {
+            let Ok(loaded) = loading.await else {
+                return Err(STOPPED.to_owned());
+            };
+            match loaded {
                 Ok(key) => Ok(key.map(|key| {
                     GatewayAccess::new(
                         key.secret.to_string(),
@@ -49,3 +55,6 @@ pub(crate) fn gateway_credential(
         _ => credential,
     }
 }
+
+#[cfg(test)]
+mod tests;

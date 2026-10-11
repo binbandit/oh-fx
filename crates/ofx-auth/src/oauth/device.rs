@@ -43,7 +43,7 @@ pub(crate) struct TokenSet {
     pub(crate) access_token: Secret,
     pub(crate) refresh_token: Option<Secret>,
     pub(crate) expires_in: i64,
-    pub(crate) scope: String,
+    pub(crate) scope: Option<String>,
     pub(crate) token_type: String,
 }
 
@@ -185,7 +185,7 @@ pub(crate) fn parse_token_set(bytes: &[u8]) -> Result<TokenSet, VercelError> {
     if !token_type.eq_ignore_ascii_case("Bearer") {
         return Err(VercelError::InvalidOAuthResponse);
     }
-    let scope = optional_string(&object, "scope")?.unwrap_or_default();
+    let scope = optional_string(&object, "scope")?;
     let access_token = Secret::new(required_string(&object, "access_token")?);
     let refresh_token = optional_string(&object, "refresh_token")?.map(Secret::new);
     let expires_in = required_integer(&object, "expires_in")?;

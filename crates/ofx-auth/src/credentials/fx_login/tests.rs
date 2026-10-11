@@ -71,6 +71,28 @@ async fn an_expired_login_is_refreshed_and_saved_with_its_team() {
 }
 
 #[tokio::test]
+async fn a_refresh_without_a_scope_keeps_the_saved_scope_and_reloads() {
+    let server = refreshed(Reply::status(
+        200,
+        r#"{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600,"token_type":"Bearer"}"#,
+    ));
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("oh-fx");
+    write_session(&data, &origin(&server), 1, TEAM);
+    let key = login(&data).load_credential().await.unwrap().unwrap();
+    assert_eq!(key.secret.as_str(), "new-access");
+    let saved = std::fs::read_to_string(data.join("auth.json")).unwrap();
+    assert!(
+        saved.contains(",\"scope\":\"openid offline_access\",\"token_type\":\"Bearer\","),
+        "{saved}"
+    );
+    let reloaded = login(&data).load_credential().await.unwrap().unwrap();
+    assert_eq!(reloaded.secret.as_str(), "new-access");
+    assert_eq!(reloaded.gateway_team(), Some("team_id"));
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
 async fn a_rejected_refresh_retires_the_session() {
     for (status, body, expected) in [
         (

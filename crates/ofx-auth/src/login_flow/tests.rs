@@ -17,12 +17,12 @@ fn team(id: &str, slug: &str, name: &str) -> Team {
     }
 }
 
-fn token(refresh: Option<&str>, expires_in: i64, scope: &str) -> TokenSet {
+fn token(refresh: Option<&str>, expires_in: i64, scope: Option<&str>) -> TokenSet {
     TokenSet {
         access_token: Secret::new(ACCESS.to_owned()),
         refresh_token: refresh.map(|refresh| Secret::new(refresh.to_owned())),
         expires_in,
-        scope: scope.to_owned(),
+        scope: scope.map(str::to_owned),
         token_type: "Bearer".to_owned(),
     }
 }
@@ -114,7 +114,7 @@ fn the_login_session_takes_the_granted_tokens_and_team() {
     let session = take_login_session(
         "https://vercel.com",
         "client",
-        token(Some(REFRESH), 3600, "openid offline_access"),
+        token(Some(REFRESH), 3600, Some("openid offline_access")),
         Some(&selected),
         1_000,
     )
@@ -130,7 +130,7 @@ fn the_login_session_takes_the_granted_tokens_and_team() {
         take_login_session(
             "https://vercel.com",
             "client",
-            token(None, 3600, ""),
+            token(None, 3600, None),
             None,
             0
         ),
@@ -140,7 +140,7 @@ fn the_login_session_takes_the_granted_tokens_and_team() {
         take_login_session(
             "https://vercel.com",
             "client",
-            token(Some(REFRESH), 0, ""),
+            token(Some(REFRESH), 0, None),
             None,
             0
         ),
@@ -281,4 +281,53 @@ async fn run_login_reports_a_denied_authorization() {
         Err(VercelError::AccessDenied)
     );
     assert_eq!(oauth.store().load_unlocked(), Ok(None));
+}
+
+#[tokio::test]
+async fn a_slow_team_choice_does_not_extend_the_login_and_a_grant_without_scope_reloads() {
+    const CHOICE_DELAY_MS: i64 = 1_500;
+    let server = std::sync::Arc::new(FakeServer::start_at_origin(|origin| {
+        [
+            Reply::status(200, metadata(origin)),
+            device_reply(),
+            Reply::status(
+                200,
+                format!(
+                    r#"{{"access_token":"{ACCESS}","refresh_token":"{REFRESH}","expires_in":3600,"token_type":"Bearer"}}"#
+                ),
+            ),
+            Reply::status(
+                200,
+                r#"{"teams":[{"id":"team_1","slug":"one","name":"One"},{"id":"team_2","slug":"two","name":"Two"}]}"#,
+            ),
+        ]
+    }));
+    let directory = tempfile::tempdir().unwrap();
+    let oauth = oauth(&server, &directory.path().join("oh-fx"), "client");
+    let (input, mut writer) = UnixStream::pair().unwrap();
+    let watched = std::sync::Arc::clone(&server);
+    let chooser = std::thread::spawn(move || {
+        while watched.requests().len() < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            CHOICE_DELAY_MS.unsigned_abs(),
+        ));
+        writer.write_all(b"2\n").unwrap();
+        writer
+    });
+    oauth
+        .run_login(&mut Vec::new(), &input, quiet())
+        .await
+        .unwrap();
+    let finished = now_ms();
+    drop(chooser.join().unwrap());
+    let saved = oauth.store().load_unlocked().unwrap().unwrap();
+    assert!(
+        saved.expires_at_ms <= finished - CHOICE_DELAY_MS + 3_600_000,
+        "expires_at_ms={} finished={finished}",
+        saved.expires_at_ms
+    );
+    assert_eq!(saved.scope, DEFAULT_SCOPE);
+    assert_eq!(saved.team_id.as_deref(), Some("team_2"));
 }

@@ -220,6 +220,7 @@ impl VercelOAuth {
             input,
         };
         let token = poll::poll_for_token(&mut deps, &prepared.device, &mut prompt).await?;
+        let received_at_ms = now_ms();
         let teams = self
             .fetch_teams(token.access_token.expose(), &prepared.metadata.issuer)
             .await
@@ -230,7 +231,7 @@ impl VercelOAuth {
             &prepared.client_id,
             token,
             selected.map(|index| &teams[index]),
-            now_ms(),
+            received_at_ms,
         )?;
         self.store
             .save_new_session(&session)
@@ -358,11 +359,11 @@ fn take_login_session(
 ) -> Result<Session, VercelError> {
     let refresh_token = token.refresh_token.ok_or(VercelError::NoRefreshToken)?;
     let expires_at_ms = oauth::expiry_timestamp_ms(now_ms, token.expires_in)?;
-    if let Some(missing) = device::missing_granted_scope(DEFAULT_SCOPE, &token.scope) {
+    let scope = token.scope.unwrap_or_else(|| DEFAULT_SCOPE.to_owned());
+    if let Some(missing) = device::missing_granted_scope(DEFAULT_SCOPE, &scope) {
         trace_log!(
             AUTH,
-            "issuer reduced the grant missing_scope={missing} granted={}",
-            token.scope
+            "issuer reduced the grant missing_scope={missing} granted={scope}"
         );
     }
     Ok(Session {
@@ -371,7 +372,7 @@ fn take_login_session(
         access_token: token.access_token,
         refresh_token,
         expires_at_ms,
-        scope: token.scope,
+        scope,
         token_type: token.token_type,
         team_slug: team.map(|team| team.slug.clone()),
         team_id: team.map(|team| team.id.clone()),

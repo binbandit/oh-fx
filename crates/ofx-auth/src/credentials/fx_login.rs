@@ -89,7 +89,7 @@ impl VercelOAuth {
             access_token: refreshed.access_token,
             refresh_token: rotated,
             expires_at_ms,
-            scope: refreshed.scope,
+            scope: refreshed.scope.unwrap_or_else(|| session.scope.clone()),
             token_type: refreshed.token_type,
             ..session.clone()
         };

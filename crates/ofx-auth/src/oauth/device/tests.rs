@@ -121,7 +121,7 @@ async fn oauth_refresh_posts_the_refresh_grant() {
         .await
         .unwrap();
     assert_eq!(token.access_token.expose(), "next");
-    assert_eq!(token.scope, "");
+    assert_eq!(token.scope, None);
     assert_eq!(
         server.requests()[0].body_text(),
         "client_id=client&grant_type=refresh_token&refresh_token=refresh%20value"
@@ -190,7 +190,7 @@ fn oauth_parses_token_sets_and_device_authorizations() {
     assert_eq!(token.access_token.expose(), "access");
     assert_eq!(token.refresh_token.unwrap().expose(), "refresh");
     assert_eq!(token.expires_in, 3600);
-    assert_eq!(token.scope, "openid offline_access");
+    assert_eq!(token.scope.as_deref(), Some("openid offline_access"));
     for invalid in [
         &br#"{"access_token":"a","expires_in":1,"token_type":"mac"}"#[..],
         br#"{"access_token":"a","expires_in":1.5,"token_type":"Bearer"}"#,

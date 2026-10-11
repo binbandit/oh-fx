@@ -47,7 +47,7 @@ impl PollDeps for ScriptedPoll {
                 access_token: Secret::new("access".to_owned()),
                 refresh_token: Some(Secret::new("refresh".to_owned())),
                 expires_in: 3600,
-                scope: "openid offline_access".to_owned(),
+                scope: Some("openid offline_access".to_owned()),
                 token_type: "Bearer".to_owned(),
             })),
         }
