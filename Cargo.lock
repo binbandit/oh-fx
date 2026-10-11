@@ -776,8 +776,10 @@ dependencies = [
 name = "ofx-exec"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "getrandom 0.4.3",
  "nix",
+ "ofx-config",
  "rustix",
  "serde",
  "serde_json",

@@ -9,6 +9,8 @@ mod output_echo;
 mod process_tree;
 mod shell_resolver;
 mod terminal_contracts;
+mod terminal_recovery;
+mod terminal_store;
 
 pub use command_contract::{CommandStatus, StatusProjection};
 pub use command_environment::{Environment, Profile};
@@ -26,4 +28,7 @@ pub use native_session::{
 };
 pub use output_echo::OutputEcho;
 pub use shell_resolver::{ResolveError, configured_login_shell, environment};
-pub use terminal_contracts::Dimensions;
+pub use terminal_contracts::{Dimensions, Lifecycle};
+pub use terminal_store::{
+    DurableTerminal, NewTerminal, StoreError, TerminalRecord, TerminalStore, Termination,
+};
