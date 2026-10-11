@@ -442,7 +442,6 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["list", "--connect"],
         &["path"],
         &["remove", "x"],
-        &["logout", "x"],
         &["trust", "approve-all"],
         &["trust", "reset"],
         &["trust", "approve", "x"],
@@ -479,7 +478,13 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["remove"],
         &["remove", ""],
         &["logout", "a", "b"],
+        &["logout"],
+        &["logout", ""],
     ] {
         fails(parse_mcp(&os(args)), usage(TopLevelKind::Mcp));
     }
+    assert_eq!(
+        parse_mcp(&os(&["logout", "remote"])).ok(),
+        Some(McpOperation::Logout("remote".to_owned()))
+    );
 }

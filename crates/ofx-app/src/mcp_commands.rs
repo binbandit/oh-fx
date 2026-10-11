@@ -75,6 +75,9 @@ pub(crate) enum Outcome {
     Authenticate {
         server: String,
     },
+    Logout {
+        server: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +131,9 @@ pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRunti
         if name.is_empty() || name.contains(TRIMMED) {
             return show(LOGOUT_USAGE);
         }
-        return show("MCP logout is not available yet.");
+        return Outcome::Logout {
+            server: name.to_owned(),
+        };
     }
     if let Some(name) = command.strip_prefix("remove ") {
         return remove(config_path, name.trim_matches(TRIMMED));
@@ -169,6 +174,11 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
         Outcome::Authenticate { server } => {
             let body = host.begin_authentication(server);
             state.notice(NoticeTone::Neutral, TOPIC, &body);
+        }
+        Outcome::Logout { server } => {
+            if let Some(body) = host.logout(server) {
+                state.notice(NoticeTone::Neutral, TOPIC, &body);
+            }
         }
     }
 }
@@ -877,13 +887,39 @@ mod tests {
     }
 
     #[test]
+    fn mcp_logout_checks_its_name_before_it_signs_out() {
+        let (_home, path) = profile();
+        let runtime = authenticating_runtime();
+        let respond_to = |command: &str| respond(command, Some(path.as_path()), &runtime);
+        for (command, expected) in [
+            ("logout docs db", LOGOUT_USAGE),
+            ("logout", USAGE),
+            (" logout \t ", USAGE),
+            ("logout\tdocs", USAGE),
+        ] {
+            assert_eq!(
+                respond_to(command),
+                Outcome::Show(expected.to_owned()),
+                "{command:?}"
+            );
+        }
+        assert_eq!(
+            respond_to(" logout \t docs \t "),
+            Outcome::Logout {
+                server: "docs".to_owned()
+            }
+        );
+        assert_eq!(
+            respond("logout docs", None, &runtime),
+            Outcome::Show(HOME_UNAVAILABLE.to_owned())
+        );
+    }
+
+    #[test]
     fn unported_features_check_their_arguments_then_say_they_are_not_available_yet() {
         let (_home, path) = profile();
         let path = Some(path.as_path());
         for (command, expected) in [
-            ("logout docs db", LOGOUT_USAGE),
-            ("logout docs", "MCP logout is not available yet."),
-            ("logout", USAGE),
             ("resource wat", RESOURCE_USAGE),
             ("resource list", RESOURCE_LIST_USAGE),
             ("resource templates docs extra", RESOURCE_LIST_USAGE),

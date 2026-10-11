@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tokio::sync::OwnedMutexGuard;
+
 use super::interactive::oauth_client;
 use super::load_stored;
 use crate::error::McpError;
@@ -20,6 +22,7 @@ pub struct LogoutResult {
 pub(crate) async fn logout(
     server: &Arc<Server>,
     options: &ConnectOptions,
+    reloads: OwnedMutexGuard<()>,
 ) -> Result<LogoutResult, McpError> {
     let config = &server.config;
     if matches!(server.lifecycle(), Lifecycle::Starting) {
@@ -67,6 +70,7 @@ pub(crate) async fn logout(
         lookup,
         stored,
         options.clone(),
+        reloads,
     ));
     fenced.await.map_err(|_| McpError::Cancelled)?
 }
@@ -77,6 +81,7 @@ async fn log_out(
     lookup: GrantLookup,
     stored: Option<Credentials>,
     options: ConnectOptions,
+    reloads: OwnedMutexGuard<()>,
 ) -> Result<LogoutResult, McpError> {
     let detached = server.auth.begin_logout().await?;
     let deleted = match delete(&store, &lookup).await {
@@ -95,6 +100,7 @@ async fn log_out(
     let discarded = server.auth.commit_logout();
     server.log_out().await;
     server.auth.finish_logout();
+    drop(reloads);
     let mut revocation_failed = false;
     for revoked in grant.iter().chain(&discarded) {
         revocation_failed |= revoke(revoked, &options).await;
