@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
@@ -62,6 +64,77 @@ impl Lifecycle {
             _ => Err(InvalidLifecycleTransition),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Start,
+    Wait,
+    Inspect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredErrorCode {
+    InvalidRequest,
+    ShellUnavailable,
+    PtyUnavailable,
+    StartupFailed,
+    SessionLost,
+    SessionNotFound,
+    AuthorityDenied,
+    CapacityExceeded,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalFailure {
+    pub action: Action,
+    pub code: StructuredErrorCode,
+    pub session_id: Option<String>,
+}
+
+impl TerminalFailure {
+    pub(crate) fn new(action: Action, code: StructuredErrorCode, session_id: Option<&str>) -> Self {
+        Self {
+            action,
+            code,
+            session_id: session_id.map(str::to_owned),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellSpec {
+    UserLogin,
+    Executable { path: PathBuf, clean_start: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnCondition {
+    Started,
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnOutcome {
+    Started,
+    SafetyCeiling,
+    Cancelled,
+    Exited(i32),
+    Signal(u32),
+}
+
+impl ReturnOutcome {
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, Self::Exited(_) | Self::Signal(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFacts {
+    pub session_id: String,
+    pub lifecycle: Lifecycle,
+    pub timed_out: bool,
 }
 
 #[cfg(test)]

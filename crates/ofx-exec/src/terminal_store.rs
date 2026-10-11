@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -8,7 +9,7 @@ use ofx_config::{DurableError, PrivateDir};
 use ofx_contract::valid_session_id;
 use serde::{Deserialize, Serialize};
 
-use crate::terminal_contracts::{Dimensions, Lifecycle, LifecycleEvent};
+use crate::terminal_contracts::{Dimensions, Lifecycle, LifecycleEvent, ReturnOutcome};
 use crate::terminal_recovery::{Disposition, reconcile};
 
 const RECORD_SCHEMA_VERSION: u16 = 2;
@@ -60,6 +61,15 @@ impl Termination {
         match self {
             Self::Exited(code) => (0..=255).contains(&code),
             Self::Signal(signal) => (1..=255).contains(&signal),
+        }
+    }
+}
+
+impl From<Termination> for ReturnOutcome {
+    fn from(termination: Termination) -> Self {
+        match termination {
+            Termination::Exited(code) => Self::Exited(code),
+            Termination::Signal(signal) => Self::Signal(signal),
         }
     }
 }
@@ -375,7 +385,7 @@ impl DurableTerminal {
         })
     }
 
-    pub fn rollback_unreleased_start(self) -> Result<(), StoreError> {
+    pub fn rollback_unreleased_start(&self) -> Result<(), StoreError> {
         if self.record.lifecycle != Lifecycle::Starting || self.record.pid.is_some() {
             return Err(StoreError::InvalidLifecycle);
         }
@@ -429,6 +439,14 @@ fn load(directory: &PrivateDir, session_id: &str) -> Result<TerminalRecord, Stor
         return Err(StoreError::InvalidRecord);
     }
     Ok(record)
+}
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn host_identity() -> Result<&'static str, StoreError> {
