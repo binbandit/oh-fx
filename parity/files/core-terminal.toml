@@ -12,7 +12,7 @@ modules = []
 upstream = "src/core/terminal/contracts.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/terminal_contracts.rs"]
-note = "Terminal dimensions and the command, authority text and shell path limits that bound the launcher's configuration are ported; actions, lifecycles, results and failures arrive with the terminal store and sessions (OH-19)."
+note = "Terminal dimensions, the command, authority text and shell path limits that bound the launcher's configuration, and the lifecycle with its transitions are ported; actions, results and failures arrive with the terminal sessions (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/engine.zig"
@@ -22,8 +22,9 @@ note = "The grid's text model is ported for replay: parsing, cursor movement, wr
 
 [[file]]
 upstream = "src/core/terminal/identity.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "profileUser names the local profile only inside terminal authority principals; since #1137 the agent in the owning process is the only actor on its terminals, so oh-fx keeps no authority principals and checks a terminal's owner session instead, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/terminal/managed_observer.zig"
@@ -43,8 +44,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/terminal/recovery.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-exec/src/terminal_recovery.rs"]
+note = "The record decision is ported: final lifecycles stay, a saved termination finalizes as exited, and any other live terminal of another process is lost. Records of this process are left untouched, records that do not decode are skipped rather than isolated, and the unavailable disposition (no process evidence) does not exist because oh-fx checks no process liveness. Checkpoint and screen evidence are not ported, because oh-fx saves no terminal journals or checkpoints (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/shell_resolver.zig"
@@ -60,8 +62,9 @@ note = "#1137: user-profile commands capture the login shell's startup state onc
 
 [[file]]
 upstream = "src/core/terminal/store.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-exec/src/terminal_store.rs"]
+note = "Terminal records are ported: private per-owner folders with record-<id>.json in upstream's field names for the fields kept, lifecycle, start, deadline, termination, loss and close updates, rollback of an unreleased start, owner identities, lookup of a terminal across owners, and owner reconciliation. Journals, checkpoints, events, authority and proof files, close transactions, quota eviction, resident tracking, process liveness checks, and the backend, backend_identity and process_token fields are not, because terminals end with the process that started them and only this process acts on them; docs/differences/tool-shell.md records it (OH-19). A save that fails after its rename keeps the record it wrote, as the file now holds it, where upstream restores the previous record in memory and refuses later saves until the folder syncs, after which a later save can overwrite the saved outcome."
 
 [[file]]
 upstream = "src/core/terminal/ui_projection.zig"
