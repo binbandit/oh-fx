@@ -270,11 +270,24 @@ fn parse_session_detail_args_accepts_explicit_id_flag() {
 fn parse_session_migration_args_accepts_positional_and_exact_ids() {
     assert_eq!(
         parse_session(os(&["migrate", "session.v2", "--allow-large", "--json"])).unwrap(),
-        session(OutputFormat::Json, SessionAction::Migrate)
+        session(
+            OutputFormat::Json,
+            SessionAction::Migrate("session.v2".to_owned())
+        )
     );
     assert_eq!(
         parse_session(os(&["migrate", "--id", "--allow-large", "--json"])).unwrap(),
-        session(OutputFormat::Json, SessionAction::Migrate)
+        session(
+            OutputFormat::Json,
+            SessionAction::Migrate("--allow-large".to_owned())
+        )
+    );
+    assert_eq!(
+        parse_session(os(&["migrate", "--allow-large", " last\t"])).unwrap(),
+        session(
+            OutputFormat::Text,
+            SessionAction::Migrate("last".to_owned())
+        )
     );
 }
 

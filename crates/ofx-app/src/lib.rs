@@ -49,7 +49,7 @@ pub use modes::default_mode;
 pub use ofx_tools::WebFetchProgress;
 pub use output_contracts::session_detail::SessionDetailSnapshot;
 pub use output_contracts::sessions::{
-    SessionListSnapshot, SessionSummarySnapshot, session_lookup_message,
+    SessionListSnapshot, SessionMigrationSnapshot, SessionSummarySnapshot, session_lookup_message,
 };
 pub use output_contracts::usage::UsageSnapshot;
 pub use output_contracts::workspace::{WorkspaceSnapshot, workspace_error_message};
