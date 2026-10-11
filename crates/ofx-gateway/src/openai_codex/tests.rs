@@ -7,7 +7,7 @@ use ofx_testkit::{FakeServer, Gate, Reply};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::test_sources::{CapturedImages, Paced, user_with_images};
+use crate::test_sources::{CapturedImages, ONE_PIXEL_PNG, Paced, user_with_images};
 
 struct Chunks(VecDeque<Vec<u8>>);
 
@@ -371,13 +371,13 @@ async fn a_live_stream_that_reencrypts_reasoning_replays_the_streamed_copy() {
 #[tokio::test]
 async fn openai_codex_sends_verified_user_images_as_input_images() {
     let images = CapturedImages::new();
-    let image = images.capture(1, "shot.png", b"\x89PNG\r\n\x1a\nA");
+    let image = images.capture(1, "shot.png", ONE_PIXEL_PNG);
     let messages = [user_with_images("look", vec![image.clone()])];
     let body = build(&messages, &[None]).unwrap();
     assert!(
         body.contains(concat!(
             r#","input":[{"role":"user","content":[{"type":"input_text","text":"look"},"#,
-            r#"{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,iVBORw0KGgpB"}]}],"#,
+            r#"{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}]}],"#,
         )),
         "{body}"
     );
