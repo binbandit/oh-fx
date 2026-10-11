@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -5,7 +6,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use ofx_tui::ForegroundLifecycle;
+
+const HERDR: &str = "herdr";
 
 #[derive(Clone, Copy)]
 pub(crate) enum State {
@@ -47,8 +51,21 @@ impl Herdr {
 
     fn new(toggle: Option<&OsStr>, socket: Option<&OsStr>, pane: Option<&OsStr>) -> Option<Self> {
         if !enabled_bytes(toggle, socket, pane) {
+            trace_log!(
+                HERDR,
+                "disabled socket={} pane={} fx_herdr={}",
+                shown(socket),
+                shown(pane),
+                shown(toggle)
+            );
             return None;
         }
+        trace_log!(
+            HERDR,
+            "enabled socket={} pane_id={}",
+            shown(socket),
+            shown(pane)
+        );
         Some(Self {
             connection: Mutex::new(Connection {
                 socket: socket?.into(),
@@ -74,7 +91,7 @@ impl Herdr {
             .unwrap_or_else(PoisonError::into_inner);
         if !connection.closed {
             for request in requests {
-                let _ = connection.send(request);
+                connection.deliver(request);
             }
         }
     }
@@ -87,7 +104,7 @@ impl Herdr {
         if !connection.closed {
             connection.closed = true;
             for request in [Request::Agent(None), Request::Clear, Request::Pane(None)] {
-                let _ = connection.send(&request);
+                connection.deliver(&request);
             }
         }
     }
@@ -122,7 +139,36 @@ impl Drop for Herdr {
     }
 }
 
+impl Request<'_> {
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::State(..) => "report",
+            Self::Session(_) => "session",
+            Self::Pane(_) => "pane_rename",
+            Self::Agent(_) => "agent_rename",
+            Self::Clear => "clear_authority",
+        }
+    }
+}
+
 impl Connection {
+    fn deliver(&mut self, request: &Request<'_>) {
+        match self.send(request) {
+            Ok(()) => trace_log!(
+                HERDR,
+                "sent {} pane_id={}",
+                request.kind(),
+                String::from_utf8_lossy(&self.pane)
+            ),
+            Err(error) => trace_log!(
+                HERDR,
+                "send failed kind={} err={}",
+                request.kind(),
+                error_name(&error)
+            ),
+        }
+    }
+
     fn send(&mut self, request: &Request<'_>) -> io::Result<()> {
         let mut socket = UnixStream::connect(&self.socket)?;
         let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
@@ -220,6 +266,22 @@ fn write_string(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
         }
     }
     output.write_all(b"\"")
+}
+
+fn shown(value: Option<&OsStr>) -> Cow<'_, str> {
+    value.map_or(Cow::Borrowed("(unset)"), OsStr::to_string_lossy)
+}
+
+fn error_name(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::NotFound => "FileNotFound",
+        io::ErrorKind::PermissionDenied => "AccessDenied",
+        io::ErrorKind::ConnectionRefused => "ConnectionRefused",
+        io::ErrorKind::ConnectionReset => "ConnectionResetByPeer",
+        io::ErrorKind::BrokenPipe => "BrokenPipe",
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => "Timeout",
+        _ => "Unexpected",
+    }
 }
 
 fn enabled_bytes(toggle: Option<&OsStr>, socket: Option<&OsStr>, pane: Option<&OsStr>) -> bool {

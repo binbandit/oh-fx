@@ -3,6 +3,7 @@ use ofx_contract::{
     StopInput, StopOutcome, ToolCall, TurnId, TurnPresentationOutcome, pre_tool_use_blocked_json,
     pre_tool_use_failed_closed_json,
 };
+use ofx_trace::TraceContext;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -49,7 +50,7 @@ impl LifecycleContext {
 
     pub(crate) async fn pre_tool_use(
         &self,
-        turn_id: TurnId,
+        (turn_id, trace): (TurnId, TraceContext),
         step_index: usize,
         call: &ToolCall,
         cancel: &CancellationToken,
@@ -64,7 +65,11 @@ impl LifecycleContext {
         let arguments_json = call.arguments.clone();
         let dispatched = tokio::task::spawn_blocking(move || {
             view.run_pre_tool_use(&PreToolUseInput {
-                invocation: HookInvocation { scope, turn_id },
+                invocation: HookInvocation {
+                    scope,
+                    turn_id,
+                    trace,
+                },
                 step_index,
                 call_id: &call_id,
                 tool_name: &tool_name,
@@ -97,7 +102,7 @@ impl LifecycleContext {
 
     pub(crate) async fn stop(
         &self,
-        turn_id: TurnId,
+        (turn_id, trace): (TurnId, TraceContext),
         step_index: usize,
         assistant_text: &str,
         can_continue: bool,
@@ -111,7 +116,11 @@ impl LifecycleContext {
         let assistant_text = assistant_text.to_owned();
         let dispatched = tokio::task::spawn_blocking(move || {
             view.run_stop(&StopInput {
-                invocation: HookInvocation { scope, turn_id },
+                invocation: HookInvocation {
+                    scope,
+                    turn_id,
+                    trace,
+                },
                 step_index,
                 assistant_text: &assistant_text,
                 can_continue,
@@ -124,7 +133,11 @@ impl LifecycleContext {
         Some(dispatched.unwrap_or(StopOutcome::Allow))
     }
 
-    pub(crate) fn post_turn_end(&mut self, turn_id: TurnId, outcome: TurnPresentationOutcome) {
+    pub(crate) fn post_turn_end(
+        &mut self,
+        (turn_id, trace): (TurnId, TraceContext),
+        outcome: TurnPresentationOutcome,
+    ) {
         if !self.view.has_post_turn_end() {
             return;
         }
@@ -133,6 +146,7 @@ impl LifecycleContext {
             invocation: HookInvocation {
                 scope: self.scope,
                 turn_id,
+                trace,
             },
             outcome,
         };

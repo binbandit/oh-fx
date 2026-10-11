@@ -9,10 +9,7 @@ use crate::ids::TurnId;
 
 fn input(can_continue: bool) -> StopInput<'static> {
     StopInput {
-        invocation: HookInvocation {
-            scope: HookScope::Interactive,
-            turn_id: TurnId::new(42),
-        },
+        invocation: HookInvocation::new(HookScope::Interactive, TurnId::new(42)),
         step_index: 3,
         assistant_text: "candidate",
         can_continue,

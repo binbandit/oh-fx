@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{PermissionAction, PermissionMode, StatuslineItem, parse_strict_json_value};
+use ofx_trace::trace_log;
 use serde_json::{Map, Value};
 
 use crate::config_runtime::{
@@ -17,6 +18,7 @@ use crate::paths::ProfilePaths;
 
 pub(crate) const MAX_PROVIDER_ORDER_ENTRIES: usize = 8;
 const MAX_PROVIDER_SLUG_BYTES: usize = 64;
+const CONFIG: &str = "config";
 const LOCK_FILE: &str = "settings.lock";
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(10);
@@ -211,6 +213,12 @@ pub enum CommitOutcome {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceEntryKind {
+    Directories,
+    ProjectMcp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceSaveError<E> {
     Edit(E),
@@ -243,9 +251,46 @@ enum Patch<'a> {
         patch: PermissionPatch<'a>,
     },
     WorkspaceEntry {
+        kind: WorkspaceEntryKind,
         key: &'a str,
         edit: WorkspaceEdit<'a>,
     },
+}
+
+impl Patch<'_> {
+    const fn operation(self) -> &'static str {
+        match self {
+            Self::Permission { .. } => "permission_patch",
+            Self::WorkspaceEntry {
+                kind: WorkspaceEntryKind::Directories,
+                ..
+            } => "workspace_directory_patch",
+            Self::WorkspaceEntry {
+                kind: WorkspaceEntryKind::ProjectMcp,
+                ..
+            } => "project_mcp_patch",
+            _ => "user_patch",
+        }
+    }
+
+    const fn scope(self) -> &'static str {
+        match self {
+            Self::Permission {
+                workspace: None, ..
+            } => "user",
+            Self::Permission { .. } | Self::WorkspaceEntry { .. } => "local",
+            _ => "user",
+        }
+    }
+
+    const fn mutation_mode(self) -> &'static str {
+        match self {
+            Self::Permission { .. }
+            | Self::WorkspaceEntry { .. }
+            | Self::PromptHistoryEnabled(_) => "commit_first",
+            _ => "runtime_first",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -361,6 +406,7 @@ pub fn save_permission_patch(
 
 pub fn save_workspace_entry<E>(
     paths: &ProfilePaths,
+    kind: WorkspaceEntryKind,
     workspace_root: &Path,
     edit: impl Fn(&mut Value) -> Result<bool, E>,
 ) -> Result<bool, WorkspaceSaveError<E>> {
@@ -378,6 +424,7 @@ pub fn save_workspace_entry<E>(
         }
     };
     let patch = Patch::WorkspaceEntry {
+        kind,
         key: &key,
         edit: &apply_edit,
     };
@@ -394,13 +441,47 @@ fn commit(
     patch: Patch<'_>,
     before_commit: &mut dyn FnMut(),
 ) -> Result<CommitOutcome, SettingsWriteFailure> {
+    let committed = commit_patch(paths, patch, before_commit);
+    let (operation, scope, mode) = (patch.operation(), patch.scope(), patch.mutation_mode());
+    match &committed {
+        Ok(CommitOutcome::Unchanged) => trace_log!(
+            CONFIG,
+            "settings operation={operation} path_category=user_settings scope={scope} mutation_mode={mode} outcome=unchanged error=none"
+        ),
+        Ok(CommitOutcome::Committed {
+            permission_rules_removed,
+            cleanup,
+        }) => trace_log!(
+            CONFIG,
+            "settings operation={operation} path_category=user_settings scope={scope} mutation_mode={mode} outcome=committed legacy_fields_removed={} legacy_workspaces_changed={} migration_snapshots_written={} permission_rules_removed={permission_rules_removed} error=none",
+            cleanup.fields_removed,
+            cleanup.workspaces_changed,
+            cleanup.recovery_paths.len()
+        ),
+        Err(failure) => trace_log!(
+            CONFIG,
+            "settings operation={operation} path_category=user_settings scope={scope} mutation_mode={mode} outcome=failed error={}",
+            failure.error
+        ),
+    }
+    committed
+}
+
+fn commit_patch(
+    paths: &ProfilePaths,
+    patch: Patch<'_>,
+    before_commit: &mut dyn FnMut(),
+) -> Result<CommitOutcome, SettingsWriteFailure> {
     let directory = PrivateDir::open_or_create(&paths.config)?;
     let _lock = lock(&directory)?;
     for _ in 0..COMMIT_ATTEMPTS {
         let existing = directory.read_owned(SETTINGS_FILE, MAX_SETTINGS_BYTES)?;
         let mut root = match &existing {
             Some(bytes) => parse_root(bytes).ok_or_else(|| {
-                let _ = create_sequenced_copy(&directory, SettingsCopy::Corrupt, bytes);
+                if let Err(error) = create_sequenced_copy(&directory, SettingsCopy::Corrupt, bytes)
+                {
+                    trace_log!(CONFIG, "settings corrupt copy skipped err={error}");
+                }
                 SettingsWriteError::InvalidFormat
             })?,
             None => Map::new(),
@@ -646,7 +727,7 @@ fn apply(
             application.changed |= changed;
             application.permission_rules_removed = removed;
         }
-        Patch::WorkspaceEntry { key, edit } => {
+        Patch::WorkspaceEntry { key, edit, .. } => {
             application.changed |= edit_workspace(root, key, edit)?;
         }
     }
@@ -1116,8 +1197,10 @@ fn prune_copies(backups: &PrivateDir, copy: SettingsCopy, written: &str) {
             .filter(|name| name != written && name.starts_with(&prefix)),
     );
     for name in copies.iter().skip(copy.keep().saturating_sub(1)) {
-        if backups.is_single_link_file(name) {
-            let _ = backups.remove(name);
+        if backups.is_single_link_file(name)
+            && let Err(error) = backups.remove(name)
+        {
+            trace_log!(CONFIG, "settings backup prune skipped err={error}");
         }
     }
 }

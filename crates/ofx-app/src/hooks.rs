@@ -87,10 +87,7 @@ mod tests {
     }
 
     fn invocation(scope: HookScope) -> HookInvocation {
-        HookInvocation {
-            scope,
-            turn_id: TurnId::new(42),
-        }
+        HookInvocation::new(scope, TurnId::new(42))
     }
 
     #[test]
