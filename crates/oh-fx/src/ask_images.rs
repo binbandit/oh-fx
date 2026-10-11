@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::{env, fmt, fs};
 
-use ofx_contract::ImageAttachment;
+use ofx_contract::{ApplicableTarget, ImageAttachment, applicable_targets_for_images};
 use ofx_images::{
     AttachmentError, IMAGE_TOO_LARGE_NOTICE, TempSnapshotDir, capture_image_snapshots,
     load_resolved_image_attachment, normalize_path_input,
@@ -118,6 +118,10 @@ impl CapturedImages {
 
     pub(crate) fn images(&self) -> &[ImageAttachment] {
         &self.images
+    }
+
+    pub(crate) fn context_targets(&self) -> Vec<ApplicableTarget> {
+        applicable_targets_for_images(&self.images)
     }
 }
 

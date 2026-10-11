@@ -55,6 +55,7 @@ impl Fixture {
                 home: Some(home.as_os_str()),
                 config_directory: Some(&config),
             },
+            &[],
             limits,
         )
     }
@@ -586,6 +587,7 @@ fn home_availability_failures_and_non_ancestor_diagnostics_stay_explicit() {
                 home,
                 config_directory: Some(&home_config(&fixture)),
             },
+            &[],
             defaults(),
         )
     };
@@ -831,6 +833,48 @@ fn initial_gather_and_later_targets_order_global_ancestors_workspace_and_hidden_
         3
     );
     assert_eq!(initial.evaluated_endpoints, [workspace]);
+}
+
+#[test]
+fn initial_gather_orders_global_ancestors_workspace_and_exact_hidden_and_build_target_scopes() {
+    let fixture = Fixture::new();
+    fixture.write("home/.config/oh-fx/AGENTS.md", b"RULE_GLOBAL");
+    fixture.write("home/projects/AGENTS.md", b"RULE_PARENT");
+    fixture.write("home/projects/work/AGENTS.md", b"RULE_WORKSPACE");
+    fixture.write("home/projects/work/.github/AGENTS.md", b"RULE_HIDDEN");
+    fixture.write("home/projects/work/build/AGENTS.md", b"RULE_BUILD");
+    fixture.write("home/projects/work/dist/AGENTS.md", b"RULE_UNRELATED");
+    let hidden = fixture.write("home/projects/work/.github/workflows/ci.yml", b"");
+    let build = fixture.write("home/projects/work/build/generated/out.zig", b"");
+    let home = fixture.path("home");
+    let config = fixture.path("home/.config/oh-fx");
+    let context = gather_project_context(
+        &fixture.path("home/projects/work"),
+        ProfileLocation {
+            home: Some(home.as_os_str()),
+            config_directory: Some(&config),
+        },
+        &[file(build), file(hidden)],
+        defaults(),
+    );
+    let text = visible(&context);
+    let order: Vec<usize> = [
+        "RULE_GLOBAL",
+        "RULE_PARENT",
+        "RULE_WORKSPACE",
+        "RULE_HIDDEN",
+        "RULE_BUILD",
+    ]
+    .iter()
+    .map(|needle| find(text, needle))
+    .collect();
+    assert!(order.is_sorted(), "{text}");
+    assert!(!text.contains("RULE_UNRELATED"));
+    assert!(text.starts_with(&format!(
+        "<project-instructions-guidance>\n{GUIDANCE}\n</project-instructions-guidance>"
+    )));
+    assert_eq!(context.delivered_sources.len(), 5);
+    assert_eq!(context.evaluated_endpoints.len(), 3);
 }
 
 #[test]
