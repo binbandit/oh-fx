@@ -777,6 +777,8 @@ dependencies = [
  "getrandom 0.4.3",
  "nix",
  "rustix",
+ "serde",
+ "serde_json",
  "signal-hook",
  "tempfile",
  "thiserror",
