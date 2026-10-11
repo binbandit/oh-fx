@@ -13,20 +13,14 @@ use crate::types::TurnPresentationOutcome;
 
 fn turn_end(scope: HookScope, outcome: TurnPresentationOutcome) -> PostTurnEndInput {
     PostTurnEndInput {
-        invocation: HookInvocation {
-            scope,
-            turn_id: TurnId::new(42),
-        },
+        invocation: HookInvocation::new(scope, TurnId::new(42)),
         outcome,
     }
 }
 
 fn attention(kind: AttentionKind) -> AttentionRequiredInput {
     AttentionRequiredInput {
-        invocation: HookInvocation {
-            scope: HookScope::Interactive,
-            turn_id: TurnId::new(42),
-        },
+        invocation: HookInvocation::new(HookScope::Interactive, TurnId::new(42)),
         kind,
     }
 }

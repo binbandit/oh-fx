@@ -11,10 +11,7 @@ use crate::types::ToolArgumentIntegrity;
 
 fn input(arguments_json: &str) -> PreToolUseInput<'_> {
     PreToolUseInput {
-        invocation: HookInvocation {
-            scope: HookScope::Interactive,
-            turn_id: TurnId::new(42),
-        },
+        invocation: HookInvocation::new(HookScope::Interactive, TurnId::new(42)),
         step_index: 2,
         call_id: "call-1",
         tool_name: "read_file",

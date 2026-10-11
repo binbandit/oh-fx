@@ -362,10 +362,7 @@ impl<'a> Shell<'a> {
         self.options
             .hooks
             .run_attention_required(&AttentionRequiredInput {
-                invocation: HookInvocation {
-                    scope: HookScope::Interactive,
-                    turn_id,
-                },
+                invocation: HookInvocation::new(HookScope::Interactive, turn_id),
                 kind,
             });
     }

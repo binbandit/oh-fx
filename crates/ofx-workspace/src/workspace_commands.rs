@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use ofx_config::{
-    ProfilePaths, Settings, SettingsError, SettingsWriteError, WorkspaceSaveError,
-    save_workspace_entry,
+    ProfilePaths, Settings, SettingsError, SettingsWriteError, WorkspaceEntryKind,
+    WorkspaceSaveError, save_workspace_entry,
 };
 use serde_json::{Map, Value};
 
@@ -122,21 +122,25 @@ pub fn execute(
     let (staged, patch) =
         prepare(current, action).map_err(|error| FailurePhase::Stage.of(error))?;
     let paths = paths.ok_or_else(|| FailurePhase::Commit.of(CommandError::HomeNotSet))?;
-    let saved_changed =
-        match save_workspace_entry(paths, current.primary(), |entry| apply(entry, &patch)) {
-            Ok(changed) => changed,
-            Err(WorkspaceSaveError::Edit(error)) => return Err(FailurePhase::Commit.of(error)),
-            Err(WorkspaceSaveError::Settings(failure))
-                if failure.error == SettingsWriteError::CommitIndeterminate =>
-            {
-                return reconcile(paths, current, staged.as_ref())
-                    .map(Outcome::Indeterminate)
-                    .map_err(|error| FailurePhase::Reconcile.of(error));
-            }
-            Err(WorkspaceSaveError::Settings(failure)) => {
-                return Err(FailurePhase::Commit.of(CommandError::Settings(failure.error)));
-            }
-        };
+    let saved_changed = match save_workspace_entry(
+        paths,
+        WorkspaceEntryKind::Directories,
+        current.primary(),
+        |entry| apply(entry, &patch),
+    ) {
+        Ok(changed) => changed,
+        Err(WorkspaceSaveError::Edit(error)) => return Err(FailurePhase::Commit.of(error)),
+        Err(WorkspaceSaveError::Settings(failure))
+            if failure.error == SettingsWriteError::CommitIndeterminate =>
+        {
+            return reconcile(paths, current, staged.as_ref())
+                .map(Outcome::Indeterminate)
+                .map_err(|error| FailurePhase::Reconcile.of(error));
+        }
+        Err(WorkspaceSaveError::Settings(failure)) => {
+            return Err(FailurePhase::Commit.of(CommandError::Settings(failure.error)));
+        }
+    };
     let runtime = staged.as_ref().unwrap_or(current);
     let committed =
         load_committed(paths, runtime).map_err(|error| FailurePhase::Reconcile.of(error))?;

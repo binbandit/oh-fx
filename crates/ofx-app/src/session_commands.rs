@@ -15,10 +15,12 @@ use ofx_permissions::{
     WEB_FETCH_PERMISSION, WEB_SEARCH_PERMISSION, canonical_web_fetch_domain_pattern,
     is_canonical_web_fetch_domain_pattern, permission_name_for_tool, web_fetch_rule_warning_count,
 };
+use ofx_trace::trace_log;
 
 use crate::user_settings::{Unsaved, append_legacy_cleanup, not_saved_notice, unsaved_notice};
 
 const ALLOWLIST_TOPIC: &str = "allowlist";
+const CONFIG: &str = "config";
 const SETTINGS_TOPIC: &str = "settings";
 const HOME_NOT_SET: &str = "HomeNotSet";
 const ALLOWLIST_USAGE: &str =
@@ -383,7 +385,7 @@ fn report_user_settings_commit(
     announce: bool,
     notices: &mut Vec<Notice>,
 ) -> Option<Settings> {
-    let settings = match reload(access) {
+    let settings = match resolve_after_commit(access, label) {
         Ok(settings) => settings,
         Err(error) => {
             let mut body =
@@ -410,6 +412,25 @@ fn report_user_settings_commit(
     Some(settings)
 }
 
+fn resolve_after_commit(access: &SettingsAccess<'_>, label: &str) -> Result<Settings, String> {
+    let settings = load(access).inspect_err(|error| {
+        trace_log!(
+            CONFIG,
+            "{label} post-commit source resolution failed err={error}"
+        );
+    })?;
+    match settings.user_layer_failure() {
+        Some(error) => {
+            trace_log!(
+                CONFIG,
+                "{label} post-commit source resolution diagnostic err={error}"
+            );
+            Err(error.to_owned())
+        }
+        None => Ok(settings),
+    }
+}
+
 fn append_commit_cleanup(body: &mut String, outcome: &CommitOutcome) {
     if let CommitOutcome::Committed { cleanup, .. } = outcome {
         append_legacy_cleanup(body, cleanup);
@@ -431,10 +452,17 @@ fn allowlist_add(access: &SettingsAccess<'_>, scope: PermissionScope, raw: &str)
     };
     match save(access, scope, patch) {
         Ok(_) => finish_allowlist_mutation(access, scope, "added", &target),
-        Err(error) => allowlist_error(format!(
-            "failed to add rule to settings (scope={}, error={error})",
-            scope.label()
-        )),
+        Err(error) => {
+            trace_log!(
+                CONFIG,
+                "allowlist add failed scope={} err={error}",
+                scope.label()
+            );
+            allowlist_error(format!(
+                "failed to add rule to settings (scope={}, error={error})",
+                scope.label()
+            ))
+        }
     }
 }
 
@@ -455,10 +483,17 @@ fn allowlist_remove(access: &SettingsAccess<'_>, scope: PermissionScope, raw: &s
         Ok(CommitOutcome::Committed { .. }) => {
             finish_allowlist_mutation(access, scope, "removed", &target)
         }
-        Err(error) => allowlist_error(format!(
-            "failed to remove rule from settings (scope={}, error={error})",
-            scope.label()
-        )),
+        Err(error) => {
+            trace_log!(
+                CONFIG,
+                "allowlist remove failed scope={} err={error}",
+                scope.label()
+            );
+            allowlist_error(format!(
+                "failed to remove rule from settings (scope={}, error={error})",
+                scope.label()
+            ))
+        }
     }
 }
 
@@ -473,6 +508,11 @@ fn allowlist_reset(access: &SettingsAccess<'_>, scope: PermissionScope, raw: &st
             ..
         }) => permission_rules_removed,
         Err(error) => {
+            trace_log!(
+                CONFIG,
+                "allowlist reset failed scope={} err={error}",
+                scope.label()
+            );
             return allowlist_error(format!(
                 "failed to reset rules in settings (scope={}, error={error})",
                 scope.label()
