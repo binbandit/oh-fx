@@ -19,7 +19,7 @@ use ofx_exec::{
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 
 const BASH: &str = "/bin/bash";
 const LONG: Duration = Duration::from_secs(20);
@@ -303,8 +303,32 @@ impl Drop for Terminal {
     }
 }
 
+fn child_pid(text: &str) -> Option<Pid> {
+    text.split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+        .find_map(|line| line.trim().strip_prefix("child "))
+        .and_then(|pid| pid.parse().ok())
+        .and_then(Pid::from_raw)
+}
+
 fn alive(pid: Pid) -> bool {
-    test_kill_process(pid).is_ok()
+    let pid = pid.as_raw_nonzero().to_string();
+    let state = if cfg!(target_os = "linux") {
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, fields)| fields.trim_start().to_owned())
+            })
+            .unwrap_or_default()
+    } else {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default()
+    };
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 fn gone_in_time(pid: Pid) -> bool {
@@ -363,16 +387,8 @@ fn a_command_killed_by_a_signal_reports_the_signal() {
 fn the_owner_leaving_kills_the_shell_process_group() {
     let mut terminal = Terminal::start("set +m; sleep 30 & echo \"child $!\"; wait");
     terminal.start_command();
-    let text = terminal.output_until("a child pid line", |text| {
-        text.split_once("child ")
-            .is_some_and(|(_, rest)| rest.contains('\n'))
-    });
-    let child = text
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("child "))
-        .and_then(|pid| pid.parse().ok())
-        .and_then(Pid::from_raw)
-        .expect("the background child's pid");
+    let text = terminal.output_until("a child pid line", |text| child_pid(text).is_some());
+    let child = child_pid(&text).expect("the background child's pid");
     assert!(alive(child));
     terminal.liveness = None;
     assert_eq!(terminal.expect(ControlKind::CommandSignal), SIGKILL);
@@ -441,8 +457,16 @@ fn run_scenario(name: &OsString) -> ExitCode {
             _ => break frame,
         }
     };
+    terminal.liveness = None;
+    let exited = terminal.launcher_exit();
     let mut stdout = io::stdout();
-    let _ = writeln!(stdout, "{:?} {}", frame.kind, frame.value);
+    let _ = writeln!(
+        stdout,
+        "{:?} {} {}",
+        frame.kind,
+        frame.value,
+        exited.success()
+    );
     ExitCode::SUCCESS
 }
 
@@ -472,7 +496,7 @@ fn a_shell_that_exits_during_startup_fails_its_profile() {
     assert_eq!(
         scenario("profile", &home, &[]),
         format!(
-            "{:?} {}\n",
+            "{:?} {} true\n",
             ControlKind::StartupFailed,
             StartupFailure::ProfileFailed as u32
         )
@@ -484,7 +508,7 @@ fn the_control_socket_is_private_to_its_owner() {
     let modes = home.join("modes");
     assert_eq!(
         scenario("socket", &home, &[(SOCKET_MODE_VARIABLE, &modes)]),
-        format!("{:?} 0\n", ControlKind::CommandExited)
+        format!("{:?} 0 true\n", ControlKind::CommandExited)
     );
     assert_eq!(
         fs::read_to_string(&modes).expect("the recorded socket modes"),
