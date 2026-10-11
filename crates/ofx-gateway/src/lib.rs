@@ -16,6 +16,7 @@ mod stall_watch;
 mod test_sources;
 mod tool_call_ids;
 mod vercel_model_policy;
+mod vercel_models;
 mod vercel_protocol;
 
 pub use chat_completions::ChatCompletionsProvider;
@@ -23,7 +24,9 @@ pub use gateway::{
     GATEWAY_TITLE_MODEL, GatewayAccess, GatewayCredential, GatewayEndpoints, GatewayProvider,
     GatewayRefresh,
 };
-pub use model_catalog::CatalogFailure;
+pub use model_catalog::{
+    AccessMetadata, CatalogAccess, CatalogFailed, CatalogFailure, CatalogFetch, PublicOnlyReason,
+};
 pub use openai_codex::{
     CodexAccess, CodexCredentials, CodexEndpoints, CodexProvider, CodexRefresh,
 };
@@ -34,3 +37,6 @@ pub use permission_reviewer::{
     ChatCompletionsReviewTransport, CodexReviewTransport, GatewayReviewTransport,
 };
 pub use provider_failure::{HttpFailure, http_failure};
+pub use vercel_models::{
+    GATEWAY_MODELS_PATH, GatewayModel, GatewayModelCatalog, GatewayModelsEndpoints,
+};

@@ -27,6 +27,12 @@ pub(crate) enum BoundedFailure {
     Failed(&'static str),
 }
 
+impl BoundedFailure {
+    pub(crate) fn retryable(self) -> bool {
+        matches!(self, Self::Failed(TIMEOUT | REQUEST_FAILED))
+    }
+}
+
 pub(crate) async fn bounded_get(
     request: RequestBuilder,
     max_bytes: usize,
