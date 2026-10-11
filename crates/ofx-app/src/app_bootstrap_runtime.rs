@@ -17,10 +17,11 @@ use ofx_config::{
     ProviderDefinition, ProviderId, SelectionError, Settings, SettingsError, request_output_tokens,
 };
 use ofx_contract::{
-    ActiveMode, ApplicableTarget, ApprovalAnswer, CallDescription, CapabilityResolver, HookView,
-    LiveAdditionalRoots, LivePermissionMode, McpServersCatalog, ModelControls, ModelProvider,
-    PermissionMode, QuestionAsker, ReasoningEffort, RequestId, ReviewTransport, StatuslineToggles,
-    Tool, is_provider_search_alias, parse_tool_args_object, provider_search_description,
+    ActiveMode, ApplicableTarget, ApprovalAnswer, ApprovalDecision, CallDescription,
+    CapabilityResolver, HookView, LiveAdditionalRoots, LivePermissionMode, McpServersCatalog,
+    ModelControls, ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId,
+    ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias, parse_tool_args_object,
+    provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -881,6 +882,16 @@ impl AgentSetup {
     }
 
     pub(crate) fn answer_approval(&self, id: RequestId, answer: ApprovalAnswer) {
+        let decision = match answer.decision {
+            ApprovalDecision::Once => "once",
+            ApprovalDecision::Always => "always",
+            ApprovalDecision::Deny => "deny",
+        };
+        ofx_trace::trace_log!(
+            "permission",
+            "approval response submitted request_id={} decision={decision}",
+            id.get()
+        );
         if let Some(approvals) = &self.approvals {
             approvals.resolve(id, answer);
         }

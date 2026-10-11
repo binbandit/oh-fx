@@ -12,6 +12,7 @@ ofx-exec.workspace = true
 ofx-markdown.workspace = true
 ofx-shell.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 ofx-workspace.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "time"] }

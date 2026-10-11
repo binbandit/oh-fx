@@ -2,6 +2,7 @@ mod auto_classifier;
 mod auto_classifier_context;
 mod command_admission;
 mod permissions;
+mod review_trace;
 mod session_permission_state;
 mod tool_admission;
 

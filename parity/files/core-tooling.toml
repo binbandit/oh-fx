@@ -74,7 +74,7 @@ note = "Result commit/cancel identity tokens are unimplemented."
 upstream = "src/core/tooling/tool_admission.zig"
 status = "partial"
 modules = ["crates/ofx-permissions/src/tool_admission.rs", "crates/ofx-tools/src/tool_admission.rs"]
-note = "File target preflight, reviews and permission decisions exist; direct execution branch proofs and dynamic MCP authority revalidation are absent. #1137's review of commands that use a captured alias or function is not yet synced."
+note = "File target preflight, reviews and permission decisions exist, with the automatic review start, result and budget trace lines; direct execution branch proofs and dynamic MCP authority revalidation are absent. #1137's review of commands that use a captured alias or function is not yet synced."
 
 [[file]]
 upstream = "src/core/tooling/tool_args.zig"

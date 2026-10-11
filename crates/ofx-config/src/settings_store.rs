@@ -303,12 +303,12 @@ pub fn save_model_preference(
 pub fn save_permission_mode(
     paths: &ProfilePaths,
     mode: PermissionMode,
-) -> Result<(), SettingsWriteFailure> {
-    commit(paths, Patch::PermissionMode(mode), &mut || {}).map(drop)
+) -> Result<CommitOutcome, SettingsWriteFailure> {
+    commit(paths, Patch::PermissionMode(mode), &mut || {})
 }
 
-pub fn save_yolo_acknowledged(paths: &ProfilePaths) -> Result<(), SettingsWriteFailure> {
-    commit(paths, Patch::YoloAcknowledged, &mut || {}).map(drop)
+pub fn save_yolo_acknowledged(paths: &ProfilePaths) -> Result<CommitOutcome, SettingsWriteFailure> {
+    commit(paths, Patch::YoloAcknowledged, &mut || {})
 }
 
 pub fn save_startup_scrollback(
