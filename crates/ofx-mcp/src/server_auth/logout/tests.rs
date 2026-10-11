@@ -619,7 +619,10 @@ async fn a_refresh_discarded_during_a_pending_logout(token: &'static str) -> Pen
     let logging_out = {
         let live = Arc::clone(&live);
         let options = profile.options();
-        tokio::spawn(async move { super::logout(&live, &options).await })
+        tokio::spawn(async move {
+            let reloads = Arc::new(tokio::sync::Mutex::new(())).lock_owned().await;
+            super::logout(&live, &options, reloads).await
+        })
     };
     for _ in 0..500 {
         if live.auth.check_authority().is_err() {

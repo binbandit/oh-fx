@@ -67,8 +67,9 @@ impl McpRuntime {
     }
 
     pub async fn logout_server(&self, name: &str) -> Result<LogoutResult, McpError> {
+        let reloads = Arc::clone(&self.reloading).lock_owned().await;
         let server = self.named(name)?;
-        logout(&server, &self.options).await
+        logout(&server, &self.options, reloads).await
     }
 
     fn named(&self, name: &str) -> Result<Arc<Server>, McpError> {
