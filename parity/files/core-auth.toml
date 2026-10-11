@@ -42,8 +42,8 @@ note = "Codex request credentials retain refresh identity, and recovery checkpoi
 [[file]]
 upstream = "src/core/auth/credentials.zig"
 status = "partial"
-modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-auth/src/credentials/fx_login.rs", "crates/ofx-app/src/codex_provider.rs", "crates/ofx-app/src/gateway_login.rs"]
-note = "Auth mode, Codex guidance and the Vercel AI Gateway sources in upstream's precedence (VERCEL_OIDC_TOKEN, AI_GATEWAY_API_KEY, the fx login with its team and 60-second refresh window under the session lock, then the stored key), the explicit credential_source choice without fallback, the stored and refreshing load modes, the retirement of rejected sign-ins, upstream's missing and selected-source messages and their auth trace lines exist; catalog access authority and the multi-provider credential-source projection come with the gateway model catalog."
+modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-auth/src/credentials/fx_login.rs", "crates/ofx-app/src/codex_provider.rs", "crates/ofx-app/src/gateway_catalog.rs", "crates/ofx-app/src/gateway_login.rs", "crates/ofx-gateway/src/model_catalog.rs"]
+note = "Auth mode, Codex guidance and the Vercel AI Gateway sources in upstream's precedence (VERCEL_OIDC_TOKEN, AI_GATEWAY_API_KEY, the fx login with its team and 60-second refresh window under the session lock, then the stored key), the explicit credential_source choice without fallback, the stored and refreshing load modes, the retirement of rejected sign-ins, upstream's missing and selected-source messages and their auth trace lines exist, and so does catalog access: the public-only states for a missing credential, a sign-in without a team or due for a refresh, and a rejected credential, the authenticated state with the sign-in's team, and the explicit authority of a chosen source, which never falls back to the public catalog. The refresh-failure and subscription public-only states and the multi-provider credential-source projection are absent."
 
 [[file]]
 upstream = "src/core/auth/grok_oauth.zig"

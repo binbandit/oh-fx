@@ -6,8 +6,8 @@ modules = []
 [[file]]
 upstream = "src/core/gateway/model_catalog.zig"
 status = "partial"
-modules = ["crates/ofx-gateway/src/model_catalog.rs"]
-note = "HTTP failure categories and which of them a picker retries are implemented; upstream catalog fetching, public fallback, projection and picker catalog ownership are absent."
+modules = ["crates/ofx-gateway/src/model_catalog.rs", "crates/ofx-gateway/src/vercel_models.rs", "crates/ofx-gateway/src/vercel_models/order.rs"]
+note = "HTTP failure categories and which of them a picker retries, catalog access and its provenance, the single public fallback after a rejected credential with its model_catalog_load trace line, and the catalog order are implemented, leaving out the rank upstream gives one vendor's models by name. The picker projection, the fx login, explicit-source and subscription access states, out-of-memory and runtime failures, and the interactive catalog ownership are absent."
 
 [[file]]
 upstream = "src/core/gateway/model_catalog_metadata.zig"
