@@ -196,7 +196,7 @@ fn step_wire<'a>(step: &'a Step, spilled: &mut Vec<(String, String)>) -> Option<
         .map(|result| result_wire(result, spilled))
         .collect::<Option<Vec<_>>>()?;
     Some(StepWire {
-        assistant: (!step.assistant.is_empty()).then_some(step.assistant.as_str()),
+        assistant: step.assistant.as_deref().filter(|text| !text.is_empty()),
         provider_replay: step.replay.as_ref(),
         tool_calls,
         tool_results,
@@ -252,8 +252,10 @@ fn result_wire<'a>(
 fn steering_wire(entry: &Steering) -> SteeringWire<'_> {
     SteeringWire {
         text: &entry.text,
-        assistant_prefix: (!entry.assistant_prefix.is_empty())
-            .then_some(entry.assistant_prefix.as_str()),
+        assistant_prefix: entry
+            .assistant_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty()),
         after_tool_step_count: entry.after_tool_step_count,
     }
 }
