@@ -226,8 +226,10 @@ impl LegacyHttpClient {
             return Err(McpError::McpConnectionClosed);
         }
         let committed = AtomicBool::new(false);
-        let elicitation = (request.server_requests == ServerRequestPolicy::RefuseElicitation)
-            .then(ElicitationContext::default);
+        let elicitation = match request.server_requests {
+            ServerRequestPolicy::RefuseElicitation(wire) => Some(ElicitationContext::new(wire)),
+            ServerRequestPolicy::Reject => None,
+        };
         let options = PostOptions {
             progress: request.progress.as_ref(),
             elicitation: elicitation.as_ref(),

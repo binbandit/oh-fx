@@ -3,19 +3,29 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ofx_jsonrpc::{ErrorCode, Frame, RequestId, RpcError};
 use serde_json::Value;
 
+use crate::elicitation::parse_request;
 use crate::error::McpError;
 use crate::protocol_messages::parse_json;
+use crate::protocol_negotiation::ElicitationWire;
 
 const MAX_SERVER_REQUESTS: usize = 32;
 const MAX_SERVER_REQUEST_FRAME_BYTES: usize = 128 * 1024;
 const MAX_STRING_ID_BYTES: usize = 256;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ElicitationContext {
+    wire: ElicitationWire,
     requests_seen: AtomicUsize,
 }
 
 impl ElicitationContext {
+    pub(crate) fn new(wire: ElicitationWire) -> Self {
+        Self {
+            wire,
+            requests_seen: AtomicUsize::new(0),
+        }
+    }
+
     pub(crate) fn respond(&self, frame: &[u8]) -> Result<String, McpError> {
         if frame.len() > MAX_SERVER_REQUEST_FRAME_BYTES {
             return Err(McpError::McpResponseFrameTooLarge);
@@ -44,7 +54,10 @@ impl ElicitationContext {
                 "Method not found",
             ));
         }
-        if !object.get("params").is_some_and(Value::is_object) {
+        if object
+            .get("params")
+            .is_none_or(|params| parse_request(self.wire, params).is_err())
+        {
             return Ok(error_response(
                 id,
                 ErrorCode::INVALID_PARAMS,
@@ -94,9 +107,13 @@ fn error_response(id: &Value, code: i64, message: &str) -> String {
 mod tests {
     use super::*;
 
+    fn context() -> ElicitationContext {
+        ElicitationContext::new(ElicitationWire::LegacyMcp2025_11)
+    }
+
     #[test]
     fn unsupported_client_features_answer_method_not_found() {
-        let context = ElicitationContext::default();
+        let context = context();
         for method in ["roots/list", "sampling/createMessage", "ping"] {
             let frame =
                 format!("{{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"{method}\",\"params\":{{}}}}");
@@ -113,8 +130,8 @@ mod tests {
 
     #[test]
     fn elicitation_without_an_interface_is_refused_with_bounded_requests() {
-        let context = ElicitationContext::default();
-        let elicit = br#"{"jsonrpc":"2.0","id":"e","method":"elicitation/create","params":{"message":"hi"}}"#;
+        let context = context();
+        let elicit = br#"{"jsonrpc":"2.0","id":"e","method":"elicitation/create","params":{"message":"hi","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}}}}}"#;
         assert_eq!(
             context.respond(elicit).unwrap(),
             "{\"jsonrpc\":\"2.0\",\"id\":\"e\",\"error\":{\"code\":-32602,\"message\":\"Unsupported elicitation mode\"}}"
@@ -126,12 +143,19 @@ mod tests {
                 .unwrap()
                 .contains("Invalid params")
         );
+        let url = br#"{"jsonrpc":"2.0","id":2,"method":"elicitation/create","params":{"mode":"url","message":"Open","url":"https://example.test/","elicitationId":"e"}}"#;
+        assert!(
+            context
+                .respond(url)
+                .unwrap()
+                .contains("Unsupported elicitation mode")
+        );
         let bad_id = br#"{"jsonrpc":"2.0","id":{},"method":"elicitation/create"}"#;
         assert_eq!(
             context.respond(bad_id).unwrap(),
             "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid request id\"}}"
         );
-        for _ in 0..30 {
+        for _ in 0..29 {
             context.respond(elicit).unwrap();
         }
         assert!(
@@ -144,5 +168,30 @@ mod tests {
             server_request_failed_response(b"not json"),
             "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Server request failed\"}}"
         );
+    }
+
+    #[test]
+    fn malformed_elicitation_requests_are_refused_as_invalid_params() {
+        let context = context();
+        for params in [
+            r#"{"message":"hi"}"#,
+            r#"{"message":"hi","requestedSchema":{"type":"object","properties":{"api_key":{"type":"string"}}}}"#,
+            r#"{"message":"hi","requestedSchema":{"type":"object","properties":{"value":{"type":"string","pattern":"(?=x)"}}}}"#,
+            r#"{"mode":"url","message":"Open","url":"http://example.test/","elicitationId":"e"}"#,
+            r#"{"mode":"url","message":"Open","url":"https://example.test/"}"#,
+            "[]",
+        ] {
+            let frame = format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"elicitation/create","params":{params}}}"#
+            );
+            assert_eq!(
+                context.respond(frame.as_bytes()).unwrap(),
+                "{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32602,\"message\":\"Invalid params\"}}",
+                "{params}"
+            );
+        }
+        let legacy = ElicitationContext::new(ElicitationWire::LegacyMcp2025_06);
+        let explicit = br#"{"jsonrpc":"2.0","id":4,"method":"elicitation/create","params":{"mode":"form","message":"hi","requestedSchema":{"type":"object","properties":{}}}}"#;
+        assert!(legacy.respond(explicit).unwrap().contains("Invalid params"));
     }
 }

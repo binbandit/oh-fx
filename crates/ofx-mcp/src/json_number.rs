@@ -1,7 +1,11 @@
+use std::cmp::Ordering;
+
 use serde_json::Value;
 
 const MAX_LEXEME_BYTES: usize = 4096;
 const MAX_EXPONENT_ABS: i64 = 1_000_000;
+const MAX_EXPANDED_DIGITS: usize = 8192;
+const LIMB_BASE: u64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NumberError {
@@ -116,12 +120,89 @@ impl Number {
         })
     }
 
-    fn is_zero(&self) -> bool {
+    pub(crate) fn is_negative(&self) -> bool {
+        self.negative
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
         self.digits == b"0"
     }
 
-    fn is_integer(&self) -> bool {
+    pub(crate) fn is_integer(&self) -> bool {
         self.is_zero() || self.exponent >= 0
+    }
+
+    pub(crate) fn order(&self, other: &Self) -> Ordering {
+        match (self.is_zero(), other.is_zero()) {
+            (true, true) => return Ordering::Equal,
+            (true, false) if other.negative => return Ordering::Greater,
+            (true, false) => return Ordering::Less,
+            (false, true) if self.negative => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            (false, false) => {}
+        }
+        if self.negative != other.negative {
+            return if self.negative {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        let magnitude = self.magnitude_order(other);
+        if self.negative {
+            magnitude.reverse()
+        } else {
+            magnitude
+        }
+    }
+
+    fn magnitude_order(&self, other: &Self) -> Ordering {
+        let places = |number: &Self| {
+            i64::try_from(number.digits.len()).unwrap_or(i64::MAX) + number.exponent
+        };
+        places(self).cmp(&places(other)).then_with(|| {
+            let width = self.digits.len().max(other.digits.len());
+            let digit = |number: &Self, index: usize| *number.digits.get(index).unwrap_or(&b'0');
+            (0..width)
+                .map(|index| digit(self, index).cmp(&digit(other, index)))
+                .find(|order| order.is_ne())
+                .unwrap_or(Ordering::Equal)
+        })
+    }
+
+    pub(crate) fn is_multiple_of(&self, divisor: &Self) -> Result<bool, NumberError> {
+        if divisor.is_zero() {
+            return Err(NumberError::InvalidNumber);
+        }
+        if self.is_zero() {
+            return Ok(true);
+        }
+        let delta = self
+            .exponent
+            .checked_sub(divisor.exponent)
+            .ok_or(NumberError::NumberLimitExceeded)?;
+        let zeros =
+            usize::try_from(delta.unsigned_abs()).map_err(|_| NumberError::NumberLimitExceeded)?;
+        let (numerator_zeros, denominator_zeros) = if delta > 0 { (zeros, 0) } else { (0, zeros) };
+        let numerator_len = self.digits.len().checked_add(numerator_zeros);
+        let denominator_len = divisor.digits.len().checked_add(denominator_zeros);
+        if !numerator_len
+            .zip(denominator_len)
+            .is_some_and(|(numerator, denominator)| {
+                numerator <= MAX_EXPANDED_DIGITS && denominator <= MAX_EXPANDED_DIGITS
+            })
+        {
+            return Err(NumberError::NumberLimitExceeded);
+        }
+        let denominator = Limbs::from_digits(&expanded(&divisor.digits, denominator_zeros));
+        let mut remainder = Limbs::default();
+        for digit in expanded(&self.digits, numerator_zeros) {
+            remainder.push_digit(digit - b'0');
+            while remainder.order(&denominator).is_ge() {
+                remainder.subtract(&denominator);
+            }
+        }
+        Ok(remainder.is_zero())
     }
 
     pub(crate) fn to_non_negative_usize(&self) -> Option<usize> {
@@ -138,6 +219,65 @@ impl Number {
             result = result.checked_mul(10)?;
         }
         Some(result)
+    }
+}
+
+fn expanded(digits: &[u8], zeros: usize) -> Vec<u8> {
+    let mut output = digits.to_vec();
+    output.resize(digits.len() + zeros, b'0');
+    output
+}
+
+#[derive(Debug, Default)]
+struct Limbs(Vec<u64>);
+
+impl Limbs {
+    fn from_digits(digits: &[u8]) -> Self {
+        let mut limbs = Self::default();
+        for digit in digits {
+            limbs.push_digit(digit - b'0');
+        }
+        limbs
+    }
+
+    fn push_digit(&mut self, digit: u8) {
+        let mut carry = u64::from(digit);
+        for limb in &mut self.0 {
+            let value = *limb * 10 + carry;
+            *limb = value % LIMB_BASE;
+            carry = value / LIMB_BASE;
+        }
+        if carry > 0 {
+            self.0.push(carry);
+        }
+    }
+
+    fn order(&self, other: &Self) -> Ordering {
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.iter().rev().cmp(other.0.iter().rev()))
+    }
+
+    fn subtract(&mut self, other: &Self) {
+        let mut borrow = 0;
+        for (index, limb) in self.0.iter_mut().enumerate() {
+            let subtrahend = other.0.get(index).copied().unwrap_or(0) + borrow;
+            if *limb >= subtrahend {
+                *limb -= subtrahend;
+                borrow = 0;
+            } else {
+                *limb += LIMB_BASE - subtrahend;
+                borrow = 1;
+            }
+        }
+        while self.0.last() == Some(&0) {
+            self.0.pop();
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -180,7 +320,56 @@ mod tests {
             parse("0.12345678901234567890123456789"),
             parse("12345678901234567890123456789e-29")
         );
-        assert_ne!(parse("9007199254740992"), parse("9007199254740993"));
+        assert_eq!(
+            parse("9007199254740992").order(&parse("9007199254740993")),
+            Ordering::Less
+        );
+        assert_eq!(parse("1").order(&parse("1.000e0")), Ordering::Equal);
+    }
+
+    #[test]
+    fn exact_json_numbers_detect_integers_and_multiple_of_without_floating_point() {
+        assert!(parse("1e3").is_integer());
+        assert!(!parse("1e-3").is_integer());
+        let divisor = parse("0.1");
+        assert_eq!(
+            parse("0.300000000000000000000000000000").is_multiple_of(&divisor),
+            Ok(true)
+        );
+        assert_eq!(
+            parse("0.300000000000000000000000000001").is_multiple_of(&divisor),
+            Ok(false)
+        );
+        assert_eq!(parse("0").is_multiple_of(&divisor), Ok(true));
+        assert_eq!(
+            parse("123456789012345678901234567890").is_multiple_of(&parse("3")),
+            Ok(true)
+        );
+        assert_eq!(
+            parse("123456789012345678901234567891").is_multiple_of(&parse("3")),
+            Ok(false)
+        );
+        assert_eq!(
+            parse("1").is_multiple_of(&parse("0")),
+            Err(NumberError::InvalidNumber)
+        );
+        assert_eq!(
+            parse("1e9000").is_multiple_of(&parse("1")),
+            Err(NumberError::NumberLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn exact_json_numbers_order_signed_magnitudes_around_zero() {
+        let zero = parse("0");
+        let positive = parse("0.0000000000000000000000000001");
+        let negative = parse("-0.0000000000000000000000000001");
+        assert_eq!(zero.order(&positive), Ordering::Less);
+        assert_eq!(zero.order(&negative), Ordering::Greater);
+        assert_eq!(positive.order(&zero), Ordering::Greater);
+        assert_eq!(negative.order(&zero), Ordering::Less);
+        assert_eq!(parse("-2").order(&parse("-10")), Ordering::Greater);
+        assert_eq!(parse("10").order(&parse("9.99")), Ordering::Greater);
     }
 
     #[test]

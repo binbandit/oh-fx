@@ -7,6 +7,7 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_http_sse::{LegacySseClient, SseShared};
 use crate::legacy_streamable_http::{HttpShared, LegacyHttpClient};
+use crate::protocol_negotiation::ElicitationWire;
 use crate::server_auth::HttpAuth;
 use crate::stdio_dispatcher::{Shared as StdioShared, StdioDispatcher};
 use crate::timing::spawn_on;
@@ -23,7 +24,7 @@ pub(crate) type ProgressSink = Arc<dyn Fn(ProgressNotification) + Send + Sync>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ServerRequestPolicy {
     Reject,
-    RefuseElicitation,
+    RefuseElicitation(ElicitationWire),
 }
 
 #[derive(Clone)]
