@@ -36,6 +36,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true
+rustix = { workspace = true, features = ["process"] }
 semver.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 tempfile.workspace = true

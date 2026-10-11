@@ -21,7 +21,7 @@ pub(crate) const LAUNCHER_CONFIG_BYTES: usize =
     MAX_COMMAND_BYTES * 6 + MAX_AUTHORITY_TEXT_BYTES * 2 + MAX_SHELL_PATH_BYTES * 2 + 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControlKind {
+pub enum ControlKind {
     Prepared = 1,
     ShellReady = 2,
     CommandStarted = 3,
@@ -43,7 +43,7 @@ pub(crate) fn write_control_frame(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StartupFailure {
+pub enum StartupFailure {
     ShellUnavailable = 1,
     ProfileFailed = 2,
     ControlFailed = 3,
