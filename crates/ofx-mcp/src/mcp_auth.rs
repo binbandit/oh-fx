@@ -298,11 +298,13 @@ fn token_expires_at(object: &Map<String, Value>, now_ms: i64) -> Result<i64, Mcp
 mod authorization;
 mod challenge;
 mod metadata;
+mod revocation;
 
 pub(crate) use authorization::{AuthorizationResult, ClientConfig, authorize_interactive};
 pub(crate) use challenge::{Challenge, collect_authenticate_header, parse_challenge};
 pub use metadata::{IssuerMismatch, IssuerMismatchSource};
 pub(crate) use metadata::{issuers_match, resource_covers_endpoint};
+pub(crate) use revocation::revoke_credentials;
 
 #[cfg(test)]
 mod tests;

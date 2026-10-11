@@ -32,6 +32,7 @@ enum State {
     Starting,
     Ready(Connection),
     Failed(String),
+    LoggedOut,
     Stopped,
 }
 
@@ -120,7 +121,7 @@ impl Server {
 
     pub(crate) fn lifecycle(&self) -> Lifecycle {
         match &*lock(&self.state) {
-            State::Waiting | State::Stopped => Lifecycle::Idle,
+            State::Waiting | State::LoggedOut | State::Stopped => Lifecycle::Idle,
             State::Starting => Lifecycle::Starting,
             State::Ready(connection) => Lifecycle::Ready(Arc::clone(&connection.client)),
             State::Failed(message) => Lifecycle::Failed(message.clone()),
@@ -192,20 +193,32 @@ impl Server {
         };
         let replaced = {
             let mut state = lock(&self.state);
-            if matches!(*state, State::Stopped) {
-                None
+            let outdated = connection
+                .client
+                .transport
+                .http_auth()
+                .is_some_and(|auth| !auth.current());
+            if outdated || matches!(*state, State::Stopped) {
+                Err(outdated)
             } else {
                 self.features
                     .reset(connection.client.server_info().capabilities);
-                Some(std::mem::replace(
+                Ok(std::mem::replace(
                     &mut *state,
                     State::Ready(connection.clone()),
                 ))
             }
         };
-        let Some(replaced) = replaced else {
-            connection.client.shutdown(ShutdownMode::Immediate).await;
-            return Ok(());
+        let replaced = match replaced {
+            Ok(replaced) => replaced,
+            Err(outdated) => {
+                connection.client.shutdown(ShutdownMode::Immediate).await;
+                return if outdated {
+                    Err(StartupFailure::from(McpError::McpAuthorityChanged))
+                } else {
+                    Ok(())
+                };
+            }
         };
         self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         spawn(watch(Arc::downgrade(self), connection));
@@ -434,6 +447,25 @@ impl Server {
     pub(crate) async fn stop(&self, mode: ShutdownMode) {
         if let Some(client) = self.retire() {
             client.shutdown(mode).await;
+        }
+    }
+
+    pub(crate) async fn log_out(&self) {
+        let _recovering = self.recovery.lock().await;
+        let retired = {
+            let mut state = lock(&self.state);
+            if !matches!(*state, State::Ready(_) | State::Failed(_)) {
+                return;
+            }
+            match std::mem::replace(&mut *state, State::LoggedOut) {
+                State::Ready(connection) => Some(connection),
+                _ => None,
+            }
+        };
+        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        if let Some(connection) = retired {
+            connection.stop.cancel();
+            connection.client.shutdown(ShutdownMode::Graceful).await;
         }
     }
 

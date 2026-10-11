@@ -4,7 +4,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::McpRuntime;
 use crate::error::McpError;
-use crate::server_auth::{AuthenticationOutcome, GrantUse, authenticate, authentication_target};
+use crate::server_auth::{
+    AuthenticationOutcome, GrantUse, LogoutResult, authenticate, authentication_target, logout,
+};
 use crate::server_lifecycle::{Lifecycle, Server};
 
 impl McpRuntime {
@@ -64,12 +66,20 @@ impl McpRuntime {
         .await
     }
 
-    fn authentication_server(&self, name: &str) -> Result<Arc<Server>, McpError> {
-        let server = self
-            .current()
+    pub async fn logout_server(&self, name: &str) -> Result<LogoutResult, McpError> {
+        let server = self.named(name)?;
+        logout(&server, &self.options).await
+    }
+
+    fn named(&self, name: &str) -> Result<Arc<Server>, McpError> {
+        self.current()
             .into_iter()
             .find(|server| server.config.name == name)
-            .ok_or(McpError::McpServerNotFound)?;
+            .ok_or(McpError::McpServerNotFound)
+    }
+
+    fn authentication_server(&self, name: &str) -> Result<Arc<Server>, McpError> {
+        let server = self.named(name)?;
         if matches!(server.lifecycle(), Lifecycle::Starting) {
             return Err(McpError::McpDiscoveryInProgress);
         }
