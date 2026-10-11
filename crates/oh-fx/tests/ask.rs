@@ -321,7 +321,7 @@ fn unselected_and_unknown_providers_explain_themselves() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stderr(&output),
-        "oh-fx ask: oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.\n"
+        "oh-fx ask: oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.\n"
     );
     let output = home.ask(&["ask", "hello"], &[("OH_FX_PROVIDER", "grok")]);
     assert!(

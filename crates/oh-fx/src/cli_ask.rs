@@ -17,7 +17,10 @@ use ofx_app::{
     ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, default_mode,
     open_store, recovered_turn, session_lookup_message,
 };
-use ofx_auth::{MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE};
+use ofx_auth::{
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE,
+    UNREADABLE_STORED_KEY_MESSAGE,
+};
 use ofx_cli::{AskArgs, AskError, AskLayout, AskOutput, LaunchModifiers, read_stdin_prompt};
 use ofx_config::{
     ConnectionError, ContextLimitName, ProfilePaths, SelectionError, Settings,
@@ -217,6 +220,10 @@ impl From<ConnectError> for Failure {
             ConnectError::MissingGatewayCredential => Self {
                 notice_in_json: true,
                 ..Self::notice("MissingCredentials", MISSING_GATEWAY_CREDENTIAL_MESSAGE)
+            },
+            ConnectError::UnreadableStoredKey => Self {
+                notice_in_json: true,
+                ..Self::notice("MissingCredentials", UNREADABLE_STORED_KEY_MESSAGE)
             },
             ConnectError::InvalidModel(model) => Self::invalid_model(model),
             ConnectError::Mcp(error) => Self::code(error.to_string()),

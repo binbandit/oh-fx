@@ -13,7 +13,8 @@ use ofx_agent::{
 };
 use ofx_auth::{
     CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, GatewaySource, HOST_MANAGED_AUTH_MESSAGE,
-    MISSING_GATEWAY_CREDENTIAL_MESSAGE, gateway_env_credential, host_managed_auth,
+    MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredKeyStore, UNREADABLE_STORED_KEY_MESSAGE,
+    gateway_credential, host_managed_auth,
 };
 use ofx_config::{
     ConfigDiagnostic, ConnectionError, ContextLimitOverride, ContextLimits, ProfilePaths,
@@ -78,6 +79,7 @@ pub struct Profile {
     paths: Option<ProfilePaths>,
     settings: Settings,
     access: WorkspaceAccess,
+    stored_key: StoredKeyStore,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -102,6 +104,8 @@ pub enum ConnectError {
     Codex(#[from] CodexUnavailable),
     #[error("{MISSING_GATEWAY_CREDENTIAL_MESSAGE}")]
     MissingGatewayCredential,
+    #[error("{UNREADABLE_STORED_KEY_MESSAGE}")]
+    UnreadableStoredKey,
     #[error("InvalidModel")]
     InvalidModel(Vec<u8>),
     #[error("{0}")]
@@ -121,7 +125,7 @@ impl CredentialSource {
         match self {
             Self::Configured => CONFIGURED_SOURCE_LABEL,
             Self::Codex => CHATGPT_SOURCE_LABEL,
-            Self::Gateway(source) => source.variable(),
+            Self::Gateway(source) => source.label(),
             Self::HostManaged => HOST_MANAGED_SOURCE_LABEL,
         }
     }
@@ -245,7 +249,18 @@ impl Profile {
             Some(paths) => Settings::load(paths, &workspace_root)?,
             None => Settings::default(),
         };
+        let lookup = |name: &str| env::var(name).ok();
+        let stored_key = StoredKeyStore::from_environment(
+            paths.as_ref().map(|paths| paths.data.as_path()),
+            &lookup,
+        );
         Self::new(workspace_root, env::var_os("HOME"), paths, settings)
+            .map(|profile| profile.with_stored_key(stored_key))
+    }
+
+    pub(crate) fn with_stored_key(mut self, stored_key: StoredKeyStore) -> Self {
+        self.stored_key = stored_key;
+        self
     }
 
     pub(crate) fn new(
@@ -262,12 +277,15 @@ impl Profile {
         if settings.profile_is_unusable() {
             return Err(ProfileError::Unusable(settings.diagnostics().to_vec()));
         }
+        let stored_key =
+            StoredKeyStore::in_profile(paths.as_ref().map(|paths| paths.data.as_path()));
         Ok(Self {
             workspace_root,
             home,
             paths,
             settings,
             access,
+            stored_key,
         })
     }
 
@@ -314,7 +332,8 @@ impl Profile {
         let lookup = |name: &str| env::var(name).ok();
         self.settings.routes(provider)
             || (*provider == ProviderId::Gateway
-                && (host_managed_auth() || gateway_env_credential(&lookup).is_some()))
+                && (host_managed_auth()
+                    || !matches!(gateway_credential(&lookup, &self.stored_key), Ok(None))))
     }
 
     pub fn resume_selection(
@@ -555,7 +574,13 @@ impl Profile {
             })?
             .map_err(ConnectError::InvalidModel)?;
             let configured_model = self.settings.selected_gateway_model(None, &lookup);
-            return gateway_route(model, configured_model, endpoints.gateway, &lookup);
+            return gateway_route(
+                model,
+                configured_model,
+                endpoints.gateway,
+                &lookup,
+                &self.stored_key,
+            );
         }
         if self.settings.codex_selected(&lookup)? {
             return self
@@ -765,12 +790,14 @@ fn gateway_route(
     configured_model: String,
     endpoints: GatewayEndpoints,
     lookup: &dyn Fn(&str) -> Option<String>,
+    store: &StoredKeyStore,
 ) -> Result<Route, ConnectError> {
     let (source, secret) = if host_managed_auth() {
         (CredentialSource::HostManaged, None)
     } else {
-        let credential =
-            gateway_env_credential(lookup).ok_or(ConnectError::MissingGatewayCredential)?;
+        let credential = gateway_credential(lookup, store)
+            .map_err(|_| ConnectError::UnreadableStoredKey)?
+            .ok_or(ConnectError::MissingGatewayCredential)?;
         (
             CredentialSource::Gateway(credential.source),
             Some(credential.secret.to_string()),
@@ -843,6 +870,7 @@ impl AgentSetup {
             CredentialSource::Gateway(GatewaySource::AiGatewayApiKey) => {
                 RouteCredential::ai_gateway_api_key()
             }
+            CredentialSource::Gateway(GatewaySource::StoredKey) => RouteCredential::stored_key(),
             CredentialSource::HostManaged => RouteCredential::host_managed(),
         }
     }

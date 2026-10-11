@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 use ofx_testkit::{FakeServer, Reply, chat_text_events};
 use serde_json::{Value, json};
 
-const GATEWAY_MISSING: &str = "oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.";
+const GATEWAY_MISSING: &str = "oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.";
 const GATEWAY_STARTUP: &str =
     "resolved model=spacexai/grok-4.7, permission_mode=auto, agent_step_limit=0";
 const MCP_EMPTY_TEXT: &str = "[doctor] mcp_connection_check=not_checked\n[doctor] mcp_servers=0 mcp_configuration_issues=0\n";

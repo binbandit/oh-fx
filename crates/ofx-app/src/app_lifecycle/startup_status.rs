@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ofx_auth::{
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredLogin,
-    codex_login_saved, gateway_env_credential, grok_login_saved, provider_route_name,
-    stored_codex_login,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredKeyStore,
+    StoredLogin, UNREADABLE_STORED_KEY_MESSAGE, codex_login_saved, gateway_credential,
+    grok_login_saved, provider_route_name, stored_codex_login,
 };
 use ofx_cli::OutputFormat;
 use ofx_config::{
@@ -146,9 +146,18 @@ impl StatusSources<'_> {
             return active(Credential::HostManaged, logins);
         }
         let data = self.paths.map(|paths| paths.data.clone());
-        let gateway = gateway_env_credential(self.lookup).map(|credential| credential.source);
+        let probes_gateway = matches!(
+            provider,
+            ProviderId::Gateway | ProviderId::Codex | ProviderId::Grok
+        );
+        let gateway = if probes_gateway {
+            let store = StoredKeyStore::from_environment(data.as_deref(), self.lookup);
+            gateway_credential(self.lookup, &store).map(|key| key.map(|key| key.source))
+        } else {
+            Ok(None)
+        };
         let logins = SavedLogins {
-            gateway: gateway.is_some() && matches!(provider, ProviderId::Codex | ProviderId::Grok),
+            gateway: *provider != ProviderId::Gateway && matches!(gateway, Ok(Some(_))),
             codex: data.clone().is_some_and(codex_login_saved),
             grok: data.clone().is_some_and(grok_login_saved),
         };
@@ -162,8 +171,9 @@ impl StatusSources<'_> {
         }
         if *provider == ProviderId::Gateway {
             return match gateway {
-                Some(source) => active(Credential::Gateway(source), logins),
-                None => missing(MISSING_GATEWAY_CREDENTIAL_MESSAGE.to_owned(), logins),
+                Ok(Some(source)) => active(Credential::Gateway(source), logins),
+                Ok(None) => missing(MISSING_GATEWAY_CREDENTIAL_MESSAGE.to_owned(), logins),
+                Err(_) => missing(UNREADABLE_STORED_KEY_MESSAGE.to_owned(), logins),
             };
         }
         if *provider != ProviderId::Codex {

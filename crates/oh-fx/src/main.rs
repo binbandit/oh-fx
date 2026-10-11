@@ -17,6 +17,7 @@ mod provider_command;
 mod question_call_record;
 mod session_command;
 mod sessions_command;
+mod setup_command;
 mod shell_call_record;
 mod status_command;
 mod upgrade_command;
@@ -115,6 +116,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Pr(args) => github_workflow::run(Workflow::PullRequest, &args, &modifiers),
             Command::Issue(args) => github_workflow::run(Workflow::Issue, &args, &modifiers),
             Command::Mcp(McpOperation::Auth(name)) => mcp_command::auth(&name),
+            Command::Setup => setup_command::run(),
             other => unavailable_command(&other),
         },
     }

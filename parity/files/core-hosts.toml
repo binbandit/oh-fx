@@ -59,13 +59,15 @@ note = "Native text clipboard command execution exists, and /trace copies its re
 
 [[file]]
 upstream = "src/core/hosts/native_keychain.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-auth/src/stored_key.rs"]
+note = "The stored AI Gateway API key loads with /usr/bin/security find-generic-password and saves through security's own hidden prompt, under service OH_FX_AI_GATEWAY_API_KEY for USER or LOGNAME, with OH_FX_DISABLE_KEYCHAIN; the getpwuid account fallback, the expect-driven non-interactive store, the metadata-only presence check, and the MCP and fx login keychain items are absent, as docs/differences/gateway.md and mcp.md record."
 
 [[file]]
 upstream = "src/core/hosts/native_secret_store.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-auth/src/stored_key.rs"]
+note = "The stored-key provider picks the macOS Keychain or a private profile file (8 KiB, line ends trimmed, group or other permissions refused as insecure) and keeps an unreadable store distinct from an absent key; the file lives at $XDG_DATA_HOME/oh-fx/api-key, and the host SecretStore port is a concrete type."
 
 [[file]]
 upstream = "src/core/hosts/runtime_profile.zig"

@@ -31,6 +31,7 @@ serde_json.workspace = true
 signal-hook.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 ofx-testkit.workspace = true
