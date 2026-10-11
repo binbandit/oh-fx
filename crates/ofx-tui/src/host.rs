@@ -3,6 +3,8 @@ pub trait Clipboard: Send + Sync {
 }
 
 pub trait ForegroundLifecycle: Send + Sync {
+    fn leaving(&self) {}
+
     fn shutdown(&self);
 }
 

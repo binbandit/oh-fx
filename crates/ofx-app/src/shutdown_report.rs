@@ -32,14 +32,17 @@ struct Stage {
 }
 
 impl ShutdownTrace {
+    pub(crate) fn begin(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| Stages::from(Instant::now()));
+    }
+
     pub(crate) fn mark(&self, name: &'static str) {
         let now = Instant::now();
         let mut stages = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let stages = stages.get_or_insert_with(|| Stages {
-            started: now,
-            last: now,
-            recorded: Vec::with_capacity(MAX_STAGES),
-        });
+        let stages = stages.get_or_insert_with(|| Stages::from(now));
         let step_ms = now.duration_since(stages.last).as_millis();
         let total_ms = now.duration_since(stages.started).as_millis();
         trace_log!(
@@ -53,6 +56,15 @@ impl ShutdownTrace {
                 step_ms,
                 total_ms,
             });
+        }
+    }
+
+    pub(crate) fn finish(&self, joined: bool, state: Option<&Path>, recorded_at_ms: i64) {
+        if joined {
+            self.mark("complete");
+        }
+        if let Some(state) = state {
+            self.save(state, recorded_at_ms);
         }
     }
 
@@ -86,6 +98,16 @@ impl ShutdownTrace {
         }
         report.push_str("]}");
         report
+    }
+}
+
+impl Stages {
+    fn from(started: Instant) -> Self {
+        Self {
+            started,
+            last: started,
+            recorded: Vec::with_capacity(MAX_STAGES),
+        }
     }
 }
 

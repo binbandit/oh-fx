@@ -85,6 +85,22 @@ fn worker_panics_are_reported_instead_of_printed_and_clean_exits_are_quiet() {
 }
 
 #[test]
+fn a_worker_still_running_after_the_grace_is_not_reported_as_joined() {
+    let _serial = HOOK_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+    let panics = PanicCapture::install(WORKER_THREAD, drop);
+    let (shell, _events) = ui_channel().unwrap();
+    let (release, held) = mpsc::channel::<()>();
+    let worker = Worker::spawn(shell.clone(), move || {
+        let _ = held.recv();
+    })
+    .unwrap();
+    assert!(matches!(worker.finish(None, None, &panics), Ok(false)));
+    release.send(()).unwrap();
+    let joined = Worker::spawn(shell, || {}).unwrap();
+    assert!(matches!(joined.finish(None, None, &panics), Ok(true)));
+}
+
+#[test]
 fn an_exit_during_a_slow_codex_refresh_restores_the_terminal_then_saves_the_rotated_login() {
     if let Some(home) = env::var_os(CHILD_HOME) {
         run_a_codex_session(Path::new(&home));
@@ -351,7 +367,7 @@ fn leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight() {
     let stopped = directory.path().join("stopped");
     let finished = directory.path().join("finished");
     let script = format!(
-        "#!/bin/sh\ncat > '{}'\npolls=0\nwhile [ -d '{}' ] && [ ! -e '{}' ] && [ \"$polls\" -lt {COPY_POLLS} ]; do\npolls=$((polls + 1))\nsleep 0.01\ndone\n[ -e '{}' ] && touch '{}'\n",
+        "#!/bin/sh\ncat > '{}'\npolls=0\nwhile [ -d '{}' ] && [ ! -e '{}' ] && [ \"$polls\" -lt {COPY_POLLS} ]; do\npolls=$((polls + 1))\nsleep 0.01\ndone\nsleep 1\n[ -e '{}' ] && touch '{}'\n",
         copied.display(),
         directory.path().display(),
         stopped.display(),
@@ -384,21 +400,64 @@ fn leaving_stops_the_agent_before_it_waits_for_a_copy_in_flight() {
         finished.exists(),
         "the agent kept running until the copy was given up"
     );
+    let saved = fs::read_to_string(
+        directory
+            .path()
+            .join("state/diagnostics/last-shutdown.json"),
+    )
+    .expect("the shutdown report");
+    let report: Value = serde_json::from_str(&saved).unwrap();
+    let stages = report["stages"].as_array().unwrap();
+    let names: Vec<&str> = stages
+        .iter()
+        .map(|stage| stage["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "terminal_released",
+            "background_stops_requested",
+            "persistence_finalized",
+            "worker_thread_joined",
+            "complete"
+        ],
+        "{saved}"
+    );
+    let step = |index: usize| stages[index]["step_ms"].as_u64().unwrap();
+    assert!(step(0) < 1000 && step(1) < 1000, "{saved}");
+    assert!(step(3) >= 900, "{saved}");
 }
 
 fn run_a_shell_that_copies(directory: &Path) -> ! {
     let (events, receiver) = ui_channel().unwrap();
     let stopped = directory.join("stopped");
+    let shutdown = ShutdownTrace::default();
+    let worker_stages = shutdown.clone();
+    let options = ShellOptions {
+        lifecycle: Some(Box::new(Exiting {
+            shutdown: shutdown.clone(),
+            herdr: None,
+            stop_upgrader: None,
+        })),
+        ..shell_options()
+    };
     let outcome = host(
-        shell_options(),
+        options,
         events,
         receiver,
-        Leaving::default(),
+        Leaving {
+            shutdown: Some(&shutdown),
+            ..Leaving::default()
+        },
         move |_, mut commands| {
             while commands.blocking_recv().is_some() {}
+            worker_stages.mark("persistence_finalized");
             fs::write(stopped, "").unwrap();
         },
     );
+    if let Ok(joined) = outcome {
+        shutdown.finish(joined, Some(&directory.join("state")), 0);
+    }
     process::exit(i32::from(outcome.is_err()));
 }
 

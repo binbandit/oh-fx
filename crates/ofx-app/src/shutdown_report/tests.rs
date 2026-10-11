@@ -93,3 +93,20 @@ fn an_oversized_or_unwritable_report_is_left_alone() {
     ShutdownTrace::default().save(&blocked, RECORDED_AT_MS);
     assert!(blocked.is_file());
 }
+
+#[test]
+fn only_a_joined_shutdown_is_marked_complete() {
+    let home = tempfile::tempdir().unwrap();
+    let state = home.path().join("state");
+    let timed_out = ShutdownTrace::default();
+    timed_out.begin();
+    timed_out.mark("worker_thread_join_timed_out");
+    timed_out.finish(false, Some(&state), RECORDED_AT_MS);
+    let saved: Value = serde_json::from_slice(&read_last(&state).unwrap()).unwrap();
+    assert_eq!(names(&saved), ["worker_thread_join_timed_out"]);
+    let joined = ShutdownTrace::default();
+    joined.finish(true, Some(&state), RECORDED_AT_MS);
+    let saved: Value = serde_json::from_slice(&read_last(&state).unwrap()).unwrap();
+    assert_eq!(names(&saved), ["complete"]);
+    ShutdownTrace::default().finish(true, None, RECORDED_AT_MS);
+}
