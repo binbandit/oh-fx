@@ -78,8 +78,13 @@ impl fmt::Debug for GatewayAccess {
 pub trait GatewayRefresh: Send + Sync {
     fn refresh<'a>(
         &'a self,
+        forced: bool,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>>;
+}
+
+fn rejected(error: &ProviderError) -> bool {
+    error.kind == ProviderErrorKind::Unauthorized && error.status == Some(401)
 }
 
 pub struct GatewayCredential {
@@ -192,37 +197,42 @@ impl GatewayProvider {
     }
 
     async fn refresh_if_due(&self, sink: &mut dyn StreamSink, cancel: &CancellationToken) {
-        let Some(refresh) = &self.refresh else {
-            return;
-        };
-        let (due, team) = {
-            let current = lock(&self.current);
-            (
-                current
-                    .refresh_after_ms
-                    .is_some_and(|refresh_after| refresh_after <= now_ms()),
-                current.team.clone(),
-            )
-        };
-        if !due {
-            return;
+        let due = lock(&self.current)
+            .refresh_after_ms
+            .is_some_and(|refresh_after| refresh_after <= now_ms());
+        if due {
+            self.replace_access(false, sink, cancel).await;
         }
-        let fresh = match refresh.refresh(cancel).await {
+    }
+
+    async fn replace_access(
+        &self,
+        forced: bool,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> bool {
+        let Some(refresh) = &self.refresh else {
+            return false;
+        };
+        let team = lock(&self.current).team.clone();
+        let fresh = match refresh.refresh(forced, cancel).await {
             Ok(Some(fresh)) if fresh.team == team => fresh,
-            Ok(None) => return,
+            Ok(None) => return false,
             Ok(Some(_)) => {
-                return sink.emit(StreamEvent::CredentialRefreshFailed {
+                sink.emit(StreamEvent::CredentialRefreshFailed {
                     source: REFRESHED_SOURCE,
-                    forced: false,
+                    forced,
                     error: AUTHORITY_CHANGED.to_owned(),
                 });
+                return false;
             }
             Err(error) => {
-                return sink.emit(StreamEvent::CredentialRefreshFailed {
+                sink.emit(StreamEvent::CredentialRefreshFailed {
                     source: REFRESHED_SOURCE,
-                    forced: false,
+                    forced,
                     error,
                 });
+                return false;
             }
         };
         let token = fresh.token.to_string();
@@ -238,8 +248,9 @@ impl GatewayProvider {
         };
         sink.emit(StreamEvent::CredentialRefreshed {
             source: REFRESHED_SOURCE,
-            forced: false,
+            forced,
         });
+        true
     }
 
     fn build(&self, request: &ModelRequest<'_>) -> Result<String, RequestError> {
@@ -301,6 +312,27 @@ impl GatewayProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
+        let replay = self.refresh.as_ref().map(|_| payload.clone());
+        match (self.send(request, payload, sink, cancel).await, replay) {
+            (Err(error), Some(payload)) if rejected(&error) => {
+                if !self.replace_access(true, sink, cancel).await {
+                    return Err(error);
+                }
+                let replayed = self.send(request, payload, sink, cancel).await;
+                sink.emit(StreamEvent::RequestReplayed);
+                replayed
+            }
+            (sent, _) => sent,
+        }
+    }
+
+    async fn send(
+        &self,
+        request: &ModelRequest<'_>,
+        payload: String,
+        sink: &mut dyn StreamSink,
+        cancel: &CancellationToken,
+    ) -> Result<GatewayCompletion, ProviderError> {
         let (secret, team) = {
             let current = lock(&self.current);
             (current.secret.clone(), current.team.clone())

@@ -193,7 +193,7 @@ fn refreshing_in_background(
             .enable_all()
             .build()
             .unwrap();
-        let _ = runtime.block_on(refresh.refresh(&CancellationToken::new()));
+        let _ = runtime.block_on(refresh.refresh(false, &CancellationToken::new()));
     })
 }
 
