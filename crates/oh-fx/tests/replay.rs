@@ -1,5 +1,4 @@
-use std::fs::{self, File};
-use std::io;
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -38,6 +37,23 @@ impl Workspace {
         let path = self.root.join("session.fxtape");
         fs::write(&path, bytes).expect("write the tape");
         path
+    }
+
+    fn pipe_without_reader(&self) -> File {
+        let path = self.root.join("closed.fifo");
+        let made = Command::new("mkfifo").arg(&path).status();
+        assert!(made.expect("run mkfifo").success());
+        let reader = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open the pipe's reader");
+        let writer = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open the pipe's writer");
+        drop(reader);
+        writer
     }
 
     fn replay(&self, args: &[&Path], stdout: Stdio) -> Output {
@@ -110,9 +126,7 @@ fn replay_names_a_terminal_grid_error_it_cannot_recover_from() {
 fn replay_into_a_closed_pipe_dies_by_sigpipe() {
     let workspace = Workspace::new();
     let tape = workspace.tape(5, 2, b"hi");
-    let (reader, writer) = io::pipe().expect("create a pipe");
-    drop(reader);
-    let output = workspace.replay(&[&tape], Stdio::from(writer));
+    let output = workspace.replay(&[&tape], Stdio::from(workspace.pipe_without_reader()));
     assert_eq!(output.status.signal(), Some(SIGPIPE));
 }
 
