@@ -378,6 +378,7 @@ fn take_session_operand(stream: &mut ArgStream) -> Option<SessionOperand> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpOperation {
     Auth(String),
+    Logout(String),
     Unported,
 }
 
@@ -398,7 +399,10 @@ pub(crate) fn parse_mcp(args: &[OsString]) -> Result<McpOperation, CliError> {
         (Some("list"), _) if rest.is_empty() || matches!(rest, [flag] if flag == "--connect") => {
             Ok(McpOperation::Unported)
         }
-        (Some("remove" | "logout"), _) if named(rest) => Ok(McpOperation::Unported),
+        (Some("logout"), [name]) if !name.is_empty() => {
+            Ok(McpOperation::Logout(name.to_string_lossy().into_owned()))
+        }
+        (Some("remove"), _) if named(rest) => Ok(McpOperation::Unported),
         _ => Err(usage()),
     }
 }

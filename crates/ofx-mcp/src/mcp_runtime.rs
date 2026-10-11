@@ -52,7 +52,7 @@ pub struct McpRuntime {
     published: Mutex<Published>,
     workspace_diagnostics: Mutex<Vec<WorkspaceDiagnostic>>,
     installed: AtomicBool,
-    reloading: tokio::sync::Mutex<()>,
+    reloading: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -107,7 +107,7 @@ impl McpRuntime {
             published: Mutex::new(Published::default()),
             workspace_diagnostics: Mutex::new(load.workspace_diagnostics),
             installed: AtomicBool::new(installed),
-            reloading: tokio::sync::Mutex::new(()),
+            reloading: Arc::default(),
         }
     }
 

@@ -1,12 +1,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use ofx_config::ContextLimits;
 use ofx_contract::{DynamicTools, ToolResultStatus};
+use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
-use super::McpRuntime;
 use super::tests::call;
+use super::{McpRuntime, ReloadOutcome};
 use crate::error::McpError;
 use crate::mcp_auth::Credentials;
 use crate::mcp_auth_store::{CredentialStore, GrantLookup};
@@ -54,7 +58,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start(revocation_status: u16) -> Self {
-        let server = FakeServer::start(move |request| reply(request, revocation_status)).await;
+        Self::serving(FakeServer::start(move |request| reply(request, revocation_status)).await)
+    }
+
+    fn serving(server: FakeServer) -> Self {
         let data = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(data.path()).unwrap().join("oh-fx");
         Self {
@@ -136,6 +143,14 @@ impl Fixture {
         runtime
     }
 
+    fn initializes(&self) -> Vec<RecordedRequest> {
+        self.server
+            .requests()
+            .into_iter()
+            .filter(|request| request.method_name().as_deref() == Some("initialize"))
+            .collect()
+    }
+
     fn paths(&self) -> Vec<String> {
         self.server
             .requests()
@@ -151,6 +166,48 @@ impl Fixture {
             .filter(|request| request.path == "/revoke")
             .map(|request| request.body.clone())
             .collect()
+    }
+}
+
+type ReloadTask = tokio::task::JoinHandle<Result<ReloadOutcome, super::ReloadCancelled>>;
+
+fn reloading(runtime: &Arc<McpRuntime>, config: McpServerConfig) -> ReloadTask {
+    let runtime = Arc::clone(runtime);
+    tokio::spawn(async move {
+        runtime
+            .reconcile(
+                NativeConfigLoad {
+                    configs: vec![config],
+                    ..NativeConfigLoad::default()
+                },
+                true,
+                true,
+                &CancellationToken::new(),
+            )
+            .await
+    })
+}
+
+fn logging_out(
+    runtime: &Arc<McpRuntime>,
+) -> tokio::task::JoinHandle<Result<LogoutResult, McpError>> {
+    let runtime = Arc::clone(runtime);
+    tokio::spawn(async move { runtime.logout_server("remote").await })
+}
+
+fn holding_the_second_initialize(
+    release: &Arc<Notify>,
+) -> impl Fn(&RecordedRequest) -> Reply + Send + Sync + 'static {
+    let held = Arc::clone(release);
+    let initializes = AtomicUsize::new(0);
+    move |request| {
+        let answer = reply(request, 200);
+        if request.method_name().as_deref() == Some("initialize")
+            && initializes.fetch_add(1, Ordering::AcqRel) == 1
+        {
+            return answer.released_by(&held);
+        }
+        answer
     }
 }
 
@@ -202,26 +259,18 @@ async fn a_logout_closes_the_session_deletes_the_grant_and_revokes_it() {
         assert!(!health.contains(secret));
         assert!(!runtime.render_summary().contains(secret));
     }
-    let initializes = |fixture: &Fixture| {
-        fixture
-            .server
-            .requests()
-            .iter()
-            .filter(|request| request.method_name().as_deref() == Some("initialize"))
-            .count()
-    };
-    let before = initializes(&fixture);
+    let before = fixture.initializes().len();
     let server = Arc::clone(&runtime.current()[0]);
     assert!(
         server
-            .running_client(tokio::time::Instant::now() + std::time::Duration::from_secs(1))
+            .running_client(tokio::time::Instant::now() + Duration::from_secs(1))
             .await
             .is_err()
     );
-    assert_eq!(initializes(&fixture), before);
+    assert_eq!(fixture.initializes().len(), before);
     assert_eq!(
         runtime
-            .reconnect_authenticated_server("remote", &tokio_util::sync::CancellationToken::new())
+            .reconnect_authenticated_server("remote", &CancellationToken::new())
             .await,
         Ok(())
     );
@@ -322,7 +371,7 @@ async fn unreadable_entries_or_a_session_grant_still_log_out() {
     let auth = &runtime.current()[0].auth;
     auth.publish(
         auth.generation(),
-        &tokio_util::sync::CancellationToken::new(),
+        &CancellationToken::new(),
         session.grant(true),
         |_| Ok(()),
     )
@@ -398,7 +447,7 @@ async fn logout_refuses_unknown_local_profileless_and_starting_servers() {
         if matches!(starting.current()[0].lifecycle(), Lifecycle::Starting) {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(matches!(
         starting.current()[0].lifecycle(),
@@ -420,13 +469,7 @@ async fn a_server_that_needs_authentication_logs_out_and_drops_its_challenge() {
         Reply::status(401).header("WWW-Authenticate", r#"Bearer scope="tools.call""#)
     })
     .await;
-    let data = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(data.path()).unwrap().join("oh-fx");
-    let fixture = Fixture {
-        server,
-        _data: data,
-        root,
-    };
+    let fixture = Fixture::serving(server);
     let config = fixture.config();
     fixture.save(&config, true);
     let runtime = fixture.runtime(vec![config], true);
@@ -447,4 +490,108 @@ async fn a_server_that_needs_authentication_logs_out_and_drops_its_challenge() {
         crate::mcp_auth::Challenge::default()
     );
     assert_eq!(fixture.revocations().len(), 2);
+}
+
+#[tokio::test]
+async fn a_logout_during_a_reload_signs_out_the_server_the_reload_publishes() {
+    let release = Arc::new(Notify::new());
+    let fixture =
+        Fixture::serving(FakeServer::start(holding_the_second_initialize(&release)).await);
+    let runtime = Arc::new(fixture.connected(false).await);
+    let original = Arc::clone(&runtime.current()[0]);
+    let changed = McpServerConfig {
+        operation_timeout_ms: 7_000,
+        ..fixture.config()
+    };
+    let reload = reloading(&runtime, changed);
+    for _ in 0..500 {
+        if fixture.initializes().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let initializes = fixture.initializes();
+    assert_eq!(initializes.len(), 2);
+    assert_eq!(
+        initializes[1].header("authorization"),
+        Some("Bearer stored-access")
+    );
+    let logout = logging_out(&runtime);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!logout.is_finished());
+    assert!(fixture.file().exists());
+    release.notify_one();
+    assert!(matches!(
+        reload.await.unwrap(),
+        Ok(ReloadOutcome::Published { .. })
+    ));
+    assert_eq!(logout.await.unwrap(), Ok(logged_out(false)));
+    assert!(!fixture.file().exists());
+    let replacement = Arc::clone(&runtime.current()[0]);
+    assert!(!Arc::ptr_eq(&original, &replacement));
+    assert_eq!(replacement.config.operation_timeout_ms, 7_000);
+    assert!(matches!(replacement.lifecycle(), Lifecycle::Idle));
+    let health = runtime.render_health();
+    assert!(
+        health.contains("state=disconnected auth=none status=unavailable\n"),
+        "{health}"
+    );
+    assert!(runtime.tools().is_empty());
+    let signed_out = fixture.server.requests().len();
+    let _ = runtime.list_prompts("remote").await;
+    let later = &fixture.server.requests()[signed_out..];
+    assert!(
+        later
+            .iter()
+            .all(|request| request.header("authorization").is_none()),
+        "{later:?}"
+    );
+    assert!(!runtime.render_health().contains("auth=authenticated"));
+}
+
+#[tokio::test]
+async fn a_reload_during_a_logout_connects_only_after_the_grant_is_gone() {
+    let fixture = Fixture::start(200).await;
+    let runtime = Arc::new(fixture.connected(false).await);
+    let held = ofx_config::PrivateDir::open_or_create(&fixture.root)
+        .unwrap()
+        .open_or_create_child("mcp-credentials")
+        .unwrap()
+        .try_lock("credentials.lock")
+        .unwrap()
+        .unwrap();
+    let logout = logging_out(&runtime);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!logout.is_finished());
+    let changed = McpServerConfig {
+        operation_timeout_ms: 7_000,
+        ..fixture.config()
+    };
+    let reload = reloading(&runtime, changed);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!reload.is_finished());
+    assert_eq!(fixture.initializes().len(), 1);
+    drop(held);
+    assert_eq!(logout.await.unwrap(), Ok(logged_out(false)));
+    assert!(matches!(
+        reload.await.unwrap(),
+        Ok(ReloadOutcome::Published { .. })
+    ));
+    assert!(!fixture.file().exists());
+    let initializes = fixture.initializes();
+    assert_eq!(initializes.len(), 2);
+    assert_eq!(initializes[1].header("authorization"), None);
+    let health = runtime.render_health();
+    assert!(health.contains("state=ready"), "{health}");
+    assert!(!health.contains("auth=authenticated"), "{health}");
+    let output = call(&runtime, "mcp_remote_echo", "{}").await;
+    assert_eq!(output.status, ToolResultStatus::Success);
+    let calls: Vec<RecordedRequest> = fixture
+        .server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method_name().as_deref() == Some("tools/call"))
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].header("authorization"), None);
 }

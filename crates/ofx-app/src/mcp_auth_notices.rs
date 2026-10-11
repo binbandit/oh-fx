@@ -3,7 +3,7 @@ use std::path::Path;
 
 use ofx_contract::{Notice, NoticeTone};
 use ofx_mcp::{
-    AuthenticationOutcome, IssuerMismatch, IssuerMismatchSource, McpError,
+    AuthenticationOutcome, IssuerMismatch, IssuerMismatchSource, LogoutResult, McpError,
     authentication_error_message,
 };
 use ofx_text::encode_terminal_safe;
@@ -26,6 +26,40 @@ pub(crate) fn busy(name: &str) -> String {
     format!(
         "MCP authentication for '{name}' is already in progress or MCP configuration is reloading."
     )
+}
+
+pub(crate) fn logout_busy(name: &str) -> String {
+    format!(
+        "MCP authentication for '{name}' is still in progress. Wait for it to finish before logging out."
+    )
+}
+
+pub(crate) fn logout_completion(name: &str, result: &Result<LogoutResult, McpError>) -> String {
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => return format!("MCP logout for '{name}' failed: {error}."),
+    };
+    if !result.removed {
+        return format!("No stored MCP credentials found for '{name}'.");
+    }
+    let mut body = if result.revocation_failed {
+        format!("Logged out of MCP server '{name}' locally; remote revocation failed.")
+    } else {
+        format!("Logged out of MCP server '{name}'.")
+    };
+    if result.repaired_entries > 0 {
+        let noun = if result.repaired_entries == 1 {
+            "entry"
+        } else {
+            "entries"
+        };
+        let _ = write!(
+            body,
+            " Removed {} unreadable MCP credential {noun}.",
+            result.repaired_entries
+        );
+    }
+    body
 }
 
 pub(crate) fn completion(
@@ -180,6 +214,61 @@ mod tests {
             format!(
                 "MCP authentication for 'docs' was rejected: expected issuer \"https://issuer.example\" but the authorization response returned issuer {returned}. oh-fx stopped before token exchange. Contact the MCP server provider; changing oauth.issuer is not a safe workaround."
             )
+        );
+    }
+
+    #[test]
+    fn logout_notices_follow_upstreams_wording() {
+        let removed = LogoutResult {
+            removed: true,
+            ..LogoutResult::default()
+        };
+        let cases = [
+            (
+                Ok(LogoutResult::default()),
+                "No stored MCP credentials found for 'docs'.",
+            ),
+            (Ok(removed), "Logged out of MCP server 'docs'."),
+            (
+                Ok(LogoutResult {
+                    local_only: true,
+                    ..removed
+                }),
+                "Logged out of MCP server 'docs'.",
+            ),
+            (
+                Ok(LogoutResult {
+                    revocation_failed: true,
+                    ..removed
+                }),
+                "Logged out of MCP server 'docs' locally; remote revocation failed.",
+            ),
+            (
+                Ok(LogoutResult {
+                    repaired_entries: 1,
+                    ..removed
+                }),
+                "Logged out of MCP server 'docs'. Removed 1 unreadable MCP credential entry.",
+            ),
+            (
+                Ok(LogoutResult {
+                    repaired_entries: 2,
+                    revocation_failed: true,
+                    ..removed
+                }),
+                "Logged out of MCP server 'docs' locally; remote revocation failed. Removed 2 unreadable MCP credential entries.",
+            ),
+            (
+                Err(McpError::McpAuthorityChanged),
+                "MCP logout for 'docs' failed: McpAuthorityChanged.",
+            ),
+        ];
+        for (result, expected) in cases {
+            assert_eq!(logout_completion("docs", &result), expected);
+        }
+        assert_eq!(
+            logout_busy("docs"),
+            "MCP authentication for 'docs' is still in progress. Wait for it to finish before logging out."
         );
     }
 }
