@@ -175,10 +175,21 @@ impl ModelProvider for FakeProvider {
                 "InvalidProviderState",
             ));
         }
+        if replay.parts_json.starts_with("reasoning of ") {
+            return Ok(Some(replay.clone()));
+        }
         Ok(Some(ProviderReplay {
             parts_json: format!("reasoning of {}", replay.parts_json),
             ..replay.clone()
         }))
+    }
+
+    fn replay_source(&self, model: &str) -> Option<ReplaySource> {
+        Some(ReplaySource {
+            provider: "fake".to_owned(),
+            model: model.to_owned(),
+            binding: None,
+        })
     }
 }
 
@@ -2817,9 +2828,21 @@ async fn assistant_messages_carry_their_completion_replay_into_later_requests() 
     assert_eq!(replays(&requests[1].messages), [Some("tool step")]);
     assert_eq!(
         replays(&requests[2].messages),
-        [Some("tool step"), Some("answer")]
+        [Some("reasoning of tool step"), Some("answer")]
     );
-    assert!(provider.projections().is_empty());
+    assert_eq!(
+        provider.projections(),
+        [(
+            "tool step".to_owned(),
+            vec!["call-1".to_owned()],
+            false,
+            true
+        )]
+    );
+    assert_eq!(
+        replays(&agent.history),
+        [Some("tool step"), Some("answer"), None]
+    );
 }
 
 #[tokio::test]
@@ -2950,6 +2973,7 @@ mod approvals;
 mod capabilities;
 mod compaction;
 mod compaction_trace;
+mod empty_replay;
 mod file_evidence;
 mod images;
 mod interrupted_closure;

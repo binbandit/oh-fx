@@ -648,6 +648,7 @@ fn codex_replay_projection_keeps_the_source_and_selects_parts() {
         CodexEndpoints::default(),
     )
     .unwrap();
+    assert_eq!(codex.replay_source("gpt-5.6-sol"), Some(source.clone()));
     assert_eq!(
         codex.project_replay(&replay, &[], false, true),
         Ok(Some(ProviderReplay {

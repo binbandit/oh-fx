@@ -7,7 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::ids::ToolCallId;
 use crate::tool_dispatch::ToolSpec;
 use crate::types::{
-    ChatMessage, FinishReason, ProviderBilling, ProviderReplay, ToolCall, ToolChoice, Usage,
+    ChatMessage, FinishReason, ProviderBilling, ProviderReplay, ReplaySource, ToolCall, ToolChoice,
+    Usage,
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -167,12 +168,15 @@ pub trait ModelProvider: Send + Sync {
             "ProviderReplayProjectionUnavailable",
         ))
     }
+
+    fn replay_source(&self, _model: &str) -> Option<ReplaySource> {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ReplaySource;
 
     struct Silent;
 
@@ -204,6 +208,11 @@ mod tests {
                 "ProviderReplayProjectionUnavailable"
             ))
         );
+    }
+
+    #[test]
+    fn providers_without_replay_state_claim_no_replay_source() {
+        assert_eq!(Silent.replay_source("model"), None);
     }
 
     #[test]

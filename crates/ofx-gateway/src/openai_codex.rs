@@ -364,6 +364,10 @@ impl ModelProvider for CodexProvider {
             parts_json,
         }))
     }
+
+    fn replay_source(&self, model: &str) -> Option<ReplaySource> {
+        Some(replay_source(model))
+    }
 }
 
 fn replay_source(model: &str) -> ReplaySource {

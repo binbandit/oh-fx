@@ -342,7 +342,10 @@ impl Agent {
             turn_id: turn.id,
             activity,
         });
-        installed
+        installed?;
+        let retained = 1.min(turn.start)..turn.start;
+        turn.history_replays = Some(self.project_empty_history_replay(retained)?);
+        Ok(())
     }
 
     fn install_turn_compaction(
@@ -372,6 +375,7 @@ impl Agent {
         }
         turn.compaction.compacted_steps |= splits_active;
         self.install_compaction(compacted);
+        turn.history_replays = Some(Vec::new());
         turn.start = self.turn_starts.last().copied().unwrap_or(turn.start);
         turn.compaction.compacted_len = Some(self.history.len());
         turn.compaction.rebuilt = true;

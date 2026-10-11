@@ -59,6 +59,7 @@ use crate::worker_runtime::WorkerRuntime;
 
 mod compaction;
 mod dynamic_tools;
+mod empty_replay;
 mod gateway_trace;
 mod history_trace;
 mod mode_policy;
@@ -79,6 +80,7 @@ mod turn_trace;
 pub use compaction::Compaction;
 use compaction::{TurnCompaction, compaction_stop};
 use dynamic_tools::{DynamicToolSet, SelectedTools, not_selected};
+use empty_replay::{ProjectedReplay, apply_projected};
 use gateway_trace::Recovering;
 use mode_policy::{Offer, denial, offer};
 use paused::{Pause, paused_required_action};
@@ -249,6 +251,7 @@ struct Turn {
     selected_tools: SelectedTools,
     trail: ToolTrail,
     projection: Option<history_trace::HistoryShape>,
+    history_replays: Option<Vec<ProjectedReplay>>,
 }
 
 #[derive(Default)]
@@ -656,6 +659,7 @@ impl Agent {
                 &self.turn_starts,
                 &self.pending_interruptions,
             ),
+            history_replays: None,
         }
     }
 
@@ -929,7 +933,7 @@ impl Agent {
             self.refresh_dynamic_tools(&turn.selected_tools);
             let context = self.context.runtime_context().await;
             let instructions = self.instructions(&skills, &context, &servers);
-            history_trace::projected(turn.trace, turn.projection.take(), instructions.len());
+            self.project_history(turn, instructions.len())?;
             let messages = self.step_messages(turn);
             let gateway_messages = instructions.len() + messages.len();
             self.trace_step(turn, (step + 1, entered), gateway_messages);
@@ -1993,8 +1997,9 @@ impl Agent {
         }
     }
 
-    fn request_history(&self) -> Cow<'_, [ChatMessage]> {
+    fn request_history(&self, replays: &[ProjectedReplay]) -> Cow<'_, [ChatMessage]> {
         let mut history = Cow::Borrowed(self.history.as_slice());
+        apply_projected(&mut history, replays);
         for (index, message) in self.history.iter().enumerate() {
             let ChatMessage::Assistant { tool_calls, .. } = message else {
                 continue;
