@@ -7,10 +7,14 @@ use ofx_text::mask_secrets;
 use ofx_trace::{TraceContext, keyless_json_preview, trace_event, trace_log};
 use tokio_util::sync::CancellationToken;
 
+mod tools;
+
+use super::replay::ReplayBuilder;
 use super::resolved_model;
 use crate::chat_completions::ChunkSource;
 use crate::secret_mask::mask_configured_secrets;
 use crate::stall_watch::StallWatch;
+pub(crate) use tools::ToolStream;
 
 const MAX_SSE_EVENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_FAILURE_DETAIL_BYTES: usize = 600;
@@ -92,6 +96,8 @@ pub(crate) struct GatewayCompletion {
     pub(crate) failure_cause: Option<FailureCause>,
     pub(crate) failure_detail: Option<String>,
     pub(crate) events: usize,
+    pub(crate) tools: ToolStream,
+    pub(crate) replay: Option<String>,
 }
 
 pub(crate) struct Stream<'a> {
@@ -107,6 +113,7 @@ impl Stream<'_> {
         cancel: &CancellationToken,
     ) -> Result<GatewayCompletion, ProviderError> {
         let mut completion = GatewayCompletion::default();
+        let mut replay = ReplayBuilder::default();
         let mut decoder = SseDecoder::new(MAX_SSE_EVENT_BYTES);
         let mut watch = StallWatch::start();
         loop {
@@ -120,7 +127,7 @@ impl Stream<'_> {
                         terminated("done_without_finish", None);
                         break;
                     }
-                    if self.accept(&mut completion, data, sink)? {
+                    if self.accept(&mut completion, &mut replay, data, sink)? {
                         break;
                     }
                     continue;
@@ -148,6 +155,10 @@ impl Stream<'_> {
                 }
             }
         }
+        if matches!(completion.finish, Some(Finish::Stop | Finish::ToolCalls)) {
+            completion.replay =
+                replay.finish(&completion.content, &completion.tools.replay_calls())?;
+        }
         summarize(&completion);
         Ok(completion)
     }
@@ -155,6 +166,7 @@ impl Stream<'_> {
     fn accept(
         &self,
         completion: &mut GatewayCompletion,
+        replay: &mut ReplayBuilder,
         data: &[u8],
         sink: &mut dyn StreamSink,
     ) -> Result<bool, ProviderError> {
@@ -181,6 +193,7 @@ impl Stream<'_> {
         let Some(kind) = fields.get("type").and_then(Json::as_str) else {
             return Ok(false);
         };
+        replay.observe(kind, fields, completion.content.len())?;
         match kind {
             "response-metadata" => {
                 if let Some(model) = fields
@@ -214,6 +227,11 @@ impl Stream<'_> {
                     });
                 }
             }
+            "tool-input-start" => completion.tools.start(fields, sink),
+            "tool-input-delta" => completion.tools.input(fields, true, sink),
+            "tool-input-end" => completion.tools.input(fields, false, sink),
+            "tool-call" => completion.tools.call(fields, self.secrets),
+            "tool-result" => completion.tools.result(fields),
             "finish" => {
                 completion.failure_cause = completion.failure_cause.or(failure_cause(fields));
                 let finish = finish_reason(fields)?;

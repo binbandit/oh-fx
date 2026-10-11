@@ -148,8 +148,8 @@ impl Agent {
         let calls = mem::take(&mut completion.tool_calls);
         let (step_replay, final_replay) = match completion.provider_replay.take() {
             Some(replay) => (
-                self.projected_replay(&replay, false, true)?,
-                self.projected_replay(&replay, true, false)?,
+                self.projected_replay(&replay, &calls, false, true)?,
+                self.projected_replay(&replay, &[], true, false)?,
             ),
             None => (None, None),
         };
@@ -168,11 +168,12 @@ impl Agent {
     fn projected_replay(
         &self,
         replay: &ProviderReplay,
+        calls: &[ToolCall],
         text: bool,
         reasoning: bool,
     ) -> Result<Option<ProviderReplay>, Stop> {
         self.provider
-            .project_replay(replay, text, reasoning)
+            .project_replay(replay, calls, text, reasoning)
             .map_err(|error| Stop::failed(TurnFailure::Provider(error)))
     }
 }

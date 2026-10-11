@@ -1,3 +1,4 @@
+mod replay;
 mod resolved_model;
 mod sse_stream;
 
@@ -206,18 +207,21 @@ impl GatewayAttempt<'_> {
 fn completed(completion: &GatewayCompletion) {
     let finish = finish_label(completion.finish);
     let content = completion.content.len();
+    let tools = completion.tools.count();
     step(
         "after_sse_consume",
-        format_args!("{ATTEMPT} finish_reason={finish} content_bytes={content} tool_call_count=0"),
+        format_args!(
+            "{ATTEMPT} finish_reason={finish} content_bytes={content} tool_call_count={tools}"
+        ),
     );
     trace_log!(
         "stream",
-        "completed {ATTEMPT} finish_reason={finish} content_bytes={content} tool_calls=0"
+        "completed {ATTEMPT} finish_reason={finish} content_bytes={content} tool_calls={tools}"
     );
     step(
         "stream_complete",
         format_args!(
-            "{ATTEMPT} finish_reason={finish} content_bytes={content} tool_call_count=0 tool_calls=0"
+            "{ATTEMPT} finish_reason={finish} content_bytes={content} tool_call_count={tools} tool_calls={tools}"
         ),
     );
 }

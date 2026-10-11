@@ -155,6 +155,7 @@ pub trait ModelProvider: Send + Sync {
     fn project_replay(
         &self,
         _replay: &ProviderReplay,
+        _calls: &[ToolCall],
         _text: bool,
         _reasoning: bool,
     ) -> Result<Option<ProviderReplay>, ProviderError> {
@@ -194,7 +195,7 @@ mod tests {
             parts_json: "[]".to_owned(),
         };
         assert_eq!(
-            Silent.project_replay(&replay, false, true),
+            Silent.project_replay(&replay, &[], false, true),
             Err(ProviderError::new(
                 ProviderErrorKind::Protocol,
                 "ProviderReplayProjectionUnavailable"
