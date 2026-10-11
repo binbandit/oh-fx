@@ -1,4 +1,7 @@
+use ofx_contract::UsageScope;
+
 use super::*;
+use crate::profile_usage_runtime::ProfileUsage;
 use crate::profile_usage_store::compaction::COMPACTION_THRESHOLD_BYTES;
 use crate::session_log::now_ms;
 
@@ -291,4 +294,94 @@ fn compacting_a_ledger_of_conflicting_pending_markers_stays_within_the_record_li
     let loaded = fixture.store().load().unwrap();
     assert_eq!(loaded.pending.len(), rows - 1);
     assert_eq!(loaded.incidents.len(), (rows - 1) / 2);
+}
+
+fn completeness_of(ledger: &str) -> UsageCompleteness {
+    let fixture = Fixture::new();
+    fixture.write(ledger.as_bytes());
+    ProfileUsage::open(&fixture.data())
+        .unwrap()
+        .report(UsageScope::Days30, NOW)
+        .unwrap()
+        .completeness
+}
+
+#[test]
+fn a_conflict_incident_is_written_unless_both_of_its_markers_survive() {
+    let recent = NOW - DAY_MS;
+    let earlier = NOW - 2 * DAY_MS;
+    let expired = NOW - 40 * DAY_MS;
+    let cases = [
+        (
+            "both markers survive",
+            vec![
+                coverage(0),
+                pending(FACT_ID, recent),
+                pending(FACT_ID, earlier),
+            ],
+            vec![
+                coverage(0),
+                pending(FACT_ID, recent),
+                pending(FACT_ID, earlier),
+            ],
+            UsageCompleteness::Incomplete,
+        ),
+        (
+            "a fact resolves the conflict",
+            vec![
+                coverage(0),
+                pending(FACT_ID, earlier),
+                pending(FACT_ID, recent),
+                generation(FACT_ID, recent, 1),
+            ],
+            vec![
+                coverage(0),
+                generation(FACT_ID, recent, 1),
+                incident(recent, "incomplete"),
+            ],
+            UsageCompleteness::Incomplete,
+        ),
+        (
+            "the first marker expired",
+            vec![
+                coverage(0),
+                pending(FACT_ID, expired),
+                pending(FACT_ID, recent),
+            ],
+            vec![
+                coverage(0),
+                pending(FACT_ID, recent),
+                incident(recent, "incomplete"),
+            ],
+            UsageCompleteness::Incomplete,
+        ),
+        (
+            "the conflicting marker expired with its incident",
+            vec![
+                coverage(0),
+                pending(FACT_ID, recent),
+                pending(FACT_ID, expired),
+            ],
+            vec![coverage(0), pending(FACT_ID, recent)],
+            UsageCompleteness::Pending,
+        ),
+        (
+            "both markers expired with their incident",
+            vec![
+                coverage(0),
+                pending(FACT_ID, expired),
+                pending(FACT_ID, expired - DAY_MS),
+            ],
+            vec![coverage(0)],
+            UsageCompleteness::Complete,
+        ),
+    ];
+    for (case, ledger, kept, completeness) in cases {
+        let index = indexed(&ledger);
+        let compacted = index.retained_lines(NOW);
+        assert_eq!(compacted, kept.concat(), "{case}");
+        assert_eq!(index.retained_count(NOW), kept.len(), "{case}");
+        assert_eq!(completeness_of(&ledger.concat()), completeness, "{case}");
+        assert_eq!(completeness_of(&compacted), completeness, "{case}");
+    }
 }

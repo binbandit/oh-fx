@@ -82,13 +82,26 @@ impl RecordIndex {
             .loaded
             .incidents
             .iter()
-            .zip(&self.derived_incidents)
-            .filter(move |(incident, derived)| !**derived && incident.occurred_at_ms >= cutoff)
+            .zip(&self.incident_sources)
+            .filter(move |(incident, source)| {
+                incident.occurred_at_ms >= cutoff
+                    && !source
+                        .as_deref()
+                        .is_some_and(|id| self.conflict_survives(id, cutoff))
+            })
             .map(|(incident, _)| ProfileEvent::Incident(incident));
         facts.chain(pending).chain(incidents)
     }
 
     fn resolved(&self, id: &str) -> bool {
         self.fact_variants.contains_key(id)
+    }
+
+    fn conflict_survives(&self, id: &str, cutoff: i64) -> bool {
+        let survives = |index: usize| self.loaded.pending[index].observed_at_ms >= cutoff;
+        !self.resolved(id)
+            && self.pending_variants.get(id).is_some_and(|variants| {
+                survives(variants.first) && variants.second.is_some_and(survives)
+            })
     }
 }

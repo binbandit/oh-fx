@@ -274,7 +274,7 @@ struct RecordIndex {
     boundary: u64,
     tail_sample: Vec<u8>,
     identity: (u64, u64),
-    derived_incidents: Vec<bool>,
+    incident_sources: Vec<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -338,17 +338,22 @@ impl RecordIndex {
                 }
                 let id = marker.id.clone();
                 let observed_at_ms = marker.observed_at_ms;
-                if absorb_variant(&mut loaded.pending, &mut self.pending_variants, id, marker) {
+                if absorb_variant(
+                    &mut loaded.pending,
+                    &mut self.pending_variants,
+                    id.clone(),
+                    marker,
+                ) {
                     loaded.incidents.push(UsageIncident {
                         occurred_at_ms: observed_at_ms,
                         completeness: UsageCompleteness::Incomplete,
                     });
-                    self.derived_incidents.push(true);
+                    self.incident_sources.push(Some(id));
                 }
             }
             ParsedRecord::Incident(incident) => {
                 loaded.incidents.push(incident);
-                self.derived_incidents.push(false);
+                self.incident_sources.push(None);
             }
         }
         Ok(())
