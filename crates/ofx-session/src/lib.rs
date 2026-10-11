@@ -37,6 +37,8 @@ mod session_usage_sidecar;
 mod spawn_gate;
 mod turn_summary;
 mod usage_publisher;
+mod usage_recovery;
+mod usage_recovery_registry;
 
 pub use fx_sessions::FxSessions;
 pub use profile_usage_runtime::{ProfilePublisher, ProfileUsage, ProfileUsageError};
@@ -72,3 +74,4 @@ pub use session_title_generation::{
 };
 pub use session_usage::UsageSnapshot;
 pub use usage_publisher::{PublicationScheduler, UsagePublisher};
+pub use usage_recovery::UsageRecovery;
