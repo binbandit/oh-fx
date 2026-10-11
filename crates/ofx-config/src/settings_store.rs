@@ -33,6 +33,7 @@ const FAST_MODE_MODEL_BOUND: &str = "fast_mode_model_bound";
 const LEGACY_CODEX_MODEL: &str = "codex_model";
 const PERMISSION_MODE: &str = "permission_mode";
 const YOLO_ACKNOWLEDGED: &str = "yolo_acknowledged";
+const CREDENTIAL_SOURCE: &str = "credential_source";
 const STARTUP_SCROLLBACK: &str = "startup_scrollback";
 const PERMISSION_MODE_MIGRATION: Migration = Migration {
     container: None,
@@ -236,6 +237,7 @@ enum Patch<'a> {
         model: &'a str,
         credential_source: &'a str,
     },
+    ClearCredentialSource,
     ModelPreference {
         provider: &'a ProviderId,
         model: &'a str,
@@ -347,6 +349,12 @@ pub fn save_provider_credential(
     )
     .map(drop)
     .map_err(|failure| failure.error)
+}
+
+pub fn clear_credential_source(paths: &ProfilePaths) -> Result<(), SettingsWriteError> {
+    commit(paths, Patch::ClearCredentialSource, &mut || {})
+        .map(drop)
+        .map_err(|failure| failure.error)
 }
 
 pub fn save_model_preference(
@@ -692,7 +700,10 @@ fn apply(
             credential_source,
         } => {
             application.changed |= apply_provider_model(root, provider, model)?;
-            application.changed |= put_string(root, "credential_source", credential_source);
+            application.changed |= put_string(root, CREDENTIAL_SOURCE, credential_source);
+        }
+        Patch::ClearCredentialSource => {
+            application.changed |= root.shift_remove(CREDENTIAL_SOURCE).is_some();
         }
         Patch::ModelPreference {
             provider,

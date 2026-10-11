@@ -251,6 +251,10 @@ The sign-in lives in `$XDG_DATA_HOME/oh-fx/auth.json` (default `~/.local/share/o
 
 `oh-fx login` reports `authorization denied` when the sign-in is denied, `authorization expired; run oh-fx login again` when the code expires first, and `failed to sign in` when Vercel cannot be reached.
 
+`oh-fx teams` lists your Vercel teams again with the current one as the default, saves the team you choose for model requests, prints `Selected Vercel team: <name> (<slug>).`, and selects the gateway with the sign-in, as `oh-fx login` does. It refreshes an expired sign-in first, and stops with `oh-fx teams: run oh-fx login first` when no sign-in is saved or `oh-fx teams: failed to list Vercel teams` when the list cannot be loaded.
+
+`oh-fx logout` (or `oh-fx logout vercel`) removes the sign-in, asks Vercel to revoke its tokens, and removes `"credential_source"` from `settings.json`, so oh-fx chooses among the other credentials again. It prints `Signed out of oh-fx.`, or `No oh-fx login session found.`, and warns `Warning: signed out locally, but the remote session could not be revoked.` when Vercel does not confirm the revocation. `/logout vercel` in the interactive shell removes the sign-in the same way, and a bare `/logout` chooses the Vercel sign-in when it is the active credential; the running shell keeps using the credential it started with until you restart it.
+
 ### Store an API key
 
 `oh-fx setup` saves an AI Gateway API key so you don't need the environment variable. Run it in a terminal and paste the key at the prompt:
@@ -267,7 +271,7 @@ The default model is `spacexai/grok-4.7`. `--model`, `OH_FX_MODEL`, and `models.
 
 Requests go to `https://ai-gateway.vercel.sh/v4/ai/language-model`. `OH_FX_GATEWAY_CHAT_URL` sends them to a local test server instead. Only a loopback `http://` URL with a port is used, and anything else is ignored, because that URL receives the key and the whole request.
 
-`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`. Choosing another team, signing out of Vercel, the model list and credits are not available in oh-fx yet. Until `oh-fx logout vercel` is, remove `"credential_source"` from `settings.json` to let oh-fx choose among the other credentials again.
+`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`. The model list and credits are not available in oh-fx yet.
 
 ## ChatGPT subscription
 

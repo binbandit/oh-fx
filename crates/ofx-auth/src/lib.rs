@@ -39,7 +39,7 @@ pub use credentials::{
     UNREADABLE_STORED_KEY_MESSAGE, VERCEL_SENT_REFRESH_LIMIT, host_managed_auth,
     is_valid_auth_mode, parse_auth_mode, valid_gateway_team,
 };
-pub use login_flow::{LoginTerminal, VercelEndpoints, VercelError, VercelOAuth};
+pub use login_flow::{LoginTerminal, LogoutResult, VercelEndpoints, VercelError, VercelOAuth};
 pub use oauth::{
     FormBody, QueryError, loopback_override, percent_encode, pkce_challenge, query_value,
 };

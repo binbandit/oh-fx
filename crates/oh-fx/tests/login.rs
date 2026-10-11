@@ -98,15 +98,6 @@ fn login_rejects_unknown_providers_with_usage() {
 }
 
 #[test]
-fn vercel_logout_is_not_available_yet() {
-    let home = Home::new();
-    let output = home.run(&["logout", "vercel"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "oh-fx: logout is not available yet\n");
-}
-
-#[test]
 fn host_managed_authentication_skips_sign_in_and_sign_out() {
     let home = Home::new();
     home.write_credentials();

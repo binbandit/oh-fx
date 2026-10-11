@@ -22,12 +22,7 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
         return print(&format!("{HOST_MANAGED_AUTH_MESSAGE}\n"));
     }
     let profile = Profile::from_environment();
-    if let Ok(workspace) = &profile.workspace {
-        ofx_trace::configure_from_env(
-            workspace,
-            profile.paths.as_ref().map(|paths| paths.state.as_path()),
-        );
-    }
+    profile.configure_trace();
     let signed_in = runtime()
         .map_err(|error| ActivationFailure::Detail(login_failure_detail(error)))
         .and_then(|runtime| {
@@ -133,8 +128,10 @@ pub(crate) fn logout(provider: Option<&ProviderId>) -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    if provider != Some(&ProviderId::Codex) {
-        return unavailable("logout");
+    if matches!(provider, None | Some(ProviderId::Gateway)) {
+        let profile = Profile::from_environment();
+        profile.configure_trace();
+        return vercel::logout(&profile, &mut io::stdout(), &mut io::stderr());
     }
     let profile = Profile::from_environment();
     let outcome = profile.chatgpt_oauth().and_then(|oauth| {
@@ -181,11 +178,6 @@ async fn logout_grok(
     }
 }
 
-fn unavailable(command: &str) -> ExitCode {
-    crate::write_unavailable(command);
-    ExitCode::FAILURE
-}
-
 fn print(text: &str) -> ExitCode {
     match crate::write_stdout(text) {
         Ok(()) => ExitCode::SUCCESS,
@@ -199,6 +191,8 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, ChatGptError> {
         .build()
         .map_err(|_| ChatGptError::OAuthTransportUnavailable)
 }
+
+mod vercel;
 
 #[cfg(test)]
 pub(crate) mod tests;

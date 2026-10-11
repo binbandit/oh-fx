@@ -20,6 +20,7 @@ mod sessions_command;
 mod setup_command;
 mod shell_call_record;
 mod status_command;
+mod teams_command;
 mod upgrade_command;
 mod usage_command;
 mod workspace_command;
@@ -124,6 +125,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Mcp(McpOperation::Auth(name)) => mcp_command::auth(&name),
             Command::Mcp(McpOperation::Logout(name)) => mcp_command::logout(&name),
             Command::Setup => setup_command::run(),
+            Command::Teams => teams_command::run(),
             other => unavailable_command(&other),
         },
     }

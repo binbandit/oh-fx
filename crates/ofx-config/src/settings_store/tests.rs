@@ -92,6 +92,30 @@ fn provider_patch_writes_one_provider_model_and_drops_the_legacy_key() {
 }
 
 #[test]
+fn the_login_source_is_saved_with_the_provider_and_cleared_alone() {
+    let fixture = Fixture::with_settings("{\"theme\":\"dark\"}");
+    save_provider_credential(
+        &fixture.paths,
+        &ProviderId::Gateway,
+        "spacexai/grok-4.7",
+        "fx_login",
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"theme\":\"dark\",\"models\":{\"gateway\":\"spacexai/grok-4.7\"},\"provider\":\"gateway\",\"credential_source\":\"fx_login\"}\n"
+    );
+    clear_credential_source(&fixture.paths).unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"theme\":\"dark\",\"models\":{\"gateway\":\"spacexai/grok-4.7\"},\"provider\":\"gateway\"}\n"
+    );
+    let backups = fixture.copies("backup").len();
+    clear_credential_source(&fixture.paths).unwrap();
+    assert_eq!(fixture.copies("backup").len(), backups);
+}
+
+#[test]
 fn unknown_keys_order_and_values_survive_a_compact_rewrite() {
     let fixture = Fixture::with_settings(
         "\u{feff}{\n  \"theme\": \"dark\",\n  \"models\": {\"local\": \"m\"},\n  \"nested\": {\"b\": [1, 2.5, 1.0, -3, 18446744073709551615, true, null], \"a\": \"\\u0041\\n\\u00e9\\\"\"},\n  \"provider\": \"local\",\n  \"providers\": {\"local\": {\"protocol\": \"openai-chat-completions\"}}\n}\n",
