@@ -78,10 +78,11 @@ impl Terminal {
         })
         .expect("launch a terminal");
         rustix::io::ioctl_fionbio(&master, false).expect("read the terminal blocking");
+        let reader = master.try_clone().expect("a terminal reader");
         let (output_sender, output) = mpsc::channel();
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            let _ = File::from(master).read_to_end(&mut bytes);
+            let _ = File::from(reader).read_to_end(&mut bytes);
             let _ = output_sender.send(bytes);
         });
         let (frame_sender, frames) = mpsc::channel();
@@ -95,7 +96,9 @@ impl Terminal {
         let pid = i32::try_from(launcher.id()).ok().and_then(Pid::from_raw);
         let (status_sender, exited) = mpsc::channel();
         thread::spawn(move || {
-            let _ = status_sender.send(launcher.wait());
+            let status = launcher.wait();
+            drop(master);
+            let _ = status_sender.send(status);
         });
         liveness.release_launcher().expect("release the launcher");
         Self {

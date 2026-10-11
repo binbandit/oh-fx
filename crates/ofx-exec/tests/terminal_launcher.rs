@@ -185,7 +185,9 @@ impl Terminal {
         })?;
         let output = Arc::new(Output::default());
         let drained = Arc::clone(&output);
-        thread::spawn(move || drained.drain(&master));
+        let master = Arc::new(master);
+        let reader = Arc::clone(&master);
+        thread::spawn(move || drained.drain(&reader));
         let (sender, frames) = mpsc::channel();
         thread::spawn(move || {
             loop {
@@ -199,7 +201,9 @@ impl Terminal {
         let launcher_pid = i32::try_from(launcher.id()).ok().and_then(Pid::from_raw);
         let (status_sender, exited) = mpsc::channel();
         thread::spawn(move || {
-            let _ = status_sender.send(launcher.wait());
+            let status = launcher.wait();
+            drop(master);
+            let _ = status_sender.send(status);
         });
         liveness.release_launcher().expect("release the launcher");
         Ok(Self {
