@@ -247,7 +247,7 @@ fn replace(sessions: &PrivateDir, id: &str, staging: &str) -> Result<(), Session
     sync_dir(sessions)
 }
 
-fn share_lock(source: &PrivateDir) -> Result<Option<OwnedFd>, SessionError> {
+pub(crate) fn share_lock(source: &PrivateDir) -> Result<Option<OwnedFd>, SessionError> {
     let flags =
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
     let lock = match fs::openat(source.as_fd(), SESSION_LOCK_FILE, flags, Mode::empty()) {
