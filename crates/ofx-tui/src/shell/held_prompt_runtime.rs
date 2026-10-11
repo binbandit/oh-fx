@@ -26,8 +26,24 @@ impl Shell<'_> {
     }
 
     pub(super) fn held_prompt_dropped(&mut self) {
-        self.outstanding
-            .retain(|submission| submission.state != SubmissionState::Held);
+        self.outstanding.retain(|submission| {
+            !matches!(
+                submission.state,
+                SubmissionState::Held | SubmissionState::Withdrawn
+            )
+        });
+        self.promote_next();
+    }
+
+    pub(super) fn withdraw_held_prompts(&mut self) {
+        if !self.holds_prompt() {
+            return;
+        }
+        for submission in &mut self.outstanding {
+            if submission.state == SubmissionState::Held {
+                submission.state = SubmissionState::Withdrawn;
+            }
+        }
         self.promote_next();
     }
 
