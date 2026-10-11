@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::env;
+use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
@@ -29,6 +30,12 @@ pub(crate) fn run() -> ExitCode {
     }
     let lookup = |name: &str| env::var(name).ok();
     let paths = ProfilePaths::from_environment();
+    if let Ok(workspace_root) = env::current_dir().and_then(fs::canonicalize) {
+        ofx_trace::configure_from_env(
+            &workspace_root,
+            paths.as_ref().map(|paths| paths.state.as_path()),
+        );
+    }
     let store =
         StoredKeyStore::from_environment(paths.as_ref().map(|paths| paths.data.as_path()), &lookup);
     if store.disabled() {

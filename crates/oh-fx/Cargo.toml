@@ -22,6 +22,7 @@ ofx-mcp.workspace = true
 ofx-session.workspace = true
 ofx-shell.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 ofx-upgrade.workspace = true
 ofx-vt.workspace = true
 ofx-workspace.workspace = true

@@ -41,6 +41,10 @@ impl StartupStatus {
             .and_then(fs::canonicalize)
             .map_err(|_| StartupStatusError::WorkspaceUnavailable)?;
         let paths = ProfilePaths::from_environment();
+        ofx_trace::configure_from_env(
+            &workspace_root,
+            paths.as_ref().map(|paths| paths.state.as_path()),
+        );
         let settings = match &paths {
             Some(paths) => Settings::load(paths, &workspace_root)?,
             None => Settings::default(),

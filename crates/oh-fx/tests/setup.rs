@@ -161,6 +161,45 @@ fn a_test_home_with_a_user_never_reaches_the_keychain() {
     );
 }
 
+fn traced(home: &Home) -> (PathBuf, String) {
+    let trace = home.root.join("trace.log");
+    let path = trace.to_str().expect("a UTF-8 trace path").to_owned();
+    (trace, path)
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn setup_and_status_write_their_stored_key_trace_lines() {
+    let home = Home::new();
+    let (trace, path) = traced(&home);
+    let environment = [("USER", "someone"), ("OH_FX_TRACE_LOG", path.as_str())];
+    let status = home.run(&["status"], &environment);
+    assert!(
+        text(&status.stdout).contains("\n[status] auth=missing\n"),
+        "{}",
+        text(&status.stdout)
+    );
+    let log = fs::read_to_string(&trace).expect("status writes the trace log");
+    assert!(
+        log.contains("load skipped step=account reason=NoKeychainsFolder"),
+        "{log}"
+    );
+    fs::remove_file(&trace).expect("clear the trace log");
+    let mut session = home.setup_in_terminal_with(&environment);
+    session
+        .wait_for(WAIT, |screen| screen.contains("API key was not saved"))
+        .unwrap_or_else(|screen| panic!("the save fails:\n{screen}"));
+    assert_eq!(
+        session.wait_exit(WAIT).and_then(|status| status.code()),
+        Some(1)
+    );
+    let log = fs::read_to_string(&trace).expect("setup writes the trace log");
+    assert!(
+        log.contains("store failed step=account err=NoKeychainsFolder"),
+        "{log}"
+    );
+}
+
 #[cfg(not(target_os = "macos"))]
 mod profile_file {
     use std::os::unix::fs::PermissionsExt;
@@ -222,6 +261,46 @@ mod profile_file {
             server.requests()[0].header("authorization"),
             Some("Bearer vck-abcd")
         );
+    }
+
+    #[test]
+    fn setup_and_status_write_their_stored_key_trace_lines() {
+        let home = Home::new();
+        let (trace, path) = traced(&home);
+        let environment = [("OH_FX_TRACE_LOG", path.as_str())];
+        let file = stored_key_file(&home);
+        let profile = file.parent().unwrap().to_path_buf();
+        fs::create_dir_all(&profile).unwrap();
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&file, "vck-exposed").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        let status = home.run(&["status"], &environment);
+        assert!(
+            text(&status.stdout).contains("\n[status] auth=missing\n"),
+            "{}",
+            text(&status.stdout)
+        );
+        let log = fs::read_to_string(&trace).expect("status writes the trace log");
+        assert!(
+            log.contains("load failed step=permissions err=StoredKeyInsecure"),
+            "{log}"
+        );
+        assert!(!log.contains("vck-exposed"), "{log}");
+        fs::remove_file(&trace).expect("clear the trace log");
+        fs::remove_dir_all(&profile).unwrap();
+        fs::write(&profile, "not a folder").unwrap();
+        let mut session = home.setup_in_terminal_with(&environment);
+        session.send(b"vck-unsaved\r");
+        session
+            .wait_for(WAIT, |screen| screen.contains("API key was not saved"))
+            .unwrap_or_else(|screen| panic!("the save fails:\n{screen}"));
+        assert_eq!(
+            session.wait_exit(WAIT).and_then(|status| status.code()),
+            Some(1)
+        );
+        let log = fs::read_to_string(&trace).expect("setup writes the trace log");
+        assert!(log.contains("store failed step=write"), "{log}");
+        assert!(!log.contains("vck-unsaved"), "{log}");
     }
 
     #[test]
