@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ofx_config::{AdvisoryLock, DurableError, PrivateDir};
+use ofx_config::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
@@ -27,6 +27,12 @@ pub(crate) struct CredentialStore {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SaveResult {
+    pub(crate) repaired_entries: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DeleteResult {
+    pub(crate) removed: usize,
     pub(crate) repaired_entries: usize,
 }
 
@@ -69,9 +75,12 @@ impl GrantLookup {
         )
     }
 
+    fn owns(&self, identity: &str, credentials: &Credentials) -> bool {
+        identity == self.identity && credentials.endpoint == self.endpoint
+    }
+
     fn matches(&self, identity: &str, credentials: &Credentials) -> bool {
-        identity == self.identity
-            && credentials.endpoint == self.endpoint
+        self.owns(identity, credentials)
             && self
                 .resource
                 .as_deref()
@@ -198,6 +207,32 @@ impl CredentialStore {
         };
         entry.clone_from(credentials);
         write_store(&locked, &store).map(Some)
+    }
+
+    pub(crate) fn delete(&self, lookup: &GrantLookup) -> Result<DeleteResult, McpError> {
+        let Some(locked) = self.open_existing()? else {
+            return Ok(DeleteResult::default());
+        };
+        let mut store = load_store(&locked.directory)?;
+        let before = store.credentials.len();
+        store
+            .credentials
+            .retain(|(identity, entry)| !lookup.owns(identity, entry));
+        let removed = before - store.credentials.len();
+        if removed == 0 && store.rejected_entries == 0 {
+            return Ok(DeleteResult::default());
+        }
+        if store.credentials.is_empty() {
+            if locked.directory.remove(FILE_NAME)? == RemoveOutcome::RemovedNotDurable {
+                return Err(DurableError::Failed.into());
+            }
+        } else {
+            write_store(&locked, &store)?;
+        }
+        Ok(DeleteResult {
+            removed,
+            repaired_entries: store.rejected_entries,
+        })
     }
 
     fn open_existing(&self) -> Result<Option<LockedDir>, McpError> {

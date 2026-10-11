@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -44,6 +44,7 @@ pub(crate) struct Reply {
     hold_open: bool,
     interrupted: bool,
     live: Option<mpsc::UnboundedReceiver<String>>,
+    released_by: Option<Arc<Notify>>,
 }
 
 impl Reply {
@@ -56,6 +57,7 @@ impl Reply {
             hold_open: false,
             interrupted: false,
             live: None,
+            released_by: None,
         }
     }
 
@@ -110,6 +112,11 @@ impl Reply {
 
     pub(crate) fn interrupted(mut self) -> Self {
         self.interrupted = true;
+        self
+    }
+
+    pub(crate) fn released_by(mut self, release: &Arc<Notify>) -> Self {
+        self.released_by = Some(Arc::clone(release));
         self
     }
 }
@@ -176,6 +183,9 @@ async fn serve(
     };
     lock(&recorded).push(request.clone());
     let mut reply = handler(&request);
+    if let Some(release) = reply.released_by.take() {
+        release.notified().await;
+    }
     let mut head = format!("HTTP/1.1 {} Fake\r\nConnection: close\r\n", reply.status);
     for (name, value) in &reply.headers {
         let _ = write!(head, "{name}: {value}\r\n");
