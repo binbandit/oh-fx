@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ofx_auth::{
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredKeyStore,
-    StoredLogin, UNREADABLE_STORED_KEY_MESSAGE, codex_login_saved, gateway_credential,
-    grok_login_saved, provider_route_name, stored_codex_login,
+    GatewaySource, GatewaySources, MISSING_CHATGPT_CREDENTIAL_MESSAGE,
+    MISSING_GATEWAY_CREDENTIAL_MESSAGE, StoredKeyStore, StoredLogin, VercelEndpoints, VercelOAuth,
+    codex_login_saved, grok_login_saved, provider_route_name, stored_codex_login,
 };
 use ofx_cli::OutputFormat;
 use ofx_config::{
@@ -111,7 +111,7 @@ impl StatusSources<'_> {
             }),
             connection: connection.map(|connection| connection.id().to_owned()),
             provider_endpoint: connection.map(|connection| connection.base_url().to_owned()),
-            auth: self.auth(&provider, connection),
+            auth: self.auth(&provider, connection, settings.credential_source()),
             permission_mode: settings.permission_mode(lookup),
             workspace_root,
             agent_step_limit: settings.max_agent_steps(lookup),
@@ -140,6 +140,7 @@ impl StatusSources<'_> {
         &self,
         provider: &ProviderId,
         connection: Option<&ProviderDefinition>,
+        credential_source: Option<&str>,
     ) -> AuthStatus {
         if self.host_managed {
             let logins = SavedLogins {
@@ -154,14 +155,12 @@ impl StatusSources<'_> {
             provider,
             ProviderId::Gateway | ProviderId::Codex | ProviderId::Grok
         );
-        let gateway = if probes_gateway {
-            let store = StoredKeyStore::from_environment(data.as_deref(), self.lookup);
-            gateway_credential(self.lookup, &store).map(|key| key.map(|key| key.source))
-        } else {
-            Ok(None)
-        };
+        let preferred = credential_source
+            .and_then(GatewaySource::parse)
+            .filter(|_| *provider == ProviderId::Gateway);
+        let gateway = probes_gateway.then(|| self.gateway(data.clone(), preferred));
         let logins = SavedLogins {
-            gateway: *provider != ProviderId::Gateway && matches!(gateway, Ok(Some(_))),
+            gateway: *provider != ProviderId::Gateway && matches!(gateway, Some(Ok(_))),
             codex: data.clone().is_some_and(codex_login_saved),
             grok: data.clone().is_some_and(grok_login_saved),
         };
@@ -173,11 +172,13 @@ impl StatusSources<'_> {
                 _ => active(Credential::Connection, logins),
             };
         }
-        if *provider == ProviderId::Gateway {
+        if let Some(gateway) = gateway.filter(|_| *provider == ProviderId::Gateway) {
             return match gateway {
-                Ok(Some(source)) => active(Credential::Gateway(source), logins),
-                Ok(None) => missing(MISSING_GATEWAY_CREDENTIAL_MESSAGE.to_owned(), logins),
-                Err(_) => missing(UNREADABLE_STORED_KEY_MESSAGE.to_owned(), logins),
+                Ok((credential, team)) => AuthStatus {
+                    team,
+                    ..active(credential, logins)
+                },
+                Err(help) => missing(help.to_owned(), logins),
             };
         }
         if *provider != ProviderId::Codex {
@@ -200,10 +201,45 @@ impl StatusSources<'_> {
     }
 }
 
+impl StatusSources<'_> {
+    fn gateway(
+        &self,
+        data: Option<PathBuf>,
+        preferred: Option<GatewaySource>,
+    ) -> Result<(Credential, Option<String>), &'static str> {
+        let store = StoredKeyStore::from_environment(data.as_deref(), self.lookup);
+        let login = data.map(|data| {
+            VercelOAuth::new(
+                data,
+                &crate::app_bootstrap_runtime::user_agent(),
+                VercelEndpoints::default(),
+            )
+        });
+        let resolution = GatewaySources {
+            lookup: self.lookup,
+            store: &store,
+            login: login.as_ref(),
+            preferred,
+        }
+        .stored();
+        let Some(key) = resolution.key() else {
+            return Err(resolution
+                .help()
+                .unwrap_or(MISSING_GATEWAY_CREDENTIAL_MESSAGE));
+        };
+        let credential = Credential::Gateway {
+            source: key.source,
+            expired: key.needs_refresh_at(ofx_trace::timestamp_ms()),
+        };
+        Ok((credential, key.display_team().map(str::to_owned)))
+    }
+}
+
 fn active(credential: Credential, logins: SavedLogins) -> AuthStatus {
     AuthStatus {
         active: Some(credential),
         help: None,
+        team: None,
         logins,
     }
 }
@@ -212,6 +248,7 @@ fn missing(help: String, logins: SavedLogins) -> AuthStatus {
     AuthStatus {
         active: None,
         help: Some(help),
+        team: None,
         logins,
     }
 }

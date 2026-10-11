@@ -21,6 +21,7 @@ pub(crate) struct StatusSnapshot<'a> {
     pub(crate) selection: &'a ProviderId,
     pub(crate) connection: Option<&'a ProviderDefinition>,
     pub(crate) source: CredentialSource,
+    pub(crate) team: Option<&'a str>,
     pub(crate) permission_mode: PermissionMode,
     pub(crate) workspace_root: &'a Path,
     pub(crate) history_turns: usize,
@@ -52,6 +53,9 @@ impl StatusSnapshot<'_> {
             let _ = writeln!(out, "connected_providers={connected}");
         }
         let _ = writeln!(out, "auth_refreshable={}", self.source.refreshable());
+        if let Some(team) = self.team {
+            let _ = writeln!(out, "team={team}");
+        }
         let _ = writeln!(
             out,
             "permission_mode={}",
@@ -106,6 +110,7 @@ mod tests {
             selection: &ProviderId::Configured("local".to_owned()),
             connection: Some(&connection),
             source: CredentialSource::Configured,
+            team: None,
             permission_mode: PermissionMode::Ask,
             workspace_root: Path::new("/work/space"),
             history_turns: 3,
@@ -126,6 +131,7 @@ mod tests {
             selection: &ProviderId::Codex,
             connection: None,
             source: CredentialSource::Codex,
+            team: None,
             permission_mode: PermissionMode::Yolo,
             workspace_root: Path::new("/work"),
             history_turns: 0,
@@ -157,6 +163,7 @@ mod tests {
                 selection: &ProviderId::Gateway,
                 connection: None,
                 source,
+                team: None,
                 permission_mode: PermissionMode::Auto,
                 workspace_root: Path::new("/work"),
                 history_turns: 1,

@@ -53,6 +53,7 @@ impl Fixture {
                 },
                 grok: ofx_auth::GrokEndpoints::default(),
                 gateway: ofx_gateway::GatewayEndpoints::default(),
+                vercel: ofx_auth::VercelEndpoints::default(),
             },
             lookup: |_| None,
         }

@@ -21,8 +21,13 @@ const NOT_CHECKED: &str = "not_checked";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Credential {
     Connection,
-    Codex { expired: bool },
-    Gateway(GatewaySource),
+    Codex {
+        expired: bool,
+    },
+    Gateway {
+        source: GatewaySource,
+        expired: bool,
+    },
     HostManaged,
 }
 
@@ -37,6 +42,7 @@ pub(crate) struct SavedLogins {
 pub(crate) struct AuthStatus {
     pub(crate) active: Option<Credential>,
     pub(crate) help: Option<String>,
+    pub(crate) team: Option<String>,
     pub(crate) logins: SavedLogins,
 }
 
@@ -46,17 +52,24 @@ impl AuthStatus {
             None => "missing",
             Some(Credential::Connection) => CredentialSource::Configured.label(),
             Some(Credential::Codex { .. }) => CredentialSource::Codex.label(),
-            Some(Credential::Gateway(source)) => CredentialSource::Gateway(source).label(),
+            Some(Credential::Gateway { source, .. }) => CredentialSource::Gateway(source).label(),
             Some(Credential::HostManaged) => CredentialSource::HostManaged.label(),
         }
     }
 
     pub(crate) fn refreshable(&self) -> bool {
-        matches!(self.active, Some(Credential::Codex { .. }))
+        match self.active {
+            Some(Credential::Codex { .. }) => true,
+            Some(Credential::Gateway { source, .. }) => source.refreshable(),
+            _ => false,
+        }
     }
 
     pub(crate) fn expired(&self) -> bool {
-        self.active == Some(Credential::Codex { expired: true })
+        matches!(
+            self.active,
+            Some(Credential::Codex { expired: true } | Credential::Gateway { expired: true, .. })
+        )
     }
 
     fn connected<'a>(&self, connection: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
@@ -151,6 +164,9 @@ impl StatusReport {
         if let Some(help) = &self.auth.help {
             line(format_args!("auth_help={help}"));
         }
+        if let Some(team) = &self.auth.team {
+            line(format_args!("team={}", safe(team)));
+        }
         line(format_args!(
             "permission_mode={}",
             self.permission_mode.display_label()
@@ -213,6 +229,9 @@ impl StatusReport {
         }
         if let Some(help) = &self.auth.help {
             object.insert("auth_help".to_owned(), json!(help));
+        }
+        if let Some(team) = &self.auth.team {
+            object.insert("team".to_owned(), json!(team));
         }
         object.insert(
             "permission_mode".to_owned(),

@@ -7,7 +7,7 @@ modules = []
 upstream = "src/core/auth/auth_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/auth_runtime.rs"]
-note = "Codex credential preparation, refresh and the unrefreshed stored-login read for status exist, with their preparation and refresh trace lines; Vercel/Grok preparation, inventory and provider transition handling are absent."
+note = "Codex credential preparation, refresh and the unrefreshed stored-login read for status exist, with their preparation and refresh trace lines, and the Vercel sign-in failures are classified as upstream classifies them, with the CLI sign-in failure text and its trace line; the Vercel status snapshot and missing help live with the credentials port, and Grok preparation, inventory and provider transition handling are absent."
 
 [[file]]
 upstream = "src/core/auth/auth_transition.zig"
@@ -37,13 +37,13 @@ note = "Native token/account parsing, expiry skew, locked durable file mutation 
 upstream = "src/core/auth/credential_authority.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-session/src/session_codec/recovery_checkpoint/route_credential.rs"]
-note = "Codex request credentials retain refresh identity, and recovery checkpoints derive upstream's slot identities for the configured, VERCEL_OIDC_TOKEN, AI_GATEWAY_API_KEY and host-managed sources and account identities for the Codex subscription; the fx login, stored-key and Grok identities come with those sources."
+note = "Codex request credentials retain refresh identity, and recovery checkpoints derive upstream's slot identities for the configured, VERCEL_OIDC_TOKEN, AI_GATEWAY_API_KEY, fx login, stored-key and host-managed sources and account identities for the Codex subscription; the Grok identity comes with its request route."
 
 [[file]]
 upstream = "src/core/auth/credentials.zig"
 status = "partial"
-modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-app/src/codex_provider.rs"]
-note = "Auth mode, Codex guidance and the Vercel AI Gateway sources VERCEL_OIDC_TOKEN, then AI_GATEWAY_API_KEY (blank values ignored), then the stored key, with the missing and unreadable-store messages, exist; the fx login source, explicit credential_source preference, catalog access authority, Vercel team context and multi-provider credential-source projection are absent."
+modules = ["crates/ofx-auth/src/credentials.rs", "crates/ofx-auth/src/credentials/fx_login.rs", "crates/ofx-app/src/codex_provider.rs", "crates/ofx-app/src/gateway_login.rs"]
+note = "Auth mode, Codex guidance and the Vercel AI Gateway sources in upstream's precedence (VERCEL_OIDC_TOKEN, AI_GATEWAY_API_KEY, the fx login with its team and 60-second refresh window under the session lock, then the stored key), the explicit credential_source choice without fallback, the stored and refreshing load modes, the retirement of rejected sign-ins, upstream's missing and selected-source messages and their auth trace lines exist; catalog access authority and the multi-provider credential-source projection come with the gateway model catalog."
 
 [[file]]
 upstream = "src/core/auth/grok_oauth.zig"
@@ -65,19 +65,21 @@ note = "Excluded JavaScript host authentication FFI entrypoint and host-owned se
 
 [[file]]
 upstream = "src/core/auth/login_flow.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-auth/src/login_flow.rs", "crates/ofx-auth/src/login_flow/poll.rs", "crates/ofx-auth/src/login_flow/team_picker.rs", "crates/ofx-auth/src/raw_input.rs"]
+note = "The CLI runLogin exists: login preparation with the client-id fallback, the device-code output, the browser-open prompt and its polling schedule, the team fetch, the numbered and interactive team pickers, the login session and its save, with upstream's tests for the polling schedule and teams; the in-shell SignInRuntime, team switching with validation and logout with revocation are absent, as their commands are."
 
 [[file]]
 upstream = "src/core/auth/oauth.zig"
 status = "partial"
-modules = ["crates/ofx-auth/src/oauth.rs"]
-note = "PKCE, endpoint validation and OAuth decoding exist; Vercel device authorization/polling and provider discovery are absent."
+modules = ["crates/ofx-auth/src/oauth.rs", "crates/ofx-auth/src/oauth/device.rs"]
+note = "PKCE, endpoint validation, OAuth decoding, issuer discovery, device authorization, device-token polling, token refresh, reduced-grant detection and upstream's OAuth error mapping exist; token revocation comes with Vercel logout."
 
 [[file]]
 upstream = "src/core/auth/oauth_session.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-auth/src/oauth_session.rs", "crates/ofx-auth/src/subscription_session.rs"]
+note = "The fx login session format, its parse rules, the 60-second refresh deadline, the client-id and loopback issuer overrides, the E2E endpoint check and locked private profile-file storage with its load trace lines exist; the macOS Keychain backend and its migration are absent as docs/differences/auth.md records, and the JavaScript host store does not apply."
 
 [[file]]
 upstream = "src/core/auth/oauth_transport.zig"

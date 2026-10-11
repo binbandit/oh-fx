@@ -98,22 +98,12 @@ fn login_rejects_unknown_providers_with_usage() {
 }
 
 #[test]
-fn other_provider_logins_are_not_available_yet() {
+fn vercel_logout_is_not_available_yet() {
     let home = Home::new();
-    for (args, command) in [
-        (&["login"][..], "login"),
-        (&["login", "vercel"], "login"),
-        (&["logout", "vercel"], "logout"),
-    ] {
-        let output = home.run(args);
-        assert_eq!(output.status.code(), Some(1), "{args:?}");
-        assert_eq!(stdout(&output), "", "{args:?}");
-        assert_eq!(
-            stderr(&output),
-            format!("oh-fx: {command} is not available yet\n"),
-            "{args:?}"
-        );
-    }
+    let output = home.run(&["logout", "vercel"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "oh-fx: logout is not available yet\n");
 }
 
 #[test]
@@ -147,19 +137,26 @@ fn logout_grok_without_a_session_succeeds_without_output_on_stderr() {
 
 #[test]
 fn login_refuses_unwritable_credential_storage_before_listening() {
-    for (provider, label) in [("codex", "Codex"), ("grok", "Grok")] {
+    for (provider, label) in [
+        ("codex", "Codex subscription"),
+        ("grok", "Grok subscription"),
+        ("vercel", "Vercel AI Gateway"),
+    ] {
         let home = Home::new();
         let data = home.root.join("data");
         fs::create_dir_all(&data).expect("create the data root");
         fs::set_permissions(&data, fs::Permissions::from_mode(0o500)).expect("make it read-only");
-        let output = home.run(&["login", provider]);
+        let output = home.run_with(
+            &["login", provider],
+            &[("OH_FX_E2E_OAUTH_ISSUER_URL", "http://127.0.0.1:1")],
+        );
         fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("restore access");
         assert!(!output.status.success());
         assert_eq!(stdout(&output), "");
         assert_eq!(
             stderr(&output),
             format!(
-                "oh-fx login: {label} subscription: Saved credential storage is unavailable. Check the saved credential, then retry.\n"
+                "oh-fx login: {label}: Saved credential storage is unavailable. Check the saved credential, then retry.\n"
             )
         );
     }

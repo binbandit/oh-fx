@@ -256,6 +256,7 @@ async fn saved_codex_request() {
                     },
                     grok: ofx_auth::GrokEndpoints::default(),
                     gateway: ofx_gateway::GatewayEndpoints::default(),
+                    vercel: ofx_auth::VercelEndpoints::default(),
                 },
             },
             &cancel,

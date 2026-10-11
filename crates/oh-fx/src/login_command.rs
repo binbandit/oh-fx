@@ -3,11 +3,16 @@ use std::os::fd::AsFd;
 use std::process::ExitCode;
 
 use ofx_auth::{
-    ChatGptError, DeleteOutcome, HOST_MANAGED_AUTH_MESSAGE, host_managed_auth, login_failure_detail,
+    ChatGptError, DeleteOutcome, HOST_MANAGED_AUTH_MESSAGE, LoginTerminal, VercelError,
+    host_managed_auth, login_failure_detail, vercel_login_failure_detail,
 };
 use ofx_config::ProviderId;
 
-use crate::provider_activation::{ActivationFailure, Caller, Profile, activate_codex, sign_in};
+use crate::provider_activation::{
+    ActivationFailure, Caller, Profile, activate_codex, activate_gateway, sign_in,
+};
+
+const SIGNED_IN_TO_VERCEL: &str = "Signed in to Vercel.\nAI Gateway access may still require billing or API setup for the selected account.\n";
 
 const LOGOUT_FAILURE: &str = "oh-fx logout: failed to durably remove saved Codex login\n";
 
@@ -16,15 +21,27 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
     if host_managed_auth() {
         return print(&format!("{HOST_MANAGED_AUTH_MESSAGE}\n"));
     }
-    if !matches!(provider, Some(ProviderId::Codex | ProviderId::Grok)) {
-        return unavailable("login");
-    }
     let profile = Profile::from_environment();
+    if let Ok(workspace) = &profile.workspace {
+        ofx_trace::configure_from_env(
+            workspace,
+            profile.paths.as_ref().map(|paths| paths.state.as_path()),
+        );
+    }
     let signed_in = runtime()
         .map_err(|error| ActivationFailure::Detail(login_failure_detail(error)))
         .and_then(|runtime| {
             runtime.block_on(async {
                 match provider {
+                    None | Some(ProviderId::Gateway) => {
+                        login_vercel(
+                            &profile,
+                            &mut io::stdout(),
+                            &io::stdin(),
+                            LoginTerminal::from_process(),
+                        )
+                        .await
+                    }
                     Some(ProviderId::Grok) => {
                         login_grok(
                             &profile,
@@ -41,10 +58,10 @@ pub(crate) fn login(provider: Option<&ProviderId>) -> ExitCode {
             })
         });
     match signed_in {
-        Ok(()) => print(if provider == Some(&ProviderId::Grok) {
-            "Signed in with Grok.\n"
-        } else {
-            "Signed in with Codex.\n"
+        Ok(()) => print(match provider {
+            None | Some(ProviderId::Gateway) => SIGNED_IN_TO_VERCEL,
+            Some(ProviderId::Grok) => "Signed in with Grok.\n",
+            _ => "Signed in with Codex.\n",
         }),
         Err(failure) => {
             failure.report("login");
@@ -62,6 +79,23 @@ pub(crate) async fn login_codex(
     activate_codex(profile, Caller::Login, false)
         .await
         .map(drop)
+}
+
+pub(crate) async fn login_vercel<F: AsFd>(
+    profile: &Profile,
+    output: &mut dyn Write,
+    input: &F,
+    terminal: LoginTerminal,
+) -> Result<(), ActivationFailure> {
+    let failed = |error: VercelError| ActivationFailure::Detail(vercel_login_failure_detail(error));
+    let oauth = profile
+        .vercel_oauth()
+        .ok_or_else(|| failed(VercelError::CredentialStorageUnavailable))?;
+    oauth
+        .run_login(output, input, terminal)
+        .await
+        .map_err(failed)?;
+    activate_gateway(profile).await
 }
 
 pub(crate) async fn login_grok<F: AsFd>(

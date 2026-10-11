@@ -66,6 +66,14 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
 const MODEL_NOT_SELECTED: &str = "no model is selected for this connection; save one under \"models\" in ~/.config/oh-fx/settings.json, or set a model for this run with --model or OH_FX_MODEL";
 const CONTEXT_LIMITS_REPAIR: &str = "; context_limits keys must be documented limit names with a non-negative integer or \"off\" value";
 const MAX_SKILL_SYMLINK_AUTHORITIES: usize = 32;
+const CREDENTIAL_SOURCES: [&str; 6] = [
+    "vercel_oidc_token",
+    "ai_gateway_api_key",
+    "fx_login",
+    "stored_key",
+    "chatgpt_subscription",
+    "grok_subscription",
+];
 const MAX_ADDITIONAL_DIRECTORIES: usize = 16;
 const ADDITIONAL_DIRECTORIES_KEY: &str = "additional_directories";
 const CODEX_MODEL_NOT_SELECTED: &str = "no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL";
@@ -291,6 +299,10 @@ pub enum LayerError {
     InvalidAutoUpgradeType,
     #[error("InvalidThemeType")]
     InvalidThemeType,
+    #[error("InvalidCredentialSourceType")]
+    InvalidCredentialSourceType,
+    #[error("InvalidCredentialSource")]
+    InvalidCredentialSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -332,6 +344,7 @@ struct Layer {
     grok_model: Option<String>,
     models: Vec<(ProviderId, String)>,
     permission_mode: Option<PermissionMode>,
+    credential_source: Option<String>,
     yolo_acknowledged: Option<bool>,
     max_agent_steps: Option<u64>,
     auto_compact_percent: Option<AutoCompactPercent>,
@@ -605,6 +618,13 @@ impl Settings {
             .or(self.workspace.permission_mode)
             .or(self.global.permission_mode)
             .unwrap_or(PermissionMode::Auto)
+    }
+
+    pub fn credential_source(&self) -> Option<&str> {
+        self.workspace
+            .credential_source
+            .as_deref()
+            .or(self.global.credential_source.as_deref())
     }
 
     pub fn yolo_acknowledged(&self) -> bool {
@@ -1101,6 +1121,10 @@ fn parse_layer(object: &Map<String, Value>, scope: LayerScope) -> Result<ParsedL
             PermissionMode::parse(mode).ok_or(LayerError::InvalidPermissionMode)
         })
         .transpose()?;
+    layer.credential_source = object
+        .get("credential_source")
+        .map(parse_credential_source)
+        .transpose()?;
     layer.yolo_acknowledged = parse_switch(
         object,
         "yolo_acknowledged",
@@ -1256,6 +1280,16 @@ fn parse_switch(
         .get(key)
         .map(|value| value.as_bool().ok_or(invalid))
         .transpose()
+}
+
+fn parse_credential_source(value: &Value) -> Result<String, LayerError> {
+    let Value::String(source) = value else {
+        return Err(LayerError::InvalidCredentialSourceType);
+    };
+    CREDENTIAL_SOURCES
+        .contains(&source.as_str())
+        .then(|| source.clone())
+        .ok_or(LayerError::InvalidCredentialSource)
 }
 
 fn parse_effort(value: &Value) -> Result<ReasoningEffort, LayerError> {
@@ -1789,6 +1823,14 @@ mod tests {
                 r#"{"yolo_acknowledged":"yes"}"#,
                 DiagnosticCause::MalformedSettings,
             ),
+            (
+                r#"{"credential_source":"keychain"}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
+            (
+                r#"{"credential_source":true}"#,
+                DiagnosticCause::MalformedSettings,
+            ),
             (r#"{"effort":42}"#, DiagnosticCause::MalformedSettings),
             (
                 r#"{"effort":"very high"}"#,
@@ -1833,6 +1875,15 @@ mod tests {
             loaded.selected_connection(&no_environment).unwrap().id,
             "portkey"
         );
+    }
+
+    #[test]
+    fn the_credential_source_names_one_persisted_source() {
+        assert_eq!(fixture_settings("{}").credential_source(), None);
+        for source in CREDENTIAL_SOURCES {
+            let settings = fixture_settings(&format!(r#"{{"credential_source":"{source}"}}"#));
+            assert_eq!(settings.credential_source(), Some(source));
+        }
     }
 
     #[test]

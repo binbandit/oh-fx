@@ -17,6 +17,7 @@ mod context;
 mod doctor_runtime;
 mod feedback_command;
 mod file_mention_runtime;
+mod gateway_login;
 mod herdr;
 mod hooks;
 mod mcp_auth_notices;
