@@ -1,6 +1,8 @@
 use std::fs::File;
 use std::os::unix::fs::FileExt;
 
+use ofx_trace::trace_log;
+
 use crate::history_snapshot::CacheTee;
 use crate::session_error::SessionError;
 use crate::session_event::{
@@ -9,6 +11,7 @@ use crate::session_event::{
 use crate::session_log::conversation_history::ReplayScan;
 use crate::session_log::conversation_progress::{ConversationProgress, ProgressPoint};
 use crate::session_replay::{History, LineRead, LineReader};
+use crate::session_trace::SESSION;
 
 pub(crate) struct ConversationWriter {
     file: File,
@@ -117,6 +120,12 @@ impl ConversationWriter {
             writer.cut(scan.complete_bytes)?;
         }
         if let Some(turn) = scan.open_turn {
+            trace_log!(
+                SESSION,
+                "event=conversation_unfinished_turn_discarded offset={} bytes={}",
+                turn.truncate_from,
+                writer.committed_bytes.saturating_sub(turn.truncate_from)
+            );
             writer.cut(turn.truncate_from)?;
             writer
                 .state
@@ -229,6 +238,11 @@ impl ConversationWriter {
             .ok_or(SessionError::EventFrameTooLarge)?;
         if self.file.metadata()?.len() != self.committed_bytes {
             self.failure = Some(SessionError::SessionWriterChanged);
+            trace_log!(
+                SESSION,
+                "conversation writer changed outside ownership offset={}",
+                self.committed_bytes
+            );
             return Err(SessionError::SessionWriterChanged);
         }
         if let Err(error) = self.file.write_all_at(bytes, self.committed_bytes) {
@@ -243,10 +257,27 @@ impl ConversationWriter {
 
     fn roll_back(&mut self, original: SessionError) -> SessionError {
         self.failure = Some(SessionError::SessionPersistenceUncertain);
-        if self.file.set_len(self.committed_bytes).is_err() || self.sync().is_err() {
+        let offset = self.committed_bytes;
+        if let Err(error) = self.file.set_len(offset) {
+            trace_log!(
+                SESSION,
+                "conversation append rollback failed offset={offset} append_err={original} rollback_err={}",
+                SessionError::from(error)
+            );
+            return SessionError::SessionPersistenceUncertain;
+        }
+        if let Err(error) = self.sync() {
+            trace_log!(
+                SESSION,
+                "conversation append rollback sync failed offset={offset} append_err={original} rollback_err={error}"
+            );
             return SessionError::SessionPersistenceUncertain;
         }
         self.failure = None;
+        trace_log!(
+            SESSION,
+            "conversation append rolled back offset={offset} err={original}"
+        );
         original
     }
 

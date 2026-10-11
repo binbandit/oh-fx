@@ -396,6 +396,12 @@ fn a_recovery_copy_that_cannot_be_staged_writes_its_discard_lines() {
             b"too long",
         );
         assert!(store.recover("missing-output").is_err());
+        saved("damaged", &["one", "two"]).write(&home.own_sessions());
+        append(
+            &home.own_sessions().join("damaged/events.jsonl"),
+            b"invalid\n{\"torn",
+        );
+        assert!(store.recover("damaged").is_ok());
         return;
     }
     let root = tempfile::tempdir().unwrap();
@@ -414,4 +420,10 @@ fn a_recovery_copy_that_cannot_be_staged_writes_its_discard_lines() {
         written.contains(" [session] event=recovery_staging_discard disposition=discarded\n"),
         "{written}"
     );
+    for line in [
+        " [session] event=conversation_recovery_boundary source_bytes=",
+        " [session] event=conversation_recovery_prefix bytes=",
+    ] {
+        assert!(written.contains(line), "{line}\n{written}");
+    }
 }

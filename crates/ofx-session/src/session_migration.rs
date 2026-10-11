@@ -49,6 +49,7 @@ pub(crate) struct LegacySession {
     turns: Vec<LegacyTurn>,
     context_history_start: usize,
     recovery: Option<Box<Continuable>>,
+    archived_recovery: bool,
     usage: Option<UsageSnapshot>,
 }
 
@@ -175,6 +176,7 @@ fn load_schema_v3(dir: &PrivateDir, id: &str) -> Result<(LegacySession, u64), Se
     match replay.recovery {
         Some(LegacyCheckpoint::Archived(turn)) => {
             session.turns.push(LegacyTurn::Conversation(turn));
+            session.archived_recovery = true;
         }
         Some(LegacyCheckpoint::Continuable(checkpoint)) => session.recovery = Some(checkpoint),
         None => {}
