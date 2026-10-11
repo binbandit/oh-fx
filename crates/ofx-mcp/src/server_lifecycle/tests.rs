@@ -64,3 +64,27 @@ async fn a_rejection_on_a_replaced_connection_leaves_the_live_one_alone() {
     assert_eq!(live.auth.authentication(&config), AuthenticationState::None);
     assert_eq!(live.auth.pending(), Challenge::default());
 }
+
+#[tokio::test]
+async fn a_failed_reconnect_leaves_the_server_as_it_was() {
+    let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/mcp", refused.local_addr().unwrap());
+    drop(refused);
+    let config = McpServerConfig {
+        startup_timeout_ms: 5_000,
+        ..McpServerConfig::remote("remote", TransportType::Http, &url)
+    };
+    let server = Arc::new(Server::new(
+        config,
+        ConnectOptions::default(),
+        Arc::new(AtomicU64::new(0)),
+    ));
+    assert!(server.start().await.is_err());
+    let Lifecycle::Failed(before) = server.lifecycle() else {
+        panic!("the server failed to start");
+    };
+    let restarts = server.restarts();
+    assert!(server.reconnect().await.is_err());
+    assert!(matches!(server.lifecycle(), Lifecycle::Failed(after) if after == before));
+    assert_eq!(server.restarts(), restarts);
+}
