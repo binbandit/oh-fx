@@ -697,6 +697,7 @@ impl Controller {
         self.serve(&mut commands).await;
         self.drain_installations().await;
         if let Some(persistence) = &mut self.persistence {
+            persistence.abandon_profile_ledger();
             persistence.close(&mut self.agent);
         }
     }

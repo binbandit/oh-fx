@@ -68,6 +68,10 @@ impl SavedAsk {
             .title_generation(setup, prompt, agent.history_turns() == 0, false)
     }
 
+    pub(crate) fn finish_publications(&self) {
+        self.live.finish_publications();
+    }
+
     pub(crate) fn close(self, discard_untouched: bool) -> String {
         let id = self.live.id().to_owned();
         if !discard_untouched || self.resumed {

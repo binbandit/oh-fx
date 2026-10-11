@@ -3,6 +3,8 @@ use std::fs::File;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +29,12 @@ const COVERAGE_FIELDS: usize = 3;
 const GENERATION_FIELDS: usize = 3;
 const PENDING_FIELDS: usize = 4;
 const INCIDENT_FIELDS: usize = 4;
+const ABANDON_CHECK_LINES: usize = 256;
+
+mod append;
+mod records;
+
+pub(crate) use records::{AppendOutcome, ProfileEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum UsageStoreError {
@@ -46,6 +54,22 @@ pub enum UsageStoreError {
     CapacityExceeded,
     #[error("UsageReadFailed")]
     ReadFailed,
+    #[error("UsageWriteFailed")]
+    WriteFailed,
+    #[error("UsageCommitIndeterminate")]
+    CommitIndeterminate,
+    #[error("UsageRecordTooLarge")]
+    RecordTooLarge,
+    #[error("UsageLockAbandoned")]
+    LockAbandoned,
+    #[error("DurableLayoutFailed")]
+    LayoutFailed,
+    #[error("InvalidGenerationFact")]
+    InvalidFact,
+    #[error("InvalidPendingMarker")]
+    InvalidPending,
+    #[error("InvalidUsageIncident")]
+    InvalidIncident,
     #[error("AccessDenied")]
     AccessDenied,
     #[error("PermissionDenied")]
@@ -87,6 +111,8 @@ pub(crate) struct ProfileUsageStore {
     data_dir: PathBuf,
     home: Option<PrivateDir>,
     lock_deadline: Duration,
+    index: Option<RecordIndex>,
+    abandoned: Arc<AtomicBool>,
 }
 
 impl ProfileUsageStore {
@@ -95,7 +121,13 @@ impl ProfileUsageStore {
             data_dir: data_dir.to_owned(),
             home: PrivateDir::open_existing(data_dir)?,
             lock_deadline: LOCK_DEADLINE,
+            index: None,
+            abandoned: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub(crate) fn abandon_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.abandoned)
     }
 
     pub(crate) fn load(&mut self) -> Result<LoadedUsage, UsageStoreError> {
@@ -196,7 +228,7 @@ fn load_unlocked(home: &PrivateDir) -> Result<LoadedUsage, UsageStoreError> {
         return Err(UsageStoreError::Incomplete);
     }
     let mut index = RecordIndex::default();
-    index.absorb_bytes(&bytes)?;
+    index.absorb_bytes(&bytes, None)?;
     Ok(index.loaded)
 }
 
@@ -238,6 +270,8 @@ struct RecordIndex {
     fact_variants: HashMap<String, Variants>,
     pending_variants: HashMap<String, Variants>,
     record_count: usize,
+    boundary: u64,
+    tail_sample: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -254,10 +288,19 @@ enum ParsedRecord {
 }
 
 impl RecordIndex {
-    fn absorb_bytes(&mut self, bytes: &[u8]) -> Result<(), UsageStoreError> {
-        for line in bytes.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
+    fn absorb_bytes(
+        &mut self,
+        bytes: &[u8],
+        abandoned: Option<&AtomicBool>,
+    ) -> Result<(), UsageStoreError> {
+        let lines = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty());
+        for (parsed, line) in lines.enumerate() {
+            if parsed % ABANDON_CHECK_LINES == 0
+                && abandoned.is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                return Err(UsageStoreError::LockAbandoned);
             }
             self.record_count += 1;
             if self.record_count > MAX_RECORDS || line.len() > MAX_RECORD_BYTES {
