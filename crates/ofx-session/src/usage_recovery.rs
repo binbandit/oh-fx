@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ofx_config::PrivateDir;
 use ofx_contract::{GenerationFact, PendingMarker, UsageCompleteness, UsageIncident};
@@ -22,29 +23,47 @@ pub struct UsageRecovery {
 
 impl UsageRecovery {
     pub fn collect(data_dir: &Path) -> Self {
-        Self::collect_marked(data_dir).unwrap_or_else(|_| Self {
-            unknown_pending: true,
-            ..Self::default()
-        })
+        Self::collect_unless_cancelled(data_dir, &AtomicBool::new(false))
+            .unwrap_or_else(Self::unknown)
     }
 
-    fn collect_marked(data_dir: &Path) -> Result<Self, SessionError> {
+    pub fn collect_unless_cancelled(data_dir: &Path, cancelled: &AtomicBool) -> Option<Self> {
+        Self::collect_marked(data_dir, cancelled).unwrap_or_else(|_| Some(Self::unknown()))
+    }
+
+    fn unknown() -> Self {
+        Self {
+            unknown_pending: true,
+            ..Self::default()
+        }
+    }
+
+    fn collect_marked(
+        data_dir: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Self>, SessionError> {
         let mut recovery = Self::default();
+        if cancelled.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         let Some(data) = PrivateDir::open_existing(data_dir)? else {
-            return Ok(recovery);
+            return Ok(Some(recovery));
         };
         let marked = marked_sessions(&data)?;
         if marked.is_empty() {
-            return Ok(recovery);
+            return Ok(Some(recovery));
         }
         let sessions = data.open_child(SESSIONS_DIR)?;
         for session in &marked {
+            if cancelled.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
             match read_marked(sessions.as_ref(), session) {
                 Some((usage, updated_at_ms, newer)) => recovery.add(&usage, updated_at_ms, newer),
                 None => recovery.unknown_pending = true,
             }
         }
-        Ok(recovery)
+        Ok(Some(recovery))
     }
 
     fn add(&mut self, usage: &UsageSnapshot, updated_at_ms: i64, newer: bool) {

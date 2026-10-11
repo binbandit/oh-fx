@@ -396,3 +396,33 @@ fn scopes_carry_upstream_labels_and_cli_values() {
     }
     assert_eq!(UsageCompleteness::parse("Complete"), None);
 }
+
+#[test]
+fn scopes_step_toward_the_session_and_the_longest_window_without_wrapping() {
+    let scopes = [
+        UsageScope::Session,
+        UsageScope::Hours24,
+        UsageScope::Days7,
+        UsageScope::Days30,
+    ];
+    let previous: Vec<UsageScope> = scopes.iter().map(|scope| scope.previous()).collect();
+    let next: Vec<UsageScope> = scopes.iter().map(|scope| scope.next()).collect();
+    assert_eq!(
+        previous,
+        [
+            UsageScope::Session,
+            UsageScope::Session,
+            UsageScope::Hours24,
+            UsageScope::Days7
+        ]
+    );
+    assert_eq!(
+        next,
+        [
+            UsageScope::Hours24,
+            UsageScope::Days7,
+            UsageScope::Days30,
+            UsageScope::Days30
+        ]
+    );
+}

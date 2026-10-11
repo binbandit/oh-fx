@@ -13,7 +13,7 @@ use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, HookScope, HookView, ModelCatalog, ModelControls,
     ModelOption, Notice, NoticeTone, ProviderError, QuestionRequest, ReasoningEffort,
     RecoveredTurn, ResumeRefusal, SessionCursor, SessionScope, SkillBinding, StatuslineItem,
-    StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome, UiCommand, UiEvent,
+    StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome, UiCommand, UiEvent, UsageScope,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_tui::Clipboard;
@@ -44,6 +44,7 @@ use crate::skill_commands::{
 };
 use crate::skills::{HostSkills, SkillInstall};
 use crate::trace_command::{SessionTitleFacts, TraceFacts, start_trace};
+use crate::usage_dashboard_runtime::UsageDashboard;
 use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
 use settings_menu::{MenuSettings, SettingsUpdate};
@@ -87,6 +88,7 @@ pub(crate) struct ControllerState {
     menu_settings: MenuSettings,
     shown_controls: ModelControls,
     sign_in: Option<SignInControl>,
+    usage: UsageDashboard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +110,20 @@ enum InstallInput {
 impl ControllerState {
     pub(crate) fn model(&self) -> &str {
         &self.model
+    }
+
+    pub(crate) fn open_usage(&mut self) {
+        self.usage.open(self.setup.profile_usage_dir());
+    }
+
+    fn show_usage(&mut self, persistence: Option<&Persistence>, scope: UsageScope, reload: bool) {
+        let data_dir = self.setup.profile_usage_dir();
+        let session = || persistence.and_then(Persistence::usage_report);
+        if reload {
+            self.usage.reload(scope, data_dir, session);
+        } else {
+            self.usage.refresh(scope, data_dir, session);
+        }
     }
 
     pub(crate) fn permissions(&self) -> &PermissionRuntime {
@@ -572,6 +588,7 @@ impl Controller {
         };
         let mcp = setup.mcp_host(Arc::clone(&emit));
         let setup_controls = setup.model_controls();
+        let usage = UsageDashboard::new(Arc::clone(&emit));
         let state = ControllerState {
             session_title: SessionTitle::new(Arc::clone(&emit)),
             title_progress: TitleProgress::default(),
@@ -603,6 +620,7 @@ impl Controller {
             mcp,
             shown_controls: setup_controls,
             sign_in: None,
+            usage,
         };
         if let Some(approvals) = state.setup.approvals() {
             approvals.attach(Arc::clone(&state.emit));
@@ -800,6 +818,14 @@ impl Controller {
                 UiCommand::OpenSessions { scope } => self.open_picker(scope),
                 UiCommand::ResumeSession { id } => self.resume_session(&id),
                 UiCommand::CloseSessionPicker => self.close_picker(),
+                UiCommand::RefreshUsage { scope } => {
+                    self.state
+                        .show_usage(self.persistence.as_ref(), scope, false);
+                }
+                UiCommand::ReloadUsage { scope } => {
+                    self.state
+                        .show_usage(self.persistence.as_ref(), scope, true);
+                }
                 UiCommand::Cancel { .. }
                 | UiCommand::PauseRecovery { .. }
                 | UiCommand::Approval { .. }
@@ -1493,6 +1519,12 @@ fn run_deferred(
         | UiCommand::ListSessions { .. }
         | UiCommand::ResumeSession { .. }
         | UiCommand::CloseSessionPicker => return refuse_session_command(state, command),
+        UiCommand::RefreshUsage { scope } => {
+            return state.show_usage(persistence.as_ref(), scope, false);
+        }
+        UiCommand::ReloadUsage { scope } => {
+            return state.show_usage(persistence.as_ref(), scope, true);
+        }
         UiCommand::Submit { .. }
         | UiCommand::RetryHeldPrompt
         | UiCommand::DropHeldPrompt
@@ -1670,7 +1702,8 @@ mod tests {
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
         PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus,
         StatuslineItem, StatuslineToggles, StopAction, ToolResultStatus, TurnId, TurnOutcome,
-        TurnPresentationOutcome, format_tool_execution_error_json,
+        TurnPresentationOutcome, UsageCoverage, UsageMenuUpdate, UsageReport,
+        format_tool_execution_error_json,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -4745,22 +4778,62 @@ mod tests {
         assert_eq!(notice.tone, NoticeTone::Neutral);
     }
 
+    fn usage_updates(events: &[UiEvent]) -> Vec<UsageMenuUpdate> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::UsageMenu { update } => Some(update.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn usage_shown(event: &UiEvent) -> bool {
+        matches!(
+            event,
+            UiEvent::UsageMenu {
+                update: UsageMenuUpdate::Report(_) | UsageMenuUpdate::Failed(_)
+            }
+        )
+    }
+
+    fn shown_report(updates: &[UsageMenuUpdate]) -> &UsageReport {
+        match updates.last() {
+            Some(UsageMenuUpdate::Report(report)) => report,
+            other => panic!("expected a usage report, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
-    async fn usage_and_cost_report_that_durable_profile_usage_is_unavailable() {
+    async fn usage_and_cost_open_the_dashboard_and_serve_each_scope() {
         let server = FakeServer::start([]);
-        let mut harness = Harness::start(&server).await;
+        let mut harness = Harness::start_saved(&server).await;
         for command in ["/usage", "/cost"] {
             harness.command(command);
-            let shown = harness
-                .until(|event| matches!(event, UiEvent::Notice { .. }))
-                .await;
-            assert_eq!(
-                notice_body(shown),
-                [
-                    "usage|Durable profile usage is unavailable in this host; active session usage remains in memory."
-                ]
+            let updates = usage_updates(harness.until(usage_shown).await);
+            assert!(
+                matches!(
+                    updates[0],
+                    UsageMenuUpdate::Opened {
+                        scope: UsageScope::Days30,
+                        ..
+                    }
+                ),
+                "{updates:?}"
             );
+            let report = shown_report(&updates);
+            assert_eq!(report.scope, UsageScope::Days30);
+            assert_eq!(report.coverage, UsageCoverage::NotStarted);
         }
+        for scope in [UsageScope::Days7, UsageScope::Session] {
+            harness.send(UiCommand::RefreshUsage { scope });
+            let updates = usage_updates(harness.until(usage_shown).await);
+            assert_eq!(shown_report(&updates).scope, scope);
+        }
+        let updates = usage_updates(harness.seen.as_slice());
+        let session = shown_report(&updates);
+        assert_eq!(session.totals.map(|totals| totals.total_tokens), Some(0));
+        assert!(session.session_activity.is_some());
     }
 
     #[tokio::test]

@@ -43,8 +43,8 @@ note = "Inline approval copy and the file approval rows (the Review change heade
 [[file]]
 upstream = "src/ui/footer/compact_command_menu_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/compact_command_menu_presentation.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation/workspace.rs"]
-note = "The status line menu's title, aligned on/off rows, short-terminal window and row count, and the workspace menu's pinned summary, directory and action rows, short-terminal window, info column and hints exist; the usage menu waits on the durable usage ledger."
+modules = ["crates/ofx-tui/src/footer/compact_command_menu_presentation.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation/usage.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation/workspace.rs"]
+note = "The status line menu's title, aligned on/off rows, short-terminal window and row count, and the workspace menu's pinned summary, directory and action rows, short-terminal window, info column and hints exist. The usage menu draws its scope tabs, loading and failure rows, status row, compact summary, model header, model rows with their facts, compact and name-only forms, the expanded detail row, the single-row priority view and its hints, laid out as upstream's constrained view at every height; the full overview rows, session activity and model columns are absent."
 
 [[file]]
 upstream = "src/ui/footer/help_menu_presentation.zig"

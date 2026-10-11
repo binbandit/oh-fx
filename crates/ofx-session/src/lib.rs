@@ -73,6 +73,6 @@ pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource
 pub use session_title_generation::{
     TitleFailure, TitleGate, TitleOutcome, TitleRequest, generate_title, prompt_excerpt,
 };
-pub use session_usage::UsageSnapshot;
+pub use session_usage::{UsageSnapshot, fresh_session_report};
 pub use usage_publisher::{PublicationScheduler, UsagePublisher};
 pub use usage_recovery::UsageRecovery;

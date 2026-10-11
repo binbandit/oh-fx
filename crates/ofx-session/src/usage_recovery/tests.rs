@@ -256,3 +256,22 @@ fn unexplained_incomplete_billing_is_recovered_as_a_gap_at_the_last_update() {
     assert!(stale.unknown_pending);
     assert!(stale.pending.is_empty());
 }
+
+#[test]
+fn a_cancelled_collection_stops_before_reading_the_profile() {
+    let profile = Profile::new();
+    let mut owed = profile.start();
+    exact(&mut owed, "resp_owed");
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        UsageRecovery::collect_unless_cancelled(Path::new("/unused"), &cancelled),
+        None
+    );
+    assert_eq!(
+        UsageRecovery::collect_unless_cancelled(&profile.data(), &cancelled),
+        None
+    );
+    let running = AtomicBool::new(false);
+    let recovery = UsageRecovery::collect_unless_cancelled(&profile.data(), &running).unwrap();
+    assert_eq!(recovery.facts.len(), 1);
+}

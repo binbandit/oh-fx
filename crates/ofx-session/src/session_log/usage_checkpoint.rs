@@ -3,7 +3,8 @@ use std::time::Instant;
 
 use ofx_config::{DurableError, PrivateDir};
 use ofx_contract::{
-    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, RequestTicket, UsageIncident,
+    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, RequestTicket,
+    UsageIncident, UsageReport, UsageReportError,
 };
 
 use super::{WritableSession, now_ms};
@@ -118,6 +119,11 @@ impl PublishedUsage {
 }
 
 impl WritableSession {
+    pub fn usage_report(&mut self) -> Result<UsageReport, UsageReportError> {
+        let now = now_ms();
+        self.usage.snapshot(now).report(now)
+    }
+
     pub(crate) fn forget_usage_recovery(&self) {
         let mut writer = self.usage_checkpoints.writer();
         let cleared = writer
