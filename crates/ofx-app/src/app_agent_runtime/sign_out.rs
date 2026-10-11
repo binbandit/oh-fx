@@ -1,9 +1,12 @@
-use ofx_auth::{ChatGptOAuth, DeleteOutcome, GrokOAuth, parse_login_provider};
-use ofx_config::ProviderId;
+use ofx_auth::{
+    ChatGptOAuth, DeleteOutcome, GatewaySource, GrokOAuth, VercelOAuth, parse_login_provider,
+};
+use ofx_config::{ProfilePaths, ProviderId, clear_credential_source};
 use ofx_contract::{BoxFuture, Notice, NoticeTone, UiEvent};
+use ofx_trace::trace_log;
 
 use super::{CatalogFetch, Controller, ControllerState};
-use crate::app_bootstrap_runtime::Login;
+use crate::app_bootstrap_runtime::{CredentialSource, Login};
 
 const AUTH_TOPIC: &str = "auth";
 const PROVIDER_TOPIC: &str = "provider";
@@ -24,6 +27,12 @@ const GROK_FAILED: &str = "Could not durably sign out of Grok. The current sourc
 const GROK_NOT_REVOKED: &str =
     "The local Grok session was removed, but remote revocation could not be confirmed.";
 const NO_LOGIN: &str = "No oh-fx login session found.";
+const LOGIN_SIGNED_OUT: &str = "Signed out of oh-fx.";
+const LOGIN_NOT_DURABLE: &str =
+    "Could not confirm durable oh-fx logout. The active source was recalculated.";
+const LOGIN_FAILED: &str = "Could not complete oh-fx logout. The current source is unchanged.";
+const LOGIN_NOT_REVOKED: &str =
+    "Warning: signed out locally, but the remote session could not be revoked.";
 
 enum Removal {
     Removed(Vec<Notice>),
@@ -59,6 +68,13 @@ impl ControllerState {
         if self.setup.provider() == ProviderId::Codex {
             return ProviderId::Codex;
         }
+        if self.setup.source() == CredentialSource::Gateway(GatewaySource::FxLogin) {
+            return ProviderId::Gateway;
+        }
+        let vercel = self
+            .setup
+            .vercel_oauth()
+            .is_some_and(|oauth| oauth.has_saved_login());
         let codex = self
             .setup
             .chatgpt_oauth()
@@ -67,9 +83,9 @@ impl ControllerState {
             .setup
             .grok_oauth()
             .is_some_and(|oauth| oauth.has_saved_login());
-        match (codex, grok) {
-            (true, false) => ProviderId::Codex,
-            (false, true) => ProviderId::Grok,
+        match (codex, grok, vercel) {
+            (true, false, false) => ProviderId::Codex,
+            (false, true, false) => ProviderId::Grok,
             _ => ProviderId::Gateway,
         }
     }
@@ -88,7 +104,14 @@ impl ControllerState {
                 let oauth = self.setup.grok_oauth();
                 Box::pin(async move { remove_grok(oauth).await })
             }
-            _ => Box::pin(async { Removal::Removed(vec![auth(NoticeTone::Neutral, NO_LOGIN)]) }),
+            _ => {
+                let oauth = self.setup.vercel_oauth();
+                let forget = (self.setup.source()
+                    == CredentialSource::Gateway(GatewaySource::FxLogin))
+                .then(|| self.setup.preferences().cloned())
+                .flatten();
+                Box::pin(async move { remove_vercel(oauth, forget).await })
+            }
         }
     }
 
@@ -185,6 +208,35 @@ async fn remove_grok(oauth: Option<GrokOAuth>) -> Removal {
     }];
     if result.revocation_failed {
         notices.push(auth(NoticeTone::Warning, GROK_NOT_REVOKED));
+    }
+    Removal::Removed(notices)
+}
+
+async fn remove_vercel(oauth: Option<VercelOAuth>, forget: Option<ProfilePaths>) -> Removal {
+    let Some(oauth) = oauth else {
+        return Removal::Failed(auth(NoticeTone::Error, LOGIN_FAILED));
+    };
+    let Ok(result) = oauth.logout().await else {
+        return Removal::Failed(auth(NoticeTone::Error, LOGIN_FAILED));
+    };
+    if let Some(paths) = forget {
+        match tokio::task::spawn_blocking(move || clear_credential_source(&paths)).await {
+            Ok(Ok(())) => trace_log!(AUTH_TOPIC, "credential choice cleared"),
+            Ok(Err(error)) => {
+                trace_log!(AUTH_TOPIC, "credential choice not cleared err={error}");
+            }
+            Err(_) => trace_log!(AUTH_TOPIC, "credential choice not cleared err=JoinFailed"),
+        }
+    }
+    let mut notices = vec![if result.local_durability_failed {
+        auth(NoticeTone::Warning, LOGIN_NOT_DURABLE)
+    } else if result.session_deleted {
+        auth(NoticeTone::Neutral, LOGIN_SIGNED_OUT)
+    } else {
+        auth(NoticeTone::Neutral, NO_LOGIN)
+    }];
+    if result.remote_revocation_failed {
+        notices.push(auth(NoticeTone::Warning, LOGIN_NOT_REVOKED));
     }
     Removal::Removed(notices)
 }

@@ -65,7 +65,7 @@ impl VercelOAuth {
         Ok(())
     }
 
-    async fn refresh_session(
+    pub(crate) async fn refresh_session(
         &self,
         mutation: &Mutation,
         session: &mut Session,

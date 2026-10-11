@@ -235,3 +235,37 @@ fn oauth_parsers_reject_non_object_json() {
         Err(VercelError::OAuthRequestFailed)
     );
 }
+
+#[tokio::test]
+async fn oauth_revocation_posts_the_token_and_its_hint() {
+    let server = FakeServer::start([
+        Reply::status(200, ""),
+        Reply::status(400, r#"{"error":"invalid_request"}"#),
+    ]);
+    let endpoint = format!("http://{}/oauth/revoke", server.address());
+    assert_eq!(
+        revoke_token(
+            &transport(),
+            &endpoint,
+            "client",
+            "refresh value",
+            "refresh_token"
+        )
+        .await,
+        Ok(())
+    );
+    assert_eq!(
+        revoke_token(&transport(), &endpoint, "client", "access", "access_token").await,
+        Err(VercelError::OAuthRequestFailed)
+    );
+    let requests = server.requests();
+    assert_eq!(requests[0].path, "/oauth/revoke");
+    assert_eq!(
+        requests[0].body_text(),
+        "client_id=client&token=refresh%20value&token_type_hint=refresh_token"
+    );
+    assert_eq!(
+        requests[1].body_text(),
+        "client_id=client&token=access&token_type_hint=access_token"
+    );
+}

@@ -13,9 +13,12 @@ use crate::oauth_session::{self, Session, SessionStore};
 use crate::oauth_transport::{Transport, TransportError};
 use crate::subscription_access::now_ms;
 
+mod logout;
 mod poll;
 mod team_picker;
+mod teams;
 
+pub use logout::LogoutResult;
 use poll::{BrowserOpenPrompt, TerminalPoll};
 
 const AUTH: &str = "auth";
@@ -26,6 +29,16 @@ const MAX_TEAMS_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub enum VercelError {
     #[error("LoginTimedOut")]
     LoginTimedOut,
+    #[error("NoSession")]
+    NoSession,
+    #[error("SessionChanged")]
+    SessionChanged,
+    #[error("NoTeams")]
+    NoTeams,
+    #[error("SessionDeleteFailed")]
+    SessionDeleteFailed,
+    #[error("RevocationEndpointMissing")]
+    RevocationEndpointMissing,
     #[error("NoRefreshToken")]
     NoRefreshToken,
     #[error("InvalidTeamSelection")]
@@ -185,6 +198,10 @@ impl VercelOAuth {
             transport: OnceLock::new(),
             endpoints,
         }
+    }
+
+    pub fn has_saved_login(&self) -> bool {
+        self.store.presence() == crate::session_presence::Presence::Present
     }
 
     pub(crate) fn store(&self) -> &SessionStore {

@@ -48,6 +48,15 @@ impl Profile {
             self.endpoints.chatgpt.clone(),
         )
     }
+    pub(crate) fn configure_trace(&self) {
+        if let Ok(workspace) = &self.workspace {
+            ofx_trace::configure_from_env(
+                workspace,
+                self.paths.as_ref().map(|paths| paths.state.as_path()),
+            );
+        }
+    }
+
     pub(crate) fn vercel_oauth(&self) -> Option<VercelOAuth> {
         self.paths.as_ref().map(|paths| {
             VercelOAuth::new(
