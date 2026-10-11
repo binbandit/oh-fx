@@ -511,6 +511,57 @@ impl PromptWriter<'_> {
     }
 }
 
+pub(crate) fn select_replay_parts(
+    replay: &ProviderReplay,
+    calls: &[ToolCall],
+    text: bool,
+    reasoning: bool,
+) -> Result<Option<ProviderReplay>> {
+    if replay.source.provider != REPLAY_PROVIDER {
+        return Err(RequestError::InvalidProviderState);
+    }
+    if replay.parts_json.len() > MAX_REPLAY_BYTES {
+        return Err(RequestError::ProviderStateTooLarge);
+    }
+    let Ok(Json::Array(parts)) =
+        parse_strict_json(replay.parts_json.as_bytes(), DuplicateKeys::AfterValue)
+    else {
+        return Err(RequestError::InvalidProviderState);
+    };
+    let total = parts.len();
+    let mut selected = Vec::with_capacity(total);
+    for part in parts {
+        let fields = part.as_object().ok_or(RequestError::InvalidProviderState)?;
+        let keep = match fields.get("type").and_then(Json::as_str) {
+            Some("text") => text,
+            Some("reasoning") => reasoning,
+            Some("tool-call") => {
+                let id = fields
+                    .get("toolCallId")
+                    .and_then(Json::as_str)
+                    .ok_or(RequestError::InvalidProviderState)?;
+                calls.iter().any(|call| call.id.as_str() == id)
+            }
+            _ => return Err(RequestError::InvalidProviderState),
+        };
+        if keep {
+            selected.push(part);
+        }
+    }
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    if selected.len() == total {
+        return Ok(Some(replay.clone()));
+    }
+    let parts_json =
+        serde_json::to_string(&selected).map_err(|_| RequestError::InvalidProviderState)?;
+    Ok(Some(ProviderReplay {
+        source: replay.source.clone(),
+        parts_json,
+    }))
+}
+
 fn replay_metadata(metadata: Option<&Json<'_>>) -> Result<Option<String>> {
     let Some(value) = metadata else {
         return Ok(None);

@@ -597,20 +597,20 @@ fn codex_replay_projection_keeps_the_source_and_selects_parts() {
     )
     .unwrap();
     assert_eq!(
-        codex.project_replay(&replay, false, true),
+        codex.project_replay(&replay, &[], false, true),
         Ok(Some(ProviderReplay {
             source,
             parts_json: r#"[{"type":"reasoning","encrypted_content":"cipher"}]"#.to_owned(),
         }))
     );
-    assert_eq!(codex.project_replay(&replay, false, false), Ok(None));
+    assert_eq!(codex.project_replay(&replay, &[], false, false), Ok(None));
     let invalid = ProviderReplay {
         parts_json: "{}".to_owned(),
         ..replay
     };
     assert_eq!(
         codex
-            .project_replay(&invalid, false, true)
+            .project_replay(&invalid, &[], false, true)
             .unwrap_err()
             .code,
         "InvalidProviderState"

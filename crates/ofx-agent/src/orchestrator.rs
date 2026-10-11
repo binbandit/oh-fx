@@ -2124,7 +2124,10 @@ impl Agent {
         } else {
             let replay = completion
                 .provider_replay
-                .map(|replay| self.provider.project_replay(&replay, false, true))
+                .map(|replay| {
+                    self.provider
+                        .project_replay(&replay, &completion.tool_calls, false, true)
+                })
                 .transpose()
                 .map_err(|error| Stop::failed(TurnFailure::Provider(error)))?
                 .flatten();
