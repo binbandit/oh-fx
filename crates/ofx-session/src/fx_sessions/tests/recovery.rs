@@ -372,3 +372,46 @@ fn a_schema_v3_checkpoint_keeps_the_saved_output_only_it_names() {
         );
     }
 }
+
+const TRACE_CHILD: &str = "OFX_SESSION_RECOVERY_TRACE_CHILD";
+const TRACE_TEST: &str =
+    "fx_sessions::tests::recovery::a_recovery_copy_that_cannot_be_staged_writes_its_discard_lines";
+
+#[test]
+fn a_recovery_copy_that_cannot_be_staged_writes_its_discard_lines() {
+    if let Some(root) = std::env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(Path::new(&root), None);
+        let home = Home::new();
+        let store = store(&home);
+        let plain = saved("missing-output", &[]);
+        let mut events = shell_turn("null", "null").replace(SAVED_RESULT, RESULT);
+        events.push_str("{\"torn");
+        plain.write_files(&home.own_sessions(), &plain.manifest(), &events);
+        private_dirs(&home.own_sessions().join("missing-output"), "tool-results");
+        private_file(
+            &home
+                .own_sessions()
+                .join("missing-output/tool-results")
+                .join(RESULT),
+            b"too long",
+        );
+        assert!(store.recover("missing-output").is_err());
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        written.contains(" [session] event=recovery_staging_discard disposition=discarded\n"),
+        "{written}"
+    );
+}
