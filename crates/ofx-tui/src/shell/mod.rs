@@ -331,6 +331,9 @@ pub fn run_shell(
 ) -> Result<(), TerminalError> {
     let mut shell = Shell::bootstrap(options, events, Arc::new(clipboard), Box::new(send))?;
     let result = shell.run();
+    if let Some(lifecycle) = &shell.options.lifecycle {
+        lifecycle.leaving();
+    }
     let fatal = shell.shutdown(result.as_ref().ok().copied().flatten());
     if let Some(lifecycle) = &shell.options.lifecycle {
         lifecycle.shutdown();

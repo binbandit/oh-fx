@@ -12,6 +12,7 @@ use ofx_text::mask_secrets;
 use ofx_trace::{NetworkTrace, Sequenced};
 
 use crate::context::civil_from_unix_days;
+use crate::shutdown_report;
 
 const LINE_LIMIT: usize = 300;
 const PROBLEM_DETAIL_LIMIT: usize = 160;
@@ -37,6 +38,7 @@ pub(crate) struct TraceFacts {
     pub(crate) web_searches: Vec<Option<ToolResultStatus>>,
     pub(crate) interrupted_turn: Option<InterruptedTurn>,
     pub(crate) session_title: SessionTitleFacts,
+    pub(crate) state_directory: Option<PathBuf>,
     pub(crate) rings: TraceRings,
 }
 
@@ -47,6 +49,7 @@ pub(super) struct Snapshot {
     trace_flag: bool,
     trace_log: Option<PathBuf>,
     terminal: Terminal,
+    last_shutdown: Option<Vec<u8>>,
     compaction: Vec<Sequenced<CompactionEvent>>,
     tool_calls: ToolCallTrace,
     network: NetworkTrace,
@@ -85,6 +88,10 @@ impl Snapshot {
         let variable =
             |name: &str| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
         let pid = std::process::id();
+        let last_shutdown = facts
+            .state_directory
+            .as_deref()
+            .and_then(shutdown_report::read_last);
         Self {
             facts,
             generated_ms: ofx_trace::timestamp_ms(),
@@ -102,6 +109,7 @@ impl Snapshot {
                 tmux: std::env::var_os("TMUX").is_some(),
                 cmux: std::env::var_os("CMUX_WORKSPACE_ID").is_some(),
             },
+            last_shutdown,
             compaction: rings.compaction.snapshot(),
             tool_calls: rings.tool_calls.snapshot(),
             network: rings.network.snapshot(),
@@ -121,6 +129,7 @@ impl Snapshot {
         self.write_summary(out)?;
         self.write_current_state(out)?;
         self.write_problems(out)?;
+        last_shutdown::write_section(out, self.last_shutdown.as_deref())?;
         self.write_compaction(out)?;
         interrupted_turn::write_section(out, self.facts.interrupted_turn.as_ref())?;
         session_title::write_section(out, &self.facts.session_title)?;
@@ -488,6 +497,7 @@ fn process_memory(pid: u32) -> Option<String> {
 }
 
 mod interrupted_turn;
+mod last_shutdown;
 mod network_calls;
 mod session_title;
 mod tool_calls;
