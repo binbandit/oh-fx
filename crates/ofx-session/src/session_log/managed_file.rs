@@ -122,9 +122,8 @@ pub(crate) fn remove_created_dir(parent: &PrivateDir, name: &str) {
     let _ = remove_tree(parent.as_fd(), name, MAX_TREE_DEPTH);
 }
 
-pub(crate) fn remove_session_dir(parent: &PrivateDir, name: &str) -> Result<(), SessionError> {
-    remove_tree(parent.as_fd(), name, MAX_TREE_DEPTH)?;
-    sync_dir(parent)
+pub(crate) fn remove_dir_tree(parent: &PrivateDir, name: &str) -> Result<(), SessionError> {
+    remove_tree(parent.as_fd(), name, MAX_TREE_DEPTH).map_err(SessionError::from)
 }
 
 pub(crate) fn same_directory(

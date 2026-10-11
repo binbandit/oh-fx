@@ -15,6 +15,7 @@ use crate::json_fields::parse_json;
 use crate::session_codec::SavedProvider;
 use crate::session_error::SessionError;
 use crate::session_store_paths::MAX_PATH_BYTES;
+use crate::session_trace::rejected;
 pub(crate) use file_presentation::{CommittedFilePresentation, LifecycleId, PresentationLine};
 use frame_decode::envelope_from;
 pub(crate) use frame_decode::saved_replay;
@@ -479,7 +480,7 @@ impl ConversationState {
             return Err(SessionError::OutOfOrderConversationEvent);
         }
         if timestamp_ms < 0 {
-            return Err(SessionError::InvalidConversationEvent);
+            return Err(rejected("envelope-timestamp"));
         }
         validate_event_shape(event)?;
         match event {
@@ -584,7 +585,7 @@ pub(crate) fn encode_conversation_frame(
     event: &ConversationEvent,
 ) -> Result<Vec<u8>, SessionError> {
     if seq == 0 || timestamp_ms < 0 {
-        return Err(SessionError::InvalidConversationEvent);
+        return Err(rejected("envelope-header"));
     }
     validate_event_shape(event)?;
     let mut frame = serde_json::to_vec(&EnvelopeWire {
@@ -628,71 +629,129 @@ impl ConversationEnvelope {
 }
 
 fn validate_event_shape(event: &ConversationEvent) -> Result<(), SessionError> {
-    let valid = match event {
+    shape_rule(event).map_or(Ok(()), |rule| Err(rejected(rule)))
+}
+
+fn shape_rule(event: &ConversationEvent) -> Option<&'static str> {
+    match event {
         ConversationEvent::User(user) => {
-            is_valid_text(&user.text) && user.work_id.as_deref().is_none_or(is_valid_identity)
+            text_rule(&user.text).or_else(|| optional_identity_rule(user.work_id.as_deref()))
         }
         ConversationEvent::Assistant(assistant) => {
-            assistant.text.len() <= MAX_TEXT_BYTES
-                && assistant
+            optional_text_rule(&assistant.text).or_else(|| {
+                (!assistant
                     .provider_replay
                     .as_ref()
-                    .is_none_or(SavedReplay::is_valid)
+                    .is_none_or(SavedReplay::is_valid))
+                .then_some("assistant-replay-parts")
+            })
         }
-        ConversationEvent::Steering(steering) => is_valid_text(&steering.text),
-        ConversationEvent::ToolCall(call) => {
-            is_valid_identity(&call.call_id)
-                && is_valid_identity(&call.tool_name)
-                && (1..=MAX_TEXT_BYTES).contains(&call.arguments_json.len())
-                && call
-                    .provider_result
+        ConversationEvent::Steering(steering) => text_rule(&steering.text),
+        ConversationEvent::ToolCall(call) => identity_rule(&call.call_id)
+            .or_else(|| identity_rule(&call.tool_name))
+            .or_else(|| {
+                (!(1..=MAX_TEXT_BYTES).contains(&call.arguments_json.len()))
+                    .then_some("tool-call-arguments")
+            })
+            .or_else(|| {
+                call.provider_result
                     .as_ref()
-                    .is_none_or(|result| result.len() <= MAX_TEXT_BYTES)
-        }
-        ConversationEvent::ToolResult(result) => {
-            is_valid_identity(&result.call_id)
-                && is_valid_identity(&result.tool_name)
-                && is_valid_identity(&result.artifact_ref)
-                && result
-                    .preview
-                    .as_ref()
-                    .is_none_or(|preview| preview.len() <= MAX_PREVIEW_BYTES)
-                && result.created_at_ms >= 0
-                && result
-                    .permission_feedback
-                    .iter()
-                    .all(|feedback| feedback.len() <= MAX_TEXT_BYTES)
-                && result
-                    .committed_file_presentation
-                    .as_deref()
-                    .is_none_or(CommittedFilePresentation::is_valid)
-                && is_valid_replay(
-                    result.command_replay_ref.as_deref(),
-                    result.command_replay_bytes,
-                )
-        }
-        ConversationEvent::Interrupted(interrupted) => {
-            interrupted
-                .partial_text
-                .as_ref()
-                .is_none_or(|text| text.len() <= MAX_TEXT_BYTES)
-                && is_valid_replay(
+                    .is_some_and(|result| result.len() > MAX_TEXT_BYTES)
+                    .then_some("tool-call-provider-result")
+            }),
+        ConversationEvent::ToolResult(result) => tool_result_rule(result),
+        ConversationEvent::Interrupted(interrupted) => interrupted
+            .partial_text
+            .as_deref()
+            .and_then(optional_text_rule)
+            .or_else(|| {
+                replay_rule(
                     interrupted.command_replay_ref.as_deref(),
                     interrupted.command_replay_bytes,
+                    "interrupted-command-replay-pair",
                 )
-                && interrupted
-                    .command_artifact_ref
-                    .as_deref()
-                    .is_none_or(is_valid_identity)
-                && are_valid_files(&interrupted.files)
-        }
-        ConversationEvent::ContextCheckpoint(checkpoint) => is_valid_text(&checkpoint.summary),
-        ConversationEvent::TurnCompleted(completed) => are_valid_files(&completed.files),
-    };
-    if valid {
-        Ok(())
+            })
+            .or_else(|| optional_identity_rule(interrupted.command_artifact_ref.as_deref()))
+            .or_else(|| files_rule(&interrupted.files)),
+        ConversationEvent::ContextCheckpoint(checkpoint) => text_rule(&checkpoint.summary),
+        ConversationEvent::TurnCompleted(completed) => files_rule(&completed.files),
+    }
+}
+
+fn tool_result_rule(result: &ToolResultEvent) -> Option<&'static str> {
+    identity_rule(&result.call_id)
+        .or_else(|| identity_rule(&result.tool_name))
+        .or_else(|| {
+            (!is_valid_identity(&result.artifact_ref)).then_some("tool-result-artifact-ref")
+        })
+        .or_else(|| {
+            result
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.len() > MAX_PREVIEW_BYTES)
+                .then_some("tool-result-preview")
+        })
+        .or_else(|| (result.created_at_ms < 0).then_some("tool-result-created-at"))
+        .or_else(|| {
+            result
+                .permission_feedback
+                .iter()
+                .find_map(|feedback| optional_text_rule(feedback))
+        })
+        .or_else(|| {
+            (!result
+                .committed_file_presentation
+                .as_deref()
+                .is_none_or(CommittedFilePresentation::is_valid))
+            .then_some("tool-result-file-presentation-source")
+        })
+        .or_else(|| {
+            replay_rule(
+                result.command_replay_ref.as_deref(),
+                result.command_replay_bytes,
+                "tool-result-command-replay-pair",
+            )
+        })
+}
+
+fn files_rule(files: &[FileEvidence]) -> Option<&'static str> {
+    files.iter().find_map(|file| {
+        (!is_valid_path(&file.path) || !file.new_path.as_deref().is_none_or(is_valid_path))
+            .then_some("file-path")
+            .or_else(|| identity_rule(&file.tool_call_id))
+            .or_else(|| identity_rule(&file.tool_name))
+    })
+}
+
+fn text_rule(text: &str) -> Option<&'static str> {
+    if text.is_empty() {
+        Some("text-empty")
     } else {
-        Err(SessionError::InvalidConversationEvent)
+        optional_text_rule(text)
+    }
+}
+
+fn optional_text_rule(text: &str) -> Option<&'static str> {
+    (text.len() > MAX_TEXT_BYTES).then_some("text-field")
+}
+
+fn identity_rule(value: &str) -> Option<&'static str> {
+    (!is_valid_identity(value)).then_some("identity")
+}
+
+fn optional_identity_rule(value: Option<&str>) -> Option<&'static str> {
+    value.and_then(identity_rule)
+}
+
+fn replay_rule(
+    handle: Option<&str>,
+    framed_bytes: Option<u64>,
+    pair: &'static str,
+) -> Option<&'static str> {
+    match (handle, framed_bytes) {
+        (None, None) => None,
+        (Some(handle), Some(_)) => identity_rule(handle),
+        _ => Some(pair),
     }
 }
 
@@ -709,20 +768,8 @@ fn is_valid_path(path: &str) -> bool {
     (1..=MAX_PATH_BYTES).contains(&path.len())
 }
 
-fn is_valid_text(text: &str) -> bool {
-    (1..=MAX_TEXT_BYTES).contains(&text.len())
-}
-
 fn is_valid_identity(value: &str) -> bool {
     (1..=MAX_IDENTITY_BYTES).contains(&value.len())
-}
-
-fn is_valid_replay(handle: Option<&str>, framed_bytes: Option<u64>) -> bool {
-    match (handle, framed_bytes) {
-        (None, None) => true,
-        (Some(handle), Some(_)) => is_valid_identity(handle),
-        _ => false,
-    }
 }
 
 #[cfg(test)]

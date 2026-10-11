@@ -31,6 +31,7 @@ mod session_store_paths;
 mod session_store_types;
 mod session_summary_codec;
 mod session_title_generation;
+mod session_trace;
 mod session_usage;
 mod session_usage_sidecar;
 #[cfg(test)]

@@ -1341,3 +1341,32 @@ fn settings_changes_write_the_config_operation_lines() {
         ],
     );
 }
+
+#[test]
+fn quitting_an_untouched_session_writes_its_pristine_discard() {
+    let (_home, mut launched) = launch(0);
+    quit(&mut launched);
+    let log = fs::read_to_string(launched.workspace.join("trace.log")).expect("read the log");
+    assert!(
+        log.contains(" [session] event=pristine_session_discard disposition=discarded\n"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_session_store_that_cannot_be_laid_out_writes_its_layout_failure() {
+    let home = TraceHome::new(vec![Reply::sse(&chat_text_events(&["answered"]))]);
+    let data = home.root.join("data");
+    fs::create_dir_all(&data).expect("prepare the trace test");
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o500)).expect("prepare the trace test");
+    let output = home.ask(&["--json", "hello"]);
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("prepare the trace test");
+    let log = home.log();
+    assert!(
+        log.contains(
+            " [session] event=writable_layout_failed source_error=StorageFailed mapped_error=DurableLayoutFailed\n"
+        ),
+        "{}\n{log}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
