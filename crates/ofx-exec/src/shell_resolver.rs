@@ -5,6 +5,7 @@ use nix::unistd::{Uid, User};
 
 use crate::command_environment::{Environment, Profile};
 use crate::native_session::{CONTROL_MODE, MarkerKind};
+use crate::terminal_contracts::ShellSpec;
 
 const MAX_LOGIN_SHELL_BYTES: usize = 4096;
 const CAPTURED_ZSH_USER_PRELUDE: &str = "\\builtin trap - TERM; ";
@@ -85,6 +86,18 @@ pub(crate) fn interactive_invocation(
     let mut argv: Vec<OsString> = vec![path.into()];
     argv.extend(flags.iter().map(OsString::from));
     Ok(argv)
+}
+
+pub(crate) fn resolve_terminal_shell(
+    configured_login_shell: Option<&Path>,
+    shell: &ShellSpec,
+) -> Result<(PathBuf, bool), ResolveError> {
+    let (path, clean_start) = match shell {
+        ShellSpec::UserLogin => (supported_login_shell(configured_login_shell)?, false),
+        ShellSpec::Executable { path, clean_start } => (path.clone(), *clean_start),
+    };
+    interactive_invocation(&path, clean_start)?;
+    Ok((path, clean_start))
 }
 
 pub(crate) fn build_bootstrap(
@@ -279,6 +292,47 @@ mod tests {
         assert_eq!(
             interactive("/bin/zsh", false),
             Ok(vec!["/bin/zsh".to_owned(), "-l".into(), "-i".into()])
+        );
+    }
+
+    #[test]
+    fn terminal_shells_resolve_the_login_shell_and_pin_explicit_ones() {
+        let bash = Path::new("/bin/bash");
+        assert_eq!(
+            resolve_terminal_shell(Some(bash), &ShellSpec::UserLogin),
+            Ok((bash.to_path_buf(), false))
+        );
+        assert_eq!(
+            resolve_terminal_shell(None, &ShellSpec::UserLogin),
+            Err(ResolveError::MissingLoginShell)
+        );
+        let fallback = PathBuf::from(if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/bash"
+        });
+        assert_eq!(
+            resolve_terminal_shell(
+                Some(Path::new("/opt/homebrew/bin/fish")),
+                &ShellSpec::UserLogin
+            ),
+            Ok((fallback, false))
+        );
+        let explicit = |path: &str| ShellSpec::Executable {
+            path: path.into(),
+            clean_start: true,
+        };
+        assert_eq!(
+            resolve_terminal_shell(None, &explicit("/bin/zsh")),
+            Ok((PathBuf::from("/bin/zsh"), true))
+        );
+        assert_eq!(
+            resolve_terminal_shell(Some(bash), &explicit("/opt/homebrew/bin/fish")),
+            Err(ResolveError::UnsupportedShell)
+        );
+        assert_eq!(
+            resolve_terminal_shell(Some(bash), &explicit("zsh")),
+            Err(ResolveError::RelativeShellPath)
         );
     }
 

@@ -102,9 +102,9 @@ note = "Native XDG profile/config/data/cache paths exist; dedicated deferred-pro
 
 [[file]]
 upstream = "src/core/shared/self_exe.zig"
-status = "partial"
-modules = ["crates/ofx-exec/src/command_runner.rs", "crates/ofx-upgrade/src/upgrade.rs"]
-note = "pathForReexec is the supervisor's /proc/self/exe re-execution and currentExecutablePath's Linux ` (deleted)` handling is installed_executable, both with upstream's tests; pathForPeerReexec arrives with native terminal sessions (OH-19), its only caller."
+status = "ported"
+modules = ["crates/ofx-exec/src/command_runner.rs", "crates/ofx-exec/src/self_exe.rs", "crates/ofx-upgrade/src/upgrade.rs"]
+note = "pathForReexec is the supervisor's /proc/self/exe re-execution, currentExecutablePath's Linux ` (deleted)` handling is installed_executable, and pathForPeerReexec, which the terminal sessions use to start their launcher, prefers the on-disk path on Linux and falls back to /proc/<pid>/exe once it no longer opens, with upstream's on-disk probe test. The FX_TEST_PRODUCT_EXE test override is not ported, because the tests that start terminals run their own executable as the launcher."
 
 [[file]]
 upstream = "src/core/shared/sort_utils.zig"
