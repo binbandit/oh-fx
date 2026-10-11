@@ -28,7 +28,7 @@ use ofx_contract::{
     tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
-use ofx_trace::{NetworkRing, Ring, TraceContext};
+use ofx_trace::{NetworkRing, Ring, TraceContext, trace_log};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
@@ -2249,8 +2249,12 @@ impl Agent {
             {
                 let issued = tool_calls.len();
                 tool_calls.retain(|call| completed.iter().any(|id| id == call.id.as_str()));
-                if tool_calls.len() != issued {
-                    *provider_replay = None;
+                if tool_calls.len() != issued && provider_replay.take().is_some() {
+                    trace_log!(
+                        "session",
+                        "provider replay omitted reason=interrupted_incomplete_association source_calls={issued} completed_calls={}",
+                        tool_calls.len()
+                    );
                 }
             }
         }

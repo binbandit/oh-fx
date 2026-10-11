@@ -289,3 +289,90 @@ fn reading_stops_at_a_cached_frame_that_no_longer_decodes() {
     assert!(frames.next().is_none());
     assert_eq!(seqs(&cache, length(&lines[0]), log_len), [2]);
 }
+
+const TRACE_CHILD: &str = "OFX_SESSION_CACHE_TRACE_CHILD";
+const TRACE_TEST: &str = "history_snapshot::tests::cache_writer_failures_write_their_trace_lines";
+
+fn read_only_cache(fixture: &Fixture, writer: &mut CacheWriter) {
+    writer.cache.file = File::open(fixture.path(HISTORY_CACHE_FILE)).unwrap();
+}
+
+fn unreplaceable_cache() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.path(HISTORY_CACHE_FILE)).unwrap();
+    fs::write(fixture.path(HISTORY_CACHE_FILE).join("held"), "held").unwrap();
+    assert!(CacheWriter::create(&fixture.dir, "sess-1").is_err());
+}
+
+fn unwritable_append_after_a_cached_prefix() {
+    let fixture = Fixture::new();
+    let lines = [line(1), line(2), line(3)];
+    let (log, log_len) = fixture.log(&lines);
+    let first = length(&lines[0]);
+    written(&fixture, "sess-1", &lines[..1], first);
+    let mut writer = CacheWriter::open(&fixture.dir, "sess-1", &log, log_len).unwrap();
+    assert!(writer.tee.flushed > first);
+    read_only_cache(&fixture, &mut writer);
+    let (_, mut tee) = writer.split();
+    tee.append(
+        first,
+        &lines[1],
+        &decode_conversation_frame(&lines[1]).unwrap(),
+    );
+    tee.append(
+        first + length(&lines[1]),
+        &lines[2],
+        &decode_conversation_frame(&lines[2]).unwrap(),
+    );
+    assert!(writer.finish(&fixture.dir, log_len).is_none());
+}
+
+fn untruncatable_tail() {
+    let fixture = Fixture::new();
+    let lines = [line(1), line(2)];
+    let mut writer = CacheWriter::create(&fixture.dir, "sess-1").unwrap();
+    mirror(&mut writer, &lines);
+    writer.tee().flush();
+    read_only_cache(&fixture, &mut writer);
+    assert!(writer.finish(&fixture.dir, length(&lines[0])).is_none());
+}
+
+#[test]
+fn cache_writer_failures_write_their_trace_lines() {
+    if let Some(root) = std::env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        unreplaceable_cache();
+        unwritable_append_after_a_cached_prefix();
+        untruncatable_tail();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    let append = format!(
+        " [session] history cache append failed offset={} err=",
+        length(&line(1))
+    );
+    for line in [
+        " [session] history cache delete failed err=",
+        " [session] history cache create failed err=",
+        &append,
+        " [session] history cache truncate failed err=",
+    ] {
+        assert!(written.contains(line), "{line}\n{written}");
+    }
+    assert_eq!(
+        written.matches("history cache append failed").count(),
+        1,
+        "{written}"
+    );
+}
