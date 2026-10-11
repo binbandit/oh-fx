@@ -6825,6 +6825,93 @@ mod tests {
         assert_eq!(server.requests().len(), 1);
     }
 
+    fn vercel_issuer(revocations: [Reply; 2]) -> FakeServer {
+        FakeServer::start_at_origin(|origin| {
+            let mut replies = vec![Reply::status(
+                200,
+                json!({
+                    "issuer": origin,
+                    "device_authorization_endpoint": format!("{origin}/device"),
+                    "token_endpoint": format!("{origin}/token"),
+                    "revocation_endpoint": format!("{origin}/revoke"),
+                })
+                .to_string(),
+            )];
+            replies.extend(revocations);
+            replies
+        })
+    }
+
+    fn save_vercel_login(home: &tempfile::TempDir, issuer: &FakeServer) -> std::path::PathBuf {
+        let data = home.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = data.join("auth.json");
+        fs::write(
+            &file,
+            format!(
+                "{{\"version\":1,\"issuer\":\"http://{}\",\"client_id\":\"client\",\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at_ms\":4102444800000,\"scope\":\"openid offline_access\",\"token_type\":\"Bearer\",\"team_id\":\"team_1\"}}",
+                issuer.address()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        file
+    }
+
+    #[tokio::test]
+    async fn logout_vercel_revokes_and_removes_the_saved_login() {
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["still here"]))]);
+        let issuer = vercel_issuer([Reply::status(200, ""), Reply::status(500, "{}")]);
+        let home = tempfile::tempdir().unwrap();
+        let file = save_vercel_login(&home, &issuer);
+        let mut settings = local_settings(&server);
+        settings["credential_source"] = json!("fx_login");
+        let setup = agent_setup_with(&home, &settings, SubscriptionEndpoints::default()).await;
+        let mut harness = Harness::with_setup(home, setup);
+        assert_eq!(
+            notices_of(&mut harness, "/logout vercel").await,
+            [
+                auth(NoticeTone::Neutral, "Signed out of oh-fx."),
+                auth(
+                    NoticeTone::Warning,
+                    "Warning: signed out locally, but the remote session could not be revoked."
+                ),
+            ]
+        );
+        assert!(!file.exists());
+        assert_eq!(issuer.requests().len(), 3);
+        assert_eq!(saved_settings(&harness)["credential_source"], "fx_login");
+        chat(&mut harness, &["hi"]).await;
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn logout_signs_out_of_the_active_vercel_login_before_a_saved_subscription() {
+        let issuer = vercel_issuer([Reply::status(200, ""), Reply::status(200, "")]);
+        let home = codex_home();
+        let file = save_vercel_login(&home, &issuer);
+        let setup = agent_setup_with(
+            &home,
+            &json!({"credential_source": "fx_login"}),
+            SubscriptionEndpoints::default(),
+        )
+        .await;
+        assert_eq!(
+            setup.source(),
+            CredentialSource::Gateway(ofx_auth::GatewaySource::FxLogin)
+        );
+        let mut harness = Harness::with_setup(home, setup);
+        assert_eq!(
+            notices_of(&mut harness, "/logout").await,
+            [auth(NoticeTone::Neutral, "Signed out of oh-fx.")]
+        );
+        assert!(!file.exists());
+        assert!(harness.home.path().join("data/chatgpt-auth.json").exists());
+        assert_eq!(saved_settings(&harness).get("credential_source"), None);
+        assert_eq!(issuer.requests().len(), 3);
+    }
+
     #[tokio::test]
     async fn the_selected_codex_login_stays_during_work_while_others_sign_out() {
         let codex = FakeServer::start([codex_partial()]);

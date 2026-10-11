@@ -1,7 +1,7 @@
 use std::env;
 use std::sync::Arc;
 
-use ofx_auth::{ChatGptOAuth, GrokOAuth};
+use ofx_auth::{ChatGptOAuth, GrokOAuth, VercelOAuth};
 use ofx_config::{ProviderDefinition, ProviderId, Settings};
 use ofx_contract::{ModelCatalog, ModelProvider, Notice, NoticeTone};
 use ofx_gateway::{CODEX_TITLE_MODEL, CodexReviewTransport};
@@ -71,6 +71,14 @@ impl AgentSetup {
             endpoints,
         )
         .ok()
+    }
+
+    pub(crate) fn vercel_oauth(&self) -> Option<VercelOAuth> {
+        Some(VercelOAuth::new(
+            self.preferences.as_ref()?.data.clone(),
+            &user_agent(),
+            self.endpoints().vercel,
+        ))
     }
 
     pub(crate) fn grok_oauth(&self) -> Option<GrokOAuth> {

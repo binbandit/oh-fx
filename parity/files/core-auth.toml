@@ -13,7 +13,7 @@ note = "Codex credential preparation, refresh and the unrefreshed stored-login r
 upstream = "src/core/auth/auth_transition.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_agent_runtime/sign_out.rs"]
-note = "The default /logout target and the busy rule for signing out of the selected provider are implemented; Gateway and Grok logout fallbacks are absent because oh-fx has no Gateway transport and does not activate Grok."
+note = "The default /logout target, which honors an active or saved Vercel sign-in, and the busy rule for signing out of the selected provider are implemented, and /logout vercel removes and revokes the Vercel sign-in; the recalculation of the active source after a gateway logout, the logout fallbacks and the 401 replay decision come with the shell's Vercel sign-in, as docs/differences/gateway.md records, and Grok is not activated."
 
 [[file]]
 upstream = "src/core/auth/browser_callback.zig"
@@ -66,14 +66,14 @@ note = "Excluded JavaScript host authentication FFI entrypoint and host-owned se
 [[file]]
 upstream = "src/core/auth/login_flow.zig"
 status = "partial"
-modules = ["crates/ofx-auth/src/login_flow.rs", "crates/ofx-auth/src/login_flow/poll.rs", "crates/ofx-auth/src/login_flow/team_picker.rs", "crates/ofx-auth/src/raw_input.rs"]
-note = "The CLI runLogin exists: login preparation with the client-id fallback, the device-code output, the browser-open prompt and its polling schedule, the team fetch, the numbered and interactive team pickers, the login session and its save, with upstream's tests for the polling schedule and teams; the in-shell SignInRuntime, team switching with validation and logout with revocation are absent, as their commands are."
+modules = ["crates/ofx-auth/src/login_flow.rs", "crates/ofx-auth/src/login_flow/poll.rs", "crates/ofx-auth/src/login_flow/team_picker.rs", "crates/ofx-auth/src/login_flow/teams.rs", "crates/ofx-auth/src/login_flow/logout.rs", "crates/ofx-auth/src/raw_input.rs"]
+note = "The CLI runLogin exists: login preparation with the client-id fallback, the device-code output, the browser-open prompt and its polling schedule, the team fetch, the numbered and interactive team pickers, the login session and its save, with upstream's tests for the polling schedule and teams; runTeams with loadTeamSelection and the session-changed check, and logout with remote revocation exist; the team validator waits for the gateway model catalog as docs/differences/gateway.md records, and the in-shell SignInRuntime is absent."
 
 [[file]]
 upstream = "src/core/auth/oauth.zig"
 status = "partial"
 modules = ["crates/ofx-auth/src/oauth.rs", "crates/ofx-auth/src/oauth/device.rs"]
-note = "PKCE, endpoint validation, OAuth decoding, issuer discovery, device authorization, device-token polling, token refresh, reduced-grant detection and upstream's OAuth error mapping exist; token revocation comes with Vercel logout."
+note = "PKCE, endpoint validation, OAuth decoding, issuer discovery, device authorization, device-token polling, token refresh, token revocation, reduced-grant detection and upstream's OAuth error mapping exist."
 
 [[file]]
 upstream = "src/core/auth/oauth_session.zig"

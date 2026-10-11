@@ -423,3 +423,159 @@ fn doctor_reports_an_expired_login_with_its_team_without_refreshing_it() {
     home.assert_no_secrets(&output);
     home.assert_no_secrets(&json);
 }
+
+#[test]
+fn teams_switches_the_saved_team_and_selects_the_gateway_with_the_login() {
+    let server = FakeServer::start([teams()]);
+    let home = Home::new();
+    home.write_session(&origin(&server), i64::MAX);
+    let output = home.run(&["teams"], &[], b"1\n");
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "\nSelect a Vercel team for AI Gateway:\nModel requests will use the selected team; Gateway access may still require billing or API setup.\n\n  1. Personal (personal)\n  2. Labs (labs) (default)\nTeam [2]: Selected Vercel team: Personal (personal).\n"
+    );
+    assert_eq!(text(&output.stderr), "");
+    assert_eq!(
+        server.requests()[0].header("authorization"),
+        Some(format!("Bearer {ACCESS}").as_str())
+    );
+    let session = fs::read_to_string(home.session_file()).unwrap();
+    assert!(session.ends_with(",\"team_slug\":\"personal\",\"team_id\":\"team_personal\"}\n"));
+    assert_eq!(
+        home.settings(),
+        Some(json!({
+            "credential_source": "fx_login",
+            "models": {"gateway": "spacexai/grok-4.7"},
+            "provider": "gateway",
+        }))
+    );
+    home.assert_no_secrets(&output);
+}
+
+#[test]
+fn teams_needs_a_login_and_a_team_list() {
+    let home = Home::new();
+    let output = home.run(&["teams"], &[], b"");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(text(&output.stderr), "oh-fx teams: run oh-fx login first\n");
+
+    let server = FakeServer::start([Reply::status(500, "{}")]);
+    home.write_session(&origin(&server), i64::MAX);
+    let output = home.run(&["teams"], &[], b"");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "oh-fx teams: failed to list Vercel teams\n"
+    );
+    assert!(
+        fs::read_to_string(home.session_file())
+            .unwrap()
+            .contains("\"team_id\":\"team_labs\"")
+    );
+    home.assert_no_secrets(&output);
+}
+
+#[test]
+fn logout_revokes_the_login_removes_it_and_forgets_the_chosen_source() {
+    let server = FakeServer::start_at_origin(|origin| {
+        [
+            metadata(origin),
+            Reply::status(200, ""),
+            Reply::status(200, ""),
+        ]
+    });
+    let home = Home::new();
+    home.write_session(&origin(&server), i64::MAX);
+    fs::create_dir_all(home.root.join("config/oh-fx")).unwrap();
+    fs::write(
+        home.root.join("config/oh-fx/settings.json"),
+        r#"{"provider":"gateway","credential_source":"fx_login"}"#,
+    )
+    .unwrap();
+    let output = home.run(&["logout"], &[], b"");
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "Signed out of oh-fx.\n");
+    assert_eq!(text(&output.stderr), "");
+    assert!(!home.session_file().exists());
+    assert_eq!(home.settings(), Some(json!({"provider": "gateway"})));
+    let bodies: Vec<String> = server
+        .requests()
+        .iter()
+        .skip(1)
+        .map(ofx_testkit::RecordedRequest::body_text)
+        .collect();
+    assert_eq!(
+        bodies,
+        [
+            format!("client_id=cl_test&token={REFRESH}&token_type_hint=refresh_token"),
+            format!("client_id=cl_test&token={ACCESS}&token_type_hint=access_token"),
+        ]
+    );
+    home.assert_no_secrets(&output);
+
+    let again = home.run(&["logout", "vercel"], &[], b"");
+    assert!(again.status.success());
+    assert_eq!(text(&again.stdout), "No oh-fx login session found.\n");
+}
+
+#[test]
+fn logout_warns_when_the_remote_session_could_not_be_revoked() {
+    let server = FakeServer::start_at_origin(|origin| {
+        [
+            metadata(origin),
+            Reply::status(500, "{}"),
+            Reply::status(200, ""),
+        ]
+    });
+    let home = Home::new();
+    home.write_session(&origin(&server), i64::MAX);
+    let output = home.run(&["logout"], &[], b"");
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "Signed out of oh-fx.\n");
+    assert_eq!(
+        text(&output.stderr),
+        "Warning: signed out locally, but the remote session could not be revoked.\n"
+    );
+    assert!(!home.session_file().exists());
+    home.assert_no_secrets(&output);
+}
+
+#[test]
+fn host_managed_authentication_leaves_teams_and_logout_alone() {
+    let server = FakeServer::start([]);
+    let home = Home::new();
+    home.write_session(&origin(&server), i64::MAX);
+    for args in [&["teams"][..], &["logout"], &["logout", "vercel"]] {
+        let output = home.run(args, &[("OH_FX_AUTH_MODE", "host-managed")], b"");
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(
+            text(&output.stdout),
+            "Authentication is managed by the host.\n"
+        );
+    }
+    assert!(home.session_file().exists());
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn teams_saves_the_team_before_an_activation_failure() {
+    let server = FakeServer::start([teams()]);
+    let home = Home::new();
+    home.write_session(&origin(&server), i64::MAX);
+    fs::create_dir_all(home.root.join("config/oh-fx")).unwrap();
+    fs::write(home.root.join("config/oh-fx/settings.json"), "{").unwrap();
+    let output = home.run(&["teams"], &[], b"1\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stdout).ends_with("Selected Vercel team: Personal (personal).\n"));
+    assert_eq!(
+        text(&output.stderr),
+        "oh-fx login: could not load settings\n"
+    );
+    assert!(
+        fs::read_to_string(home.session_file())
+            .unwrap()
+            .contains("\"team_id\":\"team_personal\"")
+    );
+    home.assert_no_secrets(&output);
+}

@@ -120,6 +120,20 @@ pub(crate) async fn refresh_token(
     parse_token_set(&bytes)
 }
 
+pub(crate) async fn revoke_token(
+    transport: &Transport,
+    endpoint: &str,
+    client_id: &str,
+    token: &str,
+    token_type_hint: &str,
+) -> Result<(), VercelError> {
+    let mut form = FormBody::default();
+    form.append("client_id", client_id);
+    form.append("token", token);
+    form.append("token_type_hint", token_type_hint);
+    post_form(transport, endpoint, &form).await.map(drop)
+}
+
 async fn post_form(
     transport: &Transport,
     url: &str,
