@@ -107,3 +107,6 @@ async fn revocation_failed(grant: &Credentials, options: &ConnectOptions) -> boo
         Err(_) => true,
     }
 }
+
+#[cfg(test)]
+mod tests;

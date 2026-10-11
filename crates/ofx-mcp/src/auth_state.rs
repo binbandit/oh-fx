@@ -262,4 +262,90 @@ mod tests {
             AuthenticationState::Authenticated
         );
     }
+
+    #[tokio::test]
+    async fn a_logout_fence_refuses_publication_until_rollback() {
+        let state = AuthState::default();
+        let epoch = state.begin_connection().unwrap();
+        state.credentials_loaded(epoch, true).unwrap();
+        state.authenticated(grant());
+        state.store_pending(Challenge {
+            scope: Some("tools.call".to_owned()),
+            ..Challenge::default()
+        });
+        let generation = state.generation();
+        let detached = state.begin_logout().await.unwrap();
+        assert_eq!(
+            detached.grant().map(|grant| grant.client_id.as_str()),
+            Some("client")
+        );
+        assert!(state.grant().is_none());
+        assert_eq!(state.generation(), generation);
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::None
+        );
+        assert_eq!(state.check_authority(), Err(McpError::McpAuthorityChanged));
+        assert_eq!(
+            state.current_generation(),
+            Err(McpError::McpAuthorityChanged)
+        );
+        assert_eq!(state.begin_connection(), Err(McpError::McpAuthorityChanged));
+        assert_eq!(
+            state.credentials_loaded(epoch, true),
+            Err(McpError::McpAuthorityChanged)
+        );
+        assert!(!state.publishable(generation));
+        assert!(!state.refreshed(generation, &grant()));
+        state.store_pending(Challenge::default());
+        assert_eq!(state.generation(), generation);
+        assert!(state.begin_logout().await.is_err());
+        state.restore_after_logout(detached);
+        assert_eq!(state.generation(), generation);
+        assert_eq!(state.check_authority(), Ok(()));
+        assert!(state.grant().is_some());
+        assert_eq!(state.pending().scope.as_deref(), Some("tools.call"));
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::Required
+        );
+        assert!(state.bound_to(epoch));
+    }
+
+    #[tokio::test]
+    async fn a_committed_logout_moves_the_generation_and_the_epoch() {
+        let state = AuthState::default();
+        let epoch = state.begin_connection().unwrap();
+        let generation = state.credentials_loaded(epoch, true).unwrap();
+        let detached = state.begin_logout().await.unwrap();
+        drop(detached);
+        state.commit_logout();
+        state.finish_logout();
+        assert!(!state.bound_to(epoch));
+        assert!(state.generation() > generation);
+        assert_eq!(
+            state.credentials_loaded(epoch, true),
+            Err(McpError::McpAuthorityChanged)
+        );
+        let fresh = state.begin_connection().unwrap();
+        assert!(state.credentials_loaded(fresh, false).is_ok());
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restore_keeps_presence_flags_without_a_grant() {
+        let state = AuthState::default();
+        state.credentials_loaded(0, true).unwrap();
+        let detached = state.begin_logout().await.unwrap();
+        assert!(detached.grant().is_none());
+        state.restore_after_logout(detached);
+        assert!(state.grant().is_none());
+        assert_eq!(
+            state.authentication(&config(false)),
+            AuthenticationState::Authenticated
+        );
+    }
 }
