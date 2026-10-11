@@ -17,7 +17,7 @@ use crate::held_directory::HeldDirectory;
 use crate::output_echo::{LineEcho, OutputEcho};
 use crate::shell_resolver::captured_invocation;
 
-const MAX_LIVE_ENTRIES: usize = 64;
+pub(crate) const MAX_LIVE_ENTRIES: usize = 64;
 const MAX_TOMBSTONES: usize = 32;
 const STOP_SETTLE_TIMEOUT: Duration =
     TERMINATION_SETTLE_TIMEOUT.saturating_add(Duration::from_secs(1));
