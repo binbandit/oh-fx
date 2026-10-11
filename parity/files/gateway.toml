@@ -2,13 +2,13 @@
 upstream = "src/gateway/chat_completions.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/chat_completions.rs"]
-note = "Custom chat-completions transport, admitted before it connects, with its connection, response-head and error-body timeouts, is implemented; Vercel Gateway transport routing and upstream retry ownership are absent, and the provider_replay_omitted lines are not written because this transport neither keeps nor sends reasoning replay."
+note = "Custom chat-completions transport, admitted before it connects, with its connection, response-head and error-body timeouts, is implemented, and a stream that reports prompt and completion tokens carries exact billing as <connection id>/<model> with cost 0, a documented difference from upstream's possibly-billed outcome; Vercel Gateway transport routing and upstream retry ownership are absent, and the provider_replay_omitted lines are not written because this transport neither keeps nor sends reasoning replay."
 
 [[file]]
 upstream = "src/gateway/chat_completions_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/chat_completions_protocol.rs"]
-note = "Function selection, request validation, provider-executed history refusal, streaming reduction, and user image content parts from verified snapshots exist; tool image follow-up messages and provider replay projection are incomplete, alongside documented gateway-dialect differences."
+note = "Function selection, request validation, provider-executed history refusal, streaming reduction, and user image content parts from verified snapshots exist, and the reducer keeps the stream id and the cached prompt and reasoning token details for exact billing; tool image follow-up messages and provider replay projection are incomplete, alongside documented gateway-dialect differences."
 
 [[file]]
 upstream = "src/gateway/client.zig"
@@ -47,7 +47,7 @@ note = "Excluded JavaScript host FFI entrypoint; this ledger targets the native 
 upstream = "src/gateway/openai_codex.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex.rs"]
-note = "Responses transport, admission once its credential headers are built, the 30-second connection timeout with an unlimited response-head wait, replay with its provider_replay_omitted trace line, the login refresh and authenticated replay reported to the agent for its trace lines, and tool-start and streamed tool input events are implemented; provisional tool status rows are tracked separately by OH-6."
+note = "Responses transport, admission once its credential headers are built, the 30-second connection timeout with an unlimited response-head wait, replay with its provider_replay_omitted trace line, the login refresh and authenticated replay reported to the agent for its trace lines, tool-start and streamed tool input events, and exact subscription billing as codex/<model> for a completed response with an id and token counts are implemented; a failed, cut-off or filtered response is an error before its usage is read; provisional tool status rows are tracked separately by OH-6."
 
 [[file]]
 upstream = "src/gateway/openai_codex_models.zig"
@@ -77,7 +77,7 @@ note = "Codex permission-review transport is implemented; shared reviewer routin
 upstream = "src/gateway/responses_protocol.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/responses_protocol.rs"]
-note = "Responses argument, text and reasoning reconciliation exists, user images are written as input_image parts from verified snapshots, and function call starts and streamed argument chunks are reported where upstream calls on_tool_start and on_tool_input; tool image outputs, preverified vision images, and the request budget checks are absent, and provisional tool status rows are tracked by OH-6."
+note = "Responses argument, text and reasoning reconciliation exists, user images are written as input_image parts from verified snapshots, function call starts and streamed argument chunks are reported where upstream calls on_tool_start and on_tool_input, and the terminal response id, the usage details and buildSubscriptionBilling's projection exist; tool image outputs, preverified vision images, and the request budget checks are absent, and provisional tool status rows are tracked by OH-6."
 
 [[file]]
 upstream = "src/gateway/sse.zig"

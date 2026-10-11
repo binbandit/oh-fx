@@ -270,6 +270,7 @@ fn into_completion(
             source: replay_source(model),
             parts_json,
         }),
+        billing: None,
     })
 }
 

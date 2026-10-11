@@ -89,6 +89,7 @@ impl ModelProvider for ScriptedProvider {
                 tool_calls,
                 finish_reason,
                 usage: Usage::default(),
+                billing: None,
                 provider_replay: None,
             })
         })
