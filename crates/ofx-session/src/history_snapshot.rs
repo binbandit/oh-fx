@@ -95,6 +95,12 @@ fn opened(dir: &PrivateDir, session_id: &str, access: Access) -> Option<File> {
     }
 }
 
+fn delete_cache(dir: &PrivateDir) {
+    if let Err(error) = dir.remove(HISTORY_CACHE_FILE) {
+        trace_log!(SESSION, "history cache delete failed err={error}");
+    }
+}
+
 fn trimmed(file: &File, len: u64) -> Result<(), SessionError> {
     if file.metadata()?.len() != len {
         file.set_len(len)?;
@@ -152,8 +158,10 @@ impl CacheWriter {
     }
 
     pub(crate) fn create(dir: &PrivateDir, session_id: &str) -> Result<Self, SessionError> {
-        let _ = dir.remove(HISTORY_CACHE_FILE);
-        let file = create_managed_file(dir, HISTORY_CACHE_FILE)?;
+        delete_cache(dir);
+        let file = create_managed_file(dir, HISTORY_CACHE_FILE).inspect_err(|error| {
+            trace_log!(SESSION, "history cache create failed err={error}");
+        })?;
         let mut tee = Tee::new(0, 0, MAX_FRAMES);
         tee.pending.extend_from_slice(MAGIC);
         tee.pending.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -192,7 +200,7 @@ impl CacheWriter {
         let Self { mut cache, tee } = self;
         if tee.broken || cache.settle(tee.appended, committed).is_none() {
             drop(cache);
-            let _ = dir.remove(HISTORY_CACHE_FILE);
+            delete_cache(dir);
             return None;
         }
         Some(cache)
@@ -206,7 +214,14 @@ impl HistoryCache {
             .frames
             .partition_point(|frame| frame.log_end() <= committed);
         if let Some(first_dropped) = self.frames.get(kept) {
-            self.file.set_len(first_dropped.file_offset).ok()?;
+            if let Err(error) = self.file.set_len(first_dropped.file_offset) {
+                trace_log!(
+                    SESSION,
+                    "history cache truncate failed err={}",
+                    SessionError::from(error)
+                );
+                return None;
+            }
             self.frames.truncate(kept);
         }
         self.frames.shrink_to_fit();
@@ -225,6 +240,15 @@ impl Tee {
             broken: false,
         }
     }
+
+    fn unflushed_log_offset(&self) -> u64 {
+        let first = self
+            .appended
+            .partition_point(|frame| frame.file_offset < self.flushed);
+        self.appended
+            .get(first)
+            .map_or(self.covered, |frame| frame.log_offset)
+    }
 }
 
 impl CacheTee<'_> {
@@ -232,7 +256,11 @@ impl CacheTee<'_> {
         if self.tee.broken || self.tee.appended.len() == self.tee.room {
             return;
         }
-        if self.encode(log_offset, line, envelope).is_none() {
+        if let Err(error) = self.encode(log_offset, line, envelope) {
+            trace_log!(
+                SESSION,
+                "history cache append failed offset={log_offset} err={error}"
+            );
             self.tee.broken = true;
             return;
         }
@@ -246,11 +274,21 @@ impl CacheTee<'_> {
         log_offset: u64,
         line: &[u8],
         envelope: &ConversationEnvelope,
+    ) -> Result<(), &'static str> {
+        if log_offset != self.tee.covered {
+            return Err("FrameOffsetMismatch");
+        }
+        self.encode_frame(log_offset, line, envelope)
+            .ok_or("PayloadTooLarge")
+    }
+
+    fn encode_frame(
+        &mut self,
+        log_offset: u64,
+        line: &[u8],
+        envelope: &ConversationEnvelope,
     ) -> Option<()> {
         let tee = &mut *self.tee;
-        if log_offset != tee.covered {
-            return None;
-        }
         let log_bytes = u64::from(u32::try_from(line.len()).ok()?);
         let line_crc = crc32fast::hash(line);
         let start = tee.pending.len();
@@ -284,7 +322,13 @@ impl CacheTee<'_> {
         if tee.broken || tee.pending.is_empty() {
             return;
         }
-        if self.file.write_all_at(&tee.pending, tee.flushed).is_err() {
+        if let Err(error) = self.file.write_all_at(&tee.pending, tee.flushed) {
+            trace_log!(
+                SESSION,
+                "history cache append failed offset={} err={}",
+                tee.unflushed_log_offset(),
+                SessionError::from(error)
+            );
             tee.broken = true;
             return;
         }
