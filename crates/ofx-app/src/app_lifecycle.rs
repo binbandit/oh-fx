@@ -19,7 +19,8 @@ use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_text::encode_terminal_safe;
 use ofx_tui::{
-    Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender, run_shell, ui_channel,
+    ForegroundLifecycle, Opening, ShellOptions, TerminalError, UiEventReceiver, UiEventSender,
+    run_shell, ui_channel,
 };
 use ofx_workspace::StatuslineIdentity;
 use tokio::runtime::Runtime;
@@ -47,6 +48,7 @@ use crate::herdr::{Herdr, HerdrObserver};
 use crate::hooks;
 use crate::native::NativeClipboard;
 use crate::prompt_history_runtime::PromptHistoryRuntime;
+use crate::shutdown_report::ShutdownTrace;
 use crate::skill_mention_runtime::SkillMentions;
 use crate::skills::Installations;
 use startup_resume::open_requested;
@@ -286,6 +288,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
         sender.send(UiEvent::Notice { notice });
     }
     let lifecycle = Herdr::from_env().map(Arc::new);
+    let shutdown = ShutdownTrace::default();
     let hooks = hooks::configure(lifecycle.as_ref()).map_err(SessionError::Hooks)?;
     session.setup.attach_hooks(hooks.clone());
     let upgrade = InteractiveUpgrade::start(
@@ -319,9 +322,13 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
             session.profile.cache_dir(),
         ))),
         skill_catalog: Some(Box::new(SkillMentions::new(session.setup.skills().clone()))),
-        lifecycle: lifecycle.as_ref().map(|client| {
-            Box::new(HerdrObserver(Arc::clone(client))) as Box<dyn ofx_tui::ForegroundLifecycle>
-        }),
+        lifecycle: Some(Box::new(Exiting {
+            shutdown: shutdown.clone(),
+            herdr: lifecycle
+                .as_ref()
+                .map(|client| HerdrObserver(Arc::clone(client))),
+            stop_upgrader: upgrade.upgrader().map(SessionUpgrader::stopper),
+        })),
         hooks: hooks.clone(),
         steering: Some(Box::new(WaitingSteering(Arc::clone(&steering)))),
         opening: session.opening,
@@ -338,25 +345,69 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let picking = matches!(options.opening, Opening::SessionPicker);
     let refreshes = session.setup.refreshes();
     let installations = session.setup.skills().installations();
+    let state = session.profile.paths().map(|paths| paths.state.clone());
     let agent = agent_work(
         session.setup,
         (session.persistence, picking, session.ultrafast_requested),
         session.executions,
         steering,
-        runtime,
+        (runtime, shutdown.clone()),
         (lifecycle, hooks),
         upgrade.shortcut(),
     );
-    host(
+    let joined = host(
         options,
         sender,
         receiver,
-        refreshes.as_deref(),
-        Some(&installations),
-        upgrade.upgrader(),
+        Leaving {
+            refreshes: refreshes.as_deref(),
+            installations: Some(&installations),
+            upgrader: upgrade.upgrader(),
+            shutdown: Some(&shutdown),
+        },
         agent,
     )?;
+    shutdown.finish(joined, state.as_deref(), ofx_trace::timestamp_ms());
     upgrade.relaunch().map_err(SessionError::Relaunch)
+}
+
+#[derive(Clone, Copy, Default)]
+struct Leaving<'a> {
+    refreshes: Option<&'a DetachedRefreshes>,
+    installations: Option<&'a Installations>,
+    upgrader: Option<&'a SessionUpgrader>,
+    shutdown: Option<&'a ShutdownTrace>,
+}
+
+impl Leaving<'_> {
+    fn mark(&self, stage: &'static str) {
+        if let Some(shutdown) = self.shutdown {
+            shutdown.mark(stage);
+        }
+    }
+}
+
+struct Exiting {
+    shutdown: ShutdownTrace,
+    herdr: Option<HerdrObserver>,
+    stop_upgrader: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+impl ForegroundLifecycle for Exiting {
+    fn leaving(&self) {
+        self.shutdown.begin();
+    }
+
+    fn shutdown(&self) {
+        self.shutdown.mark("terminal_released");
+        if let Some(herdr) = &self.herdr {
+            herdr.shutdown();
+        }
+        if let Some(stop) = &self.stop_upgrader {
+            stop();
+        }
+        self.shutdown.mark("background_stops_requested");
+    }
 }
 
 fn agent_work(
@@ -364,7 +415,7 @@ fn agent_work(
     (persistence, pick_at_start, ultrafast_requested): (Option<Persistence>, bool, bool),
     executions: ManagedExecutions,
     steering: Arc<WorkerRuntime>,
-    runtime: Runtime,
+    (runtime, shutdown): (Runtime, ShutdownTrace),
     (herdr, hooks): (Option<Arc<Herdr>>, HookView),
     upgrade: UpgradeShortcut,
 ) -> impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static {
@@ -388,16 +439,20 @@ fn agent_work(
                 tokio::spawn::<BoxFuture<'static, ()>>(Box::pin(discover_mcp(mcp, notices)))
             });
             Box::pin(controller.run(commands)).await;
+            shutdown.mark("persistence_finalized");
             if let Some(discovery) = discovery {
                 discovery.abort();
             }
             if let Some(mcp) = &mcp {
                 mcp.shutdown(ShutdownMode::Immediate).await;
             }
+            shutdown.mark("mcp_children_terminated");
             executions.shutdown().await;
+            shutdown.mark("terminals_ended");
             if let Some(refreshes) = refreshes {
                 refreshes.settle().await;
             }
+            shutdown.mark("credentials_saved");
         });
         runtime.shutdown_timeout(Duration::from_millis(100));
     }
@@ -435,13 +490,11 @@ fn host(
     options: ShellOptions,
     events: UiEventSender,
     receiver: UiEventReceiver,
-    refreshes: Option<&DetachedRefreshes>,
-    installations: Option<&Installations>,
-    upgrader: Option<&SessionUpgrader>,
+    leaving: Leaving<'_>,
     work: impl FnOnce(UiEventSender, UnboundedReceiver<UiCommand>) + Send + 'static,
-) -> Result<(), SessionError> {
+) -> Result<bool, SessionError> {
     let stop_upgrader = || {
-        if let Some(upgrader) = upgrader {
+        if let Some(upgrader) = leaving.upgrader {
             upgrader.stop_for_process_exit();
         }
     };
@@ -466,8 +519,14 @@ fn host(
         })
         .unwrap_or_else(|payload| panic::resume_unwind(payload));
     stop_upgrader();
-    worker.finish(refreshes, installations, &panics)?;
-    Ok(result?)
+    let joined = worker.finish(leaving.refreshes, leaving.installations, &panics)?;
+    leaving.mark(if joined {
+        "worker_thread_joined"
+    } else {
+        "worker_thread_join_timed_out"
+    });
+    result?;
+    Ok(joined)
 }
 
 struct Worker {
@@ -495,7 +554,7 @@ impl Worker {
         refreshes: Option<&DetachedRefreshes>,
         installations: Option<&Installations>,
         panics: &PanicCapture,
-    ) -> Result<(), SessionError> {
+    ) -> Result<bool, SessionError> {
         if let Some(refreshes) = refreshes {
             refreshes.close();
         }
@@ -508,7 +567,8 @@ impl Worker {
                     if installations.is_some_and(|installs| {
                         installs.wait_for_running(WORKER_SHUTDOWN_GRACE)
                     }) || refreshes.is_some_and(DetachedRefreshes::wait_for_running) => {}
-                Ok(()) | Err(RecvTimeoutError::Timeout) => return Ok(()),
+                Ok(()) => return Ok(true),
+                Err(RecvTimeoutError::Timeout) => return Ok(false),
             }
         }
     }
