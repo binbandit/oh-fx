@@ -31,8 +31,8 @@ fn send_marker(args: &[OsString]) -> io::Result<()> {
     frame[..NONCE_LEN].copy_from_slice(nonce);
     frame[NONCE_LEN] = kind as u8;
     let mut stream = UnixStream::connect(control_path)?;
-    stream.write_all(&frame)?;
     stream.set_read_timeout(Some(MARKER_ACK_TIMEOUT))?;
+    stream.write_all(&frame)?;
     let mut ack = [0; 1];
     stream.read_exact(&mut ack)?;
     if ack[0] != MARKER_ACK {

@@ -192,8 +192,8 @@ fn the_control_socket_acknowledges_only_accepted_markers() {
     };
     let send = |frame: [u8; MARKER_FRAME_LEN]| {
         let mut stream = UnixStream::connect(&control).unwrap();
-        stream.write_all(&frame).unwrap();
         stream.set_read_timeout(Some(LONG)).unwrap();
+        stream.write_all(&frame).unwrap();
         let mut ack = Vec::new();
         stream.read_to_end(&mut ack).unwrap();
         ack
