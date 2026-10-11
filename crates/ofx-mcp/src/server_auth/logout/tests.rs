@@ -723,3 +723,28 @@ async fn a_committed_logout_revokes_a_refresh_it_held_after_its_own_grant() {
     );
     assert!(!pending.profile.file().exists());
 }
+
+#[tokio::test]
+async fn a_logout_whose_caller_goes_away_still_revokes_after_it_commits() {
+    let pending = a_refresh_discarded_during_a_pending_logout(RENEWED).await;
+    pending.logging_out.abort();
+    assert!(pending.logging_out.await.unwrap_err().is_cancelled());
+    drop(pending.held);
+    assert!(
+        pending
+            .server
+            .wait_for(|request| request.body.starts_with("token=renewed-access"))
+            .await
+    );
+    assert_eq!(
+        revocations(&pending.server),
+        [
+            "token=stored-refresh&token_type_hint=refresh_token&client_id=client",
+            "token=stored-access&token_type_hint=access_token&client_id=client",
+            "token=renewed-refresh&token_type_hint=refresh_token&client_id=client",
+            "token=renewed-access&token_type_hint=access_token&client_id=client",
+        ]
+    );
+    assert!(!pending.profile.file().exists());
+    assert_eq!(pending.live.auth.check_authority(), Ok(()));
+}

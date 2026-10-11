@@ -61,20 +61,14 @@ pub(crate) async fn logout(
     } else {
         None
     };
-    let fenced = tokio::spawn(log_out(Arc::clone(server), store, lookup, stored));
-    let Some((deleted, grants)) = fenced.await.map_err(|_| McpError::Cancelled)?? else {
-        return Ok(LogoutResult::default());
-    };
-    let mut revocation_failed = false;
-    for grant in &grants {
-        revocation_failed |= revoke(grant, options).await;
-    }
-    Ok(LogoutResult {
-        removed: true,
-        revocation_failed,
-        repaired_entries: deleted.repaired_entries,
-        local_only: false,
-    })
+    let fenced = tokio::spawn(log_out(
+        Arc::clone(server),
+        store,
+        lookup,
+        stored,
+        options.clone(),
+    ));
+    fenced.await.map_err(|_| McpError::Cancelled)?
 }
 
 async fn log_out(
@@ -82,7 +76,8 @@ async fn log_out(
     store: CredentialStore,
     lookup: GrantLookup,
     stored: Option<Credentials>,
-) -> Result<Option<(DeleteResult, Vec<Credentials>)>, McpError> {
+    options: ConnectOptions,
+) -> Result<LogoutResult, McpError> {
     let detached = server.auth.begin_logout().await?;
     let deleted = match delete(&store, &lookup).await {
         Ok(deleted) => deleted,
@@ -94,16 +89,22 @@ async fn log_out(
     let grant = detached.grant().cloned().or(stored);
     if deleted.removed == 0 && deleted.repaired_entries == 0 && grant.is_none() {
         server.auth.restore_after_logout(detached);
-        return Ok(None);
+        return Ok(LogoutResult::default());
     }
     drop(detached);
     let discarded = server.auth.commit_logout();
     server.log_out().await;
     server.auth.finish_logout();
-    Ok(Some((
-        deleted,
-        grant.into_iter().chain(discarded).collect(),
-    )))
+    let mut revocation_failed = false;
+    for revoked in grant.iter().chain(&discarded) {
+        revocation_failed |= revoke(revoked, &options).await;
+    }
+    Ok(LogoutResult {
+        removed: true,
+        revocation_failed,
+        repaired_entries: deleted.repaired_entries,
+        local_only: false,
+    })
 }
 
 async fn delete(store: &CredentialStore, lookup: &GrantLookup) -> Result<DeleteResult, McpError> {
