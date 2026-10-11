@@ -4,6 +4,7 @@ use ofx_contract::{ChatMessage, ProviderOptions, StreamEvent, ToolChoice, Usage}
 use ofx_testkit::{FakeServer, RecordedRequest, RefusedPort, Reply};
 
 use super::*;
+use crate::test_sources::{CapturedImages, ONE_PIXEL_PNG, user_with_images};
 
 const KEY: &str = "vck_live_0123456789abcdef";
 const MODEL: &str = "openai/gpt-5.6-sol";
@@ -395,4 +396,34 @@ fn diagnostics_keep_identified_details_and_name_the_cause_otherwise() {
         "provider_error: two words: message"
     );
     assert_eq!(diagnostic(Some(": x"), "fallback"), "fallback: : x");
+}
+
+#[tokio::test]
+async fn images_over_the_pixel_limit_stay_out_of_gateway_requests_with_upstreams_notice() {
+    let images = CapturedImages::new();
+    let wide = images.capture(
+        1,
+        "wide.jpg",
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x0a\x23\x28\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01\xff\xd9",
+    );
+    let pixel = images.capture(2, "pixel.png", ONE_PIXEL_PNG);
+    let snapshot = wide.snapshot_path.clone().unwrap();
+    let messages = [user_with_images("compare", vec![wide, pixel.clone()])];
+    let server = FakeServer::start([Reply::sse(&[STOP])]);
+    let gateway = keyed(&server);
+    let turn = request(&messages, None);
+    let measured = gateway.request_body(&turn);
+    let mut sink = |_: StreamEvent| {};
+    gateway
+        .stream(&turn, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap();
+    let notice = format!(
+        "[Image #1 not sent: image/jpeg is 9000x10 pixels. This request permits at most 8000 per side and 5 MiB encoded per image. The original is saved at {snapshot}. Use an available image tool to save a smaller copy to a new file ending in .jpg, then read_file the copy. If no image tool is available, ask the user before installing one.]\ncompare"
+    );
+    let withheld = [user_with_images(&notice, vec![pixel])];
+    let expected = build_request(&request(&withheld, None), USER_AGENT).unwrap();
+    let body = only_request(&server).body_text();
+    assert_eq!(body, expected);
+    assert_eq!(measured.as_deref(), Some(&*body));
 }

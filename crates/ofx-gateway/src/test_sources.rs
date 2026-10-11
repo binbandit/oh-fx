@@ -30,6 +30,9 @@ impl ChunkSource for Paced {
     }
 }
 
+pub(crate) const ONE_PIXEL_PNG: &[u8] =
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01";
+
 pub(crate) struct CapturedImages {
     _directory: tempfile::TempDir,
     root: PathBuf,
