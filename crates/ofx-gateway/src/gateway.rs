@@ -101,10 +101,7 @@ impl GatewayProvider {
     }
 
     fn build(&self, request: &ModelRequest<'_>) -> Result<String, RequestError> {
-        match self
-            .attachments
-            .withhold_oversized_attachments(request.messages)
-        {
+        match self.attachments.withhold_oversized_images(request.messages) {
             Some(messages) => build_request(
                 &ModelRequest {
                     messages: &messages,

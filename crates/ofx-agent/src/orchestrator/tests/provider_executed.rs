@@ -165,6 +165,7 @@ async fn a_stop_with_provider_results_keeps_them_and_finishes_without_another_re
                 tool_name: "perplexity_search".to_owned(),
                 content: SOURCE.to_owned(),
                 status: ToolResultStatus::Success,
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: Some(final_text.to_owned()),

@@ -476,6 +476,7 @@ fn a_continued_checkpoint_is_cleared_once_its_turn_is_saved() {
                 tool_name: "shell".to_owned(),
                 content: "out".to_owned(),
                 status: ToolResultStatus::Success,
+                images: Vec::new(),
             },
             ChatMessage::restored_steering("also tests"),
         ]
@@ -844,6 +845,7 @@ fn continued_history<'a>(continued: &'a RecoveredTurn, end: TurnEnd<'a>) -> Hist
             tool_name,
             content,
             status,
+            ..
         }) = messages.peek()
         {
             tool_results.push(StepResult {

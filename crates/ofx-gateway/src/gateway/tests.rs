@@ -1,8 +1,10 @@
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ofx_contract::{
-    ChatMessage, ProviderOptions, ReplaySource, StreamEvent, ToolCallId, ToolChoice,
-    ToolExecutionProvenance, Usage,
+    ChatMessage, ProviderOptions, ReplaySource, StreamEvent, ToolCall, ToolCallId, ToolChoice,
+    ToolExecutionProvenance, ToolImage, ToolResultStatus, Usage,
 };
 use ofx_testkit::{FakeServer, RecordedRequest, RefusedPort, Reply};
 
@@ -589,4 +591,66 @@ async fn reasoning_and_call_metadata_come_back_as_a_gateway_replay() {
             "InvalidProviderState"
         ))
     );
+}
+
+fn tool_result_with_image(id: &str, content: &str, status: ToolResultStatus) -> ChatMessage {
+    ChatMessage::Tool {
+        call_id: ToolCallId::new(id),
+        tool_name: "capture".to_owned(),
+        content: content.to_owned(),
+        status,
+        images: vec![ToolImage {
+            data: STANDARD.encode(ONE_PIXEL_PNG),
+            mime_type: "image/png".to_owned(),
+            source_ref: None,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn tool_images_reach_the_gateway_in_a_follow_up_user_message_unless_denied() {
+    let denial = r#"{"error":{"type":"tool_permission_denied","reason":"policy_denied"}}"#;
+    let messages = [
+        ChatMessage::user("capture both"),
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![
+                ToolCall::new("call_shot", "capture", "{}"),
+                ToolCall::new("call_secret", "capture", "{}"),
+            ],
+            provider_replay: None,
+        },
+        tool_result_with_image("call_shot", "captured", ToolResultStatus::Success),
+        tool_result_with_image("call_secret", denial, ToolResultStatus::Failure),
+    ];
+    let server = FakeServer::start([Reply::sse(&[STOP])]);
+    let gateway = keyed(&server);
+    let turn = request(&messages, None);
+    let measured = gateway.request_body(&turn);
+    let mut sink = |_: StreamEvent| {};
+    gateway
+        .stream(&turn, &mut sink, &CancellationToken::new())
+        .await
+        .unwrap();
+
+    let sent = only_request(&server);
+    let body = sent.json();
+    let prompt = body["prompt"].as_array().unwrap();
+    assert_eq!(prompt.len(), 5);
+    let results = prompt[3]["content"].as_array().unwrap();
+    assert_eq!(
+        results[0]["output"],
+        serde_json::json!({"type": "content", "value": [{"type": "text", "text": "captured"}]})
+    );
+    assert_eq!(results[1]["output"]["type"], "execution-denied");
+    let encoded = STANDARD.encode(ONE_PIXEL_PNG);
+    assert_eq!(
+        prompt[4],
+        serde_json::json!({"role": "user", "content": [
+            {"type": "text", "text": "Attached image(s) from the tool result."},
+            {"type": "file", "mediaType": "image/png", "data": {"type": "data", "data": encoded}},
+        ]})
+    );
+    assert_eq!(sent.body_text().matches(&encoded).count(), 1);
+    assert_eq!(measured.as_deref(), Some(&*sent.body_text()));
 }

@@ -87,6 +87,7 @@ fn result(id: &str, name: &str, content: &str, status: ToolResultStatus) -> Chat
         tool_name: name.to_owned(),
         content: content.to_owned(),
         status,
+        images: Vec::new(),
     }
 }
 
@@ -863,4 +864,86 @@ fn replay_selection_refuses_malformed_or_oversized_parts() {
         select_replay_parts(&oversized, &[], true, true),
         Err(RequestError::ProviderStateTooLarge)
     );
+}
+
+fn with_image(message: ChatMessage) -> ChatMessage {
+    match message {
+        ChatMessage::Tool {
+            call_id,
+            tool_name,
+            content,
+            status,
+            ..
+        } => ChatMessage::Tool {
+            call_id,
+            tool_name,
+            content,
+            status,
+            images: vec![ToolImage {
+                data: "cG5n".to_owned(),
+                mime_type: "image/png".to_owned(),
+                source_ref: None,
+            }],
+        },
+        other => other,
+    }
+}
+
+#[test]
+fn grouped_tool_results_retain_images_and_individual_error_status() {
+    for (status, text) in [
+        (ToolResultStatus::Success, "capture"),
+        (ToolResultStatus::Failure, "Tool error: capture"),
+    ] {
+        let messages = [
+            assistant(
+                None,
+                vec![
+                    call("call_capture", "capture", "{}"),
+                    call("labels", "read_labels", "{}"),
+                ],
+            ),
+            with_image(result("call_capture", "capture", "capture", status)),
+            success("labels", "read_labels", "labels"),
+        ];
+        let prompt = prompt(&body(&messages).unwrap());
+        assert_eq!(prompt.len(), 3);
+        let results = prompt[1]["content"].as_array().unwrap();
+        assert_eq!(
+            results[0]["output"],
+            serde_json::json!({"type": "content", "value": [{"type": "text", "text": text}]})
+        );
+        assert_eq!(
+            results[1]["output"],
+            serde_json::json!({"type": "text", "value": "labels"})
+        );
+        assert_eq!(
+            prompt[2],
+            serde_json::json!({"role": "user", "content": [
+                {"type": "text", "text": "Attached image(s) from the tool result."},
+                {"type": "file", "mediaType": "image/png", "data": {"type": "data", "data": "cG5n"}},
+            ]})
+        );
+    }
+}
+
+#[test]
+fn images_from_denied_tool_results_stay_out_of_gateway_requests() {
+    let messages = [
+        assistant(None, vec![call("call_capture", "capture", "{}")]),
+        with_image(result(
+            "call_capture",
+            "capture",
+            DENIAL,
+            ToolResultStatus::Failure,
+        )),
+    ];
+    let text = body(&messages).unwrap();
+    let prompt = prompt(&text);
+    assert_eq!(prompt.len(), 2);
+    assert_eq!(
+        prompt[1]["content"][0]["output"]["type"],
+        "execution-denied"
+    );
+    assert!(!text.contains("cG5n"));
 }
