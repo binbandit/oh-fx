@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 getrandom.workspace = true
 nix = { workspace = true, features = ["signal", "user"] }
-rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "termios"] }
+rustix = { workspace = true, features = ["event", "fs", "process", "pty", "stdio", "termios"] }
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
@@ -18,7 +18,6 @@ tokio = { workspace = true, features = ["io-util", "macros", "process", "sync", 
 tokio-util.workspace = true
 
 [dev-dependencies]
-rustix = { workspace = true, features = ["pty"] }
 tempfile.workspace = true
 
 [[test]]
@@ -31,6 +30,10 @@ harness = false
 
 [[test]]
 name = "terminal_echo"
+harness = false
+
+[[test]]
+name = "terminal_launcher"
 harness = false
 
 [lints]
