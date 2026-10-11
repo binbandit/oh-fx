@@ -139,8 +139,8 @@ note = "Shared image inspection requests and bounded streamed image-provider cap
 [[file]]
 upstream = "src/core/agent/runtime/interruption.zig"
 status = "partial"
-modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs"]
-note = "Cancelled partial turns, completed tool outputs and steering at its tool-step boundary are logged, and the interrupted persistence, aborted tool, finish event and stream failure trace lines are written; interrupted command replay and image evidence are absent."
+modules = ["crates/ofx-agent/src/orchestrator.rs", "crates/ofx-agent/src/orchestrator/turn_log.rs", "crates/ofx-agent/src/interrupted_turn.rs"]
+note = "Cancelled partial turns, completed tool outputs and steering at its tool-step boundary are logged, and the interrupted persistence, aborted tool, finish event and stream failure trace lines are written; the agent keeps the last interrupted turn's running call and completed tools for /trace; interrupted command replay and image evidence are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/lifecycle.zig"

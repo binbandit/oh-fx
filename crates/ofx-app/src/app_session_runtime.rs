@@ -26,7 +26,11 @@ pub(crate) use launch_overrides::{LaunchOverrides, RestoredPreferences};
 pub(crate) use persistence::{Persistence, Resumption};
 pub(crate) use session_listing::{Answer, Listed, PageRequest, SessionListing};
 pub use session_titles::TitleGeneration;
-pub(crate) use session_titles::{RenameError, SessionTitle, validate_session_title};
+#[cfg(test)]
+pub(crate) use session_titles::{LastTitle, RunningTitle};
+pub(crate) use session_titles::{
+    RenameError, SessionTitle, TitleProgress, TitleSnapshot, TitleStatus, validate_session_title,
+};
 pub(crate) use shell_recovery::{NOT_CONTINUED, RECOVERY_TOPIC, SIGN_IN_TO_CONTINUE};
 use shell_recovery::{ShellRecovery, shell_recovery};
 
@@ -320,6 +324,7 @@ impl LiveSession {
             session_id: self.id.clone(),
             excerpt: excerpt.to_owned(),
             session: Arc::downgrade(&self.session),
+            progress: None,
         })
     }
 

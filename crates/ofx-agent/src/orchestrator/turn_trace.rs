@@ -1,9 +1,11 @@
 use ofx_contract::{
     Completion, FinishReason, ProviderError, ToolCall, ToolCallId, ToolOutput, ToolResultStatus,
+    TurnStop,
 };
 use ofx_trace::{TraceContext, keyless_json_preview, trace_event, trace_log};
 
 use super::{Stop, TurnFailure};
+use crate::InterruptedTurn;
 
 const AGENT: &str = "agent";
 const TOOL: &str = "tool";
@@ -23,7 +25,7 @@ pub(super) const CANCELLED: &str = "cancelled";
 pub(super) struct ToolTrail {
     completed: Vec<String>,
     last_call: Option<(ToolCallId, String)>,
-    active: Option<(ToolCallId, String)>,
+    active: Option<ToolCall>,
     step: Option<u64>,
     pub(super) gateway_messages: usize,
     pub(super) cancelled_in_tools: bool,
@@ -52,14 +54,22 @@ impl ToolTrail {
     }
 
     pub(super) fn completed(&mut self, call: &ToolCall) {
-        if tracks_tools() {
-            self.completed.push(call.name.clone());
-        }
+        self.completed.push(call.name.clone());
     }
 
     pub(super) fn interrupted_at(&mut self, call: &ToolCall) {
-        if tracks_tools() && self.active.is_none() {
-            self.active = Some((call.id.clone(), call.name.clone()));
+        if self.active.is_none() {
+            self.active = Some(call.clone());
+        }
+    }
+
+    pub(super) fn interrupted_turn(&self, stop: TurnStop) -> InterruptedTurn {
+        match stop {
+            TurnStop::Cancelled => InterruptedTurn {
+                in_flight: self.active.clone(),
+                completed_tools: self.completed.clone(),
+            },
+            TurnStop::Failed => InterruptedTurn::default(),
         }
     }
 
@@ -322,7 +332,7 @@ fn interrupted_persisted(context: TraceContext, interrupted: &Interrupted<'_>) {
         "prompt_bytes={prompt_bytes} partial_assistant_bytes={partial_bytes} active_tool={active} completed_tool_count={completed} completed_tool_names={names} active_tool_reason={}",
         interrupt_reason(interrupted)
     );
-    if let Some((id, name)) = &trail.active {
+    if let Some(ToolCall { id, name, .. }) = &trail.active {
         trace_log!(
             AGENT,
             "aborted tool output persisted call_id={} name={name}",

@@ -1,4 +1,4 @@
-use ofx_contract::{ProviderErrorKind, ToolCallId};
+use ofx_contract::ProviderErrorKind;
 
 use super::*;
 
@@ -12,7 +12,7 @@ fn provider(code: &str, status: Option<u16>) -> Result<String, Stop> {
 fn trail(completed: &[&str], active: Option<&str>) -> ToolTrail {
     ToolTrail {
         completed: completed.iter().map(|name| (*name).to_owned()).collect(),
-        active: active.map(|name| (ToolCallId::new("call_1"), name.to_owned())),
+        active: active.map(|name| ToolCall::new("call_1", name, "{}")),
         ..ToolTrail::default()
     }
 }
@@ -144,5 +144,21 @@ fn a_turn_context_drops_the_step() {
             step_id: 0,
             subagent_id: 2,
         }
+    );
+}
+
+#[test]
+fn only_a_cancelled_turn_keeps_its_in_flight_call_and_completed_tools() {
+    let ran = trail(&["read_file", "shell"], Some("edit_file"));
+    assert_eq!(
+        ran.interrupted_turn(TurnStop::Cancelled),
+        InterruptedTurn {
+            in_flight: Some(ToolCall::new("call_1", "edit_file", "{}")),
+            completed_tools: vec!["read_file".to_owned(), "shell".to_owned()],
+        }
+    );
+    assert_eq!(
+        ran.interrupted_turn(TurnStop::Failed),
+        InterruptedTurn::default()
     );
 }

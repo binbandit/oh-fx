@@ -4,6 +4,7 @@ mod assistant_stream;
 mod compactor;
 mod execution_memory;
 mod gateway_step;
+mod interrupted_turn;
 mod lifecycle;
 mod model_response_recovery;
 mod orchestrator;
@@ -27,6 +28,7 @@ pub use approvals::Approvals;
 pub use assistant_stream::{normalize_assistant_text_for_display, text_for_completed_presentation};
 pub use compactor::{CompactionError, CompactionEvent, CompactionTraceKind, checkpoint_model_text};
 pub use gateway_step::MeteredProvider;
+pub use interrupted_turn::InterruptedTurn;
 pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };

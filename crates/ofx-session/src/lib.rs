@@ -67,6 +67,8 @@ pub use session_store_types::{
     SessionRecovery, SessionRecoveryStatus,
 };
 pub use session_summary_codec::{ResumablePage, ResumeContinuation, SessionSource, SessionSummary};
-pub use session_title_generation::{TitleGate, TitleRequest, generate_title, prompt_excerpt};
+pub use session_title_generation::{
+    TitleFailure, TitleGate, TitleOutcome, TitleRequest, generate_title, prompt_excerpt,
+};
 pub use session_usage::UsageSnapshot;
 pub use usage_publisher::{PublicationScheduler, UsagePublisher};
