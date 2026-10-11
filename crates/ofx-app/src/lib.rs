@@ -55,4 +55,6 @@ pub use output_contracts::usage::UsageSnapshot;
 pub use output_contracts::workspace::{WorkspaceSnapshot, workspace_error_message};
 
 #[cfg(test)]
+mod gateway_images;
+#[cfg(test)]
 mod prompt_goldens;
