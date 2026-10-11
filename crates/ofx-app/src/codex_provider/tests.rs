@@ -729,3 +729,40 @@ async fn missing_expired_and_unsafe_logins_never_build_a_provider() {
 mod capabilities;
 mod history_replay;
 mod reviews;
+
+#[test]
+fn a_login_refresh_sent_before_the_session_ends_is_waited_for_past_the_subscription_limit() {
+    let started = Instant::now();
+    let closed = started + Duration::from_millis(10_500);
+    let login = Refreshes {
+        running: 1,
+        logins: 1,
+        latest_start: None,
+        closed_at: Some(closed),
+    };
+    let deadline = login
+        .drain_deadline(DrainLimits::default(), closed)
+        .unwrap();
+    assert_eq!(deadline, closed + Duration::from_secs(18));
+    assert!(deadline > started + Duration::from_secs(24));
+    let both = Refreshes {
+        running: 2,
+        logins: 1,
+        latest_start: Some(started + Duration::from_secs(20)),
+        closed_at: Some(closed),
+    };
+    assert_eq!(
+        both.drain_deadline(DrainLimits::default(), closed),
+        Some(started + Duration::from_secs(40))
+    );
+    let subscription = Refreshes {
+        running: 1,
+        logins: 0,
+        latest_start: Some(started),
+        closed_at: Some(closed),
+    };
+    assert_eq!(
+        subscription.drain_deadline(DrainLimits::default(), closed),
+        Some(started + Duration::from_secs(20))
+    );
+}

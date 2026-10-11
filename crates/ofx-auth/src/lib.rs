@@ -36,8 +36,8 @@ pub use credentials::{
     AUTH_MODE_VARIABLE, AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL, GatewayKey,
     GatewayRefusal, GatewayResolution, GatewaySource, GatewaySources, HOST_MANAGED_AUTH_MESSAGE,
     MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE,
-    UNREADABLE_STORED_KEY_MESSAGE, host_managed_auth, is_valid_auth_mode, parse_auth_mode,
-    valid_gateway_team,
+    UNREADABLE_STORED_KEY_MESSAGE, VERCEL_SENT_REFRESH_LIMIT, host_managed_auth,
+    is_valid_auth_mode, parse_auth_mode, valid_gateway_team,
 };
 pub use login_flow::{LoginTerminal, VercelEndpoints, VercelError, VercelOAuth};
 pub use oauth::{

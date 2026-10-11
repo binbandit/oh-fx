@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ofx_auth::{
     CHATGPT_REFRESH_LIMIT, ChatGptAccess, ChatGptEndpoints, ChatGptOAuth, GrokEndpoints,
-    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, VercelEndpoints,
-    loopback_override, prepare_chatgpt_credential, refresh_chatgpt_credential,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, PreparationError, RefreshMode, VERCEL_SENT_REFRESH_LIMIT,
+    VercelEndpoints, loopback_override, prepare_chatgpt_credential, refresh_chatgpt_credential,
 };
 use ofx_config::ProfilePaths;
 use ofx_contract::{
@@ -260,28 +260,84 @@ pub(crate) struct DetachedRefreshes {
     state: Mutex<Refreshes>,
     drained: Condvar,
     settled: Notify,
+    stopped: CancellationToken,
+    limits: DrainLimits,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DrainLimits {
+    subscription: Duration,
+    login: Duration,
+}
+
+impl Default for DrainLimits {
+    fn default() -> Self {
+        Self {
+            subscription: CHATGPT_REFRESH_LIMIT,
+            login: VERCEL_SENT_REFRESH_LIMIT,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct Refreshes {
     running: usize,
+    logins: usize,
     latest_start: Option<Instant>,
-    closed: bool,
+    closed_at: Option<Instant>,
+}
+
+impl Refreshes {
+    fn drain_deadline(&self, limits: DrainLimits, now: Instant) -> Option<Instant> {
+        let subscription = self
+            .latest_start
+            .map(|started| started + limits.subscription);
+        let login = (self.logins > 0).then(|| self.closed_at.unwrap_or(now) + limits.login);
+        subscription.max(login)
+    }
 }
 
 impl DetachedRefreshes {
+    #[cfg(test)]
+    pub(crate) fn with_limits(subscription: Duration, login: Duration) -> Self {
+        Self {
+            limits: DrainLimits {
+                subscription,
+                login,
+            },
+            ..Self::default()
+        }
+    }
+
     fn state(&self) -> MutexGuard<'_, Refreshes> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn start(self: &Arc<Self>) -> Option<RunningRefresh> {
         let mut state = self.state();
-        if state.closed {
+        if state.closed_at.is_some() {
             return None;
         }
         state.running += 1;
         state.latest_start = Some(Instant::now());
-        Some(RunningRefresh(Arc::clone(self)))
+        Some(RunningRefresh {
+            refreshes: Arc::clone(self),
+            login: false,
+        })
+    }
+
+    pub(crate) fn start_login(self: &Arc<Self>) -> Option<(RunningRefresh, CancellationToken)> {
+        let mut state = self.state();
+        if state.closed_at.is_some() {
+            return None;
+        }
+        state.running += 1;
+        state.logins += 1;
+        let running = RunningRefresh {
+            refreshes: Arc::clone(self),
+            login: true,
+        };
+        Some((running, self.stopped.clone()))
     }
 
     pub(crate) fn pending(&self) -> bool {
@@ -289,15 +345,13 @@ impl DetachedRefreshes {
     }
 
     pub(crate) fn close(&self) {
-        self.state().closed = true;
+        self.state().closed_at.get_or_insert_with(Instant::now);
+        self.stopped.cancel();
     }
 
     pub(crate) fn wait_for_running(&self) -> bool {
         let mut state = self.state();
-        let Some(deadline) = state
-            .latest_start
-            .map(|started| started + CHATGPT_REFRESH_LIMIT)
-        else {
+        let Some(deadline) = state.drain_deadline(self.limits, Instant::now()) else {
             return false;
         };
         let mut waited = false;
@@ -327,15 +381,21 @@ impl DetachedRefreshes {
     }
 }
 
-pub(crate) struct RunningRefresh(Arc<DetachedRefreshes>);
+pub(crate) struct RunningRefresh {
+    refreshes: Arc<DetachedRefreshes>,
+    login: bool,
+}
 
 impl Drop for RunningRefresh {
     fn drop(&mut self) {
-        let mut state = self.0.state();
+        let mut state = self.refreshes.state();
         state.running -= 1;
+        if self.login {
+            state.logins -= 1;
+        }
         if state.running == 0 {
-            self.0.drained.notify_all();
-            self.0.settled.notify_waiters();
+            self.refreshes.drained.notify_all();
+            self.refreshes.settled.notify_waiters();
         }
     }
 }

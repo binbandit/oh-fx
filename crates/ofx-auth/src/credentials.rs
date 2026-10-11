@@ -12,6 +12,8 @@ use crate::subscription_access::now_ms;
 
 mod fx_login;
 
+pub use fx_login::VERCEL_SENT_REFRESH_LIMIT;
+
 pub(crate) const GROK_SOURCE_LABEL: &str = "Grok subscription";
 
 pub const AUTH_MODE_VARIABLE: &str = "OH_FX_AUTH_MODE";

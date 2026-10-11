@@ -1,16 +1,21 @@
+use std::time::Duration;
+
 use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use super::{GatewayKey, GatewaySource};
+use crate::chatgpt_oauth::REFRESH_SAVE_TIME;
 use crate::login_flow::{VercelError, VercelOAuth};
 use crate::oauth;
 use crate::oauth::device;
 use crate::oauth_session::{self, Mutation, Session};
+use crate::oauth_transport::REQUEST_TIMEOUT;
 use crate::session_presence::Presence;
 use crate::subscription_access::now_ms;
 
 const AUTH: &str = "auth";
+pub const VERCEL_SENT_REFRESH_LIMIT: Duration = REQUEST_TIMEOUT.saturating_add(REFRESH_SAVE_TIME);
 
 impl VercelOAuth {
     pub(crate) fn load_stored_credential(&self) -> Result<Option<GatewayKey>, VercelError> {

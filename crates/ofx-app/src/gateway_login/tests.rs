@@ -158,3 +158,82 @@ async fn an_interactive_turn_stops_at_once_and_the_session_end_waits_for_the_sav
         .expect("the session end waits for the refresh to save");
     assert!(saved(&data).contains(ROTATED), "{}", saved(&data));
 }
+
+fn slow_issuer(discovery: Duration, token: Duration) -> FakeServer {
+    FakeServer::start_at_origin(|origin| {
+        [
+            Reply::delayed_status(
+                200,
+                format!(
+                    r#"{{"issuer":"{origin}","device_authorization_endpoint":"{origin}/oauth/device","token_endpoint":"{origin}/oauth/token"}}"#
+                ),
+                discovery,
+            ),
+            Reply::delayed_status(
+                200,
+                r#"{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600,"scope":"openid offline_access","token_type":"Bearer"}"#,
+                token,
+            ),
+        ]
+    })
+}
+
+fn refreshing_in_background(
+    data: &std::path::Path,
+    server: &FakeServer,
+    detached: &Arc<DetachedRefreshes>,
+) -> std::thread::JoinHandle<()> {
+    write_session(data, &format!("http://{}", server.address()), 1);
+    let refresh = LoginRefresh {
+        login: VercelOAuth::new(data.to_owned(), "oh-fx/test", VercelEndpoints::default()),
+        detached: Some(Arc::clone(detached)),
+    };
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = runtime.block_on(refresh.refresh(&CancellationToken::new()));
+    })
+}
+
+fn wait_for_requests(server: &FakeServer, count: usize) {
+    while server.requests().len() < count {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_session_end_waits_for_a_sent_refresh_through_a_slow_issuer() {
+    let server = slow_issuer(Duration::from_secs(1), Duration::from_millis(1_400));
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("oh-fx");
+    let detached = Arc::new(DetachedRefreshes::with_limits(
+        Duration::from_secs(2),
+        Duration::from_millis(1_800),
+    ));
+    let refreshing = refreshing_in_background(&data, &server, &detached);
+    wait_for_requests(&server, 2);
+    detached.close();
+    detached.wait_for_running();
+    assert!(saved(&data).contains(ROTATED), "{}", saved(&data));
+    refreshing.join().unwrap();
+}
+
+#[test]
+fn the_session_end_stops_a_refresh_that_has_not_sent_its_token_request() {
+    let server = slow_issuer(Duration::from_secs(1), Duration::ZERO);
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("oh-fx");
+    let detached = Arc::new(DetachedRefreshes::default());
+    let refreshing = refreshing_in_background(&data, &server, &detached);
+    wait_for_requests(&server, 1);
+    let ending = std::time::Instant::now();
+    detached.close();
+    detached.wait_for_running();
+    assert!(ending.elapsed() < Duration::from_millis(900));
+    refreshing.join().unwrap();
+    std::thread::sleep(Duration::from_millis(1_200));
+    assert_eq!(server.requests().len(), 1);
+    assert!(saved(&data).contains("\"refresh_token\":\"login-refresh\""));
+}

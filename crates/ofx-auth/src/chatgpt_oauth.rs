@@ -39,7 +39,7 @@ const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 const CALLBACK_PREFIX: &str = "/auth/callback?";
 const MILLISECONDS_PER_SECOND: i64 = 1000;
 const REFRESH_CANCEL_GRACE: Duration = Duration::from_secs(2);
-const REFRESH_SAVE_TIME: Duration = Duration::from_secs(3);
+pub(crate) const REFRESH_SAVE_TIME: Duration = Duration::from_secs(3);
 pub const CHATGPT_REFRESH_LIMIT: Duration = MUTATION_LOCK_WAIT
     .saturating_add(REQUEST_TIMEOUT)
     .saturating_add(REFRESH_SAVE_TIME);

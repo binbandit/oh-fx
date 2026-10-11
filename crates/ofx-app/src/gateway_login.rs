@@ -25,13 +25,13 @@ impl GatewayRefresh for LoginRefresh {
             let Some(detached) = &self.detached else {
                 return access(self.login.load_credential(cancel).await);
             };
-            let Some(running) = detached.start() else {
+            let Some((running, stopped)) = detached.start_login() else {
                 return Ok(None);
             };
             let (finished, loaded) = oneshot::channel();
             let login = self.login.clone();
             tokio::spawn(async move {
-                let loading = login.load_credential(&CancellationToken::new()).await;
+                let loading = login.load_credential(&stopped).await;
                 drop(running);
                 let _ = finished.send(loading);
             });

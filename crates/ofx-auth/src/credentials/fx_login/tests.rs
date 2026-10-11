@@ -185,7 +185,7 @@ async fn a_refresh_that_cannot_be_saved_retires_the_consumed_session() {
     let refresh = oauth.load_credential(&never);
     let release = async {
         while server.requests().len() < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         std::fs::set_permissions(
             data.join("auth.json"),
@@ -263,10 +263,10 @@ async fn a_token_request_already_sent_is_answered_and_saved_after_cancellation()
     let refresh = oauth.load_credential(&cancel);
     let release = async {
         while server.requests().len() < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         cancel.cancel();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         gate.open();
     };
     let (result, ()) = tokio::join!(refresh, release);
