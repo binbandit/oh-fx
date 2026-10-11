@@ -324,10 +324,10 @@ impl Installing {
     }
 
     fn discard(&self, refreshed: Credentials) -> HeaderValue {
-        if self.state.logged_out_since(self.epoch) {
+        if let Some(revoked) = self.state.discard_refreshed(self.epoch, refreshed) {
             let http = self.http.clone();
             tokio::spawn(async move {
-                let _ = revoke_credentials(&http, &refreshed).await;
+                let _ = revoke_credentials(&http, &revoked).await;
             });
         }
         self.current_bearer()

@@ -62,13 +62,13 @@ pub(crate) async fn logout(
         None
     };
     let fenced = tokio::spawn(log_out(Arc::clone(server), store, lookup, stored));
-    let Some((deleted, grant)) = fenced.await.map_err(|_| McpError::Cancelled)?? else {
+    let Some((deleted, grants)) = fenced.await.map_err(|_| McpError::Cancelled)?? else {
         return Ok(LogoutResult::default());
     };
-    let revocation_failed = match &grant {
-        Some(grant) => revocation_failed(grant, options).await,
-        None => false,
-    };
+    let mut revocation_failed = false;
+    for grant in &grants {
+        revocation_failed |= revoke(grant, options).await;
+    }
     Ok(LogoutResult {
         removed: true,
         revocation_failed,
@@ -82,7 +82,7 @@ async fn log_out(
     store: CredentialStore,
     lookup: GrantLookup,
     stored: Option<Credentials>,
-) -> Result<Option<(DeleteResult, Option<Credentials>)>, McpError> {
+) -> Result<Option<(DeleteResult, Vec<Credentials>)>, McpError> {
     let detached = server.auth.begin_logout().await?;
     let deleted = match delete(&store, &lookup).await {
         Ok(deleted) => deleted,
@@ -97,10 +97,13 @@ async fn log_out(
         return Ok(None);
     }
     drop(detached);
-    server.auth.commit_logout();
+    let discarded = server.auth.commit_logout();
     server.log_out().await;
     server.auth.finish_logout();
-    Ok(Some((deleted, grant)))
+    Ok(Some((
+        deleted,
+        grant.into_iter().chain(discarded).collect(),
+    )))
 }
 
 async fn delete(store: &CredentialStore, lookup: &GrantLookup) -> Result<DeleteResult, McpError> {
@@ -111,7 +114,7 @@ async fn delete(store: &CredentialStore, lookup: &GrantLookup) -> Result<DeleteR
         .map_err(|_| McpError::Cancelled)?
 }
 
-async fn revocation_failed(grant: &Credentials, options: &ConnectOptions) -> bool {
+async fn revoke(grant: &Credentials, options: &ConnectOptions) -> bool {
     if grant.revocation_endpoint.is_none() {
         return false;
     }

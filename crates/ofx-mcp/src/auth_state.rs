@@ -24,6 +24,7 @@ struct AuthInner {
     challenge_present: bool,
     credentials_present: bool,
     grant: Option<Credentials>,
+    discarded: Vec<Credentials>,
 }
 
 impl AuthState {
@@ -136,9 +137,19 @@ impl AuthState {
         self.lock().logout_epoch == epoch
     }
 
-    pub(crate) fn logged_out_since(&self, epoch: u64) -> bool {
-        let inner = self.lock();
-        inner.logging_out || inner.logout_epoch != epoch
+    pub(crate) fn discard_refreshed(
+        &self,
+        epoch: u64,
+        refreshed: Credentials,
+    ) -> Option<Credentials> {
+        let mut inner = self.lock();
+        if inner.logout_epoch != epoch {
+            return Some(refreshed);
+        }
+        if inner.logging_out {
+            inner.discarded.push(refreshed);
+        }
+        None
     }
 
     pub(crate) fn pending(&self) -> Challenge {

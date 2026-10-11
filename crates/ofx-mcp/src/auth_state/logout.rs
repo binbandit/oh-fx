@@ -40,13 +40,15 @@ impl AuthState {
         inner.pending = detached.pending;
         inner.challenge_present = detached.challenge_present;
         inner.credentials_present = detached.credentials_present;
+        inner.discarded.clear();
         inner.logging_out = false;
     }
 
-    pub(crate) fn commit_logout(&self) {
+    pub(crate) fn commit_logout(&self) -> Vec<Credentials> {
         let mut inner = self.lock();
         inner.generation = inner.generation.saturating_add(1);
         inner.logout_epoch = inner.logout_epoch.saturating_add(1);
+        std::mem::take(&mut inner.discarded)
     }
 
     pub(crate) fn finish_logout(&self) {

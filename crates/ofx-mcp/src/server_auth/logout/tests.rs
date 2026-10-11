@@ -522,15 +522,24 @@ async fn a_request_waiting_on_a_refresh_never_sends_after_a_logout() {
     assert!(state.grant().is_none());
 }
 
+fn revocations(server: &FakeServer) -> Vec<String> {
+    server
+        .requests()
+        .iter()
+        .filter(|request| request.path == "/revoke")
+        .map(|request| request.body.clone())
+        .collect()
+}
+
 #[tokio::test]
-async fn a_refresh_discarded_by_a_logout_revokes_the_rotated_grant() {
+async fn a_refresh_discarded_after_a_logout_committed_revokes_the_rotated_grant() {
     let release = Arc::new(Notify::new());
     let server = refreshing_behind(&release).await;
     let profile = Profile::new();
     let config = config(&server.url);
     let state = Arc::new(AuthState::default());
     let request = waiting_request(&server, &profile, &config, &state).await;
-    let detached = state.begin_logout().await.unwrap();
+    fenced_logout(&state, &profile, &config).await;
     release.notify_one();
     assert_eq!(request.await.unwrap(), Err(McpError::McpAuthorityChanged));
     assert!(
@@ -538,20 +547,179 @@ async fn a_refresh_discarded_by_a_logout_revokes_the_rotated_grant() {
             .wait_for(|request| request.body.starts_with("token=renewed-access"))
             .await
     );
-    let revoked: Vec<String> = server
-        .requests()
-        .iter()
-        .filter(|request| request.path == "/revoke")
-        .map(|request| request.body.clone())
-        .collect();
     assert_eq!(
-        revoked,
+        revocations(&server),
         [
             "token=renewed-refresh&token_type_hint=refresh_token&client_id=client",
             "token=renewed-access&token_type_hint=access_token&client_id=client",
         ]
     );
     assert!(state.grant().is_none());
-    assert_eq!(stored_token(&profile).as_deref(), Some("stored-access"));
-    state.restore_after_logout(detached);
+}
+
+struct PendingLogout {
+    server: FakeServer,
+    release: Arc<Notify>,
+    live: Arc<Server>,
+    profile: Profile,
+    held: ofx_config::AdvisoryLock,
+    logging_out: tokio::task::JoinHandle<Result<super::LogoutResult, McpError>>,
+}
+
+async fn a_refresh_discarded_during_a_pending_logout(token: &'static str) -> PendingLogout {
+    let release = Arc::new(Notify::new());
+    let gate = Arc::clone(&release);
+    let server = FakeServer::start(move |request| match request.path.as_str() {
+        "/token" => Reply::json(token).released_by(&gate),
+        "/revoke" => Reply::status(200),
+        _ => mcp_reply(request),
+    })
+    .await;
+    let profile = Profile::new();
+    let config = config(&server.url);
+    let mut expiring = grant(&server.url, 1);
+    expiring.revocation_endpoint = Some(server.url.replace("/mcp", "/revoke"));
+    profile
+        .store()
+        .save(&GrantLookup::for_server(&config).unwrap(), &expiring)
+        .unwrap();
+    let live = Arc::new(Server::new(
+        config.clone(),
+        profile.options(),
+        Arc::new(AtomicU64::new(0)),
+    ));
+    live.auth
+        .publish(
+            live.auth.generation(),
+            &tokio_util::sync::CancellationToken::new(),
+            expiring,
+            |_| Ok(()),
+        )
+        .unwrap();
+    let auth = HttpAuth::resolve(
+        &config,
+        Some(profile.store()),
+        &live.auth,
+        || Ok(oauth()),
+        &|_| None,
+    )
+    .await
+    .ok()
+    .unwrap();
+    let url = server.url.clone();
+    let request = tokio::spawn(async move { auth.apply(oauth().get(url)).await.err() });
+    assert!(server.wait_for(|request| request.path == "/token").await);
+    let held = ofx_config::PrivateDir::open_or_create(&profile.root)
+        .unwrap()
+        .open_or_create_child("mcp-credentials")
+        .unwrap()
+        .try_lock("credentials.lock")
+        .unwrap()
+        .unwrap();
+    let logging_out = {
+        let live = Arc::clone(&live);
+        let options = profile.options();
+        tokio::spawn(async move { super::logout(&live, &options).await })
+    };
+    for _ in 0..500 {
+        if live.auth.check_authority().is_err() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    assert_eq!(
+        live.auth.check_authority(),
+        Err(McpError::McpAuthorityChanged)
+    );
+    release.notify_one();
+    assert_eq!(request.await.unwrap(), Some(McpError::McpAuthorityChanged));
+    assert!(revocations(&server).is_empty());
+    PendingLogout {
+        server,
+        release,
+        live,
+        profile,
+        held,
+        logging_out,
+    }
+}
+
+#[tokio::test]
+async fn a_rolled_back_logout_drops_an_unrotated_refresh_without_revoking_it() {
+    let pending = a_refresh_discarded_during_a_pending_logout(
+        r#"{"access_token":"renewed-access","expires_in":3600,"token_type":"Bearer"}"#,
+    )
+    .await;
+    assert_eq!(pending.logging_out.await.unwrap(), Err(McpError::LockBusy));
+    drop(pending.held);
+    assert!(revocations(&pending.server).is_empty());
+    let config = pending.live.config.clone();
+    assert_eq!(
+        pending.live.auth.authentication(&config),
+        AuthenticationState::Authenticated
+    );
+    assert_eq!(
+        pending
+            .live
+            .auth
+            .grant()
+            .map(|grant| grant.access_token.as_str().to_owned())
+            .as_deref(),
+        Some("stored-access")
+    );
+    assert_eq!(
+        stored_token(&pending.profile).as_deref(),
+        Some("stored-access")
+    );
+    let again = HttpAuth::resolve(
+        &config,
+        Some(pending.profile.store()),
+        &pending.live.auth,
+        || Ok(oauth()),
+        &|_| None,
+    )
+    .await
+    .ok()
+    .unwrap();
+    pending.release.notify_one();
+    let refreshed = again
+        .apply(oauth().get(&pending.server.url))
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(
+        refreshed
+            .headers()
+            .get("authorization")
+            .map(|value| value.to_str().unwrap().to_owned())
+            .as_deref(),
+        Some("Bearer renewed-access")
+    );
+    assert!(revocations(&pending.server).is_empty());
+}
+
+#[tokio::test]
+async fn a_committed_logout_revokes_a_refresh_it_held_after_its_own_grant() {
+    let pending = a_refresh_discarded_during_a_pending_logout(RENEWED).await;
+    drop(pending.held);
+    assert_eq!(
+        pending.logging_out.await.unwrap(),
+        Ok(super::LogoutResult {
+            removed: true,
+            revocation_failed: false,
+            repaired_entries: 0,
+            local_only: false,
+        })
+    );
+    assert_eq!(
+        revocations(&pending.server),
+        [
+            "token=stored-refresh&token_type_hint=refresh_token&client_id=client",
+            "token=stored-access&token_type_hint=access_token&client_id=client",
+            "token=renewed-refresh&token_type_hint=refresh_token&client_id=client",
+            "token=renewed-access&token_type_hint=access_token&client_id=client",
+        ]
+    );
+    assert!(!pending.profile.file().exists());
 }
