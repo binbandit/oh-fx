@@ -7,9 +7,12 @@ use ofx_contract::{
 };
 use serde_json::Value;
 
+use ofx_testkit::{FakeServer, Reply};
+
 use super::*;
 use crate::chat_completions_protocol::{self, RequestOptions};
-use crate::openai_codex;
+use crate::{GatewayCredential, GatewayEndpoints};
+use crate::{openai_codex, vercel_protocol};
 
 struct Scripted {
     results: Mutex<VecDeque<Result<Completion, ProviderError>>>,
@@ -103,7 +106,7 @@ fn review_messages() -> [ChatMessage; 3] {
             call_id: call.id,
             tool_name: call.name,
             content: "Tool call has not executed; it is pending permission review.".to_owned(),
-            status: ToolResultStatus::Failure,
+            status: ToolResultStatus::Success,
         },
     ]
 }
@@ -360,4 +363,346 @@ fn custom_connection_review_bodies_carry_the_review_budget() {
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][3]["role"], "tool");
     assert_eq!(body["messages"][3]["tool_call_id"], "call_review");
+}
+
+fn with_status(kind: ProviderErrorKind, status: u16) -> Result<Completion, ProviderError> {
+    Err(ProviderError {
+        status: Some(status),
+        ..ProviderError::new(kind, "status")
+    })
+}
+
+fn gateway(server: &FakeServer, reviewer_model: Option<&str>) -> GatewayReviewTransport {
+    let provider = GatewayProvider::new(
+        GatewayCredential::new(Some("vck-review-0123456789".to_owned()), None),
+        "oh-fx/test",
+        GatewayEndpoints {
+            chat: format!("http://{}/v4/ai/language-model", server.address()),
+        },
+    )
+    .unwrap();
+    GatewayReviewTransport::new(Arc::new(provider), reviewer_model.map(str::to_owned))
+}
+
+#[test]
+fn gateway_reviews_use_the_gateway_reviewer_or_the_configured_model() {
+    let server = FakeServer::start([]);
+    let transport = gateway(&server, None);
+    assert_eq!(transport.model("spacexai/grok-4.7"), "openai/gpt-5.6-luna");
+    assert_eq!(transport.max_output_tokens("openai/gpt-5.6-luna"), 2048);
+    let configured = gateway(&server, Some("openai/review"));
+    assert_eq!(configured.model("spacexai/grok-4.7"), "openai/review");
+}
+
+fn expect_gateway_outcomes(
+    cases: impl IntoIterator<Item = (Result<Completion, ProviderError>, ReviewTransportOutcome)>,
+) {
+    for (result, expected) in cases {
+        let shown = format!("{result:?}");
+        let outcome = match result {
+            Ok(completion) => ReviewTransportOutcome::Completion(completion),
+            Err(error) => gateway_failure(&error),
+        };
+        assert_eq!(outcome, expected, "{shown}");
+    }
+}
+
+#[test]
+fn gateway_review_http_failures_retry_only_upstreams_transient_statuses() {
+    let transient = ReviewTransportOutcome::TransientFailure;
+    let permanent = ReviewTransportOutcome::PermanentFailure;
+    expect_gateway_outcomes([
+        (
+            with_status(ProviderErrorKind::ProviderError, 408),
+            transient.clone(),
+        ),
+        (
+            with_status(ProviderErrorKind::ProviderError, 425),
+            transient.clone(),
+        ),
+        (
+            with_status(ProviderErrorKind::RateLimited, 429),
+            transient.clone(),
+        ),
+        (
+            with_status(ProviderErrorKind::ServerError, 500),
+            transient.clone(),
+        ),
+        (
+            with_status(ProviderErrorKind::ProviderError, 529),
+            transient,
+        ),
+        (
+            with_status(ProviderErrorKind::InvalidRequest, 400),
+            permanent.clone(),
+        ),
+        (
+            with_status(ProviderErrorKind::Unauthorized, 401),
+            permanent.clone(),
+        ),
+        (
+            with_status(ProviderErrorKind::ProviderError, 404),
+            permanent,
+        ),
+    ]);
+}
+
+#[test]
+fn gateway_review_stream_failures_follow_upstreams_gateway_reviewer() {
+    let undecided = || ReviewTransportOutcome::Completion(undecided());
+    let transient = ReviewTransportOutcome::TransientFailure;
+    let permanent = ReviewTransportOutcome::PermanentFailure;
+    expect_gateway_outcomes([
+        (
+            failure(ProviderErrorKind::ServerError, "ProviderError"),
+            transient.clone(),
+        ),
+        (
+            failure(ProviderErrorKind::StreamStalled, "ProviderError"),
+            transient.clone(),
+        ),
+        (
+            failure(ProviderErrorKind::ProviderError, "ContentFiltered"),
+            permanent.clone(),
+        ),
+        (
+            failure(ProviderErrorKind::Protocol, "OutputTruncated"),
+            undecided(),
+        ),
+        (
+            failure(ProviderErrorKind::TransportInterrupted, "StreamInterrupted"),
+            undecided(),
+        ),
+        (
+            failure(ProviderErrorKind::StreamStalled, "StreamInterrupted"),
+            undecided(),
+        ),
+        (
+            failure(ProviderErrorKind::Protocol, "InvalidProviderCompletion"),
+            undecided(),
+        ),
+        (
+            failure(
+                ProviderErrorKind::Protocol,
+                "MalformedProviderResultIdentity",
+            ),
+            undecided(),
+        ),
+        (
+            failure(
+                ProviderErrorKind::Protocol,
+                "MalformedAuthoritativeToolIdentity",
+            ),
+            undecided(),
+        ),
+        (
+            failure(
+                ProviderErrorKind::Protocol,
+                "MalformedProviderToolArguments",
+            ),
+            undecided(),
+        ),
+        (
+            failure(ProviderErrorKind::TransportInterrupted, "RequestFailed"),
+            transient,
+        ),
+        (
+            failure(ProviderErrorKind::TransportInterrupted, "ReadFailed"),
+            permanent.clone(),
+        ),
+        (
+            failure(ProviderErrorKind::ConnectivityLost, "ConnectionFailed"),
+            permanent.clone(),
+        ),
+        (
+            failure(ProviderErrorKind::ConnectionFailed, "ConnectionFailed"),
+            permanent.clone(),
+        ),
+        (
+            failure(ProviderErrorKind::Protocol, "InvalidGatewaySseEvent"),
+            permanent,
+        ),
+        (
+            failure(ProviderErrorKind::Timeout, "Timeout"),
+            ReviewTransportOutcome::TimedOut,
+        ),
+        (
+            Err(ProviderError::cancelled()),
+            ReviewTransportOutcome::Cancelled,
+        ),
+    ]);
+}
+
+const CAUTION: &str = r#"{"type":"tool-call","toolCallId":"review_1","toolName":"permission_decision","input":{"decision":"caution"}}"#;
+
+fn reviewed(decision: &str) -> Completion {
+    Completion {
+        content: None,
+        tool_calls: vec![ToolCall::new(
+            "review_1",
+            "permission_decision",
+            format!(r#"{{"decision":"{decision}"}}"#),
+        )],
+        finish_reason: FinishReason::ToolCalls,
+        usage: Usage::default(),
+        provider_replay: None,
+    }
+}
+
+#[tokio::test]
+async fn a_complete_decision_is_kept_whatever_finish_follows_it() {
+    for ending in [
+        vec![
+            CAUTION,
+            r#"{"type":"finish","finishReason":{"unified":"tool-calls"}}"#,
+        ],
+        vec![
+            CAUTION,
+            r#"{"type":"finish","finishReason":{"unified":"length"}}"#,
+        ],
+        vec![
+            CAUTION,
+            r#"{"type":"finish","finishReason":{"unified":"stop"}}"#,
+        ],
+        vec![
+            CAUTION,
+            r#"{"type":"finish","finishReason":{"unified":"other"}}"#,
+        ],
+        vec![CAUTION, "[DONE]"],
+        vec![CAUTION],
+    ] {
+        let server = FakeServer::start([Reply::sse(&ending)]);
+        let transport = gateway(&server, None);
+        assert_eq!(
+            send(&transport, "openai/gpt-5.6-luna").await,
+            ReviewTransportOutcome::Completion(reviewed("caution")),
+            "{ending:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn gateway_review_finishes_that_carry_no_decision_follow_upstream() {
+    let cases = [
+        (
+            vec![r#"{"type":"finish","finishReason":{"unified":"length"}}"#],
+            ReviewTransportOutcome::Completion(undecided()),
+        ),
+        (
+            vec![r#"{"type":"text-delta","delta":"thinking"}"#],
+            ReviewTransportOutcome::Completion(Completion {
+                content: Some("thinking".to_owned()),
+                ..undecided()
+            }),
+        ),
+        (
+            vec![
+                CAUTION,
+                r#"{"type":"finish","finishReason":{"unified":"error"}}"#,
+            ],
+            ReviewTransportOutcome::TransientFailure,
+        ),
+        (
+            vec![
+                CAUTION,
+                r#"{"type":"finish","finishReason":{"unified":"content-filter"}}"#,
+            ],
+            ReviewTransportOutcome::PermanentFailure,
+        ),
+    ];
+    for (events, expected) in cases {
+        let server = FakeServer::start([Reply::sse(&events)]);
+        let transport = gateway(&server, None);
+        assert_eq!(
+            send(&transport, "openai/gpt-5.6-luna").await,
+            expected,
+            "{events:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn gateway_review_bodies_carry_no_model_derived_options_for_any_family() {
+    for model in [
+        "openai/gpt-5.6-luna",
+        "xai/grok-4",
+        "zai/glm-5.2",
+        "spacexai/grok-4.7",
+    ] {
+        let server = FakeServer::start([Reply::sse(&[
+            CAUTION,
+            r#"{"type":"finish","finishReason":{"unified":"tool-calls"}}"#,
+        ])]);
+        let transport = gateway(&server, Some(model));
+        let reviewer = transport.model("spacexai/grok-4.7").to_owned();
+        let tools = review_tools();
+        let messages = review_messages();
+        let request = ModelRequest {
+            model: &reviewer,
+            instructions: &["<permission_review>"],
+            messages: &messages,
+            tools: &tools,
+            tool_choice: ToolChoice::Required,
+            max_output_tokens: Some(transport.max_output_tokens(&reviewer)),
+            provider_options: ProviderOptions {
+                reasoning_effort: Some("high"),
+                fast: true,
+                prompt_caching: true,
+            },
+            session_id: None,
+        };
+        let body = transport.request_body(&request).unwrap();
+        assert!(
+            matches!(
+                transport
+                    .send(&request, body, &CancellationToken::new())
+                    .await,
+                ReviewTransportOutcome::Completion(_)
+            ),
+            "{model}"
+        );
+        let sent = server.requests()[0].body_text();
+        assert!(
+            sent.ends_with(r#""toolChoice":{"type":"required"},"maxOutputTokens":2048}"#),
+            "{model}: {sent}"
+        );
+        let parsed: Value = serde_json::from_str(&sent).unwrap();
+        for absent in ["providerOptions", "reasoning", "headers"] {
+            assert!(parsed.get(absent).is_none(), "{model}: {absent} in {sent}");
+        }
+        assert_eq!(
+            server.requests()[0].header("ai-language-model-id"),
+            Some(model)
+        );
+    }
+}
+
+#[test]
+fn gateway_review_bodies_require_the_decision_and_send_no_provider_options() {
+    let tools = review_tools();
+    let messages = review_messages();
+    let request = ModelRequest {
+        model: GATEWAY_REVIEWER_MODEL,
+        instructions: &["<permission_review>"],
+        messages: &messages,
+        tools: &tools,
+        tool_choice: ToolChoice::Required,
+        max_output_tokens: Some(MAX_REVIEW_OUTPUT_TOKENS),
+        provider_options: ProviderOptions::default(),
+        session_id: None,
+    };
+    let text = vercel_protocol::build_review_request(&request).unwrap();
+    assert!(text.ends_with(r#""toolChoice":{"type":"required"},"maxOutputTokens":2048}"#));
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert!(body.get("providerOptions").is_none());
+    assert!(body.get("reasoning").is_none());
+    assert_eq!(body["prompt"][0]["role"], "system");
+    assert_eq!(body["tools"][0]["name"], "permission_decision");
+    assert_eq!(
+        body["prompt"][3]["content"][0]["output"],
+        serde_json::json!({
+            "type": "text",
+            "value": "Tool call has not executed; it is pending permission review."
+        })
+    );
 }
