@@ -6,6 +6,8 @@ use ofx_contract::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::gateway::GatewayProvider;
+
 const CODEX_REVIEWER_MODEL: &str = "gpt-5.6-luna";
 const GATEWAY_REVIEWER_MODEL: &str = "openai/gpt-5.6-luna";
 const MAX_REVIEW_OUTPUT_TOKENS: u32 = 2048;
@@ -110,12 +112,12 @@ impl ReviewTransport for ChatCompletionsReviewTransport {
 }
 
 pub struct GatewayReviewTransport {
-    provider: Arc<dyn ModelProvider>,
+    provider: Arc<GatewayProvider>,
     reviewer_model: Option<String>,
 }
 
 impl GatewayReviewTransport {
-    pub fn new(provider: Arc<dyn ModelProvider>, reviewer_model: Option<String>) -> Self {
+    pub fn new(provider: Arc<GatewayProvider>, reviewer_model: Option<String>) -> Self {
         Self {
             provider,
             reviewer_model,
@@ -135,7 +137,7 @@ impl ReviewTransport for GatewayReviewTransport {
     }
 
     fn request_body(&self, request: &ModelRequest<'_>) -> Option<String> {
-        self.provider.request_body(request)
+        self.provider.review_body(request)
     }
 
     fn send<'a>(
@@ -144,7 +146,12 @@ impl ReviewTransport for GatewayReviewTransport {
         body: String,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ReviewTransportOutcome> {
-        send(&*self.provider, request, body, cancel, gateway_failure)
+        Box::pin(async move {
+            match self.provider.review(request, body, cancel).await {
+                Ok(completion) => ReviewTransportOutcome::Completion(completion),
+                Err(error) => gateway_failure(&error),
+            }
+        })
     }
 }
 

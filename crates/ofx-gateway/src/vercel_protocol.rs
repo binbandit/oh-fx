@@ -60,6 +60,33 @@ pub(crate) fn replay_source(model: &str) -> ReplaySource {
 }
 
 pub(crate) fn build_request(request: &ModelRequest<'_>, user_agent: &str) -> Result<String> {
+    let mut out = build_prompt(request)?;
+    if let Some(effort) = request.provider_options.reasoning_effort {
+        out.push_str(",\"reasoning\":");
+        push_json_string(&mut out, reasoning_wire_value(effort));
+    }
+    write_provider_options(
+        &mut out,
+        request.provider_options.fast,
+        request.provider_options.prompt_caching,
+        parallel_tool_calls(request.model),
+    );
+    if request.model == USER_AGENT_MODEL {
+        out.push_str(",\"headers\":{\"user-agent\":");
+        push_json_string(&mut out, user_agent);
+        out.push('}');
+    }
+    out.push('}');
+    Ok(out)
+}
+
+pub(crate) fn build_review_request(request: &ModelRequest<'_>) -> Result<String> {
+    let mut out = build_prompt(request)?;
+    out.push('}');
+    Ok(out)
+}
+
+fn build_prompt(request: &ModelRequest<'_>) -> Result<String> {
     if request
         .messages
         .iter()
@@ -90,22 +117,6 @@ pub(crate) fn build_request(request: &ModelRequest<'_>, user_agent: &str) -> Res
     if let Some(limit) = request.max_output_tokens {
         let _ = write!(out, ",\"maxOutputTokens\":{limit}");
     }
-    if let Some(effort) = request.provider_options.reasoning_effort {
-        out.push_str(",\"reasoning\":");
-        push_json_string(&mut out, reasoning_wire_value(effort));
-    }
-    write_provider_options(
-        &mut out,
-        request.provider_options.fast,
-        request.provider_options.prompt_caching,
-        parallel_tool_calls(request.model),
-    );
-    if request.model == USER_AGENT_MODEL {
-        out.push_str(",\"headers\":{\"user-agent\":");
-        push_json_string(&mut out, user_agent);
-        out.push('}');
-    }
-    out.push('}');
     Ok(out)
 }
 
