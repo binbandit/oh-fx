@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -143,6 +143,7 @@ fn foreground_session_reports_startup_visible_attention_turns_and_release() {
         .env("OH_FX_AUTO_UPGRADE", "0")
         .env("HERDR_SOCKET_PATH", &socket.path)
         .env("HERDR_PANE_ID", "test-pane")
+        .env("OH_FX_TRACE_LOG", home.join("trace.log"))
         .process_group(0);
     let mut session =
         PtySession::spawn(command, 30, 100).expect("Herdr fixture operation succeeds");
@@ -201,6 +202,93 @@ fn foreground_session_reports_startup_visible_attention_turns_and_release() {
     assert_eq!(reports[11]["method"], "pane.clear_agent_authority");
     assert_eq!(reports[12]["method"], "pane.rename");
     assert!(reports[12]["params"]["label"].is_null());
+    let log = fs::read_to_string(home.join("trace.log")).expect("read the trace log");
+    assert_traced_reports(&log, &socket.path);
+}
+
+fn assert_traced_reports(log: &str, socket: &Path) {
+    let lines: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once(' ').map(|(_, body)| body))
+        .collect();
+    let position = |wanted: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(wanted))
+            .unwrap_or_else(|| panic!("{wanted}\n{log}"))
+    };
+    let enabled = position(&format!(
+        "[herdr] enabled socket={} pane_id=test-pane",
+        socket.display()
+    ));
+    let session_sent = position("[herdr] sent session pane_id=test-pane");
+    assert!(enabled < session_sent, "{log}");
+    for kind in ["report", "pane_rename", "agent_rename", "clear_authority"] {
+        position(&format!("[herdr] sent {kind} pane_id=test-pane"));
+    }
+    let attention = position(
+        "[hooks] event=handler_start lifecycle_event=AttentionRequired handler=fx.herdr.attention_required scope=interactive",
+    );
+    let attended = position(
+        "[hooks] event=handler_finish lifecycle_event=AttentionRequired handler=fx.herdr.attention_required scope=interactive duration_ms=",
+    );
+    assert!(attention < attended, "{log}");
+    assert!(lines[attended].ends_with(" outcome=ok"), "{log}");
+    let turn_end = lines
+        .iter()
+        .find(|line| {
+            line.starts_with("[hooks] event=handler_finish turn_id=")
+                && line.contains(" lifecycle_event=PostTurnEnd handler=fx.herdr.turn_end scope=interactive duration_ms=")
+        })
+        .unwrap_or_else(|| panic!("{log}"));
+    assert!(turn_end.ends_with(" outcome=ok"), "{log}");
+}
+
+#[test]
+fn an_unreachable_herdr_socket_writes_its_send_failures() {
+    let root = tempfile::tempdir().expect("Herdr fixture operation succeeds");
+    let home = fs::canonicalize(root.path()).expect("Herdr fixture operation succeeds");
+    let config = home.join("config/oh-fx");
+    fs::create_dir_all(&config).expect("Herdr fixture operation succeeds");
+    let server = FakeServer::start([]);
+    fs::write(config.join("settings.json"), json!({"provider":"local","providers":{"local":{"protocol":"openai-chat-completions","base_url":server.base_url(),"auth":{"type":"none"},"models":["model-a"]}}}).to_string()).expect("Herdr fixture operation succeeds");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+    command
+        .current_dir(&home)
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/bin:/bin")
+        .env("TERM", "xterm-256color")
+        .env("OH_FX_AUTO_UPGRADE", "0")
+        .env("HERDR_SOCKET_PATH", home.join("missing.sock"))
+        .env("HERDR_PANE_ID", "test-pane")
+        .env("OH_FX_TRACE_LOG", home.join("trace.log"))
+        .process_group(0);
+    let mut session =
+        PtySession::spawn(command, 30, 100).expect("Herdr fixture operation succeeds");
+    session
+        .wait_for(WAIT, |screen| screen.contains("Run /help for commands"))
+        .expect("Herdr fixture operation succeeds");
+    session.send(b"/exit\r");
+    assert!(
+        session
+            .wait_exit(WAIT)
+            .expect("Herdr fixture operation succeeds")
+            .success()
+    );
+    let log = fs::read_to_string(home.join("trace.log")).expect("read the trace log");
+    for kind in ["report", "pane_rename", "agent_rename", "clear_authority"] {
+        assert!(
+            log.contains(&format!("[herdr] send failed kind={kind} err=FileNotFound")),
+            "{kind}\n{log}"
+        );
+    }
+    assert!(!log.contains("[herdr] sent "), "{log}");
 }
 
 #[test]
@@ -254,7 +342,10 @@ fn disabled_foreground_and_noninteractive_commands_do_not_contact_herdr() {
     assert_eq!(requests[0].json()["model"], "model-a");
     assert!(socket.lines.lock().expect("reports mutex").is_empty());
     let mut disabled = command();
-    disabled.env("OH_FX_HERDR", "FaLsE").process_group(0);
+    disabled
+        .env("OH_FX_HERDR", "FaLsE")
+        .env("OH_FX_TRACE_LOG", home.join("trace.log"))
+        .process_group(0);
     let mut session =
         PtySession::spawn(disabled, 30, 100).expect("Herdr fixture operation succeeds");
     session
@@ -273,6 +364,14 @@ fn disabled_foreground_and_noninteractive_commands_do_not_contact_herdr() {
             .lock()
             .expect("Herdr fixture operation succeeds")
             .is_empty()
+    );
+    let log = fs::read_to_string(home.join("trace.log")).expect("read the trace log");
+    assert!(
+        log.contains(&format!(
+            "[herdr] disabled socket={} pane=test-pane fx_herdr=FaLsE\n",
+            socket.path.display()
+        )),
+        "{log}"
     );
 }
 

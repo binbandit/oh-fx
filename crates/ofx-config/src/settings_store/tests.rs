@@ -1046,7 +1046,12 @@ fn a_workspace_entry_is_edited_in_place_and_removed_once_empty() {
     );
     let workspace = Path::new("/ws");
     assert_eq!(
-        save_workspace_entry(&fixture.paths, workspace, |entry| put_flag(entry, true)),
+        save_workspace_entry(
+            &fixture.paths,
+            WorkspaceEntryKind::Directories,
+            workspace,
+            |entry| put_flag(entry, true)
+        ),
         Ok(true)
     );
     assert_eq!(
@@ -1054,17 +1059,32 @@ fn a_workspace_entry_is_edited_in_place_and_removed_once_empty() {
         "{\"provider\":\"local\",\"workspaces\":{\"/other\":{\"context\":false},\"/ws\":{\"context\":true,\"flag\":true}}}\n"
     );
     assert_eq!(
-        save_workspace_entry(&fixture.paths, workspace, |entry| put_flag(entry, true)),
+        save_workspace_entry(
+            &fixture.paths,
+            WorkspaceEntryKind::Directories,
+            workspace,
+            |entry| put_flag(entry, true)
+        ),
         Ok(false)
     );
     let fresh = Path::new("/fresh");
     assert_eq!(
-        save_workspace_entry(&fixture.paths, fresh, |entry| put_flag(entry, true)),
+        save_workspace_entry(
+            &fixture.paths,
+            WorkspaceEntryKind::Directories,
+            fresh,
+            |entry| put_flag(entry, true)
+        ),
         Ok(true)
     );
     assert!(fixture.read().contains(r#""/fresh":{"flag":true}"#));
     assert_eq!(
-        save_workspace_entry(&fixture.paths, fresh, |entry| put_flag(entry, false)),
+        save_workspace_entry(
+            &fixture.paths,
+            WorkspaceEntryKind::Directories,
+            fresh,
+            |entry| put_flag(entry, false)
+        ),
         Ok(true)
     );
     assert!(!fixture.read().contains("/fresh"));
@@ -1075,9 +1095,12 @@ fn the_last_workspace_entry_takes_the_empty_workspaces_object_with_it() {
     let fixture =
         Fixture::with_settings(r#"{"provider":"local","workspaces":{"/ws":{"flag":true}}}"#);
     assert_eq!(
-        save_workspace_entry(&fixture.paths, Path::new("/ws"), |entry| put_flag(
-            entry, false
-        )),
+        save_workspace_entry(
+            &fixture.paths,
+            WorkspaceEntryKind::Directories,
+            Path::new("/ws"),
+            |entry| put_flag(entry, false)
+        ),
         Ok(true)
     );
     assert_eq!(fixture.read(), "{\"provider\":\"local\"}\n");
@@ -1088,20 +1111,75 @@ fn a_refused_workspace_edit_leaves_the_settings_untouched() {
     let original = r#"{"workspaces":{"/ws":[1]}}"#;
     let fixture = Fixture::with_settings(original);
     assert_eq!(
-        save_workspace_entry(&fixture.paths, Path::new("/ws"), |entry| put_flag(
-            entry, true
-        )),
+        save_workspace_entry(
+            &fixture.paths,
+            WorkspaceEntryKind::Directories,
+            Path::new("/ws"),
+            |entry| put_flag(entry, true)
+        ),
         Err(WorkspaceSaveError::Edit("NotAnObject"))
     );
     assert_eq!(fixture.read(), original);
     let locked = Fixture::with_settings(r#"{"workspaces":[]}"#);
     assert!(matches!(
-        save_workspace_entry(&locked.paths, Path::new("/ws"), |entry| put_flag(
-            entry, true
-        )),
+        save_workspace_entry(
+            &locked.paths,
+            WorkspaceEntryKind::Directories,
+            Path::new("/ws"),
+            |entry| put_flag(entry, true)
+        ),
         Err(WorkspaceSaveError::Settings(SettingsWriteFailure {
             error: SettingsWriteError::InvalidFormat,
             ..
         }))
     ));
+}
+
+#[test]
+fn settings_operations_take_upstreams_names_scopes_and_modes() {
+    let provider = ProviderId::Codex;
+    let edit = |_: &mut Value| Ok(false);
+    let names = |patch: Patch<'_>| (patch.operation(), patch.scope(), patch.mutation_mode());
+    for patch in [
+        Patch::CodexModel("gpt-5"),
+        Patch::ProviderModel(&provider, "gpt-5"),
+        Patch::PermissionMode(PermissionMode::Auto),
+        Patch::YoloAcknowledged,
+        Patch::StartupScrollback(false),
+        Patch::SessionTitles(true),
+    ] {
+        assert_eq!(names(patch), ("user_patch", "user", "runtime_first"));
+    }
+    assert_eq!(
+        names(Patch::PromptHistoryEnabled(false)),
+        ("user_patch", "user", "commit_first")
+    );
+    let reset = PermissionPatch::Reset(AllowlistResetScope::All);
+    assert_eq!(
+        names(Patch::Permission {
+            workspace: None,
+            patch: reset,
+        }),
+        ("permission_patch", "user", "commit_first")
+    );
+    assert_eq!(
+        names(Patch::Permission {
+            workspace: Some("/ws"),
+            patch: reset,
+        }),
+        ("permission_patch", "local", "commit_first")
+    );
+    for (kind, operation) in [
+        (WorkspaceEntryKind::Directories, "workspace_directory_patch"),
+        (WorkspaceEntryKind::ProjectMcp, "project_mcp_patch"),
+    ] {
+        assert_eq!(
+            names(Patch::WorkspaceEntry {
+                kind,
+                key: "/ws",
+                edit: &edit,
+            }),
+            (operation, "local", "commit_first")
+        );
+    }
 }

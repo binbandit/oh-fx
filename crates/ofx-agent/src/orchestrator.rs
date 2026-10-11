@@ -708,7 +708,7 @@ impl Agent {
                 turn_id: id,
                 outcome: TurnOutcome::Failed,
             });
-            self.post_turn_end(id, TurnPresentationOutcome::Failed);
+            self.post_turn_end((id, trace), TurnPresentationOutcome::Failed);
             return TurnReport {
                 outcome: TurnOutcome::Failed,
                 final_text: String::new(),
@@ -749,7 +749,7 @@ impl Agent {
                 text: Arc::from(final_text.as_str()),
             });
         }
-        self.post_turn_end(id, presentation_outcome(outcome, ending));
+        self.post_turn_end((id, turn.trace), presentation_outcome(outcome, ending));
         TurnReport {
             outcome,
             final_text,
@@ -818,9 +818,9 @@ impl Agent {
         }
     }
 
-    fn post_turn_end(&mut self, turn_id: TurnId, outcome: TurnPresentationOutcome) {
+    fn post_turn_end(&mut self, turn: (TurnId, TraceContext), outcome: TurnPresentationOutcome) {
         if let Some(lifecycle) = &mut self.lifecycle {
-            lifecycle.post_turn_end(turn_id, outcome);
+            lifecycle.post_turn_end(turn, outcome);
         }
     }
 
@@ -852,7 +852,13 @@ impl Agent {
         };
         let step_index = usize::try_from(turn.steps).unwrap_or(usize::MAX);
         match lifecycle
-            .stop(turn.id, step_index, rendered, can_continue, cancel)
+            .stop(
+                (turn.id, turn.trace),
+                step_index,
+                rendered,
+                can_continue,
+                cancel,
+            )
             .await
         {
             None => Err(Stop::interrupted()),
@@ -1908,7 +1914,7 @@ impl Agent {
             }
             prepared.push(
                 lifecycle
-                    .pre_tool_use(turn.id, step_index, call, cancel)
+                    .pre_tool_use((turn.id, turn.trace), step_index, call, cancel)
                     .await?,
             );
         }

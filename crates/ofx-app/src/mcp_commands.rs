@@ -2,7 +2,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
-use ofx_config::{SettingsWriteError, WorkspaceSaveError, save_workspace_entry};
+use ofx_config::{
+    SettingsWriteError, WorkspaceEntryKind, WorkspaceSaveError, save_workspace_entry,
+};
 use ofx_contract::NoticeTone;
 use ofx_mcp::{
     AddIntentError, CompletionArgument, CompletionResult, FeatureFailure, McpError, McpRuntime,
@@ -328,9 +330,12 @@ fn apply_project_action(
         action,
         ProjectMcpAction::Reject(_) | ProjectMcpAction::Reset
     );
-    let saved = save_workspace_entry(paths, host.sources().workspace_root(), |entry| {
-        apply_project_mcp_action_to_entry(entry, action).map(|change| change.changed)
-    });
+    let saved = save_workspace_entry(
+        paths,
+        WorkspaceEntryKind::ProjectMcp,
+        host.sources().workspace_root(),
+        |entry| apply_project_mcp_action_to_entry(entry, action).map(|change| change.changed),
+    );
     match saved {
         Ok(committed) => {
             if reducing {

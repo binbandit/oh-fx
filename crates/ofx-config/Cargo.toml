@@ -10,6 +10,7 @@ publish.workspace = true
 getrandom.workspace = true
 ofx-contract.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 percent-encoding.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 serde_json.workspace = true
