@@ -27,5 +27,7 @@ pub use openai_codex::{
 pub use openai_codex_models::{
     CODEX_TITLE_MODEL, CatalogCredential, CodexModel, CodexModelCatalog, CodexModelsEndpoints,
 };
-pub use permission_reviewer::{ChatCompletionsReviewTransport, CodexReviewTransport};
+pub use permission_reviewer::{
+    ChatCompletionsReviewTransport, CodexReviewTransport, GatewayReviewTransport,
+};
 pub use provider_failure::{HttpFailure, http_failure};
