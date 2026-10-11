@@ -26,7 +26,7 @@ note = "Custom/Codex requests exist, and the Vercel AI Gateway provider builds a
 upstream = "src/builtins/gateway/permission_reviewer.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/permission_reviewer.rs"]
-note = "Review request/response transport exists; Vercel reviewer route, Jev override and session usage recording are absent."
+note = "The review transport exists for Codex, custom connections and the Vercel AI Gateway, whose reviewer defaults to openai/gpt-5.6-luna, takes a configured reviewer model, sends upstream's pending review body without provider options and maps HTTP statuses and stream outcomes to upstream's transient and permanent failures; the review_model setting and its environment override arrive with the gateway route, and the Jev override and session usage recording are absent."
 
 [[file]]
 upstream = "src/builtins/gateway/typesafe_permission_reviewer.zig"

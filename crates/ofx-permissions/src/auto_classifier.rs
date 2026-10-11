@@ -240,7 +240,7 @@ fn pending_review_messages(context_message: String, call: &ToolCall) -> [ChatMes
             call_id: call.id.clone(),
             tool_name: call.name.clone(),
             content: PENDING_TOOL_REVIEW_RESULT.to_owned(),
-            status: ToolResultStatus::Failure,
+            status: ToolResultStatus::Success,
         },
     ]
 }
