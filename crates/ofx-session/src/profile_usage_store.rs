@@ -32,6 +32,7 @@ const INCIDENT_FIELDS: usize = 4;
 const ABANDON_CHECK_LINES: usize = 256;
 
 mod append;
+mod compaction;
 mod records;
 
 pub(crate) use records::{AppendOutcome, ProfileEvent};
@@ -272,6 +273,8 @@ struct RecordIndex {
     record_count: usize,
     boundary: u64,
     tail_sample: Vec<u8>,
+    identity: (u64, u64),
+    incident_sources: Vec<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -335,14 +338,23 @@ impl RecordIndex {
                 }
                 let id = marker.id.clone();
                 let observed_at_ms = marker.observed_at_ms;
-                if absorb_variant(&mut loaded.pending, &mut self.pending_variants, id, marker) {
+                if absorb_variant(
+                    &mut loaded.pending,
+                    &mut self.pending_variants,
+                    id.clone(),
+                    marker,
+                ) {
                     loaded.incidents.push(UsageIncident {
                         occurred_at_ms: observed_at_ms,
                         completeness: UsageCompleteness::Incomplete,
                     });
+                    self.incident_sources.push(Some(id));
                 }
             }
-            ParsedRecord::Incident(incident) => loaded.incidents.push(incident),
+            ParsedRecord::Incident(incident) => {
+                loaded.incidents.push(incident);
+                self.incident_sources.push(None);
+            }
         }
         Ok(())
     }

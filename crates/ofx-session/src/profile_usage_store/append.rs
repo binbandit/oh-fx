@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::os::fd::AsFd;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,6 +10,7 @@ use ofx_contract::{UsageCompleteness, UsageIncident};
 use rustix::fs::{self, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
+use super::compaction::{COMPACTION_THRESHOLD_BYTES, retention_cutoff};
 use super::records::{AppendOutcome, ProfileEvent, push_coverage, push_incident};
 use super::{
     LOCK_RETRY, MAX_FILE_BYTES, MAX_RECORD_BYTES, MAX_RECORDS, ProfileUsageStore, RecordIndex,
@@ -38,7 +39,7 @@ impl ProfileUsageStore {
         }
         let home = writable_home(&mut self.home, &self.data_dir)?;
         let _lock = acquire_lock(home, self.lock_deadline, &self.abandoned)?;
-        let file = open_writable_ledger(home)?;
+        let mut file = open_writable_ledger(home)?;
         let tail = inspect_tail(&file)?;
         let index = ensure_index(&mut self.index, &file, tail.length, &self.abandoned)?;
         let decision = index.classify(event);
@@ -66,36 +67,106 @@ impl ProfileUsageStore {
         if appended.is_empty() {
             return Ok(decision.outcome);
         }
-        let next_length = u64::try_from(appended.len())
-            .ok()
-            .and_then(|added| tail.length.checked_add(added))
-            .filter(|length| *length <= MAX_FILE_BYTES)
-            .ok_or(UsageStoreError::CapacityExceeded)?;
-        if index.record_count.saturating_add(records) > MAX_RECORDS {
-            return Err(UsageStoreError::CapacityExceeded);
+        let added = u64::try_from(appended.len()).map_err(|_| UsageStoreError::CapacityExceeded)?;
+        let mut next_length = tail.length.checked_add(added);
+        let mut base_records = index.record_count;
+        let compacted = (next_length.is_none_or(|length| length > MAX_FILE_BYTES)
+            || base_records.saturating_add(records) > MAX_RECORDS)
+            && index.has_expired(now);
+        let mut boundary = tail.length;
+        let mut committed = false;
+        if compacted {
+            let current = read_index(&file, tail.length, &self.abandoned)?;
+            base_records = current.retained_count(now);
+            let mut retained = current.retained_lines(now);
+            if tail.incomplete {
+                retained.push_str(&appended);
+                next_length = u64::try_from(retained.len()).ok();
+                within_capacity(next_length, base_records, records)?;
+                replace_ledger(home, retained.as_bytes())?;
+                committed = true;
+            } else {
+                within_capacity(u64::try_from(retained.len()).ok(), base_records, 0)?;
+                replace_ledger(home, retained.as_bytes())?;
+                file = open_writable_ledger(home)?;
+                boundary = ledger_length(&file)?;
+                next_length = boundary.checked_add(added);
+            }
         }
-        if tail.incomplete {
-            let mut replacement = read_prefix(&file, tail.length)?;
+        let next_length = within_capacity(next_length, base_records, records)?;
+        if !committed && tail.incomplete {
+            let mut replacement = read_prefix(&file, boundary)?;
             replacement.extend_from_slice(appended.as_bytes());
-            home.replace(USAGE_FILE, &replacement)
-                .map_err(|error| match error {
-                    DurableError::PostRenameFailed => UsageStoreError::CommitIndeterminate,
-                    DurableError::PreRenameFailed => UsageStoreError::WriteFailed,
-                    error => error.into(),
-                })?;
-        } else {
-            file.write_all_at(appended.as_bytes(), tail.length)
+            replace_ledger(home, &replacement)?;
+        } else if !committed {
+            file.write_all_at(appended.as_bytes(), boundary)
                 .and_then(|()| file.sync_all())
                 .map_err(|_| UsageStoreError::WriteFailed)?;
         }
-        if index.absorb_bytes(appended.as_bytes(), None).is_ok() {
+        let compact_after = !compacted
+            && next_length > COMPACTION_THRESHOLD_BYTES
+            && (index.has_aged(now) || event.timestamp() < retention_cutoff(now));
+        if compacted || index.absorb_bytes(appended.as_bytes(), None).is_err() {
+            self.index = None;
+        } else {
             index.boundary = next_length;
             index.sample_tail(appended.as_bytes());
-        } else {
-            self.index = None;
+        }
+        if compact_after && !self.abandoned.load(Ordering::Acquire) {
+            compact_ledger(home, &mut self.index, &self.abandoned, now)?;
         }
         Ok(decision.outcome)
     }
+}
+
+fn within_capacity(
+    length: Option<u64>,
+    base_records: usize,
+    records: usize,
+) -> Result<u64, UsageStoreError> {
+    length
+        .filter(|length| {
+            *length <= MAX_FILE_BYTES && base_records.saturating_add(records) <= MAX_RECORDS
+        })
+        .ok_or(UsageStoreError::CapacityExceeded)
+}
+
+fn replace_ledger(home: &PrivateDir, bytes: &[u8]) -> Result<(), UsageStoreError> {
+    home.replace(USAGE_FILE, bytes)
+        .map_err(|error| match error {
+            DurableError::PostRenameFailed => UsageStoreError::CommitIndeterminate,
+            DurableError::PreRenameFailed => UsageStoreError::WriteFailed,
+            error => error.into(),
+        })
+}
+
+fn compact_ledger(
+    home: &PrivateDir,
+    slot: &mut Option<RecordIndex>,
+    abandoned: &AtomicBool,
+    now: i64,
+) -> Result<(), UsageStoreError> {
+    let file = open_writable_ledger(home)?;
+    let current = read_index(&file, ledger_length(&file)?, abandoned)?;
+    let retained = current.retained_lines(now);
+    let length = u64::try_from(retained.len()).ok();
+    if within_capacity(length, current.retained_count(now), 0).is_err() {
+        return Ok(());
+    }
+    *slot = None;
+    replace_ledger(home, retained.as_bytes())
+}
+
+fn ledger_identity(file: &File) -> Result<(u64, u64), UsageStoreError> {
+    let metadata = file.metadata().map_err(|_| UsageStoreError::ReadFailed)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn ledger_length(file: &File) -> Result<u64, UsageStoreError> {
+    Ok(file
+        .metadata()
+        .map_err(|_| UsageStoreError::ReadFailed)?
+        .len())
 }
 
 fn writable_home<'a>(
@@ -176,10 +247,7 @@ fn open_writable_ledger(home: &PrivateDir) -> Result<File, UsageStoreError> {
 }
 
 fn inspect_tail(file: &File) -> Result<Tail, UsageStoreError> {
-    let length = file
-        .metadata()
-        .map_err(|_| UsageStoreError::ReadFailed)?
-        .len();
+    let length = ledger_length(file)?;
     if length == 0 {
         return Ok(Tail {
             length,
@@ -228,28 +296,41 @@ fn ensure_index<'a>(
     boundary: u64,
     abandoned: &AtomicBool,
 ) -> Result<&'a mut RecordIndex, UsageStoreError> {
+    let identity = ledger_identity(file)?;
     let current = slot.as_mut().is_some_and(|index| {
-        (boundary == index.boundary && index.tail_matches(file))
-            || (boundary > index.boundary && index.absorb_tail(file, boundary, abandoned))
+        index.identity == identity
+            && ((boundary == index.boundary && index.tail_matches(file))
+                || (boundary > index.boundary && index.absorb_tail(file, boundary, abandoned)))
     });
     if !current {
         *slot = None;
-        if boundary > MAX_FILE_BYTES {
-            return Err(UsageStoreError::CapacityExceeded);
-        }
-        let mut fresh = RecordIndex::default();
-        if boundary > 0 {
-            let bytes = read_prefix(file, boundary)?;
-            if bytes.last() != Some(&b'\n') {
-                return Err(UsageStoreError::Incomplete);
-            }
-            fresh.absorb_bytes(&bytes, Some(abandoned))?;
-            fresh.boundary = boundary;
-            fresh.sample_tail(&bytes);
-        }
-        *slot = Some(fresh);
+        *slot = Some(read_index(file, boundary, abandoned)?);
     }
     slot.as_mut().ok_or(UsageStoreError::Invalid)
+}
+
+fn read_index(
+    file: &File,
+    boundary: u64,
+    abandoned: &AtomicBool,
+) -> Result<RecordIndex, UsageStoreError> {
+    if boundary > MAX_FILE_BYTES {
+        return Err(UsageStoreError::CapacityExceeded);
+    }
+    let mut fresh = RecordIndex {
+        identity: ledger_identity(file)?,
+        ..RecordIndex::default()
+    };
+    if boundary > 0 {
+        let bytes = read_prefix(file, boundary)?;
+        if bytes.last() != Some(&b'\n') {
+            return Err(UsageStoreError::Incomplete);
+        }
+        fresh.absorb_bytes(&bytes, Some(abandoned))?;
+        fresh.boundary = boundary;
+        fresh.sample_tail(&bytes);
+    }
+    Ok(fresh)
 }
 
 impl RecordIndex {
