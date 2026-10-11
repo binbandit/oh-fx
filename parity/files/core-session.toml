@@ -234,7 +234,7 @@ modules = []
 upstream = "src/core/session/usage_recovery.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/usage_recovery.rs"]
-note = "collectFromHomeConservative exists for oh-fx's own sessions: only marked sessions are read, a checkpoint is trusted when it is newer than its marker, their publication backlog, incidents and pending generations are folded within the 4096-record bounds, an unsettled or unreadable session or a marker newer than its checkpoint makes the recovery unknown, and an unreadable index does too; the cancelable variant and the sessions v2 markers wait for the dashboard and the v2 store. A marker naming a vanished session is cleared rather than left unknown, as docs/differences/usage.md records."
+note = "collectFromHomeConservative exists for oh-fx's own sessions: only marked sessions are read, a checkpoint is trusted when it is newer than its marker, their publication backlog, incidents and pending generations are folded within the 4096-record bounds, an unsettled or unreadable session or a marker newer than its checkpoint makes the recovery unknown, and an unreadable index does too; the cancelable variant and the sessions v2 markers wait for the dashboard and the v2 store."
 
 [[file]]
 upstream = "src/core/session/usage_report.zig"

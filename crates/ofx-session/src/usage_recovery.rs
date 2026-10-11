@@ -8,9 +8,7 @@ use crate::session_log::read_metadata;
 use crate::session_store::SESSIONS_DIR;
 use crate::session_usage::{Availability, UsageSnapshot};
 use crate::session_usage_sidecar::{SIDECAR_FILE, load_conversation};
-use crate::usage_recovery_registry::{
-    MarkedSession, RecoveryRegistry, checkpoint_modified_at_ns, marked_sessions,
-};
+use crate::usage_recovery_registry::{MarkedSession, checkpoint_modified_at_ns, marked_sessions};
 
 const MAX_RECOVERY_RECORDS: usize = 4096;
 
@@ -40,12 +38,7 @@ impl UsageRecovery {
             return Ok(recovery);
         }
         let sessions = data.open_child(SESSIONS_DIR)?;
-        let registry = RecoveryRegistry::new(data);
         for session in &marked {
-            if vanished(sessions.as_ref(), &session.id) {
-                recovery.unknown_pending |= registry.clear(&session.id).is_err();
-                continue;
-            }
             match read_marked(sessions.as_ref(), session) {
                 Some((usage, updated_at_ms, newer)) => recovery.add(&usage, updated_at_ms, newer),
                 None => recovery.unknown_pending = true,
@@ -94,12 +87,6 @@ fn bounded<T>(records: &mut Vec<T>, added: impl IntoIterator<Item = T>) -> bool 
         records.push(record);
     }
     false
-}
-
-fn vanished(sessions: Option<&PrivateDir>, id: &str) -> bool {
-    sessions
-        .map_or(Ok(None), |sessions| sessions.open_child(id))
-        .is_ok_and(|session| session.is_none())
 }
 
 fn read_marked(

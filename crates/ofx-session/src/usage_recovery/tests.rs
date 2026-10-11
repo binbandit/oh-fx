@@ -163,15 +163,26 @@ fn a_marked_session_that_cannot_be_read_leaves_the_usage_unknown() {
 }
 
 #[test]
-fn a_marker_naming_a_vanished_session_heals() {
+fn a_session_away_during_an_import_refresh_keeps_its_marker_and_returns_to_the_report() {
     let profile = Profile::new();
-    drop(profile.start());
-    let data = PrivateDir::open_existing(&profile.data()).unwrap().unwrap();
-    RecoveryRegistry::new(data)
-        .mark("vanished", 1, true)
-        .unwrap();
-    assert_eq!(profile.collect(), UsageRecovery::default());
-    assert!(!profile.marker("vanished").exists());
+    let mut session = profile.start();
+    exact(&mut session, "resp_away");
+    let id = session.id().to_owned();
+    drop(session);
+    let sessions = profile.data().join(SESSIONS_DIR);
+    let retired = sessions.join(".refresh-retired");
+    fs::rename(sessions.join(&id), &retired).unwrap();
+
+    let away = profile.collect();
+    assert!(away.unknown_pending);
+    assert!(away.facts.is_empty());
+    assert!(profile.marker(&id).exists());
+
+    fs::rename(&retired, sessions.join(&id)).unwrap();
+    let restored = profile.collect();
+    assert!(!restored.unknown_pending);
+    assert_eq!(restored.facts.len(), 1);
+    assert_eq!(restored.pending.len(), 1);
 }
 
 #[test]
