@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use ofx_http::ConnectionOptions;
 use tokio_util::sync::CancellationToken;
@@ -49,7 +50,7 @@ pub(crate) fn authentication_target(config: &McpServerConfig) -> Result<(), McpE
 pub(crate) async fn authenticate(
     config: &McpServerConfig,
     options: &ConnectOptions,
-    state: &AuthState,
+    state: &Arc<AuthState>,
     grant_use: GrantUse,
     open_url: &(dyn Fn(&str) -> bool + Sync),
     cancel: &CancellationToken,
@@ -116,19 +117,18 @@ pub(crate) async fn authenticate(
             return Ok(AuthenticationOutcome::IssuerMismatch(mismatch));
         }
     };
-    if cancel.is_cancelled() {
-        return Err(McpError::Cancelled);
-    }
-    if state.generation() != generation {
-        return Err(McpError::McpAuthorityChanged);
-    }
-    let saved = credentials.clone();
-    let result = tokio::task::spawn_blocking(move || store.save(&lookup, &saved))
-        .await
-        .map_err(|_| McpError::Cancelled)??;
-    state.authenticated(credentials);
+    let publishing = Arc::clone(state);
+    let stop = cancel.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        let lock = store.lock_for_save()?;
+        publishing.publish(generation, &stop, credentials, |grant| {
+            lock.save(&lookup, grant)
+        })
+    })
+    .await
+    .map_err(|_| McpError::Cancelled)??;
     Ok(AuthenticationOutcome::Authenticated {
-        repaired_entries: result.repaired_entries,
+        repaired_entries: saved.repaired_entries,
     })
 }
 

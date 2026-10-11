@@ -103,6 +103,38 @@ fn same_grant(
         && entry.issuer == credentials.issuer
 }
 
+pub(crate) struct SaveLock {
+    locked: LockedDir,
+}
+
+impl SaveLock {
+    pub(crate) fn save(
+        &self,
+        lookup: &GrantLookup,
+        credentials: &Credentials,
+    ) -> Result<SaveResult, McpError> {
+        let mut store = load_store(&self.locked.directory)?;
+        let mut slot = None;
+        let mut kept = Vec::with_capacity(store.credentials.len() + 1);
+        for (identity, entry) in store.credentials.drain(..) {
+            if lookup.matches(&identity, &entry)
+                || same_grant(&identity, &entry, &lookup.identity, credentials)
+            {
+                slot.get_or_insert(kept.len());
+            } else {
+                kept.push((identity, entry));
+            }
+        }
+        let replacement = (lookup.identity.clone(), credentials.clone());
+        match slot {
+            Some(index) => kept.insert(index, replacement),
+            None => kept.push(replacement),
+        }
+        store.credentials = kept;
+        write_store(&self.locked, &store)
+    }
+}
+
 struct LockedDir {
     directory: PrivateDir,
     _lock: AdvisoryLock,
@@ -133,31 +165,19 @@ impl CredentialStore {
         Ok(matched.cloned())
     }
 
+    #[cfg(test)]
     pub(crate) fn save(
         &self,
         lookup: &GrantLookup,
         credentials: &Credentials,
     ) -> Result<SaveResult, McpError> {
-        let locked = self.open_or_create()?;
-        let mut store = load_store(&locked.directory)?;
-        let mut slot = None;
-        let mut kept = Vec::with_capacity(store.credentials.len() + 1);
-        for (identity, entry) in store.credentials.drain(..) {
-            if lookup.matches(&identity, &entry)
-                || same_grant(&identity, &entry, &lookup.identity, credentials)
-            {
-                slot.get_or_insert(kept.len());
-            } else {
-                kept.push((identity, entry));
-            }
-        }
-        let replacement = (lookup.identity.clone(), credentials.clone());
-        match slot {
-            Some(index) => kept.insert(index, replacement),
-            None => kept.push(replacement),
-        }
-        store.credentials = kept;
-        write_store(&locked, &store)
+        self.lock_for_save()?.save(lookup, credentials)
+    }
+
+    pub(crate) fn lock_for_save(&self) -> Result<SaveLock, McpError> {
+        Ok(SaveLock {
+            locked: self.open_or_create()?,
+        })
     }
 
     pub(crate) fn save_refreshed(

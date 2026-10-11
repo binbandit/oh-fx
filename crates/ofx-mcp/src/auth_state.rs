@@ -1,5 +1,8 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use tokio_util::sync::CancellationToken;
+
+use crate::error::McpError;
 use crate::health::AuthenticationState;
 use crate::mcp_auth::{Challenge, Credentials};
 use crate::mcp_contract::McpServerConfig;
@@ -47,13 +50,27 @@ impl AuthState {
         true
     }
 
-    pub(crate) fn authenticated(&self, credentials: Credentials) {
+    pub(crate) fn publish<T>(
+        &self,
+        generation: u64,
+        cancel: &CancellationToken,
+        credentials: Credentials,
+        save: impl FnOnce(&Credentials) -> Result<T, McpError>,
+    ) -> Result<T, McpError> {
         let mut inner = self.lock();
+        if cancel.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
+        if inner.generation != generation {
+            return Err(McpError::McpAuthorityChanged);
+        }
+        let saved = save(&credentials)?;
         inner.generation = inner.generation.saturating_add(1);
         inner.pending = None;
         inner.challenge_present = false;
         inner.credentials_present = true;
         inner.grant = Some(credentials);
+        Ok(saved)
     }
 
     pub(crate) fn grant(&self) -> Option<Credentials> {

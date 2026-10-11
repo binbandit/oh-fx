@@ -47,6 +47,7 @@ fn visit(url: &str) {
 
 struct Session {
     _data: tempfile::TempDir,
+    root: std::path::PathBuf,
     options: ConnectOptions,
     store: CredentialStore,
 }
@@ -61,6 +62,7 @@ impl Session {
                 ..ConnectOptions::default()
             },
             store: CredentialStore::new(&root),
+            root,
             _data: data,
         }
     }
@@ -76,7 +78,7 @@ impl Session {
 async fn run(
     session: &Session,
     config: &McpServerConfig,
-    state: &AuthState,
+    state: &Arc<AuthState>,
     grant_use: GrantUse,
     open_url: &(dyn Fn(&str) -> bool + Sync),
     cancel: &CancellationToken,
@@ -102,7 +104,7 @@ async fn a_session_grant_is_installed_for_a_project_server_and_saved() {
         workspace_admission: Some(WorkspaceAdmission::Approved),
         ..McpServerConfig::remote("project", TransportType::Http, &server.url)
     };
-    let state = AuthState::default();
+    let state = Arc::new(AuthState::default());
     state.store_pending(crate::mcp_auth::Challenge::default());
     let open = |url: &str| {
         visit(url);
@@ -138,7 +140,7 @@ async fn a_session_grant_is_installed_for_a_project_server_and_saved() {
     let refused = run(
         &session,
         &config,
-        &AuthState::default(),
+        &Arc::default(),
         GrantUse::LaterSessions,
         &open,
         &CancellationToken::new(),
@@ -213,4 +215,66 @@ fn the_callback_timeout_message_names_oh_fx() {
         authentication_error_message(&McpError::McpAuthorityChanged),
         "McpAuthorityChanged"
     );
+}
+
+#[tokio::test]
+async fn a_flow_superseded_while_the_store_is_locked_neither_saves_nor_publishes() {
+    for challenged in [false, true] {
+        let server = authority().await;
+        let session = Session::new();
+        let config = McpServerConfig::remote("remote", TransportType::Http, &server.url);
+        let state = Arc::new(AuthState::default());
+        let held = ofx_config::PrivateDir::open_or_create(&session.root)
+            .unwrap()
+            .open_or_create_child("mcp-credentials")
+            .unwrap()
+            .try_lock("credentials.lock")
+            .unwrap()
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let flow = {
+            let config = config.clone();
+            let options = session.options.clone();
+            let state = Arc::clone(&state);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                let open = |url: &str| {
+                    visit(url);
+                    true
+                };
+                authenticate(
+                    &config,
+                    &options,
+                    &state,
+                    GrantUse::ThisSession,
+                    &open,
+                    &cancel,
+                    &|_| None,
+                )
+                .await
+            })
+        };
+        assert!(server.wait_for(|request| request.path == "/token").await);
+        if challenged {
+            state.store_pending(crate::mcp_auth::Challenge {
+                scope: Some("tools.admin".to_owned()),
+                ..crate::mcp_auth::Challenge::default()
+            });
+        } else {
+            cancel.cancel();
+        }
+        drop(held);
+        let expected = if challenged {
+            McpError::McpAuthorityChanged
+        } else {
+            McpError::Cancelled
+        };
+        assert_eq!(flow.await.unwrap(), Err(expected), "{challenged}");
+        assert_eq!(session.saved(&config), None, "{challenged}");
+        assert!(state.grant().is_none());
+        if challenged {
+            assert_eq!(state.authentication(&config), AuthenticationState::Required);
+            assert_eq!(state.pending().scope.as_deref(), Some("tools.admin"));
+        }
+    }
 }

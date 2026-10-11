@@ -662,7 +662,14 @@ mod stored {
         .unwrap();
         let mut authorized = fixture.credentials(i64::MAX, None);
         authorized.access_token = Zeroizing::new("authorized-token".to_owned());
-        state.authenticated(authorized);
+        state
+            .publish(
+                state.generation(),
+                &CancellationToken::new(),
+                authorized,
+                |_| Ok(()),
+            )
+            .unwrap();
         let builder = old
             .apply(oauth_client().get(&fixture.server.url))
             .await
@@ -900,7 +907,7 @@ mod authenticating {
         let result = authenticate(
             config,
             options,
-            &AuthState::default(),
+            &Arc::default(),
             GrantUse::LaterSessions,
             &open,
             &CancellationToken::new(),
