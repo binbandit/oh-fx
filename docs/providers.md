@@ -195,7 +195,8 @@ An HTTP error from the gateway is reported differently. It prints one `oh-fx ask
 
 | Message | Cause |
 | --- | --- |
-| `oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.` | No `provider` is selected, so oh-fx uses the Vercel AI Gateway, and neither `VERCEL_OIDC_TOKEN` nor `AI_GATEWAY_API_KEY` is set. Set one, run `oh-fx login codex`, or add a connection and select it. |
+| `oh-fx needs access to Vercel AI Gateway. Run oh-fx setup to use an API key, or set AI_GATEWAY_API_KEY.` | No `provider` is selected, so oh-fx uses the Vercel AI Gateway, and it found no credential. Run `oh-fx setup`, set `AI_GATEWAY_API_KEY`, run `oh-fx login codex`, or add a connection and select it. |
+| `oh-fx could not read the stored API key from ...` | A stored key exists but could not be read: the Keychain refused, or the key file is not private or is larger than 8 KiB. Set `OH_FX_TRACE_LOG` and retry to see the failing step, or set `AI_GATEWAY_API_KEY`. |
 | `AI_GATEWAY_API_KEY authentication failed · HTTP 401` | The Vercel AI Gateway rejected the key. `VERCEL_OIDC_TOKEN` is named instead when that variable supplied the token. |
 | `oh-fx: UnknownConfiguredProvider` | `provider` or `OH_FX_PROVIDER` names a connection that is not under `providers`. |
 | `The configured provider credential is unavailable. ...` | `auth.type` is `bearer` and its environment variable is unset or blank. |
@@ -210,12 +211,13 @@ An HTTP error from the gateway is reported differently. It prints one `oh-fx ask
 
 ## Vercel AI Gateway
 
-With no `provider` selected, or `"provider": "gateway"`, oh-fx sends requests to the Vercel AI Gateway, as upstream fx does. It reads the credential from the environment:
+With no `provider` selected, or `"provider": "gateway"`, oh-fx sends requests to the Vercel AI Gateway, as upstream fx does. It uses the first credential it finds:
 
-| Variable | Use |
+| Source | Use |
 | --- | --- |
-| `VERCEL_OIDC_TOKEN` | A Vercel OIDC token. It is used first. |
+| `VERCEL_OIDC_TOKEN` | A Vercel OIDC token. |
 | `AI_GATEWAY_API_KEY` | An AI Gateway API key. |
+| Stored API key | The key `oh-fx setup` saved. |
 
 A variable that is empty or holds only whitespace counts as unset. With `OH_FX_AUTH_MODE=host-managed`, oh-fx sends no `Authorization` header, for a host that adds its own.
 
@@ -224,11 +226,23 @@ export AI_GATEWAY_API_KEY=...
 oh-fx ask "summarize this repository"
 ```
 
+### Store an API key
+
+`oh-fx setup` saves an AI Gateway API key so you don't need the environment variable. Run it in a terminal and paste the key at the prompt:
+
+```text
+$ oh-fx setup
+Paste AI Gateway API key (input hidden): ••••••••••••
+Saved API key to profile file.
+```
+
+On macOS the key goes into the login Keychain under `OH_FX_AI_GATEWAY_API_KEY`, and the Keychain's own prompt takes it. Elsewhere it goes into `$XDG_DATA_HOME/oh-fx/api-key` (default `~/.local/share/oh-fx/api-key`). The file is created with mode `0600` in a `0700` folder, and oh-fx refuses to read it if group or others can read it. `OH_FX_DISABLE_KEYCHAIN=1` turns stored keys off: `oh-fx setup` refuses to save, and oh-fx ignores any key it saved before.
+
 The default model is `spacexai/grok-4.7`. `--model`, `OH_FX_MODEL`, and `models.gateway` (or the top-level `model`) in `settings.json` choose another, in that order. Session titles use `openai/gpt-5.6-luna`, and auto mode reviews held tool calls with `openai/gpt-5.6-luna`.
 
 Requests go to `https://ai-gateway.vercel.sh/v4/ai/language-model`. `OH_FX_GATEWAY_CHAT_URL` sends them to a local test server instead. Only a loopback `http://` URL with a port is used, and anything else is ignored, because that URL receives the key and the whole request.
 
-`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, and never print its value. Signing in with Vercel, a stored key, the model list and credits are not available in oh-fx yet.
+`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY` or `auth=stored API key (profile file)`, and never print its value. Signing in with Vercel, the model list and credits are not available in oh-fx yet.
 
 ## ChatGPT subscription
 

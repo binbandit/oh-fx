@@ -302,6 +302,7 @@ impl Profile {
             settings,
         )
         .ok()
+        .map(|profile| profile.with_stored_key(self.stored_key.clone()))
     }
 }
 
