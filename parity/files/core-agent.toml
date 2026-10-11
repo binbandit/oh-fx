@@ -260,7 +260,7 @@ note = "Vision call image preparation and model execution are unimplemented."
 upstream = "src/core/agent/stream_provider.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/stream_provider.rs"]
-note = "Streaming text/reasoning, tool starts and streamed tool input, provider admission and completions exist; image request modes and delivery evidence are absent on main."
+note = "Streaming text/reasoning, tool starts and streamed tool input, provider admission and completions, and replay projection with each assistant unit's calls exist; image request modes and delivery evidence are absent on main."
 
 [[file]]
 upstream = "src/core/agent/tool_preparation.zig"
