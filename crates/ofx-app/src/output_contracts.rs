@@ -18,6 +18,7 @@ const CODEX_CONNECTION: &str = "Codex";
 
 pub(crate) struct StatusSnapshot<'a> {
     pub(crate) model: &'a str,
+    pub(crate) selection: &'a ProviderId,
     pub(crate) connection: Option<&'a ProviderDefinition>,
     pub(crate) source: CredentialSource,
     pub(crate) permission_mode: PermissionMode,
@@ -32,24 +33,24 @@ impl StatusSnapshot<'_> {
     pub(crate) fn render_interactive_body(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "model={}", self.model);
+        let gateway = *self.selection == ProviderId::Gateway;
         match self.connection {
             Some(connection) => {
                 let _ = writeln!(out, "model_source={}", connection.id());
                 let _ = writeln!(out, "provider_endpoint={}", connection.base_url());
             }
-            None => {
-                let _ = writeln!(
-                    out,
-                    "model_source={}",
-                    provider_route_name(&ProviderId::Codex)
-                );
+            None if !gateway => {
+                let _ = writeln!(out, "model_source={}", provider_route_name(self.selection));
             }
+            None => {}
         }
         let _ = writeln!(out, "auth={}", self.source.label());
-        let connected = self
-            .connection
-            .map_or(CODEX_CONNECTION, ProviderDefinition::id);
-        let _ = writeln!(out, "connected_providers={connected}");
+        if !gateway {
+            let connected = self
+                .connection
+                .map_or(CODEX_CONNECTION, ProviderDefinition::id);
+            let _ = writeln!(out, "connected_providers={connected}");
+        }
         let _ = writeln!(out, "auth_refreshable={}", self.source.refreshable());
         let _ = writeln!(
             out,
@@ -102,6 +103,7 @@ mod tests {
         let connection = connection(directory.path());
         let snapshot = StatusSnapshot {
             model: "model-a",
+            selection: &ProviderId::Configured("local".to_owned()),
             connection: Some(&connection),
             source: CredentialSource::Configured,
             permission_mode: PermissionMode::Ask,
@@ -121,6 +123,7 @@ mod tests {
     fn a_codex_subscription_names_its_route_and_refreshes() {
         let snapshot = StatusSnapshot {
             model: "gpt-6.1-sol",
+            selection: &ProviderId::Codex,
             connection: None,
             source: CredentialSource::Codex,
             permission_mode: PermissionMode::Yolo,
@@ -134,5 +137,39 @@ mod tests {
             snapshot.render_interactive_body(),
             "model=gpt-6.1-sol\nmodel_source=Codex subscription\nauth=Codex subscription\nconnected_providers=Codex\nauth_refreshable=true\npermission_mode=full access\nworkspace=/work\nhistory_turns=0\nsession_permission_grants=0\nagent_step_limit=0\nultrafast_requested=false"
         );
+    }
+
+    #[test]
+    fn the_gateway_names_neither_a_model_source_nor_connected_providers_as_upstream_does() {
+        for (source, auth) in [
+            (
+                CredentialSource::Gateway(ofx_auth::GatewaySource::AiGatewayApiKey),
+                "AI_GATEWAY_API_KEY",
+            ),
+            (
+                CredentialSource::Gateway(ofx_auth::GatewaySource::VercelOidcToken),
+                "VERCEL_OIDC_TOKEN",
+            ),
+            (CredentialSource::HostManaged, "host managed"),
+        ] {
+            let snapshot = StatusSnapshot {
+                model: "spacexai/grok-4.7",
+                selection: &ProviderId::Gateway,
+                connection: None,
+                source,
+                permission_mode: PermissionMode::Auto,
+                workspace_root: Path::new("/work"),
+                history_turns: 1,
+                session_permission_grants: 0,
+                agent_step_limit: 24,
+                ultrafast_requested: false,
+            };
+            assert_eq!(
+                snapshot.render_interactive_body(),
+                format!(
+                    "model=spacexai/grok-4.7\nauth={auth}\nauth_refreshable=false\npermission_mode=auto\nworkspace=/work\nhistory_turns=1\nsession_permission_grants=0\nagent_step_limit=24\nultrafast_requested=false"
+                )
+            );
+        }
     }
 }

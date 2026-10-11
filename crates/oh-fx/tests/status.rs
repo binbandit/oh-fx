@@ -308,15 +308,56 @@ fn settings_that_select_no_runnable_model_fail_like_startup() {
         "oh-fx: no Codex model is selected; run `oh-fx provider codex` to choose one, or set a model for this run with --model or OH_FX_MODEL\n"
     );
 
-    let home = Home::new(None);
+    let home = Home::new(Some(&json!({"provider": "grok"})));
     let output = home.status(&["status", "--json"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(text(&output.stdout), "");
     assert!(
-        text(&output.stderr)
-            .starts_with("oh-fx: the gateway provider is not available in oh-fx yet;"),
+        text(&output.stderr).starts_with("oh-fx: the grok provider is not available in oh-fx yet;"),
         "{}",
         text(&output.stderr)
+    );
+}
+
+#[test]
+fn the_default_gateway_reports_its_environment_credential_like_upstream() {
+    let home = Home::new(None);
+    let workspace = home.workspace().display().to_string();
+    let (stdout, _) = home.succeeds(&["status"], &[]);
+    assert_eq!(
+        stdout,
+        format!(
+            "[status] model=spacexai/grok-4.7\n[status] model_origin=default\n[status] auth=missing\n[status] auth_refreshable=false\n[status] auth_help=oh-fx needs access to Vercel AI Gateway. Set AI_GATEWAY_API_KEY.\n{}{MCP_EMPTY_TEXT}",
+            tail(&workspace)
+        )
+    );
+    let key = [("AI_GATEWAY_API_KEY", "vck-0123456789")];
+    let (stdout, _) = home.succeeds(&["status", "--json"], &key);
+    assert_eq!(
+        stdout,
+        format!(
+            r#"{{"kind":"status","model":"spacexai/grok-4.7","model_origin":"default","auth":"AI_GATEWAY_API_KEY","auth_refreshable":false,{},{MCP_EMPTY_JSON}}}
+"#,
+            json_tail(&workspace)
+        )
+    );
+    let (stdout, _) = home.succeeds(
+        &["status"],
+        &[
+            ("VERCEL_OIDC_TOKEN", "oidc-0123456789"),
+            ("OH_FX_MODEL", "xai/grok-5"),
+        ],
+    );
+    assert!(
+        stdout.starts_with("[status] model=xai/grok-5\n[status] model_origin=OH_FX_MODEL\n[status] auth=VERCEL_OIDC_TOKEN\n[status] auth_refreshable=false\n"),
+        "{stdout}"
+    );
+    let home = Home::new(Some(&codex_settings()));
+    home.sign_in_to_codex(i64::MAX);
+    let (stdout, _) = home.succeeds(&["status"], &key);
+    assert!(
+        stdout.contains("\n[status] connected_providers=Vercel AI Gateway, Codex\n"),
+        "{stdout}"
     );
 }
 
@@ -325,7 +366,7 @@ fn host_managed_authentication_is_active_for_every_provider() {
     let home = Home::new(Some(&codex_settings()));
     let (stdout, _) = home.succeeds(&["status"], &[("OH_FX_AUTH_MODE", "host-managed")]);
     assert!(
-        stdout.contains("\n[status] auth=host managed\n[status] connected_providers=Codex\n[status] auth_refreshable=false\n[status] permission_mode=auto\n"),
+        stdout.contains("\n[status] auth=host managed\n[status] connected_providers=Vercel AI Gateway, Codex\n[status] auth_refreshable=false\n[status] permission_mode=auto\n"),
         "{stdout}"
     );
 }

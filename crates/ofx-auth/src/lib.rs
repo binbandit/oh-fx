@@ -30,8 +30,9 @@ pub use chatgpt_oauth::{
 };
 pub use credentials::{
     AUTH_MODE_VARIABLE, AuthMode, CHATGPT_RELOGIN_MESSAGE, CHATGPT_SOURCE_LABEL,
-    HOST_MANAGED_AUTH_MESSAGE, MISSING_CHATGPT_CREDENTIAL_MESSAGE, host_managed_auth,
-    is_valid_auth_mode, parse_auth_mode,
+    GatewayEnvCredential, GatewaySource, HOST_MANAGED_AUTH_MESSAGE,
+    MISSING_CHATGPT_CREDENTIAL_MESSAGE, MISSING_GATEWAY_CREDENTIAL_MESSAGE, gateway_env_credential,
+    host_managed_auth, is_valid_auth_mode, parse_auth_mode,
 };
 pub use oauth::{
     FormBody, QueryError, loopback_override, percent_encode, pkce_challenge, query_value,

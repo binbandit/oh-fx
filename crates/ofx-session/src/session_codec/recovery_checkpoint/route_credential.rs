@@ -15,6 +15,18 @@ impl RouteCredential {
         Self::derived("configured", None)
     }
 
+    pub fn vercel_oidc_token() -> Self {
+        Self::derived("vercel_oidc_token", None)
+    }
+
+    pub fn ai_gateway_api_key() -> Self {
+        Self::derived("ai_gateway_api_key", None)
+    }
+
+    pub fn host_managed() -> Self {
+        Self::derived("host_managed", None)
+    }
+
     pub fn chatgpt_subscription(account_id: &str) -> Self {
         Self::derived("chatgpt_subscription", Some(account_id))
     }
