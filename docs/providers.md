@@ -271,7 +271,19 @@ The default model is `spacexai/grok-4.7`. `--model`, `OH_FX_MODEL`, and `models.
 
 Requests go to `https://ai-gateway.vercel.sh/v4/ai/language-model`. `OH_FX_GATEWAY_CHAT_URL` sends them to a local test server instead. Only a loopback `http://` URL with a port is used, and anything else is ignored, because that URL receives the key and the whole request.
 
-`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`. The model list and credits are not available in oh-fx yet.
+`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`. Credits are not available in oh-fx yet.
+
+### List the models
+
+```text
+$ oh-fx models
+[models] 3 available
+ - openai/gpt-5.6-sol
+ - xai/grok-4.7
+ - zai/glm-5.2
+```
+
+`oh-fx models` lists the AI Gateway's language models from `https://ai-gateway.vercel.sh/coding-agent/v1/models`: models with tool use first, then by tier, provider and release date. It sends the gateway credential the shell would use, and with the Vercel sign-in it asks for the chosen team's catalog with `?teamId=`. A sign-in without a team lists the public catalog and ends with `[models] Choose a Vercel team to load its private models.`. When `credential_source` chooses a source, a rejected credential fails the listing instead of falling back. Without a credential it lists the public catalog and ends with `[models] Using the public model catalog; sign in with Vercel or use an AI Gateway API key for team-private models.`. When the gateway rejects the credential with HTTP 401 or 403, it lists the public catalog once and ends with `[models] Your Gateway credential was rejected; using the public model catalog.`. `--json` prints `{"kind":"models","count":…,"shown_count":…,"more_count":0,"private_models_hidden":…,"ids":[…]}`. For tests, `OH_FX_GATEWAY_BASE_URL` replaces `https://ai-gateway.vercel.sh` and `OH_FX_E2E_GATEWAY_MODELS_URL` replaces the whole URL; both take only a loopback `http://` URL with a port.
 
 ## ChatGPT subscription
 

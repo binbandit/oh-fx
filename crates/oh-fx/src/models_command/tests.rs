@@ -14,8 +14,18 @@ struct Listed {
 async fn list(profile: &Profile, format: OutputFormat, host_managed: bool) -> Listed {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let listing = match codex_selection(profile, &mut stderr) {
-        Ok(()) => list_models(profile, format, host_managed, &mut stdout, &mut stderr).await,
+    let listing = match selection(profile, &mut stderr) {
+        Ok(catalog) => {
+            list_models(
+                profile,
+                catalog,
+                format,
+                host_managed,
+                &mut stdout,
+                &mut stderr,
+            )
+            .await
+        }
         Err(listing) => listing,
     };
     Listed {
@@ -161,9 +171,10 @@ async fn a_json_failure_that_cannot_be_written_is_reported_on_stderr() {
     let server = FakeServer::start([]);
     let mut stderr = Vec::new();
     let profile = fixture.profile(&auth, &server);
-    assert_eq!(codex_selection(&profile, &mut stderr), Ok(()));
+    assert_eq!(selection(&profile, &mut stderr), Ok(Catalog::Codex));
     let listing = list_models(
         &profile,
+        Catalog::Codex,
         OutputFormat::Json,
         false,
         &mut Unwritable,
@@ -190,14 +201,15 @@ async fn host_managed_catalogs_need_no_local_login() {
 }
 
 #[tokio::test]
-async fn other_providers_are_left_to_the_unavailable_command() {
-    let fixture = signed_in_with_codex();
+async fn configured_providers_are_left_to_the_unavailable_command() {
+    let fixture = Fixture::new();
+    fixture.write_settings(
+        r#"{"provider":"local","models":{"local":"m"},"providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:9/v1","auth":{"type":"none"},"models":["m"]}}}"#,
+    );
     let auth = FakeServer::start([]);
     let server = FakeServer::start([]);
-    let mut profile = fixture.profile(&auth, &server);
-    profile.lookup = |name| (name == "OH_FX_PROVIDER").then(|| "gateway".to_owned());
-    let listed = list(&profile, OutputFormat::Json, false).await;
-    assert_eq!(listed.listing, Listing::NotCodex);
+    let listed = list(&fixture.profile(&auth, &server), OutputFormat::Json, false).await;
+    assert_eq!(listed.listing, Listing::Unsupported);
     assert_eq!(listed.stdout, "");
     assert_eq!(listed.stderr, "");
     assert!(server.requests().is_empty());
@@ -266,20 +278,23 @@ async fn settings_diagnostics_are_reported_before_the_listing() {
 fn settings_are_answered_before_any_async_runtime_starts() {
     let auth = FakeServer::start([]);
     let server = FakeServer::start([]);
-    let selection = |profile: &Profile| {
+    let selected = |profile: &Profile| {
         let mut stderr = Vec::new();
-        let selected = codex_selection(profile, &mut stderr);
+        let selected = selection(profile, &mut stderr);
         (selected, String::from_utf8(stderr).unwrap())
     };
     let fixture = signed_in_with_codex();
     let mut profile = fixture.profile(&auth, &server);
-    assert_eq!(selection(&profile), (Ok(()), String::new()));
+    assert_eq!(selected(&profile), (Ok(Catalog::Codex), String::new()));
     profile.lookup = |name| (name == "OH_FX_PROVIDER").then(|| "gateway".to_owned());
-    assert_eq!(selection(&profile), (Err(Listing::NotCodex), String::new()));
+    assert_eq!(
+        selected(&profile),
+        (Ok(Catalog::Gateway(None)), String::new())
+    );
     let broken = Fixture::new();
     broken.write_settings("{\"provider\":");
     assert_eq!(
-        selection(&broken.profile(&auth, &server)),
+        selected(&broken.profile(&auth, &server)),
         (
             Err(Listing::Failed),
             "oh-fx: InvalidProfileConfiguration\n".to_owned()
@@ -288,7 +303,7 @@ fn settings_are_answered_before_any_async_runtime_starts() {
     let unselected = Fixture::new();
     unselected.write_settings(r#"{"provider":"codex"}"#);
     assert_eq!(
-        selection(&unselected.profile(&auth, &server)).0,
+        selected(&unselected.profile(&auth, &server)).0,
         Err(Listing::Failed)
     );
     assert!(server.requests().is_empty());
@@ -296,10 +311,235 @@ fn settings_are_answered_before_any_async_runtime_starts() {
 
 #[test]
 fn model_ids_are_shown_terminal_safe_in_text_and_raw_in_json() {
-    let ids = vec!["gpt-6.1-sol\u{9b}31m".to_owned(), "a\u{202e}b".to_owned()];
-    let text = text_listing(&ids);
+    let models = Models {
+        ids: vec!["gpt-6.1-sol\u{9b}31m".to_owned(), "a\u{202e}b".to_owned()],
+        source: Some(CHATGPT_SOURCE_LABEL),
+        provider: CHATGPT_SOURCE_LABEL,
+        public_only: None,
+    };
+    let text = text_listing(&models);
     assert!(!text.contains('\u{9b}'), "{text:?}");
     assert!(!text.contains('\u{202e}'), "{text:?}");
     assert!(text.starts_with("[models] 2 available\n - gpt-6.1-sol"));
-    assert!(json_listing(&ids).contains("gpt-6.1-sol\u{9b}31m"));
+    assert!(json_listing(&models).contains("gpt-6.1-sol\u{9b}31m"));
+}
+
+const GATEWAY_KEY: &str = "vck_live_0123456789abcdef";
+const PUBLIC_NOTE: &str = "[models] Using the public model catalog; sign in with Vercel or use an AI Gateway API key for team-private models.\n";
+
+fn gateway_listing(ids: &[&str]) -> Reply {
+    let entries: Vec<String> = ids
+        .iter()
+        .map(|id| format!(r#"{{"id":"{id}","type":"language","tags":["tool-use"]}}"#))
+        .collect();
+    Reply::status(200, format!(r#"{{"data":[{}]}}"#, entries.join(",")))
+}
+
+fn gateway_profile(
+    fixture: &Fixture,
+    auth: &FakeServer,
+    server: &FakeServer,
+    keyed: bool,
+) -> Profile {
+    fixture.write_settings(r#"{"provider":"gateway"}"#);
+    let mut profile = fixture.profile(auth, server);
+    if keyed {
+        profile.lookup = |name| (name == "AI_GATEWAY_API_KEY").then(|| GATEWAY_KEY.to_owned());
+    }
+    profile
+}
+
+#[tokio::test]
+async fn gateway_models_are_listed_in_catalog_order_with_the_key() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([
+        gateway_listing(&["vendor/plain-1", "openai/gpt-5.6-sol"]),
+        gateway_listing(&["vendor/plain-1", "openai/gpt-5.6-sol"]),
+    ]);
+    let profile = gateway_profile(&fixture, &auth, &server, true);
+    let text = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(text.listing, Listing::Listed);
+    assert_eq!(
+        text.stdout,
+        "[models] 2 available\n - openai/gpt-5.6-sol\n - vendor/plain-1\n"
+    );
+    assert_eq!(text.stderr, "");
+    let json = list(&profile, OutputFormat::Json, false).await;
+    assert_eq!(
+        json.stdout,
+        "{\"kind\":\"models\",\"count\":2,\"shown_count\":2,\"more_count\":0,\"private_models_hidden\":false,\"ids\":[\"openai/gpt-5.6-sol\",\"vendor/plain-1\"]}\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].path, "/v1/coding-agent/v1/models");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {GATEWAY_KEY}").as_str())
+    );
+    assert!(auth.requests().is_empty());
+}
+
+#[tokio::test]
+async fn without_a_credential_the_public_gateway_catalog_is_listed_and_explained() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([
+        gateway_listing(&["openai/gpt-5.6-sol"]),
+        gateway_listing(&["openai/gpt-5.6-sol"]),
+        gateway_listing(&[]),
+    ]);
+    let profile = gateway_profile(&fixture, &auth, &server, false);
+    let text = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(
+        text.stdout,
+        format!("[models] 1 available\n - openai/gpt-5.6-sol\n{PUBLIC_NOTE}")
+    );
+    let json = list(&profile, OutputFormat::Json, false).await;
+    assert!(
+        json.stdout.contains("\"private_models_hidden\":true"),
+        "{}",
+        json.stdout
+    );
+    let empty = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(
+        empty.stdout,
+        format!("[models] no models returned by gateway\n{PUBLIC_NOTE}")
+    );
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| request.header("authorization").is_none())
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_gateway_key_falls_back_to_the_public_catalog() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([
+        Reply::status(401, "{}"),
+        gateway_listing(&["openai/gpt-5.6-sol"]),
+    ]);
+    let profile = gateway_profile(&fixture, &auth, &server, true);
+    let text = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(
+        text.stdout,
+        "[models] 1 available\n - openai/gpt-5.6-sol\n[models] Your Gateway credential was rejected; using the public model catalog.\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].header("authorization"), None);
+}
+
+#[tokio::test]
+async fn gateway_catalog_failures_use_the_upstream_details_and_codes() {
+    for (reply, detail, code) in [
+        (
+            Reply::status(503, "{}"),
+            "Unavailable",
+            "GatewayUnavailable",
+        ),
+        (
+            Reply::status(200, "{}"),
+            "MalformedResponse",
+            "MalformedResponse",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let auth = FakeServer::start([]);
+        let server = FakeServer::start([reply.clone(), reply]);
+        let profile = gateway_profile(&fixture, &auth, &server, true);
+        let text = list(&profile, OutputFormat::Text, false).await;
+        assert_eq!(text.listing, Listing::Failed);
+        assert_eq!(
+            text.stderr,
+            format!("oh-fx models: could not list models: {detail}\n")
+        );
+        let json = list(&profile, OutputFormat::Json, false).await;
+        assert_eq!(
+            json.stdout,
+            format!(
+                "{{\"kind\":\"models\",\"error\":\"could not list models: {detail}\",\"code\":\"{code}\"}}\n"
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_host_managed_gateway_catalog_sends_no_credential_and_needs_no_explanation() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([gateway_listing(&["openai/gpt-5.6-sol"])]);
+    let profile = gateway_profile(&fixture, &auth, &server, true);
+    let text = list(&profile, OutputFormat::Text, true).await;
+    assert_eq!(text.stdout, "[models] 1 available\n - openai/gpt-5.6-sol\n");
+    assert_eq!(server.requests()[0].header("authorization"), None);
+}
+
+fn write_login(fixture: &Fixture, team: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = &fixture.paths.data;
+    std::fs::create_dir_all(directory).unwrap();
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = directory.join("auth.json");
+    std::fs::write(
+        &file,
+        format!(
+            "{{\"version\":1,\"issuer\":\"https://vercel.com\",\"client_id\":\"client\",\"access_token\":\"{GATEWAY_KEY}\",\"refresh_token\":\"login-refresh\",\"expires_at_ms\":{},\"scope\":\"openid offline_access\",\"token_type\":\"Bearer\"{team}}}",
+            i64::MAX
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[tokio::test]
+async fn a_vercel_sign_in_lists_its_team_catalog_or_explains_a_missing_team() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([
+        gateway_listing(&["openai/gpt-5.6-sol"]),
+        gateway_listing(&["openai/gpt-5.6-sol"]),
+    ]);
+    let profile = gateway_profile(&fixture, &auth, &server, false);
+    write_login(&fixture, ",\"team_slug\":\"one\",\"team_id\":\"team_1\"");
+    let team = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(team.stdout, "[models] 1 available\n - openai/gpt-5.6-sol\n");
+    write_login(&fixture, "");
+    let teamless = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(
+        teamless.stdout,
+        "[models] 1 available\n - openai/gpt-5.6-sol\n[models] Choose a Vercel team to load its private models.\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests[0].path, "/v1/coding-agent/v1/models?teamId=team_1");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {GATEWAY_KEY}").as_str())
+    );
+    assert_eq!(requests[0].header("x-vercel-ai-gateway-team"), None);
+    assert_eq!(requests[1].path, "/v1/coding-agent/v1/models");
+    assert_eq!(requests[1].header("authorization"), None);
+}
+
+#[tokio::test]
+async fn a_chosen_credential_source_never_falls_back_to_the_public_catalog() {
+    let fixture = Fixture::new();
+    let auth = FakeServer::start([]);
+    let server = FakeServer::start([
+        Reply::status(401, "{}"),
+        gateway_listing(&["openai/gpt-5.6-sol"]),
+    ]);
+    let mut profile = gateway_profile(&fixture, &auth, &server, true);
+    fixture.write_settings(r#"{"provider":"gateway","credential_source":"ai_gateway_api_key"}"#);
+    profile.lookup = |name| (name == "AI_GATEWAY_API_KEY").then(|| GATEWAY_KEY.to_owned());
+    let text = list(&profile, OutputFormat::Text, false).await;
+    assert_eq!(text.listing, Listing::Failed);
+    assert_eq!(
+        text.stderr,
+        "oh-fx models: could not list models: AuthenticationRejected\n"
+    );
+    assert_eq!(server.requests().len(), 1);
 }

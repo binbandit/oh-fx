@@ -17,6 +17,7 @@ mod context;
 mod doctor_runtime;
 mod feedback_command;
 mod file_mention_runtime;
+mod gateway_catalog;
 mod gateway_login;
 mod herdr;
 mod hooks;
@@ -48,6 +49,7 @@ pub use app_session_runtime::{
 };
 pub use codex_provider::{CodexUnavailable, SubscriptionEndpoints};
 pub use doctor_runtime::Doctor;
+pub use gateway_catalog::gateway_catalog_access;
 pub use modes::default_mode;
 pub use ofx_tools::WebFetchProgress;
 pub use output_contracts::session_detail::SessionDetailSnapshot;

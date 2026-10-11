@@ -26,6 +26,7 @@ use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{OptionalActions, OutputModes, Winsize, tcgetattr, tcsetattr, tcsetwinsize};
 
 use ofx_cli::{HelpStyle, TopLevelKind, render_command_help, render_top_level_help};
+use ofx_testkit::{FakeServer, Reply};
 
 const SIGPIPE: i32 = 13;
 const SIGKILL: i32 = 9;
@@ -387,8 +388,7 @@ fn interactive_and_resume_launches_need_a_terminal() {
 #[test]
 fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
     for (args, kind) in [
-        (&["models", "--json"][..], "models"),
-        (&["balance", "--json"], "credits"),
+        (&["balance", "--json"][..], "credits"),
         (&["--sessions-v2", "session", "x", "--json"], "session"),
     ] {
         let output = oh_fx(args, &[]);
@@ -537,11 +537,7 @@ fn closed_pipes_follow_each_upstream_path() {
         let output = into_closed_pipe(args);
         assert_eq!(output.status.signal(), Some(SIGPIPE), "{args:?}");
     }
-    for args in [
-        &["status", "--help"][..],
-        &["status", "--json", "--bogus"],
-        &["models", "--json"],
-    ] {
+    for args in [&["status", "--help"][..], &["status", "--json", "--bogus"]] {
         let output = into_closed_pipe(args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert!(
@@ -880,4 +876,108 @@ fn the_hidden_session_supervisor_runs_nothing_without_a_release() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), "");
     assert_eq!(output.stderr, b"\x1e");
+}
+
+#[test]
+fn models_lists_the_gateway_catalog_and_reports_a_closed_stdout() {
+    let key = "vck_live_0123456789abcdef";
+    let listing = Reply::status(
+        200,
+        r#"{"data":[{"id":"vendor/plain-1","type":"language"},{"id":"openai/gpt-5.6-sol","type":"language","tags":["tool-use"]}]}"#,
+    );
+    let server = FakeServer::start([listing.clone(), listing]);
+    let url = format!("http://{}/coding-agent/v1/models", server.address());
+    let environment = [
+        ("OH_FX_E2E_GATEWAY_MODELS_URL", url.as_str()),
+        ("AI_GATEWAY_API_KEY", key),
+    ];
+    let output = oh_fx(&["models", "--json"], &environment);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "{\"kind\":\"models\",\"count\":2,\"shown_count\":2,\"more_count\":0,\"private_models_hidden\":false,\"ids\":[\"openai/gpt-5.6-sol\",\"vendor/plain-1\"]}\n"
+    );
+    assert_eq!(stderr(&output), "");
+    let writer = {
+        let _no_forks = FORKS.write().unwrap_or_else(PoisonError::into_inner);
+        let (reader, writer) = io::pipe().expect("create a pipe");
+        drop(reader);
+        writer
+    };
+    let closed = run(&["models", "--json"], &environment, Stdio::from(writer));
+    assert_eq!(closed.status.code(), Some(1));
+    assert!(
+        stderr(&closed).ends_with("oh-fx: WriteFailed\n"),
+        "{}",
+        stderr(&closed)
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {key}").as_str())
+    );
+}
+
+#[test]
+fn models_sends_the_key_to_the_base_url_override_and_traces_the_load() {
+    use std::os::unix::fs::PermissionsExt;
+    let key = "vck_stored_0123456789abcdef";
+    let server = FakeServer::start([Reply::status(
+        200,
+        r#"{"data":[{"id":"openai/gpt-5.6-sol","type":"language","tags":["tool-use"]}]}"#,
+    )]);
+    let profile = tempfile::tempdir().expect("create a profile directory");
+    let data = profile.path().join("oh-fx");
+    std::fs::create_dir_all(&data).expect("create the data directory");
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700))
+        .expect("make the data directory private");
+    let stored = data.join("api-key");
+    std::fs::write(&stored, key).expect("write the stored key");
+    std::fs::set_permissions(&stored, std::fs::Permissions::from_mode(0o600))
+        .expect("make the stored key private");
+    let trace = profile.path().join("trace.log");
+    let base = format!("http://{}", server.address());
+    let data_home = profile.path().display().to_string();
+    let trace_log = trace.display().to_string();
+    let stored_key = cfg!(target_os = "linux");
+    let mut environment = vec![
+        ("XDG_DATA_HOME", data_home.as_str()),
+        ("OH_FX_GATEWAY_BASE_URL", base.as_str()),
+        ("OH_FX_TRACE_LOG", trace_log.as_str()),
+    ];
+    if !stored_key {
+        environment.push(("AI_GATEWAY_API_KEY", key));
+    }
+    let source = if stored_key {
+        "stored_key"
+    } else {
+        "ai_gateway_api_key"
+    };
+    let output = oh_fx(&["models"], &environment);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "[models] 1 available\n - openai/gpt-5.6-sol\n"
+    );
+    let requests = server.requests();
+    assert_eq!(requests[0].path, "/coding-agent/v1/models");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {key}").as_str())
+    );
+    let log = std::fs::read_to_string(&trace).expect("read the trace log");
+    let line = log
+        .lines()
+        .find(|line| line.contains("model_catalog_load"))
+        .unwrap_or_else(|| panic!("{log}"));
+    assert!(
+        line.contains("[catalog] event=model_catalog_load "),
+        "{line}"
+    );
+    assert!(
+        line.contains(&format!("requested_access=authenticated credential_source={source} effective_access=authenticated public_only_reason=none anonymous_fallback=false outcome=loaded failure_category=none http_status=none retryable=none")),
+        "{line}"
+    );
+    assert!(!log.contains(key));
 }
