@@ -233,7 +233,7 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         (&["--sessions-v2"], "--sessions-v2"),
         (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
         (&["balance"], "credits"),
-        (&["mcp", "list"], "mcp"),
+        (&["mcp", "path"], "mcp"),
     ] {
         let output = oh_fx(args, &[]);
         assert_eq!(output.status.code(), Some(1), "{args:?}");

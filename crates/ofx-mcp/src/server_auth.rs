@@ -215,7 +215,7 @@ fn unreadable_store(server: &str, error: McpError) -> StartupFailure {
     StartupFailure::explained(error, Some(UNREADABLE_STORE.to_owned()))
 }
 
-async fn load_stored(
+pub(crate) async fn load_stored(
     lookup: GrantLookup,
     store: &CredentialStore,
 ) -> Result<Option<Credentials>, McpError> {

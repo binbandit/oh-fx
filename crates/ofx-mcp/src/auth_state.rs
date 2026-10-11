@@ -38,6 +38,10 @@ impl AuthState {
         inner.challenge_present = true;
     }
 
+    pub(crate) fn note_stored_credentials(&self, present: bool) {
+        self.lock().credentials_present = present;
+    }
+
     pub(crate) fn mark_reauthentication_required(&self, expected_generation: u64) {
         let mut inner = self.lock();
         if inner.generation != expected_generation {
