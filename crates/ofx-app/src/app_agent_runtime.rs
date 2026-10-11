@@ -1805,6 +1805,7 @@ mod tests {
                     mode: None,
                     permission_prompts: false,
                     open_browser: false,
+                    context_targets: &[],
                 },
                 &CancellationToken::new(),
             )
