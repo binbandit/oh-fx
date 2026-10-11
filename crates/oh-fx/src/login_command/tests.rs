@@ -255,6 +255,7 @@ async fn saved_codex_request() {
                         client_version: format!("{}/@openai/codex/latest", models.base_url()),
                     },
                     grok: ofx_auth::GrokEndpoints::default(),
+                    gateway: ofx_gateway::GatewayEndpoints::default(),
                 },
             },
             &cancel,

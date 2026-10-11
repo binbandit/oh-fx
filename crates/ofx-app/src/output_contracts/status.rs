@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use ofx_auth::GatewaySource;
 use ofx_cli::OutputFormat;
 use ofx_contract::PermissionMode;
 use ofx_mcp::{LocalConfigInspection, ProfileConfigDiagnostic, WorkspaceAdmission};
@@ -9,7 +10,8 @@ use serde_json::{Map, Value, json};
 
 use crate::app_bootstrap_runtime::CredentialSource;
 
-const HOST_MANAGED_SOURCE_LABEL: &str = "host managed";
+const GATEWAY_CONNECTION: &str = "Vercel AI Gateway";
+const GATEWAY_CONNECTION_ID: &str = "vercel-ai-gateway";
 const CODEX_CONNECTION: &str = "Codex";
 const CODEX_CONNECTION_ID: &str = "codex";
 const GROK_CONNECTION: &str = "Grok";
@@ -20,11 +22,13 @@ const NOT_CHECKED: &str = "not_checked";
 pub(crate) enum Credential {
     Connection,
     Codex { expired: bool },
+    Gateway(GatewaySource),
     HostManaged,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SavedLogins {
+    pub(crate) gateway: bool,
     pub(crate) codex: bool,
     pub(crate) grok: bool,
 }
@@ -42,7 +46,8 @@ impl AuthStatus {
             None => "missing",
             Some(Credential::Connection) => CredentialSource::Configured.label(),
             Some(Credential::Codex { .. }) => CredentialSource::Codex.label(),
-            Some(Credential::HostManaged) => HOST_MANAGED_SOURCE_LABEL,
+            Some(Credential::Gateway(source)) => CredentialSource::Gateway(source).label(),
+            Some(Credential::HostManaged) => CredentialSource::HostManaged.label(),
         }
     }
 
@@ -60,6 +65,9 @@ impl AuthStatus {
         if let Some(id) = connection.filter(|_| connection_active) {
             connected.push((id, id));
         }
+        if self.logins.gateway {
+            connected.push((GATEWAY_CONNECTION, GATEWAY_CONNECTION_ID));
+        }
         if self.logins.codex {
             connected.push((CODEX_CONNECTION, CODEX_CONNECTION_ID));
         }
@@ -73,7 +81,7 @@ impl AuthStatus {
 pub(crate) struct StatusReport {
     pub(crate) model: String,
     pub(crate) model_origin: &'static str,
-    pub(crate) model_source: String,
+    pub(crate) model_source: Option<String>,
     pub(crate) connection: Option<String>,
     pub(crate) provider_endpoint: Option<String>,
     pub(crate) auth: AuthStatus,
@@ -102,7 +110,9 @@ impl StatusReport {
         };
         line(format_args!("model={}", safe(&self.model)));
         line(format_args!("model_origin={}", self.model_origin));
-        line(format_args!("model_source={}", self.model_source));
+        if let Some(source) = &self.model_source {
+            line(format_args!("model_source={source}"));
+        }
         if let Some(endpoint) = &self.provider_endpoint {
             line(format_args!("provider_endpoint={endpoint}"));
         }
@@ -124,14 +134,16 @@ impl StatusReport {
             }
         }
         line(format_args!("auth={}", self.auth.label()));
-        let connected = self.auth.connected(self.connection.as_deref());
-        let names: Vec<&str> = connected.iter().map(|(name, _)| *name).collect();
-        let names = if names.is_empty() {
-            "none".to_owned()
-        } else {
-            names.join(", ")
-        };
-        line(format_args!("connected_providers={names}"));
+        if self.model_source.is_some() {
+            let connected = self.auth.connected(self.connection.as_deref());
+            let names: Vec<&str> = connected.iter().map(|(name, _)| *name).collect();
+            let names = if names.is_empty() {
+                "none".to_owned()
+            } else {
+                names.join(", ")
+            };
+            line(format_args!("connected_providers={names}"));
+        }
         line(format_args!("auth_refreshable={}", self.auth.refreshable()));
         if self.auth.expired() {
             line(format_args!("auth_expired=true"));
@@ -160,7 +172,9 @@ impl StatusReport {
         object.insert("kind".to_owned(), json!("status"));
         object.insert("model".to_owned(), json!(self.model));
         object.insert("model_origin".to_owned(), json!(self.model_origin));
-        object.insert("model_source".to_owned(), json!(self.model_source));
+        if let Some(source) = &self.model_source {
+            object.insert("model_source".to_owned(), json!(source));
+        }
         if let Some(endpoint) = &self.provider_endpoint {
             object.insert("provider_endpoint".to_owned(), json!(endpoint));
         }
@@ -181,13 +195,15 @@ impl StatusReport {
             }
         }
         object.insert("auth".to_owned(), json!(self.auth.label()));
-        let connected: Vec<&str> = self
-            .auth
-            .connected(self.connection.as_deref())
-            .into_iter()
-            .map(|(_, id)| id)
-            .collect();
-        object.insert("connected_providers".to_owned(), json!(connected));
+        if self.model_source.is_some() {
+            let connected: Vec<&str> = self
+                .auth
+                .connected(self.connection.as_deref())
+                .into_iter()
+                .map(|(_, id)| id)
+                .collect();
+            object.insert("connected_providers".to_owned(), json!(connected));
+        }
         object.insert(
             "auth_refreshable".to_owned(),
             json!(self.auth.refreshable()),

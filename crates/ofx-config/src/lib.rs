@@ -11,8 +11,8 @@ mod paths;
 mod settings_store;
 
 pub use config_runtime::{
-    ConfigDiagnostic, ConfigSource, LayerError, PermissionSources, SelectionError, Settings,
-    SettingsError, is_valid_provider_order_list,
+    ConfigDiagnostic, ConfigSource, DEFAULT_GATEWAY_MODEL, LayerError, PermissionSources,
+    SelectionError, Settings, SettingsError, is_valid_provider_order_list,
 };
 pub use configured_provider::{
     ConfiguredProviderError, MAX_MODEL_BYTES, MaxTokensParameter, ProviderDefinition,

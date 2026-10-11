@@ -52,6 +52,7 @@ impl Fixture {
                     client_version: format!("{}/@openai/codex/latest", catalog.base_url()),
                 },
                 grok: ofx_auth::GrokEndpoints::default(),
+                gateway: ofx_gateway::GatewayEndpoints::default(),
             },
             lookup: |_| None,
         }
