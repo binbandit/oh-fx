@@ -94,6 +94,17 @@ pub(super) fn cancelled(asked: &Asked<'_>) {
     );
 }
 
+pub(super) fn denial_preserved(context: TraceContext, call: &ToolCall) {
+    trace_event!(
+        PERMISSION,
+        "turn_permission_denial_preserved",
+        context,
+        "call_id={} tool_name={}",
+        call.id.as_str(),
+        call.name
+    );
+}
+
 fn source(asked: &Asked<'_>, decision: Granted) -> &'static str {
     match (decision, asked.action) {
         (Granted::Deny | Granted::PermissionRequired, _) => "denied",

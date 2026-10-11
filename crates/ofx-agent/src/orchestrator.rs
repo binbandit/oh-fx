@@ -2769,6 +2769,7 @@ async fn review(
 ) -> Option<ReviewVerdict> {
     let call = judged.call;
     if let Some(verdict) = reviewing.reviews.cached(call) {
+        permission_trace::denial_preserved(judged.trace, call);
         return Some(verdict);
     }
     let attempt_available = reviewing.reviews.attempt_available(call);

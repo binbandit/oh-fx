@@ -976,14 +976,12 @@ fn a_steered_turn_keeps_the_turn_id_its_prompt_was_queued_with() {
 
 #[test]
 fn a_read_outside_the_workspace_without_a_way_to_approve_it_needs_permission() {
-    let home = TraceHome::new(Vec::new());
-    let outside = home.root.join("outside.txt");
-    let read = json!({"path": outside}).to_string();
-    let home = TraceHome::new(vec![Reply::sse(&chat_tool_call_events(
-        "call_1",
-        "read_file",
-        &read,
-    ))]);
+    let read = json!({"path": "../outside.txt"}).to_string();
+    let home = TraceHome::new(vec![
+        Reply::sse(&chat_tool_call_events("call_1", "read_file", &read)),
+        Reply::sse(&chat_text_events(&["must not be requested"])),
+    ]);
+    fs::write(home.root.join("outside.txt"), "outside\n").expect("write the outside file");
     home.set_permission_mode("ask");
     let output = home.ask(&["--json", "--no-save", "read it"]);
     assert_eq!(output.status.code(), Some(1));
@@ -1005,4 +1003,5 @@ fn a_read_outside_the_workspace_without_a_way_to_approve_it_needs_permission() {
         ],
     );
     assert!(!log.contains("event=execution_start"), "{log}");
+    assert_eq!(home.server.requests().len(), 1);
 }
