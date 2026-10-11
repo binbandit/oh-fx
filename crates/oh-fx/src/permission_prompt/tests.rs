@@ -6,6 +6,7 @@ use ofx_contract::{
 };
 
 use super::*;
+use crate::terminal_lines::read_line;
 
 fn request(tool_name: &str, target: Option<&str>) -> ApprovalRequest {
     ApprovalRequest {
@@ -147,20 +148,35 @@ fn only_a_single_y_approves_and_everything_else_denies() {
         (b"", ApprovalDecision::Deny),
         (b"\x0by\n", ApprovalDecision::Deny),
     ] {
-        assert_eq!(decision(&mut &input[..]), expected, "{input:?}");
+        assert_eq!(decision(&read_line(&mut &input[..])), expected, "{input:?}");
     }
     let overlong = [b' '; 300];
-    assert_eq!(decision(&mut &overlong[..]), ApprovalDecision::Deny);
+    assert_eq!(
+        decision(&read_line(&mut &overlong[..])),
+        ApprovalDecision::Deny
+    );
     let line = |padding: usize, ending: &[u8]| {
         let mut line = vec![b' '; padding];
         line.push(b'y');
         line.extend_from_slice(ending);
         line
     };
-    assert_eq!(decision(&mut &line(254, b"\n")[..]), ApprovalDecision::Once);
-    assert_eq!(decision(&mut &line(254, b"")[..]), ApprovalDecision::Once);
-    assert_eq!(decision(&mut &line(255, b"\n")[..]), ApprovalDecision::Deny);
-    assert_eq!(decision(&mut &line(255, b"")[..]), ApprovalDecision::Deny);
+    assert_eq!(
+        decision(&read_line(&mut &line(254, b"\n")[..])),
+        ApprovalDecision::Once
+    );
+    assert_eq!(
+        decision(&read_line(&mut &line(254, b"")[..])),
+        ApprovalDecision::Once
+    );
+    assert_eq!(
+        decision(&read_line(&mut &line(255, b"\n")[..])),
+        ApprovalDecision::Deny
+    );
+    assert_eq!(
+        decision(&read_line(&mut &line(255, b"")[..])),
+        ApprovalDecision::Deny
+    );
 }
 
 #[test]
@@ -170,10 +186,10 @@ fn an_overlong_answer_is_read_to_its_end_and_never_answers_the_next_prompt() {
     let mut input = &answers[..];
     assert_eq!(
         [
-            decision(&mut input),
-            decision(&mut input),
-            decision(&mut input),
-            decision(&mut input),
+            decision(&read_line(&mut input)),
+            decision(&read_line(&mut input)),
+            decision(&read_line(&mut input)),
+            decision(&read_line(&mut input)),
         ],
         [
             ApprovalDecision::Deny,

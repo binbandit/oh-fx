@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::auth_state::AuthState;
+use crate::elicitation::ElicitationCapabilities;
+use crate::elicitation_interaction::InputResponder;
 use crate::error::McpError;
 use crate::features::tools::{CatalogBuilder, Limits, Listing};
 use crate::legacy_http_sse::{LegacySseClient, SSE_PROTOCOL_VERSION, validate_initialize_response};
@@ -23,9 +25,9 @@ use crate::mcp_auth_store::CredentialStore;
 use crate::mcp_contract::McpServerConfig;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::{
-    ElicitationCapabilities, STDIO_INITIALIZED_NOTIFICATION, ServerCapabilities,
-    build_legacy_initialize_request, build_tools_list_request, parse_json,
-    parse_server_capabilities, parse_server_identity, parse_server_instructions,
+    STDIO_INITIALIZED_NOTIFICATION, ServerCapabilities, build_legacy_initialize_request,
+    build_tools_list_request, parse_json, parse_server_capabilities, parse_server_identity,
+    parse_server_instructions,
 };
 use crate::protocol_negotiation::{
     ElicitationWire, LegacyInitializeObservation, LegacyInitializeTransition, LegacyStdioVersion,
@@ -42,11 +44,21 @@ use crate::transport::{McpTransport, ShutdownMode, Transport, TransportRequest};
 
 pub(crate) const DISCOVERY_RESPONSE_FRAME_CAP_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ConnectOptions {
     pub client_version: String,
     pub user_agent: String,
     pub profile_data: Option<PathBuf>,
+    pub elicitation: Option<InputResponder>,
+}
+
+impl ConnectOptions {
+    fn elicitation_capabilities(&self) -> ElicitationCapabilities {
+        self.elicitation
+            .as_ref()
+            .map(InputResponder::capabilities)
+            .unwrap_or_default()
+    }
 }
 
 impl Default for ConnectOptions {
@@ -56,6 +68,7 @@ impl Default for ConnectOptions {
             user_agent: format!("oh-fx/{client_version}"),
             client_version,
             profile_data: None,
+            elicitation: None,
         }
     }
 }
@@ -312,7 +325,7 @@ async fn initialize_once(
         id,
         offered.as_str(),
         offered.wire(),
-        ElicitationCapabilities::default(),
+        options.elicitation_capabilities(),
         &options.client_version,
     );
     dispatcher
@@ -356,7 +369,7 @@ pub(crate) async fn connect_http(
         1,
         preferred.as_str(),
         preferred.wire(),
-        ElicitationCapabilities::default(),
+        options.elicitation_capabilities(),
         &options.client_version,
     );
     let initialize =

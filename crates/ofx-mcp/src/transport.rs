@@ -5,9 +5,9 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::error::McpError;
+use crate::legacy_elicitation_runtime::ElicitationContext;
 use crate::legacy_http_sse::{LegacySseClient, SseShared};
 use crate::legacy_streamable_http::{HttpShared, LegacyHttpClient};
-use crate::protocol_negotiation::ElicitationWire;
 use crate::server_auth::HttpAuth;
 use crate::stdio_dispatcher::{Shared as StdioShared, StdioDispatcher};
 use crate::timing::spawn_on;
@@ -21,12 +21,6 @@ pub(crate) struct ProgressNotification {
 
 pub(crate) type ProgressSink = Arc<dyn Fn(ProgressNotification) + Send + Sync>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ServerRequestPolicy {
-    Reject,
-    RefuseElicitation(ElicitationWire),
-}
-
 #[derive(Clone)]
 pub(crate) struct TransportRequest {
     pub id: u64,
@@ -35,7 +29,7 @@ pub(crate) struct TransportRequest {
     pub deadline: Instant,
     pub send_cancellation: bool,
     pub progress: Option<ProgressSink>,
-    pub server_requests: ServerRequestPolicy,
+    pub elicitation: Option<Arc<ElicitationContext>>,
 }
 
 impl TransportRequest {
@@ -47,7 +41,14 @@ impl TransportRequest {
             deadline,
             send_cancellation: false,
             progress: None,
-            server_requests: ServerRequestPolicy::Reject,
+            elicitation: None,
+        }
+    }
+
+    pub(crate) async fn expired(&self) {
+        match &self.elicitation {
+            Some(context) => context.gate().expired().await,
+            None => tokio::time::sleep_until(self.deadline).await,
         }
     }
 }
@@ -62,7 +63,7 @@ impl fmt::Debug for TransportRequest {
             .field("deadline", &self.deadline)
             .field("send_cancellation", &self.send_cancellation)
             .field("progress", &self.progress.is_some())
-            .field("server_requests", &self.server_requests)
+            .field("elicitation", &self.elicitation.is_some())
             .finish()
     }
 }

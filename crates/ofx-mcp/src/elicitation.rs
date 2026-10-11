@@ -8,7 +8,10 @@ mod secret;
 mod tests;
 mod uri;
 
+pub(crate) use form::{Field, FieldKind, FormSchema};
+
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
+const MAX_RESPONSE_BYTES: usize = 128 * 1024;
 const MAX_MESSAGE_BYTES: usize = 8 * 1024;
 const MAX_STRING_BYTES: usize = 64 * 1024;
 const MAX_NAME_BYTES: usize = 256;
@@ -34,23 +37,88 @@ pub(crate) enum Mode {
     Url,
 }
 
-pub(crate) fn parse_request(wire: ElicitationWire, params: &Value) -> Outcome<Mode> {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ElicitationCapabilities {
+    pub(crate) form: bool,
+    pub(crate) url: bool,
+}
+
+impl ElicitationCapabilities {
+    pub(crate) fn supports(self, mode: Mode) -> bool {
+        match mode {
+            Mode::Form => self.form,
+            Mode::Url => self.url,
+        }
+    }
+
+    pub(crate) fn any(self) -> bool {
+        self.form || self.url
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Answer {
+    AcceptForm(Vec<(String, String)>),
+    Decline,
+    Cancel,
+}
+
+impl Answer {
+    pub(crate) fn to_json(&self) -> String {
+        match self {
+            Self::AcceptForm(content) => {
+                let fields = content
+                    .iter()
+                    .map(|(name, json)| format!("{}:{json}", Value::from(name.as_str())))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{{\"action\":\"accept\",\"content\":{{{fields}}}}}")
+            }
+            Self::Decline => "{\"action\":\"decline\"}".to_owned(),
+            Self::Cancel => "{\"action\":\"cancel\"}".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RequestKind {
+    Form(FormSchema),
+    Url,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Request {
+    pub(crate) message: String,
+    pub(crate) kind: RequestKind,
+}
+
+impl Request {
+    pub(crate) fn mode(&self) -> Mode {
+        match self.kind {
+            RequestKind::Form(_) => Mode::Form,
+            RequestKind::Url => Mode::Url,
+        }
+    }
+}
+
+pub(crate) fn parse_request(wire: ElicitationWire, params: &Value) -> Outcome<Request> {
     if serialized_len(params) > MAX_REQUEST_BYTES {
         return Err(ElicitationError::LimitExceeded);
     }
     let object = params.as_object().ok_or(ElicitationError::InvalidRequest)?;
     let mode = parse_mode(wire, object.get("mode")).ok_or(ElicitationError::UnsupportedMode)?;
-    bounded_string(
+    let message = bounded_string(
         object.get("message"),
         MAX_MESSAGE_BYTES,
         ElicitationError::InvalidRequest,
-    )?;
-    match mode {
+    )?
+    .to_owned();
+    let kind = match mode {
         Mode::Form => {
             let schema = object
                 .get("requestedSchema")
                 .ok_or(ElicitationError::InvalidRequest)?;
-            form::parse_form_schema(wire, schema)?;
+            RequestKind::Form(form::parse_form_schema(wire, schema)?)
         }
         Mode::Url => {
             if object.contains_key("requestedSchema") {
@@ -71,9 +139,10 @@ pub(crate) fn parse_request(wire: ElicitationWire, params: &Value) -> Outcome<Mo
             } else if object.contains_key("elicitationId") {
                 return Err(ElicitationError::InvalidRequest);
             }
+            RequestKind::Url
         }
-    }
-    Ok(mode)
+    };
+    Ok(Request { message, kind })
 }
 
 fn parse_mode(wire: ElicitationWire, mode: Option<&Value>) -> Option<Mode> {
@@ -88,6 +157,29 @@ fn parse_mode(wire: ElicitationWire, mode: Option<&Value>) -> Option<Mode> {
         "url" => Some(Mode::Url),
         _ => None,
     }
+}
+
+pub(crate) fn validate_answer(request: &Request, answer: &Answer) -> Outcome<()> {
+    if answer.to_json().len() > MAX_RESPONSE_BYTES {
+        return Err(ElicitationError::LimitExceeded);
+    }
+    match (answer, &request.kind) {
+        (Answer::Decline | Answer::Cancel, _) => Ok(()),
+        (Answer::AcceptForm(content), RequestKind::Form(form)) => form.validate_answers(content),
+        (Answer::AcceptForm(_), RequestKind::Url) => Err(ElicitationError::InvalidResponse),
+    }
+}
+
+pub(crate) fn validate_field_json(field: &Field, value_json: &str) -> Outcome<()> {
+    if value_json.len() > MAX_RESPONSE_BYTES {
+        return Err(ElicitationError::LimitExceeded);
+    }
+    if matches!(field.kind, FieldKind::Number | FieldKind::Integer) {
+        return field.validate_number_lexeme(value_json.trim_matches([' ', '\t', '\n', '\r']));
+    }
+    let value: Value =
+        serde_json::from_str(value_json).map_err(|_| ElicitationError::InvalidResponse)?;
+    field.validate_value(&value)
 }
 
 fn bounded_string(

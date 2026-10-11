@@ -4,6 +4,7 @@ mod catalog_refresh;
 mod command_provider;
 mod docker_run;
 mod elicitation;
+mod elicitation_interaction;
 mod error;
 mod feature_catalog;
 mod feature_catalog_runtime;
@@ -58,6 +59,7 @@ mod uri;
 mod workspace_config;
 
 pub use command_provider::{AddIntent, AddIntentError, is_valid_server_name, parse_add_intent};
+pub use elicitation_interaction::InputResponder;
 pub use error::McpError;
 pub use feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
 pub use features::common::{ResourceContent, ResourceData};

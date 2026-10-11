@@ -168,6 +168,7 @@ async fn bootstrap(
                 permission_prompts: false,
                 open_browser: ofx_auth::browser_allowed(),
                 context_targets: &[],
+                mcp_questioner: None,
             },
             &CancellationToken::new(),
         )

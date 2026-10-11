@@ -34,7 +34,7 @@ use ofx_gateway::{
     GatewayProvider, GatewayReviewTransport,
 };
 use ofx_http::ClientError;
-use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError};
+use ofx_mcp::{ConnectOptions, InputResponder, McpRuntime, ProfileStoreError};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_session::{ProfilePublisher, RouteCredential};
 use ofx_tools::{CapabilitySearch, WebFetchProgress};
@@ -169,6 +169,7 @@ pub struct Launch<'a> {
     pub permission_prompts: bool,
     pub open_browser: bool,
     pub context_targets: &'a [ApplicableTarget],
+    pub mcp_questioner: Option<Arc<dyn QuestionAsker>>,
 }
 
 pub struct AgentSetup {
@@ -453,7 +454,9 @@ impl Profile {
         let permissions =
             self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
-        let (mcp, tools) = self.mcp_runtime(tools, &skills.search(), &limits, interactive)?;
+        let elicitation = launch.mcp_questioner.clone().map(InputResponder::new);
+        let (mcp, tools) =
+            self.mcp_runtime(tools, &skills.search(), &limits, interactive, elicitation)?;
         let children = ChildFactory {
             route: Mutex::new(route.children()),
             executions: launch.executions.clone(),
@@ -749,14 +752,15 @@ impl Profile {
         search: &CapabilitySearch,
         limits: &ContextLimits,
         interactive: bool,
+        elicitation: Option<InputResponder>,
     ) -> Result<McpTools, ProfileStoreError> {
-        let runtime = self.load_mcp_runtime(&tools, limits, interactive)?;
+        let runtime = self.load_mcp_runtime(&tools, limits, interactive, elicitation)?;
         let tools = tool_set::with_mcp(tools, search, runtime.clone());
         Ok((runtime, tools))
     }
 
     pub fn mcp_command_runtime(&self) -> Result<Option<Arc<McpRuntime>>, ProfileStoreError> {
-        self.load_mcp_runtime(&[], &ContextLimits::default(), false)
+        self.load_mcp_runtime(&[], &ContextLimits::default(), false, None)
     }
 
     fn load_mcp_runtime(
@@ -764,6 +768,7 @@ impl Profile {
         tools: &[Arc<dyn Tool>],
         limits: &ContextLimits,
         interactive: bool,
+        elicitation: Option<InputResponder>,
     ) -> Result<Option<Arc<McpRuntime>>, ProfileStoreError> {
         let sources = McpSources::new(self.paths.clone(), self.workspace_root.clone());
         let load = sources.load_with(&self.settings)?;
@@ -774,6 +779,7 @@ impl Profile {
             client_version: ofx_upgrade::VERSION.to_owned(),
             user_agent: user_agent(),
             profile_data: self.paths.as_ref().map(|paths| paths.data.clone()),
+            elicitation,
         };
         let reserved = tools.iter().map(|tool| tool.spec().name.clone()).collect();
         Ok(Some(Arc::new(McpRuntime::new(
@@ -1275,6 +1281,7 @@ mod tests {
                     permission_prompts: false,
                     open_browser: false,
                     context_targets: &[],
+                    mcp_questioner: None,
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -1331,6 +1338,7 @@ mod tests {
                     permission_prompts: false,
                     open_browser: false,
                     context_targets: &[],
+                    mcp_questioner: None,
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -1428,6 +1436,7 @@ mod tests {
                     endpoints: SubscriptionEndpoints::default(),
                     open_browser: false,
                     context_targets: &[],
+                    mcp_questioner: None,
                     mode: Some(ActiveMode {
                         registry: &INSPECTION,
                         id: "inspect",
@@ -1612,6 +1621,7 @@ mod tests {
                     mode: None,
                     open_browser: false,
                     context_targets: &[],
+                    mcp_questioner: None,
                 },
                 &CancellationToken::new(),
             )

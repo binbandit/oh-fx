@@ -4,6 +4,7 @@ use ofx_contract::parse_strict_json_value;
 use ofx_jsonrpc::{Frame, RequestId};
 use serde_json::{Map, Value, json};
 
+use crate::elicitation::ElicitationCapabilities;
 use crate::error::McpError;
 use crate::mcp_contract::validate_json_rpc_response_envelope;
 use crate::mcp_json::write_compact;
@@ -12,12 +13,6 @@ use crate::protocol_negotiation::{ElicitationWire, ResponsePayload, classify_res
 pub(crate) const CLIENT_NAME: &str = "oh-fx";
 pub(crate) const STDIO_INITIALIZED_NOTIFICATION: &str =
     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ElicitationCapabilities {
-    pub(crate) form: bool,
-    pub(crate) url: bool,
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ServerCapabilities {

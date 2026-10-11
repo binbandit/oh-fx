@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use super::{
     ElicitationError, MAX_NAME_BYTES, MAX_STRING_BYTES, Outcome, bounded_string, secret, uri,
+    validate_field_json,
 };
 use crate::fmt_int::parse_unsigned;
 use crate::json_number::{self, Number, NumberError};
@@ -23,8 +24,13 @@ pub(super) const PATTERN_LIMITS: Limits = Limits {
     steps: 100_000,
 };
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FormSchema {
+    pub(crate) fields: Vec<Field>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FieldKind {
+pub(crate) enum FieldKind {
     String,
     Number,
     Integer,
@@ -42,22 +48,39 @@ enum Format {
     DateTime,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Choice {
+    pub(crate) value: String,
+    pub(crate) title: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Field {
-    pub(super) kind: FieldKind,
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) title: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) kind: FieldKind,
+    pub(crate) required: bool,
+    pub(crate) default_json: Option<String>,
     min_length: Option<usize>,
     max_length: Option<usize>,
     minimum: Option<Number>,
     maximum: Option<Number>,
     multiple_of: Option<Number>,
-    min_items: Option<usize>,
-    max_items: Option<usize>,
+    pub(crate) min_items: Option<usize>,
+    pub(crate) max_items: Option<usize>,
     format: Format,
     pattern: Option<String>,
-    choices: Vec<String>,
+    pub(crate) choices: Vec<Choice>,
 }
 
-pub(super) fn parse_form_schema(wire: ElicitationWire, schema: &Value) -> Outcome<Vec<Field>> {
+impl Field {
+    pub(crate) fn display_name(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.name)
+    }
+}
+
+pub(super) fn parse_form_schema(wire: ElicitationWire, schema: &Value) -> Outcome<FormSchema> {
     let text = serde_json::to_string(schema).map_err(|_| ElicitationError::InvalidSchema)?;
     if text.len() > MAX_SCHEMA_BYTES {
         return Err(ElicitationError::LimitExceeded);
@@ -80,16 +103,17 @@ pub(super) fn parse_form_schema(wire: ElicitationWire, schema: &Value) -> Outcom
         .as_object()
         .filter(|properties| properties.len() <= MAX_FIELDS)
         .ok_or(ElicitationError::LimitExceeded)?;
-    required_names(object.get("required"), properties)?;
-    properties
+    let required = required_names(object.get("required"), properties)?;
+    let fields = properties
         .iter()
         .map(|(name, schema)| {
             if name.is_empty() || name.len() > MAX_NAME_BYTES {
                 return Err(ElicitationError::InvalidSchema);
             }
-            parse_field(wire, name, schema)
+            parse_field(wire, name, schema, required.contains(name.as_str()))
         })
-        .collect()
+        .collect::<Outcome<_>>()?;
+    Ok(FormSchema { fields })
 }
 
 fn required_names<'a>(
@@ -118,7 +142,12 @@ fn required_names<'a>(
     Ok(names)
 }
 
-fn parse_field(wire: ElicitationWire, name: &str, schema: &Value) -> Outcome<Field> {
+fn parse_field(
+    wire: ElicitationWire,
+    name: &str,
+    schema: &Value,
+    required: bool,
+) -> Outcome<Field> {
     let object = schema.as_object().ok_or(ElicitationError::InvalidSchema)?;
     let kind = object
         .get("type")
@@ -138,12 +167,17 @@ fn parse_field(wire: ElicitationWire, name: &str, schema: &Value) -> Outcome<Fie
             .transpose()
     };
     let title = label("title")?;
-    label("description")?;
+    let description = label("description")?;
     if secret::is_secret_field(name, title) {
         return Err(ElicitationError::SecretField);
     }
     let mut field = Field {
+        name: name.to_owned(),
+        title: title.map(str::to_owned),
+        description: description.map(str::to_owned),
         kind: FieldKind::String,
+        required,
+        default_json: None,
         min_length: None,
         max_length: None,
         minimum: None,
@@ -193,6 +227,7 @@ fn parse_field(wire: ElicitationWire, name: &str, schema: &Value) -> Outcome<Fie
         if text.len() > MAX_STRING_BYTES {
             return Err(ElicitationError::LimitExceeded);
         }
+        field.default_json = Some(text);
         field.validate_value(default)?;
     }
     Ok(field)
@@ -297,7 +332,7 @@ impl Field {
         Ok(())
     }
 
-    pub(super) fn validate_value(&self, value: &Value) -> Outcome<()> {
+    pub(crate) fn validate_value(&self, value: &Value) -> Outcome<()> {
         match self.kind {
             FieldKind::String => self.validate_string(value),
             FieldKind::Number | FieldKind::Integer => {
@@ -316,6 +351,11 @@ impl Field {
             FieldKind::MultiSelect => self.validate_selection(value),
             FieldKind::Boolean | FieldKind::SingleSelect => Err(ElicitationError::InvalidResponse),
         }
+    }
+
+    pub(super) fn validate_number_lexeme(&self, lexeme: &str) -> Outcome<()> {
+        let number = Number::parse(lexeme).map_err(|_| ElicitationError::InvalidResponse)?;
+        self.validate_number(&number)
     }
 
     fn validate_string(&self, value: &Value) -> Outcome<()> {
@@ -390,16 +430,36 @@ impl Field {
     }
 
     fn has_choice(&self, value: &str) -> bool {
-        self.choices.iter().any(|choice| choice == value)
+        self.choices.iter().any(|choice| choice.value == value)
     }
 }
 
-fn titled_choices(value: &Value) -> Outcome<Vec<String>> {
+impl FormSchema {
+    pub(super) fn validate_answers(&self, content: &[(String, String)]) -> Outcome<()> {
+        if content.len() > self.fields.len()
+            || content
+                .iter()
+                .any(|(name, _)| !self.fields.iter().any(|field| &field.name == name))
+        {
+            return Err(ElicitationError::InvalidResponse);
+        }
+        for field in &self.fields {
+            match content.iter().find(|(name, _)| name == &field.name) {
+                Some((_, json)) => validate_field_json(field, json)?,
+                None if field.required => return Err(ElicitationError::InvalidResponse),
+                None => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn titled_choices(value: &Value) -> Outcome<Vec<Choice>> {
     let items = value
         .as_array()
         .filter(|items| (1..=MAX_OPTIONS).contains(&items.len()))
         .ok_or(ElicitationError::InvalidSchema)?;
-    let mut choices: Vec<String> = Vec::with_capacity(items.len());
+    let mut choices: Vec<Choice> = Vec::with_capacity(items.len());
     for item in items {
         let item = item.as_object().ok_or(ElicitationError::InvalidSchema)?;
         let constant = item.get("const").ok_or(ElicitationError::InvalidSchema)?;
@@ -407,23 +467,26 @@ fn titled_choices(value: &Value) -> Outcome<Vec<String>> {
         let value = constant
             .as_str()
             .ok_or(ElicitationError::UnsupportedSchema)?;
-        bounded_string(
+        let title = bounded_string(
             Some(title),
             MAX_LABEL_BYTES,
             ElicitationError::InvalidSchema,
         )?;
-        if choices.iter().any(|prior| prior == value) {
+        if choices.iter().any(|prior| prior.value == value) {
             return Err(ElicitationError::InvalidSchema);
         }
         if item.contains_key("description") {
             return Err(ElicitationError::UnsupportedSchema);
         }
-        choices.push(value.to_owned());
+        choices.push(Choice {
+            value: value.to_owned(),
+            title: title.to_owned(),
+        });
     }
     Ok(choices)
 }
 
-fn enum_choices(value: &Value, names: Option<&Value>) -> Outcome<Vec<String>> {
+fn enum_choices(value: &Value, names: Option<&Value>) -> Outcome<Vec<Choice>> {
     let items = value
         .as_array()
         .filter(|items| (1..=MAX_OPTIONS).contains(&items.len()))
@@ -436,19 +499,22 @@ fn enum_choices(value: &Value, names: Option<&Value>) -> Outcome<Vec<String>> {
                 .ok_or(ElicitationError::InvalidSchema)
         })
         .transpose()?;
-    let mut choices: Vec<String> = Vec::with_capacity(items.len());
+    let mut choices: Vec<Choice> = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         let value = item.as_str().ok_or(ElicitationError::UnsupportedSchema)?;
         let title = names.map_or(item, |names| &names[index]);
-        bounded_string(
+        let title = bounded_string(
             Some(title),
             MAX_LABEL_BYTES,
             ElicitationError::InvalidSchema,
         )?;
-        if choices.iter().any(|prior| prior == value) {
+        if choices.iter().any(|prior| prior.value == value) {
             return Err(ElicitationError::InvalidSchema);
         }
-        choices.push(value.to_owned());
+        choices.push(Choice {
+            value: value.to_owned(),
+            title: title.to_owned(),
+        });
     }
     Ok(choices)
 }

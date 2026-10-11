@@ -25,9 +25,9 @@ use ofx_config::{
 };
 use ofx_contract::{
     ApprovalRequest, CallDescription, FULL_ACCESS_WARNING, ImageAttachment, ModelRecoveryAction,
-    ModelRecoveryCause, PermissionMode, RecoveredTurn, RouteRecoveryStatus, ToolActivity,
-    ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent, Usage,
-    format_unknown_action,
+    ModelRecoveryCause, PermissionMode, QuestionAsker, RecoveredTurn, RouteRecoveryStatus,
+    ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent,
+    Usage, format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -47,6 +47,7 @@ use tokio_util::sync::CancellationToken;
 use crate::ask_images::{CapturedImages, ImageFailure, load_image_paths};
 use crate::ask_session::SavedAsk;
 use crate::command_echo::CommandEcho;
+use crate::mcp_question_prompt::TerminalQuestions;
 use crate::permission_prompt;
 use crate::question_call_record::question_text;
 use crate::shell_call_record::{
@@ -453,7 +454,7 @@ async fn ask(
         modifiers,
         executions: &executions,
     };
-    let answered = answer(&request, endpoints, echo, &cancel, &received).await;
+    let answered = Box::pin(answer(&request, endpoints, echo, &cancel, &received)).await;
     executions.shutdown().await;
     if args.output.layout == AskLayout::Captured {
         received.restore_default_action();
@@ -609,6 +610,8 @@ async fn prepare_agent(
         permission_prompts: permission_prompts_allowed(args),
         open_browser: false,
         context_targets: &context_targets,
+        mcp_questioner: elicitation_allowed(args)
+            .then(|| Arc::new(TerminalQuestions) as Arc<dyn QuestionAsker>),
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending
@@ -699,6 +702,12 @@ async fn start_mcp(
         Some(failure) => Err(Failure::notice("McpRequiredServerUnavailable", failure)),
         None => Ok(()),
     }
+}
+
+fn elicitation_allowed(args: &AskArgs) -> bool {
+    output_mode(args.output) == OutputMode::Terminal
+        && io::stdin().is_terminal()
+        && io::stderr().is_terminal()
 }
 
 fn permission_prompts_allowed(args: &AskArgs) -> bool {

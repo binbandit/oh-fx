@@ -267,3 +267,58 @@ async fn read_request(stream: &mut TcpStream) -> Option<RecordedRequest> {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+pub(crate) struct ScriptedAnswers {
+    answers: Mutex<Vec<String>>,
+    questions: Mutex<Vec<String>>,
+}
+
+impl ScriptedAnswers {
+    pub(crate) fn new(answers: &[&str]) -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(
+                answers
+                    .iter()
+                    .rev()
+                    .map(|answer| (*answer).to_owned())
+                    .collect(),
+            ),
+            questions: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub(crate) fn questions(&self) -> Vec<String> {
+        lock(&self.questions).clone()
+    }
+}
+
+impl ofx_contract::QuestionAsker for ScriptedAnswers {
+    fn ask(
+        &self,
+        entries: Vec<ofx_contract::QuestionBatchEntry>,
+    ) -> ofx_contract::BoxFuture<'static, Option<Vec<String>>> {
+        lock(&self.questions).extend(entries.into_iter().map(|entry| entry.question));
+        let answer = lock(&self.answers).pop();
+        Box::pin(async move { answer.map(|answer| vec![answer]) })
+    }
+}
+
+struct CurrentOwner;
+
+impl crate::legacy_elicitation_runtime::ElicitationOwner for CurrentOwner {
+    fn current(&self) -> bool {
+        true
+    }
+}
+
+pub(crate) fn operation_elicitation(
+    answers: &Arc<ScriptedAnswers>,
+) -> crate::legacy_elicitation_runtime::OperationElicitation {
+    crate::legacy_elicitation_runtime::OperationElicitation {
+        responder: crate::elicitation_interaction::InputResponder::new(
+            Arc::clone(answers) as Arc<dyn ofx_contract::QuestionAsker>
+        ),
+        server_name: "fixture".to_owned(),
+        owner: Box::new(CurrentOwner),
+    }
+}
