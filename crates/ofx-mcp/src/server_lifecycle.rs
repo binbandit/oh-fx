@@ -207,12 +207,12 @@ impl Server {
             connection.client.shutdown(ShutdownMode::Immediate).await;
             return Ok(());
         };
+        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+        spawn(watch(Arc::downgrade(self), connection));
         if let State::Ready(previous) = replaced {
             previous.stop.cancel();
             previous.client.shutdown(ShutdownMode::Immediate).await;
         }
-        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-        spawn(watch(Arc::downgrade(self), connection));
         Ok(())
     }
 
@@ -377,6 +377,32 @@ impl Server {
         }
         self.ready_client()
             .ok_or(RestartFailure::Unavailable(McpError::McpConnectionClosed))
+    }
+
+    pub(crate) async fn reconnect(self: &Arc<Self>) -> Result<(), McpError> {
+        let deadline = startup_deadline(&self.config);
+        let _recovering = timeout_at(deadline, self.recovery.lock())
+            .await
+            .map_err(|_| McpError::McpRequestTimedOut)?;
+        self.connect(Box::pin(McpClient::connect_until(
+            &self.config,
+            &self.options,
+            deadline,
+            &self.auth,
+        )))
+        .await
+        .map_err(|failure| failure.error)?;
+        if !matches!(self.lifecycle(), Lifecycle::Ready(_)) {
+            return Err(McpError::McpConnectionClosed);
+        }
+        ofx_trace::log(
+            "mcp",
+            format_args!(
+                "reconnected server with refreshed credentials server={} transport=negotiated",
+                self.config.name
+            ),
+        );
+        Ok(())
     }
 
     pub(crate) fn publish_catalog<T: FeatureCatalog>(

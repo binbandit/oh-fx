@@ -215,6 +215,10 @@ pub enum McpError {
     RandomSourceUnavailable,
     #[error("McpAuthenticationNotRemote")]
     McpAuthenticationNotRemote,
+    #[error("McpDiscoveryInProgress")]
+    McpDiscoveryInProgress,
+    #[error("McpAuthorityChanged")]
+    McpAuthorityChanged,
     #[error("McpStoredCredentialsNotAllowed")]
     McpStoredCredentialsNotAllowed,
     #[error("McpClientSecretEnvironmentMissing")]

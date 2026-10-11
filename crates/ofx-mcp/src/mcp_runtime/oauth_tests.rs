@@ -332,3 +332,25 @@ async fn a_tool_list_refresh_answered_with_401_retires_the_server() {
     needs_authentication(&runtime);
     assert!(runtime.tools().is_empty());
 }
+
+#[tokio::test]
+async fn a_starting_server_cannot_be_authenticated_yet() {
+    let hanging = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let runtime = remote_runtime(&format!("http://{}/mcp", hanging.local_addr().unwrap()));
+    let settling = runtime.connect(StartupPhase::All);
+    for _ in 0..200 {
+        if matches!(runtime.current()[0].lifecycle(), Lifecycle::Starting) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        runtime.validate_authentication_server("remote"),
+        Err(crate::error::McpError::McpDiscoveryInProgress)
+    );
+    assert_eq!(
+        runtime.validate_authentication_server("absent"),
+        Err(crate::error::McpError::McpServerNotFound)
+    );
+    settling.abandon().await;
+}

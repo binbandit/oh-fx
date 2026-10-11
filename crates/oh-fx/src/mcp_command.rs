@@ -4,12 +4,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ofx_app::Profile;
-use ofx_mcp::{AuthenticationOutcome, McpError, McpRuntime};
+use ofx_mcp::{AuthenticationOutcome, McpError, McpRuntime, authentication_error_message};
 use ofx_text::encode_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
 const NAME_BYTES: usize = 160;
-const CALLBACK_TIMED_OUT: &str = "Authorization timed out. Run the connection command again and finish authorization in your browser while oh-fx stays open";
 
 pub(crate) fn auth(name: &str) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
@@ -34,7 +33,7 @@ pub(crate) fn auth(name: &str) -> ExitCode {
         true
     };
     let cancel = CancellationToken::new();
-    match tokio.block_on(runtime.authenticate_server(name, &open, &cancel)) {
+    match tokio.block_on(runtime.authenticate_server_for_later_sessions(name, &open, &cancel)) {
         Ok(AuthenticationOutcome::Authenticated { repaired_entries }) => {
             let shown = encode_terminal_safe(name.as_bytes(), NAME_BYTES).text;
             let mut text = format!("Authenticated MCP server '{shown}'.");
@@ -58,7 +57,7 @@ pub(crate) fn auth(name: &str) -> ExitCode {
         Ok(AuthenticationOutcome::IssuerMismatch(_)) => {
             failed(&McpError::McpAuthorizationIssuerMismatch.to_string())
         }
-        Err(error) => failed(&message(&error)),
+        Err(error) => failed(&authentication_error_message(&error)),
     }
 }
 
@@ -73,13 +72,6 @@ fn load_runtime() -> Result<Arc<McpRuntime>, String> {
     }
     drop(stderr);
     runtime.ok_or_else(|| McpError::McpServerNotFound.to_string())
-}
-
-fn message(error: &McpError) -> String {
-    match error {
-        McpError::McpAuthorizationCallbackTimedOut => CALLBACK_TIMED_OUT.to_owned(),
-        _ => error.to_string(),
-    }
 }
 
 fn failed(message: &str) -> ExitCode {
