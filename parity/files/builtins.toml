@@ -44,7 +44,7 @@ note = "Startup and working reports, the fx.herdr.turn_end hook reporting idle a
 upstream = "src/builtins/hooks/herdr.zig"
 status = "ported"
 modules = ["crates/ofx-app/src/herdr.rs"]
-note = "Byte-faithful socket requests, raw 32-byte status clamp, opt-out, serialized names/release and receive-only timeout; application opt-out prefix differs as recorded in docs/differences/hooks.md."
+note = "Byte-faithful socket requests, raw 32-byte status clamp, opt-out, serialized names/release and receive-only timeout, with the herdr trace lines; application opt-out prefix differs as recorded in docs/differences/hooks.md."
 
 [[file]]
 upstream = "src/builtins/hooks/notifications.zig"

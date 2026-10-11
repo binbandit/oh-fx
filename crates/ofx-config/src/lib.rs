@@ -30,8 +30,8 @@ pub use model_provider::{ProviderId, is_valid_provider_id};
 pub use paths::ProfilePaths;
 pub use settings_store::{
     AllowlistResetScope, CommitOutcome, LegacyCleanup, PermissionPatch, SettingsWriteError,
-    SettingsWriteFailure, WorkspaceSaveError, save_codex_model, save_model_preference,
-    save_permission_mode, save_permission_patch, save_prompt_history_enabled, save_provider_model,
-    save_session_titles, save_startup_scrollback, save_statusline_item, save_workspace_entry,
-    save_yolo_acknowledged,
+    SettingsWriteFailure, WorkspaceEntryKind, WorkspaceSaveError, save_codex_model,
+    save_model_preference, save_permission_mode, save_permission_patch,
+    save_prompt_history_enabled, save_provider_model, save_session_titles, save_startup_scrollback,
+    save_statusline_item, save_workspace_entry, save_yolo_acknowledged,
 };

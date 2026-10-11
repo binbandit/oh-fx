@@ -750,6 +750,7 @@ dependencies = [
  "getrandom 0.4.3",
  "ofx-contract",
  "ofx-text",
+ "ofx-trace",
  "percent-encoding",
  "rustix",
  "serde_json",
@@ -764,6 +765,7 @@ name = "ofx-contract"
 version = "0.1.0"
 dependencies = [
  "ofx-text",
+ "ofx-trace",
  "serde",
  "serde_json",
  "sha2",

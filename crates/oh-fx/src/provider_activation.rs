@@ -10,9 +10,11 @@ use ofx_auth::{
 };
 use ofx_config::{ProfilePaths, Settings, save_codex_model};
 use ofx_gateway::{CatalogCredential, CodexModelCatalog};
+use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
 
 const SETTINGS_UNAVAILABLE: &str = "could not load settings";
+const CONFIG: &str = "config";
 
 pub(crate) struct Profile {
     pub(crate) paths: Option<ProfilePaths>,
@@ -157,10 +159,14 @@ fn load_settings(
     workspace: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Settings, ActivationFailure> {
-    let settings = Settings::load(paths, workspace)
-        .ok()
-        .filter(|settings| !settings.profile_is_unusable())
-        .ok_or_else(|| detail(SETTINGS_UNAVAILABLE))?;
+    let settings = Settings::load(paths, workspace).map_err(|error| unloaded(&error))?;
+    if settings.profile_is_unusable() {
+        return Err(unloaded(
+            &settings
+                .user_layer_failure()
+                .unwrap_or("InvalidSettingsFormat"),
+        ));
+    }
     settings
         .codex_selected(lookup)
         .map_err(|_| detail(SETTINGS_UNAVAILABLE))?;
@@ -203,14 +209,25 @@ async fn fetch_catalog(
     Ok(models.into_iter().map(|model| model.id).collect())
 }
 
+fn unloaded(error: &dyn std::fmt::Display) -> ActivationFailure {
+    trace_log!(
+        CONFIG,
+        "provider selection settings load failed err={error}"
+    );
+    detail(SETTINGS_UNAVAILABLE)
+}
+
 async fn save_selection(paths: &ProfilePaths, model: &str) -> Result<(), ActivationFailure> {
     let paths = paths.clone();
     let model = model.to_owned();
-    tokio::task::spawn_blocking(move || save_codex_model(&paths, &model))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .ok_or_else(|| detail("failed to save provider selection"))
+    match tokio::task::spawn_blocking(move || save_codex_model(&paths, &model)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            trace_log!(CONFIG, "provider selection persistence failed err={error}");
+            Err(detail("failed to save provider selection"))
+        }
+        Err(_) => Err(detail("failed to save provider selection")),
+    }
 }
 
 fn select_catalog_model<'a>(models: &'a [String], saved: Option<&str>) -> Option<&'a str> {

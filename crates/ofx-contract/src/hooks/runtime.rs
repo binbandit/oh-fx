@@ -2,10 +2,14 @@ use std::sync::Arc;
 
 use super::definitions::{
     ARGUMENTS_JSON_BYTES, AttentionRequiredInput, CONTEXT_BYTES, HANDLER_NAME_BYTES,
-    HookDispatchError, HookHandlerError, HookRegistrationError, PostTurnEndInput, PreToolUseAction,
-    PreToolUseInput, PreToolUseOutcome, REASON_BYTES, StopAction, StopInput, StopOutcome,
+    HookDispatchError, HookHandlerError, HookInvocation, HookRegistrationError, PostTurnEndInput,
+    PreToolUseAction, PreToolUseInput, PreToolUseOutcome, REASON_BYTES, StopAction, StopInput,
+    StopOutcome,
 };
 use crate::types::ToolArgumentIntegrity;
+use handler_trace::{HandlerTrace, Lifecycle};
+
+mod handler_trace;
 
 type SideEffect<Input> = Box<dyn Fn(&Input) + Send + Sync>;
 type PreToolUseHandler =
@@ -104,16 +108,48 @@ impl HookView {
                 arguments_json: rewritten.as_deref().unwrap_or(input.arguments_json),
                 ..*input
             };
-            match (handler.run)(&current).map_err(|error| match error {
-                HookHandlerError::Failed => HookDispatchError::HandlerFailed,
-                HookHandlerError::Cancelled => HookDispatchError::Cancelled,
-            })? {
-                PreToolUseAction::Continue => {}
+            let trace = HandlerTrace::start(
+                Lifecycle::PreToolUse,
+                &handler.name,
+                input.invocation,
+                Some(input.call_id),
+            );
+            let action = match (handler.run)(&current) {
+                Ok(action) => action,
+                Err(error) => {
+                    trace.fail(handler_error_name(error));
+                    return Err(match error {
+                        HookHandlerError::Failed => HookDispatchError::HandlerFailed,
+                        HookHandlerError::Cancelled => HookDispatchError::Cancelled,
+                    });
+                }
+            };
+            match action {
+                PreToolUseAction::Continue => trace.finish("continue"),
                 PreToolUseAction::RewriteArguments(arguments_json) => {
-                    rewritten = Some(validated_rewrite(arguments_json)?);
+                    match validated_rewrite(arguments_json) {
+                        Ok(arguments_json) => {
+                            trace.finish("rewrite");
+                            rewritten = Some(arguments_json);
+                        }
+                        Err(HookDispatchError::HandlerOutputTooLarge) => {
+                            trace.finish("rewrite_too_large");
+                            return Err(HookDispatchError::HandlerOutputTooLarge);
+                        }
+                        Err(error) => {
+                            trace.fail(dispatch_error_name(error));
+                            return Err(error);
+                        }
+                    }
                 }
                 PreToolUseAction::Block(reason) => {
-                    return validated_block(reason).map(PreToolUseOutcome::Blocked);
+                    let blocked = validated_block(reason);
+                    trace.finish(match &blocked {
+                        Ok(_) => "block",
+                        Err(HookDispatchError::HandlerOutputTooLarge) => "block_too_large",
+                        Err(_) => "invalid_block",
+                    });
+                    return blocked.map(PreToolUseOutcome::Blocked);
                 }
             }
         }
@@ -131,15 +167,24 @@ impl HookView {
             return StopOutcome::Allow;
         };
         for handler in &runtime.stop {
+            let trace = HandlerTrace::start(Lifecycle::Stop, &handler.name, input.invocation, None);
             match (handler.run)(input) {
-                Err(_) => return StopOutcome::Allow,
-                Ok(StopAction::Allow) => {}
+                Err(error) => {
+                    trace.fail(handler_error_name(error));
+                    return StopOutcome::Allow;
+                }
+                Ok(StopAction::Allow) => trace.finish("allow"),
                 Ok(StopAction::ContinueOnce(context)) => {
-                    return if input.can_continue && context.len() <= CONTEXT_BYTES {
-                        StopOutcome::ContinueOnce(context)
-                    } else {
-                        StopOutcome::Allow
-                    };
+                    if !input.can_continue {
+                        trace.finish("continue_not_allowed");
+                        return StopOutcome::Allow;
+                    }
+                    if context.len() > CONTEXT_BYTES {
+                        trace.finish("invalid_continue");
+                        return StopOutcome::Allow;
+                    }
+                    trace.finish("continue_once");
+                    return StopOutcome::ContinueOnce(context);
                 }
             }
         }
@@ -154,7 +199,12 @@ impl HookView {
 
     pub fn run_post_turn_end(&self, input: &PostTurnEndInput) {
         if let Some(runtime) = &self.0 {
-            run_side_effects(&runtime.post_turn_end, input);
+            run_side_effects(
+                Lifecycle::PostTurnEnd,
+                &runtime.post_turn_end,
+                input,
+                input.invocation,
+            );
         }
     }
 
@@ -166,7 +216,12 @@ impl HookView {
 
     pub fn run_attention_required(&self, input: &AttentionRequiredInput) {
         if let Some(runtime) = &self.0 {
-            run_side_effects(&runtime.attention_required, input);
+            run_side_effects(
+                Lifecycle::AttentionRequired,
+                &runtime.attention_required,
+                input,
+                input.invocation,
+            );
         }
     }
 }
@@ -206,9 +261,32 @@ fn register_side_effect<Input>(
     Ok(())
 }
 
-fn run_side_effects<Input>(handlers: &[Registered<SideEffect<Input>>], input: &Input) {
+fn run_side_effects<Input>(
+    event: Lifecycle,
+    handlers: &[Registered<SideEffect<Input>>],
+    input: &Input,
+    invocation: HookInvocation,
+) {
     for handler in handlers {
+        let trace = HandlerTrace::start(event, &handler.name, invocation, None);
         (handler.run)(input);
+        trace.finish("ok");
+    }
+}
+
+const fn handler_error_name(error: HookHandlerError) -> &'static str {
+    match error {
+        HookHandlerError::Failed => "Failed",
+        HookHandlerError::Cancelled => "Cancelled",
+    }
+}
+
+const fn dispatch_error_name(error: HookDispatchError) -> &'static str {
+    match error {
+        HookDispatchError::HandlerFailed => "HandlerFailed",
+        HookDispatchError::Cancelled => "Cancelled",
+        HookDispatchError::InvalidHandlerOutput => "InvalidHandlerOutput",
+        HookDispatchError::HandlerOutputTooLarge => "HandlerOutputTooLarge",
     }
 }
 

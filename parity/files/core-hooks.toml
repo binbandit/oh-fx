@@ -26,7 +26,7 @@ note = "The continuation prefix names oh-fx, as docs/differences/hooks.md record
 upstream = "src/core/hooks/runtime.zig"
 status = "ported"
 modules = ["crates/ofx-contract/src/hooks/runtime.rs"]
-note = "Handler name validation, duplicate refusal per event, freezing into a shared view that holds nothing when no handler registered, PreToolUse dispatch that chains rewrites in order, lets the first block win and rejects oversized or non-object rewrites and empty or oversized block reasons, Stop dispatch where the first continuation wins, an error or an oversized context allows and a continuation without budget becomes an allow, and ordered PostTurnEnd and AttentionRequired dispatch exist. Freezing consumes the runtime and handlers write no trace lines, as docs/differences/hooks.md records."
+note = "Handler name validation, duplicate refusal per event, freezing into a shared view that holds nothing when no handler registered, PreToolUse dispatch that chains rewrites in order, lets the first block win and rejects oversized or non-object rewrites and empty or oversized block reasons, Stop dispatch where the first continuation wins, an error or an oversized context allows and a continuation without budget becomes an allow, and ordered PostTurnEnd and AttentionRequired dispatch exist. Each handler writes upstream's handler_start and handler_finish trace lines. Freezing consumes the runtime, as docs/differences/hooks.md records."
 
 [[file]]
 upstream = "src/core/hooks/tool.zig"

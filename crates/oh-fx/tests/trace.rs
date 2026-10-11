@@ -152,10 +152,19 @@ fn trace_copies_a_private_report_with_the_trace_log_tail() {
         "\nOH_FX_TRACE: off\ntrace_log: {}\n",
         log.display()
     )));
+    let written = fs::read_to_string(&log).unwrap();
+    assert!(
+        written.starts_with(&format!("{EARLIER_LINE}\n")),
+        "{written}"
+    );
+    assert!(
+        written.contains(" [herdr] disabled socket=(unset) pane=(unset) fx_herdr=(unset)\n"),
+        "{written}"
+    );
     assert!(report.contains(&format!(
-        "\n## Trace Tail\npath={} last_bytes={}\nonly obvious secrets masked\n{EARLIER_LINE}\n",
+        "\n## Trace Tail\npath={} last_bytes={}\nonly obvious secrets masked\n{written}",
         log.display(),
-        EARLIER_LINE.len() + 1
+        written.len()
     )));
     assert!(report.contains("\nTERM: xterm-256color\n"));
     quit(&mut launched);
@@ -1283,4 +1292,52 @@ fn quitting_saves_the_shutdown_stages_that_the_next_trace_reports() {
         .collect();
     assert_eq!(listed, names, "{section}");
     quit(&mut relaunched);
+}
+
+#[test]
+fn settings_changes_write_the_config_operation_lines() {
+    let (home, mut launched) = launch(0);
+    let committed = "legacy_fields_removed=0 legacy_workspaces_changed=0 migration_snapshots_written=0 permission_rules_removed=0 error=none";
+    launched.session.send(b"/allowlist add command \"git *\"\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("(scope=local)"))
+        .expect("the local rule is saved");
+    launched.session.send(b"/settings startup-scrollback off\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| screen.contains("startup_scrollback: off"))
+        .expect("the setting is saved");
+    let settings = home
+        .path()
+        .canonicalize()
+        .expect("prepare the trace test")
+        .join("config/oh-fx/settings.json");
+    fs::write(&settings, "{").expect("break the settings");
+    launched
+        .session
+        .send(b"/allowlist user add tool read_file\r");
+    launched
+        .session
+        .wait_for(WAIT, |screen| {
+            screen.contains(
+                "failed to add rule to settings (scope=user, error=InvalidSettingsFormat)",
+            )
+        })
+        .expect("the user rule fails");
+    quit(&mut launched);
+    let log = fs::read_to_string(launched.workspace.join("trace.log")).expect("read the log");
+    assert_in_order(
+        &log,
+        &[
+            &format!(
+                "[config] settings operation=permission_patch path_category=user_settings scope=local mutation_mode=commit_first outcome=committed {committed}"
+            ),
+            &format!(
+                "[config] settings operation=user_patch path_category=user_settings scope=user mutation_mode=runtime_first outcome=committed {committed}"
+            ),
+            "[config] settings operation=permission_patch path_category=user_settings scope=user mutation_mode=commit_first outcome=failed error=InvalidSettingsFormat",
+            "[config] allowlist add failed scope=user err=InvalidSettingsFormat",
+        ],
+    );
 }

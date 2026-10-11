@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt;
 
+use ofx_trace::TraceContext;
+
 use crate::ids::TurnId;
 use crate::types::TurnPresentationOutcome;
 
@@ -21,6 +23,29 @@ pub enum HookScope {
 pub struct HookInvocation {
     pub scope: HookScope,
     pub turn_id: TurnId,
+    pub trace: TraceContext,
+}
+
+impl HookInvocation {
+    #[must_use]
+    pub fn new(scope: HookScope, turn_id: TurnId) -> Self {
+        Self {
+            scope,
+            turn_id,
+            trace: TraceContext::default(),
+        }
+    }
+}
+
+impl HookScope {
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::Ask => "ask",
+            Self::Acp => "acp",
+            Self::Subagent => "subagent",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
