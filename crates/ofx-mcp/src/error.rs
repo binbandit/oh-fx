@@ -220,6 +220,10 @@ pub enum McpError {
     McpDiscoveryInProgress,
     #[error("McpAuthorityChanged")]
     McpAuthorityChanged,
+    #[error("RevocationEndpointMissing")]
+    RevocationEndpointMissing,
+    #[error("TokenRevocationFailed")]
+    TokenRevocationFailed,
     #[error("McpStoredCredentialsNotAllowed")]
     McpStoredCredentialsNotAllowed,
     #[error("McpClientSecretEnvironmentMissing")]

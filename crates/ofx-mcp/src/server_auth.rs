@@ -9,6 +9,7 @@ use crate::auth_state::AuthState;
 use crate::error::McpError;
 use crate::mcp_auth::{
     Credentials, collect_authenticate_header, now_ms, parse_challenge, refresh_credentials,
+    revoke_credentials,
 };
 use crate::mcp_auth_store::{CredentialStore, GrantLookup};
 use crate::mcp_contract::{HttpHeader, McpServerConfig};
@@ -22,6 +23,7 @@ const UNREADABLE_STORE: &str = "Stored MCP credentials could not be read securel
 pub(crate) struct HttpAuth {
     server: String,
     state: Arc<AuthState>,
+    epoch: u64,
     headers: Vec<HttpHeader>,
     stored: Option<StoredAuth>,
     rejection: StateMutex<Option<Rejection>>,
@@ -36,6 +38,7 @@ struct StoredAuth {
     server: String,
     state: Arc<AuthState>,
     generation: u64,
+    epoch: u64,
     store: CredentialStore,
     http: reqwest::Client,
     credentials: Arc<Mutex<Credentials>>,
@@ -51,6 +54,7 @@ impl HttpAuth {
         oauth_client: impl FnOnce() -> Result<reqwest::Client, McpError>,
         environment: &(dyn Fn(&str) -> Option<String> + Sync),
     ) -> Result<Self, StartupFailure> {
+        let epoch = state.begin_connection()?;
         let loaded = match (store, state.grant()) {
             (Some(store), Some(credentials)) => Some((store, credentials)),
             (Some(store), None) if config.allow_stored_credentials => {
@@ -68,12 +72,13 @@ impl HttpAuth {
             environment,
             loaded.as_ref().map(|(_, credentials)| credentials),
         )?;
-        let generation = state.set_credentials_loaded(loaded.is_some());
+        let generation = state.credentials_loaded(epoch, loaded.is_some())?;
         let stored = match loaded {
             Some((store, credentials)) => Some(StoredAuth {
                 server: config.name.clone(),
                 state: Arc::clone(state),
                 generation,
+                epoch,
                 store,
                 http: oauth_client()?,
                 bearer: Arc::new(StateMutex::new(bearer_header(&credentials)?)),
@@ -85,6 +90,7 @@ impl HttpAuth {
         Ok(Self {
             server: config.name.clone(),
             state: Arc::clone(state),
+            epoch,
             headers,
             stored,
             rejection: StateMutex::new(None),
@@ -153,11 +159,29 @@ impl HttpAuth {
         StartupFailure::explained(failure.error, message)
     }
 
+    pub(crate) fn current(&self) -> bool {
+        self.state.bound_to(self.epoch)
+    }
+
     pub(crate) async fn apply(&self, builder: RequestBuilder) -> Result<RequestBuilder, McpError> {
+        self.ensure_current()?;
         let builder = self.apply_static(builder);
         match &self.stored {
-            Some(stored) => Ok(builder.header(AUTHORIZATION, stored.authorization().await?)),
+            Some(stored) => {
+                let bearer = stored.authorization().await?;
+                self.ensure_current()?;
+                Ok(builder.header(AUTHORIZATION, bearer))
+            }
             None => Ok(builder),
+        }
+    }
+
+    fn ensure_current(&self) -> Result<(), McpError> {
+        self.state.check_authority()?;
+        if self.current() {
+            Ok(())
+        } else {
+            Err(McpError::McpAuthorityChanged)
         }
     }
 
@@ -207,6 +231,7 @@ impl StoredAuth {
         if !credentials.needs_refresh(now_ms()) {
             return bearer_header(&credentials);
         }
+        self.state.check_authority()?;
         let generation = self.generation;
         if credentials.refresh_token.is_none() {
             self.fail(CREDENTIALS_EXPIRED);
@@ -228,6 +253,8 @@ impl StoredAuth {
             server: self.server.clone(),
             state: Arc::clone(&self.state),
             generation,
+            epoch: self.epoch,
+            http: self.http.clone(),
             bearer: Arc::clone(&self.bearer),
             failure: Arc::clone(&self.failure),
         };
@@ -261,6 +288,8 @@ struct Installing {
     server: String,
     state: Arc<AuthState>,
     generation: u64,
+    epoch: u64,
+    http: reqwest::Client,
     bearer: Arc<StateMutex<HeaderValue>>,
     failure: Arc<StateMutex<Option<String>>>,
 }
@@ -271,8 +300,9 @@ impl Installing {
         mut credentials: OwnedMutexGuard<Credentials>,
         refreshed: Credentials,
     ) -> Result<HeaderValue, McpError> {
-        if self.state.generation() != self.generation {
-            return Ok(self.current_bearer());
+        let _publishing = self.state.publication().await;
+        if !self.state.publishable(self.generation) {
+            return Ok(self.discard(refreshed));
         }
         let saved = refreshed.clone();
         let store = self.store.clone();
@@ -285,12 +315,22 @@ impl Installing {
         }
         let header = bearer_header(&refreshed)?;
         if !self.state.refreshed(self.generation, &refreshed) {
-            return Ok(self.current_bearer());
+            return Ok(self.discard(refreshed));
         }
         *credentials = refreshed;
         *self.bearer.lock().unwrap_or_else(PoisonError::into_inner) = header.clone();
         *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
         Ok(header)
+    }
+
+    fn discard(&self, refreshed: Credentials) -> HeaderValue {
+        if let Some(revoked) = self.state.discard_refreshed(self.epoch, refreshed) {
+            let http = self.http.clone();
+            tokio::spawn(async move {
+                let _ = revoke_credentials(&http, &revoked).await;
+            });
+        }
+        self.current_bearer()
     }
 
     fn current_bearer(&self) -> HeaderValue {
@@ -353,9 +393,12 @@ fn resolve_headers(
 }
 
 mod interactive;
+mod logout;
 
 pub use interactive::{AuthenticationOutcome, authentication_error_message};
 pub(crate) use interactive::{GrantUse, authenticate, authentication_target};
+pub use logout::LogoutResult;
+pub(crate) use logout::logout;
 
 #[cfg(test)]
 mod capture_tests;
