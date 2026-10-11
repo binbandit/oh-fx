@@ -2000,6 +2000,7 @@ impl Agent {
     fn request_history(&self, replays: &[ProjectedReplay]) -> Cow<'_, [ChatMessage]> {
         let mut history = Cow::Borrowed(self.history.as_slice());
         apply_projected(&mut history, replays);
+        let mut rewritten = false;
         for (index, message) in self.history.iter().enumerate() {
             let ChatMessage::Assistant { tool_calls, .. } = message else {
                 continue;
@@ -2012,11 +2013,12 @@ impl Agent {
                     && let ChatMessage::Assistant { tool_calls, .. } = &mut history.to_mut()[index]
                 {
                     tool_calls[position].arguments = arguments;
+                    rewritten = true;
                 }
             }
         }
-        if let Cow::Owned(projected) = &history {
-            history_trace::tool_history_projected(projected.len());
+        if rewritten {
+            history_trace::tool_history_projected(history.len());
         }
         history
     }

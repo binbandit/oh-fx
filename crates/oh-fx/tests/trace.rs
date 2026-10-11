@@ -715,29 +715,7 @@ fn a_resumed_codex_ask_traces_the_empty_step_replay_it_sends_without_its_prose()
     fs::write(home.root.join("workspace/README.md"), "# Readme\n").expect("write the readme");
     let first = home.ask(&["--json", "Read README.md"]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
-    let events = home.events();
-    let mut frames: Vec<serde_json::Value> = fs::read_to_string(&events)
-        .expect("read the saved session")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("a saved frame"))
-        .collect();
-    let step = frames
-        .iter_mut()
-        .find(|frame| frame["event"]["assistant"]["text"] == "I will read it.")
-        .expect("the saved tool step");
-    step["event"]["assistant"]["text"] = json!("");
-    let parts: String = step["event"]["assistant"]["provider_replay"]["parts_json"]
-        .as_str()
-        .expect("the saved step replay")
-        .to_owned();
-    let saved: Vec<String> = frames.iter().map(ToString::to_string).collect();
-    fs::write(&events, saved.join("\n") + "\n").expect("save the step without its prose");
-    let reasoning: Vec<serde_json::Value> = serde_json::from_str::<Vec<serde_json::Value>>(&parts)
-        .expect("the replay parts")
-        .into_iter()
-        .filter(|part| part["type"] == "reasoning")
-        .collect();
-    let retained = serde_json::to_string(&reasoning).expect("the reasoning parts");
+    let (parts, retained) = blank_saved_reply(&home, "I will read it.");
 
     let second = home.ask(&["--resume", "last", "--json", "again"]);
     assert_eq!(second.status.code(), Some(0), "{second:?}");
@@ -768,6 +746,70 @@ fn a_resumed_codex_ask_traces_the_empty_step_replay_it_sends_without_its_prose()
     assert!(resumed.contains("opaque-cipher"), "{resumed}");
     assert!(!resumed.contains("I will read it."), "{resumed}");
     assert!(!resumed.contains("commentary"), "{resumed}");
+    assert!(!log.contains("legacy_tool_history_projected"), "{log}");
+}
+
+fn blank_saved_reply(home: &CodexTraceHome, text: &str) -> (String, String) {
+    let events = home.events();
+    let mut frames: Vec<serde_json::Value> = fs::read_to_string(&events)
+        .expect("read the saved session")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a saved frame"))
+        .collect();
+    let reply = frames
+        .iter_mut()
+        .find(|frame| frame["event"]["assistant"]["text"] == text)
+        .expect("the saved reply");
+    reply["event"]["assistant"]["text"] = json!("");
+    let parts: String = reply["event"]["assistant"]["provider_replay"]["parts_json"]
+        .as_str()
+        .expect("the saved reply's replay")
+        .to_owned();
+    let saved: Vec<String> = frames.iter().map(ToString::to_string).collect();
+    fs::write(&events, saved.join("\n") + "\n").expect("save the reply without its text");
+    let reasoning: Vec<serde_json::Value> = serde_json::from_str::<Vec<serde_json::Value>>(&parts)
+        .expect("the replay parts")
+        .into_iter()
+        .filter(|part| part["type"] == "reasoning")
+        .collect();
+    let retained = serde_json::to_string(&reasoning).expect("the reasoning parts");
+    (parts, retained)
+}
+
+fn codex_reasoned_answer(text: &str) -> Reply {
+    Reply::sse(&[
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"opaque-cipher"}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":text}),
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}),
+    ]
+    .map(|event| event.to_string()))
+}
+
+#[test]
+fn a_resumed_empty_reply_traces_its_replay_projection_but_no_shell_history_projection() {
+    let home = CodexTraceHome::new(
+        Reply::status(500, "{}"),
+        vec![codex_reasoned_answer("Checked."), codex_answer("Again.")],
+        false,
+    );
+    let first = home.ask(&["--json", "Check the notes."]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let (parts, retained) = blank_saved_reply(&home, "Checked.");
+    let second = home.ask(&["--resume", "last", "--json", "again"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let log = home.log();
+    let projected = format!(
+        "[history] empty_assistant_replay_projected message_index=1 prior_bytes={} retained_bytes={}",
+        parts.len(),
+        retained.len()
+    );
+    assert!(bodies(&log).contains(&projected.as_str()), "{log}");
+    assert!(!log.contains("legacy_tool_history_projected"), "{log}");
+    let resumed = home.servers.codex.requests()[1].body_text();
+    assert!(resumed.contains("opaque-cipher"), "{resumed}");
+    assert!(!resumed.contains("Checked."), "{resumed}");
 }
 
 #[test]
