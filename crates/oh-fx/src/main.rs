@@ -55,6 +55,12 @@ fn main() -> ExitCode {
     if ofx_exec::is_foreground_session_invocation(&args) {
         ofx_exec::run_foreground_session(&args);
     }
+    if ofx_exec::is_terminal_control_invocation(&args) {
+        ofx_exec::run_terminal_control(&args);
+    }
+    if ofx_exec::is_terminal_launcher_invocation(&args) {
+        ofx_exec::run_terminal_launcher();
+    }
     if args == ofx_upgrade::BACKGROUND_UPGRADE_ARGS {
         return upgrade_command::run_in_background();
     }

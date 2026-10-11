@@ -8,14 +8,17 @@ publish.workspace = true
 
 [dependencies]
 getrandom.workspace = true
-nix = { workspace = true, features = ["user"] }
-rustix = { workspace = true, features = ["event", "process"] }
+nix = { workspace = true, features = ["signal", "user"] }
+rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "termios"] }
+serde.workspace = true
+serde_json.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "sync", "time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]
+rustix = { workspace = true, features = ["pty"] }
 tempfile.workspace = true
 
 [[test]]
@@ -24,6 +27,10 @@ harness = false
 
 [[test]]
 name = "process_tree"
+harness = false
+
+[[test]]
+name = "terminal_echo"
 harness = false
 
 [lints]

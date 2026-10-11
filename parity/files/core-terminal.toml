@@ -10,8 +10,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/terminal/contracts.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-exec/src/terminal_contracts.rs"]
+note = "Terminal dimensions and the command, authority text and shell path limits that bound the launcher's configuration are ported; actions, lifecycles, results and failures arrive with the terminal store and sessions (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/engine.zig"
@@ -31,8 +32,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/terminal/native_session.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-exec/src/native_session.rs", "crates/ofx-exec/src/native_session/control.rs", "crates/ofx-exec/src/native_session/launcher.rs", "crates/ofx-exec/src/native_session/marker.rs"]
+note = "The launcher and control-marker process modes (--oh-fx-internal-terminal-launcher and --oh-fx-internal-terminal-control) are ported with upstream's configuration, frames, markers, echo restore and watchdog. A launcher whose shell ends while it waits for the command's release stops waiting at once, and the echo restore blocks SIGTTOU so it takes effect where upstream's fails with EIO, as docs/differences/tool-shell.md records. Commandless terminals, which no caller starts at the pin, are not ported. The launch that starts them, the session registry, output, waits, writes, signals and closes arrive next (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/operation.zig"
