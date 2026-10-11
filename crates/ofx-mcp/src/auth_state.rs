@@ -45,12 +45,13 @@ impl AuthState {
         true
     }
 
-    pub(crate) fn set_credentials_loaded(&self, loaded: bool) {
+    pub(crate) fn set_credentials_loaded(&self, loaded: bool) -> u64 {
         let mut inner = self.lock();
         if loaded {
             inner.generation = inner.generation.saturating_add(1);
         }
         inner.credentials_present = loaded;
+        inner.generation
     }
 
     pub(crate) fn pending(&self) -> Challenge {

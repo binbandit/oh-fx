@@ -42,6 +42,7 @@ struct Rejection {
 struct StoredAuth {
     server: String,
     state: Arc<AuthState>,
+    generation: u64,
     store: CredentialStore,
     http: reqwest::Client,
     credentials: Arc<Mutex<Credentials>>,
@@ -73,11 +74,12 @@ impl HttpAuth {
             environment,
             loaded.as_ref().map(|(_, credentials)| credentials),
         )?;
-        state.set_credentials_loaded(loaded.is_some());
+        let generation = state.set_credentials_loaded(loaded.is_some());
         let stored = match loaded {
             Some((store, credentials)) => Some(StoredAuth {
                 server: config.name.clone(),
                 state: Arc::clone(state),
+                generation,
                 store,
                 http: oauth_client()?,
                 bearer: Arc::new(StateMutex::new(bearer_header(&credentials)?)),
@@ -211,7 +213,7 @@ impl StoredAuth {
         if !credentials.needs_refresh(now_ms()) {
             return bearer_header(&credentials);
         }
-        let generation = self.state.generation();
+        let generation = self.generation;
         if credentials.refresh_token.is_none() {
             self.fail(CREDENTIALS_EXPIRED);
             self.state.mark_reauthentication_required(generation);

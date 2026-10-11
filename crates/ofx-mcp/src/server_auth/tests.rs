@@ -590,6 +590,51 @@ mod stored {
     }
 
     #[tokio::test]
+    async fn a_refresh_an_old_connection_starts_after_a_replacement_loaded_is_fenced() {
+        let fixture = Fixture::start(r#"{"error":"invalid_grant"}"#).await;
+        fixture
+            .store()
+            .save(
+                &fixture.lookup(),
+                &fixture.credentials(1, Some("stored-refresh")),
+            )
+            .unwrap();
+        let state = Arc::new(AuthState::default());
+        let config = fixture.config();
+        let connect = || {
+            HttpAuth::resolve(
+                &config,
+                Some(fixture.store()),
+                &state,
+                || Ok(oauth_client()),
+                &|_| None,
+            )
+        };
+        let old = connect().await.ok().unwrap();
+        let mut fresh = fixture.credentials(i64::MAX, None);
+        fresh.access_token = Zeroizing::new("fresh-token".to_owned());
+        fixture.store().save(&fixture.lookup(), &fresh).unwrap();
+        let replacement = connect().await.ok().unwrap();
+        let used = replacement
+            .apply(oauth_client().get(&fixture.server.url))
+            .await
+            .unwrap();
+        assert_eq!(authorization(used).as_deref(), Some("Bearer fresh-token"));
+        assert_eq!(token_requests(&fixture), 0);
+        assert_eq!(
+            old.apply(oauth_client().get(&fixture.server.url))
+                .await
+                .err(),
+            Some(McpError::McpRefreshRejected)
+        );
+        assert_eq!(token_requests(&fixture), 1);
+        assert_eq!(
+            state.authentication(&fixture.config()),
+            crate::health::AuthenticationState::Authenticated
+        );
+    }
+
+    #[tokio::test]
     async fn a_challenge_wins_over_a_remembered_refresh_failure() {
         let server = FakeServer::start(|request| match request.path.as_str() {
             "/token" => Reply::json(r#"{"error":"temporarily_unavailable"}"#).with_status(400),
