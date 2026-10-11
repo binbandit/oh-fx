@@ -82,6 +82,97 @@ fn provider_request_measurement_excludes_responses_protocol_tool_image_payloads(
     assert_eq!(measured.text_tokens, text_tokens(without_image_payload));
 }
 
+fn gateway_user_parts(parts: &str) -> String {
+    format!(r#"{{"prompt":[{{"role":"user","content":[{parts}]}}]}}"#)
+}
+
+fn gateway_image(media_type: &str, payload: &str) -> String {
+    format!(
+        r#"{{"type":"file","mediaType":"{media_type}","data":{{"type":"data","data":"{payload}"}}}}"#
+    )
+}
+
+#[test]
+fn gateway_image_file_parts_stay_out_of_the_text_estimate() {
+    let small = RequestCost::measure(
+        &gateway_user_parts(&gateway_image("image/png", "AAAA")),
+        true,
+    );
+    let large = RequestCost::measure(
+        &gateway_user_parts(&gateway_image("image/png", &"AAAA".repeat(1000))),
+        true,
+    );
+    assert!(large.bytes > small.bytes);
+    assert_eq!(small.text_tokens, large.text_tokens);
+    assert_eq!(small.estimated_tokens, large.estimated_tokens);
+    assert!(small.image_identity.is_some());
+    assert_ne!(small.image_identity, large.image_identity);
+    let jpeg = RequestCost::measure(
+        &gateway_user_parts(&gateway_image("image/jpeg", "AAAA")),
+        true,
+    );
+    assert_ne!(jpeg.image_identity, small.image_identity);
+}
+
+#[test]
+fn gateway_text_files_and_tool_results_keep_their_bytes_in_the_text_estimate() {
+    let text_file = gateway_user_parts(&gateway_image("text/plain", "AAAA"));
+    let measured = RequestCost::measure(&text_file, true);
+    assert_eq!(measured.text_tokens, text_tokens(&text_file));
+    assert_eq!(measured.image_identity, None);
+    let body = format!(
+        r#"{{"prompt":[{{"role":"system","content":"\"data\":\"BBBB\""}},{{"role":"user","content":[{{"type":"text","text":"\"data\":\"BBBB\""}},{}]}},{{"role":"tool","content":[{{"type":"tool-result","toolCallId":"call_1","toolName":"read_file","output":{{"type":"text","value":"\"data\":\"BBBB\""}}}}]}}]}}"#,
+        gateway_image("image/png", "BBBB")
+    );
+    let without_image_payload = body.replacen(
+        r#""data":{"type":"data","data":"BBBB"}"#,
+        r#""data":{"type":"data","data":""}"#,
+        1,
+    );
+    let measured = RequestCost::measure(&body, true);
+    assert_eq!(measured.text_tokens, text_tokens(&without_image_payload));
+    assert!(measured.image_identity.is_some());
+}
+
+#[test]
+fn gateway_tool_image_follow_ups_are_priced_as_image_input() {
+    let body = format!(
+        r#"{{"prompt":[{{"role":"tool","content":[{{"type":"tool-result","toolCallId":"call_1","toolName":"read_file","output":{{"type":"text","value":"capture"}}}}]}},{{"role":"user","content":[{{"type":"text","text":"Attached image(s) from the tool result."}},{}]}}]}}"#,
+        gateway_image("image/png", "AAAABBBBCCCCDDDD")
+    );
+    let measured = RequestCost::measure(&body, true);
+    assert!(measured.image_identity.is_some());
+    assert!(RequestCost::measure(&body, false).estimated_tokens > measured.estimated_tokens);
+}
+
+#[test]
+fn gateway_image_accounting_handles_a_large_payload() {
+    let payload = "A".repeat(4 * 1024 * 1024);
+    let body = gateway_user_parts(&format!(
+        r#"{{"type":"text","text":"what is this"}},{}"#,
+        gateway_image("image/png", &payload)
+    ));
+
+    assert!(RequestCost::measure(&body, true).text_tokens < 100);
+}
+
+#[test]
+fn malformed_gateway_image_parts_fall_back_to_the_text_estimate() {
+    for body in [
+        r#"{"input":[],"prompt":[]}"#.to_owned(),
+        gateway_user_parts(r#"{"type":"file","mediaType":"image/png","data":"AAAA"}"#),
+        gateway_user_parts(r#"{"type":"file","mediaType":"image/png"}"#),
+        gateway_user_parts(
+            r#"{"type":"file","mediaType":"image/png","data":{"type":"url","url":"https://x/y.png"}}"#,
+        ),
+        gateway_user_parts(r#"{"type":"file","mediaType":"image/png","data":{"type":"data"}}"#),
+        gateway_user_parts(&gateway_image("image/png", "escaped\\nimage")),
+    ] {
+        let measured = RequestCost::measure(&body, true);
+        assert_eq!(measured, cost(body.len(), text_tokens(&body)), "{body}");
+    }
+}
+
 #[test]
 fn provider_request_measurement_degrades_to_text_estimate_on_unknown_envelopes() {
     let body = r#"{"model":"fixture/model","contents":[{"role":"user","parts":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}"#;
