@@ -227,3 +227,39 @@ fn the_usage_menu_and_the_other_compact_menus_replace_each_other() {
     assert!(test.shell.statusline_menu.is_none());
     assert!(test.shell.usage_menu.is_some());
 }
+
+#[test]
+fn a_late_answer_to_an_earlier_scope_leaves_the_newer_request_in_place() {
+    for late in [
+        UsageMenuUpdate::Loading(UsageScope::Days7),
+        UsageMenuUpdate::Report(report(UsageScope::Days7)),
+        UsageMenuUpdate::Failed(UsageScope::Days7),
+    ] {
+        let mut test = opened();
+        press(&mut test, b"\t");
+        press(&mut test, b"\t");
+        test.deliver(update(late.clone()));
+        press(&mut test, b"\t");
+        assert_eq!(
+            test.sent(),
+            [
+                UiCommand::RefreshUsage {
+                    scope: UsageScope::Days7
+                },
+                UiCommand::RefreshUsage {
+                    scope: UsageScope::Hours24
+                },
+                UiCommand::RefreshUsage {
+                    scope: UsageScope::Session
+                },
+            ],
+            "{late:?}"
+        );
+        test.deliver(update(UsageMenuUpdate::Report(report(UsageScope::Session))));
+        assert!(
+            test.screen()
+                .contains("Usage  30 days  7 days  24 hours  [Session]"),
+            "{late:?}"
+        );
+    }
+}

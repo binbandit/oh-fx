@@ -3,6 +3,7 @@ use ofx_contract::{ModelUsage, UsageReport, UsageScope};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UsageMenu {
     requested_scope: UsageScope,
+    awaiting: Option<UsageScope>,
     pub(crate) selected_model: usize,
     pub(crate) expanded_model: Option<usize>,
     pub(crate) model_window_start: usize,
@@ -22,6 +23,7 @@ impl UsageMenu {
     pub(crate) fn loading(scope: UsageScope) -> Self {
         Self {
             requested_scope: scope,
+            awaiting: None,
             selected_model: 0,
             expanded_model: None,
             model_window_start: 0,
@@ -52,6 +54,7 @@ impl UsageMenu {
         });
         self.expanded_model = find_model(&report.models, old_expanded.as_deref());
         self.requested_scope = report.scope;
+        self.awaiting = None;
         self.report = Some(report);
         self.selected_model = selected;
         self.refresh_failed = false;
@@ -61,10 +64,16 @@ impl UsageMenu {
     pub(crate) fn record_refresh_failure(&mut self, attempted_scope: UsageScope) {
         self.refresh_failed = true;
         self.requested_scope = attempted_scope;
+        self.awaiting = None;
     }
 
     pub(crate) fn request(&mut self, scope: UsageScope) {
         self.requested_scope = scope;
+        self.awaiting = Some(scope);
+    }
+
+    pub(crate) fn answers(&self, scope: UsageScope) -> bool {
+        self.awaiting.is_none_or(|awaiting| awaiting == scope)
     }
 
     pub(crate) fn move_model(&mut self, delta: isize, visible_model_rows: usize) -> bool {

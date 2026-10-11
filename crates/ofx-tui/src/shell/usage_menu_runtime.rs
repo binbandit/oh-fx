@@ -40,17 +40,17 @@ impl Shell<'_> {
                     Some(report.map_or_else(|| UsageMenu::loading(scope), UsageMenu::opened));
             }
             UsageMenuUpdate::Report(report) => {
-                if let Some(menu) = &mut self.usage_menu {
+                if let Some(menu) = self.answering_usage_menu(report.scope) {
                     menu.replace(report);
                 }
             }
             UsageMenuUpdate::Loading(scope) => {
-                if let Some(menu) = &mut self.usage_menu {
+                if let Some(menu) = self.answering_usage_menu(scope) {
                     menu.set_loading_scope(scope);
                 }
             }
             UsageMenuUpdate::Failed(scope) => {
-                if let Some(menu) = &mut self.usage_menu {
+                if let Some(menu) = self.answering_usage_menu(scope) {
                     menu.record_refresh_failure(scope);
                 }
             }
@@ -116,6 +116,10 @@ impl Shell<'_> {
             | InputEvent::NativeClearDetected => {}
         }
         Ok(())
+    }
+
+    fn answering_usage_menu(&mut self, scope: UsageScope) -> Option<&mut UsageMenu> {
+        self.usage_menu.as_mut().filter(|menu| menu.answers(scope))
     }
 
     fn usage_visible_rows(&self, view: &UsageMenuView<'_>) -> usize {
