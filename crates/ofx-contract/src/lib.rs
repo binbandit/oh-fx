@@ -115,18 +115,18 @@ pub use types::{
     FileChangeStats, FinishReason, ImageAttachment, LivePermissionMode, ModelFailureDiagnostic,
     ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, PermissionAction,
     PermissionMode, PermissionRule, ProviderBilling, ProviderReplay, QuestionBatchEntry,
-    QuestionOption, ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus,
-    ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance,
-    ToolImage, ToolResultStatus, ToolStatusDetail, TurnPresentationOutcome, TurnSummary,
-    TurnTokenProgress, Usage, is_valid_reasoning_effort, valid_credential_account_id,
-    valid_gateway_generation_id,
+    QuestionOption, QuestionSubmission, ReasoningEffort, ReplaySource, RouteRecoveryKind,
+    RouteRecoveryStatus, ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice,
+    ToolExecutionProvenance, ToolImage, ToolResultStatus, ToolStatusDetail,
+    TurnPresentationOutcome, TurnSummary, TurnTokenProgress, Usage, is_valid_reasoning_effort,
+    valid_credential_account_id, valid_gateway_generation_id,
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,
     ModelCatalog, ModelCatalogSource, ModelControls, ModelOption, Notice, NoticeLink, NoticeTone,
-    QuestionRequest, SavedFileChange, SavedToolCall, StatuslineItem, StatuslineToggles,
-    ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent, UsageMenuUpdate,
-    WorkspaceIdentity, WorkspaceIdentitySource,
+    QuestionRequest, QuestionSource, SavedFileChange, SavedToolCall, StatuslineItem,
+    StatuslineToggles, ToolDeferral, ToolRejection, TurnOutcome, UiCommand, UiEvent,
+    UsageMenuUpdate, WorkspaceIdentity, WorkspaceIdentitySource,
 };
 pub use usage_report::{
     GenerationFact, ModelUsage, PendingMarker, SessionActivity, SessionModelSource, SessionTotals,

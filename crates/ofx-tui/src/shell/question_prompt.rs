@@ -1,11 +1,11 @@
-use ofx_contract::{QuestionRequest, RequestId};
+use ofx_contract::{QuestionRequest, QuestionSource, QuestionSubmission, RequestId};
 
 use crate::composer::text_boundaries::{
     logical_line_end, logical_line_start, next_character_end, next_word_delete_end, next_word_end,
     previous_character_start, previous_whitespace_delimited_token_start, previous_word_start,
 };
 use crate::footer::question_freeform_layout::{self, Direction};
-use crate::row_text::terminal_safe;
+use crate::row_text::{terminal_safe, terminal_safe_keeping_breaks};
 
 pub(crate) const FREEFORM_OPTION_LABEL: &str = "Other";
 
@@ -26,6 +26,7 @@ pub(crate) struct Draft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PromptEntry {
     question: String,
+    submission: QuestionSubmission,
     options: Vec<PromptOption>,
     choice: usize,
     answer: Option<String>,
@@ -90,6 +91,7 @@ pub(crate) enum FreeformEdit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuestionPrompt {
     pub(crate) request_id: RequestId,
+    pub(crate) source: QuestionSource,
     entries: Vec<PromptEntry>,
     current: usize,
     limit_rejected: bool,
@@ -97,6 +99,7 @@ pub(crate) struct QuestionPrompt {
 
 impl QuestionPrompt {
     pub(crate) fn new(request: QuestionRequest) -> Self {
+        let source = request.source;
         let entries = request
             .entries
             .into_iter()
@@ -112,13 +115,20 @@ impl QuestionPrompt {
                         freeform: false,
                     })
                     .collect();
-                options.push(PromptOption {
-                    label: FREEFORM_OPTION_LABEL.to_owned(),
-                    description: None,
-                    freeform: true,
-                });
+                if entry.submission == QuestionSubmission::Label {
+                    options.push(PromptOption {
+                        label: FREEFORM_OPTION_LABEL.to_owned(),
+                        description: None,
+                        freeform: true,
+                    });
+                }
+                let question = match source {
+                    QuestionSource::AgentQuestion => terminal_safe(&entry.question),
+                    QuestionSource::McpElicitation => terminal_safe_keeping_breaks(&entry.question),
+                };
                 PromptEntry {
-                    question: terminal_safe(&entry.question).into_owned(),
+                    question: question.into_owned(),
+                    submission: entry.submission,
                     options,
                     choice: 0,
                     answer: None,
@@ -128,6 +138,7 @@ impl QuestionPrompt {
             .collect();
         Self {
             request_id: request.id,
+            source,
             entries,
             current: 0,
             limit_rejected: false,
@@ -222,10 +233,10 @@ impl QuestionPrompt {
         let Some(option) = entry.options.get(entry.choice) else {
             return Decision::Pending;
         };
-        entry.answer = Some(if option.freeform {
-            entry.draft.text.clone()
-        } else {
-            option.label.clone()
+        entry.answer = Some(match entry.submission {
+            QuestionSubmission::Choice => format!("{{\"option\":{}}}", entry.choice),
+            QuestionSubmission::Label if option.freeform => entry.draft.text.clone(),
+            QuestionSubmission::Label => option.label.clone(),
         });
         entry.draft.preferred_column = None;
         let count = self.entries.len();
@@ -436,8 +447,10 @@ mod tests {
                 .map(|question| QuestionBatchEntry {
                     question: (*question).to_owned(),
                     options: labels.iter().map(|label| option(label, None)).collect(),
+                    submission: QuestionSubmission::Label,
                 })
                 .collect(),
+            source: QuestionSource::AgentQuestion,
         })
     }
 
@@ -451,7 +464,9 @@ mod tests {
                     option("No", None),
                     option("Maybe", Some("decide later")),
                 ],
+                submission: QuestionSubmission::Label,
             }],
+            source: QuestionSource::AgentQuestion,
         })
     }
 

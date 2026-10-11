@@ -1206,6 +1206,7 @@ impl Presenter {
             | UiEvent::UsageReported { .. }
             | UiEvent::ApprovalFeedback { .. }
             | UiEvent::QuestionRequested { .. }
+            | UiEvent::QuestionWithdrawn { .. }
             | UiEvent::ApiStatus { .. }
             | UiEvent::Notice { .. }
             | UiEvent::ModelSelected { .. }

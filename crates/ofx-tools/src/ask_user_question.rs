@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use ofx_contract::{
     ActionLabel, BoxFuture, CallDescription, CallPresentation, Concurrency, PreparedCall,
-    QuestionAsker, QuestionBatchEntry, QuestionOption, Tool, ToolActivity, ToolArgValue,
-    ToolContext, ToolEffect, ToolOutput, ToolSpec, format_unknown_action, parse_tool_args_nested,
-    parse_tool_args_object,
+    QuestionAsker, QuestionBatchEntry, QuestionOption, QuestionSubmission, Tool, ToolActivity,
+    ToolArgValue, ToolContext, ToolEffect, ToolOutput, ToolSpec, format_unknown_action,
+    parse_tool_args_nested, parse_tool_args_object,
 };
 use ofx_text::encode_terminal_safe;
 use serde_json::Value;
@@ -241,6 +241,7 @@ fn parse_entry(item: &ToolArgValue) -> Result<QuestionBatchEntry, BatchError> {
     Ok(QuestionBatchEntry {
         question,
         options: parsed,
+        submission: QuestionSubmission::Label,
     })
 }
 

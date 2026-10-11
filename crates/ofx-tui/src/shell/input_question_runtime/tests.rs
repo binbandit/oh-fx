@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use ofx_contract::{
-    HistoryEntry, QuestionBatchEntry, QuestionOption, QuestionRequest, RequestId, SkillMenuFocus,
-    SkillMenuGroup, SkillMenuItem, SkillMenuSource, TurnId, TurnOutcome, UiCommand, UiEvent,
+    HistoryEntry, QuestionBatchEntry, QuestionOption, QuestionRequest, QuestionSource,
+    QuestionSubmission, RequestId, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
+    TurnId, TurnOutcome, UiCommand, UiEvent,
 };
 
 use super::super::Opening;
@@ -21,6 +22,7 @@ fn entry(question: &str, labels: &[&str]) -> QuestionBatchEntry {
     QuestionBatchEntry {
         question: question.to_owned(),
         options: labels.iter().map(|label| option(label, None)).collect(),
+        submission: QuestionSubmission::Label,
     }
 }
 
@@ -30,6 +32,7 @@ fn requested(turn: u64, id: u64, entries: Vec<QuestionBatchEntry>) -> UiEvent {
         request: QuestionRequest {
             id: RequestId::new(id),
             entries,
+            source: QuestionSource::AgentQuestion,
         },
     }
 }
@@ -42,6 +45,7 @@ fn proceed() -> Vec<QuestionBatchEntry> {
             option("No", None),
             option("Maybe", Some("decide later")),
         ],
+        submission: QuestionSubmission::Label,
     }]
 }
 
@@ -283,6 +287,7 @@ fn long_questions_and_choices_wrap_inside_the_footer() {
             ),
             option("Skip", None),
         ],
+        submission: QuestionSubmission::Label,
     }]);
     let screen = test.screen();
     for piece in [
@@ -309,6 +314,7 @@ fn hostile_question_text_never_reaches_the_terminal_raw() {
             option("\u{1b}[31mred", Some("\u{9b}31mdesc")),
             option("ok", None),
         ],
+        submission: QuestionSubmission::Label,
     }]);
     let written = test.written();
     assert!(!written.contains("\x1b]2;PWNED"), "{written:?}");
@@ -601,4 +607,107 @@ fn a_resumed_session_replays_answered_questions_as_their_resolution_rows() {
     let resolution = screen.find("  1) Which depth?").unwrap();
     assert!(screen[..resolution].contains("┃ pick for me"), "{screen}");
     assert!(screen[resolution..].contains("Shipping fast."), "{screen}");
+}
+
+fn elicited(entry: QuestionBatchEntry) -> TestShell {
+    let mut test = TestShell::start();
+    test.submit("use the server");
+    test.deliver(UiEvent::TurnStarted {
+        turn_id: TurnId::new(1),
+    });
+    test.deliver(UiEvent::QuestionRequested {
+        turn_id: TurnId::new(1),
+        request: QuestionRequest {
+            id: RequestId::new(4),
+            entries: vec![entry],
+            source: QuestionSource::McpElicitation,
+        },
+    });
+    test
+}
+
+fn elicitation_question() -> QuestionBatchEntry {
+    QuestionBatchEntry {
+        question: "MCP server fixture requests name (required)\nReason: Who\\x0aare you?"
+            .to_owned(),
+        options: Vec::new(),
+        submission: QuestionSubmission::Label,
+    }
+}
+
+#[test]
+fn an_elicitation_question_keeps_its_lines_and_leaves_no_resolution_row() {
+    let mut test = elicited(elicitation_question());
+    let screen = test.screen();
+    for line in [
+        "  MCP server fixture requests name (required)\n",
+        "  Reason: Who\\x0aare you?\n",
+        "↑↓ cursor · shift+↑↓ options · tab questions · enter answer · esc cancel",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    press(&mut test, b"Ada\r");
+    assert_eq!(answers(&test), [answered(4, Some(&["Ada"]))]);
+    let screen = test.screen();
+    assert!(!screen.contains("MCP server fixture"), "{screen}");
+    assert!(!screen.contains("Ada"), "{screen}");
+}
+
+#[test]
+fn a_choice_submission_answers_with_the_chosen_option_index() {
+    let mut test = elicited(QuestionBatchEntry {
+        question: "MCP server fixture requests color (required)\n\nReason: Pick\nChoose an option to submit.".to_owned(),
+        options: vec![option("[1] Red", None), option("Decline", None), option("Cancel", None)],
+        submission: QuestionSubmission::Choice,
+    });
+    let screen = test.screen();
+    assert!(screen.contains("    3) Cancel"), "{screen}");
+    assert!(!screen.contains("Other"), "{screen}");
+    press(&mut test, b"\x1b[B");
+    press(&mut test, b"\r");
+    assert_eq!(answers(&test), [answered(4, Some(&[r#"{"option":1}"#]))]);
+}
+
+#[test]
+fn escape_on_an_elicitation_cancels_the_turn_without_a_question_row() {
+    let mut test = elicited(elicitation_question());
+    test.screen();
+    press(&mut test, b"\x1b");
+    test.advance(100);
+    test.step();
+    assert!(test.sent().contains(&UiCommand::Cancel {
+        turn_id: TurnId::new(1)
+    }));
+    assert_eq!(answers(&test), [answered(4, None)]);
+    let screen = test.screen();
+    assert!(
+        screen.contains("■ Cancelled · What can oh-fx do differently?"),
+        "{screen}"
+    );
+    assert!(!screen.contains("MCP server fixture"), "{screen}");
+}
+
+#[test]
+fn a_withdrawn_question_leaves_the_panel_without_an_answer_or_a_cancel() {
+    let mut test = elicited(elicitation_question());
+    assert!(test.screen().contains("MCP server fixture requests name"));
+    test.deliver(UiEvent::QuestionWithdrawn {
+        request_id: RequestId::new(9),
+    });
+    assert!(test.screen().contains("MCP server fixture requests name"));
+    test.deliver(UiEvent::QuestionWithdrawn {
+        request_id: RequestId::new(4),
+    });
+    let screen = test.screen();
+    assert!(
+        !screen.contains("MCP server fixture requests name"),
+        "{screen}"
+    );
+    assert!(!screen.contains("Cancelled"), "{screen}");
+    assert!(answers(&test).is_empty());
+    assert!(!test.sent().contains(&UiCommand::Cancel {
+        turn_id: TurnId::new(1)
+    }));
+    press(&mut test, b"hello");
+    assert!(test.screen().contains("hello"));
 }

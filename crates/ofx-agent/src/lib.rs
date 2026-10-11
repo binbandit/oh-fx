@@ -33,7 +33,7 @@ pub use orchestrator::{
     Agent, AgentConfig, BlockedCall, Compaction, EventSink, RuntimeContext, TurnFailure, TurnReport,
 };
 pub use project_context::{DeliveryState, ProjectContext, ProjectContextProvider};
-pub use questions::{QuestionRequests, Questions};
+pub use questions::{QuestionEvent, QuestionRequests, Questions};
 pub use recovery_pause::RecoveryPause;
 pub use skill_context::{SkillContext, SkillContextFailure, SkillContextProvider};
 pub use subagent::{

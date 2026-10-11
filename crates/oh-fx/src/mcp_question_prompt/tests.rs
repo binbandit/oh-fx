@@ -10,6 +10,7 @@ fn entry(question: &str, labels: &[(&str, Option<&str>)]) -> QuestionBatchEntry 
                 description: description.map(str::to_owned),
             })
             .collect(),
+        submission: ofx_contract::QuestionSubmission::Label,
     }
 }
 

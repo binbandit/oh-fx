@@ -178,6 +178,7 @@ impl Shell<'_> {
                 self.end_assistant_step(turn_id);
                 self.question_requested(turn_id, request);
             }
+            UiEvent::QuestionWithdrawn { request_id } => self.question_withdrawn(request_id),
             event @ (UiEvent::ToolStarted { .. }
             | UiEvent::ToolRejected { .. }
             | UiEvent::ToolFinished { .. }
@@ -984,7 +985,9 @@ mod tests {
                         label: "Yes".to_owned(),
                         description: None,
                     }],
+                    submission: ofx_contract::QuestionSubmission::Label,
                 }],
+                source: ofx_contract::QuestionSource::AgentQuestion,
             },
         });
         test.screen();

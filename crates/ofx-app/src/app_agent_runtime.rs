@@ -4,16 +4,16 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{
-    Agent, Compaction, CompactionError, EventSink, InterruptedTurn, QuestionRequests, QueuedPrompt,
-    TraceRings, TurnFailure, TurnReport, WorkerRuntime,
+    Agent, Compaction, CompactionError, EventSink, InterruptedTurn, QuestionEvent,
+    QuestionRequests, QueuedPrompt, TraceRings, TurnFailure, TurnReport, WorkerRuntime,
 };
 use ofx_auth::ChatGptError;
 use ofx_config::save_model_preference;
 use ofx_contract::{
     BoxFuture, CompactionActivity, CompactionEnd, HookScope, HookView, ModelCatalog, ModelControls,
-    ModelOption, Notice, NoticeTone, ProviderError, QuestionRequest, ReasoningEffort,
-    RecoveredTurn, ResumeRefusal, SessionCursor, SessionScope, SkillBinding, StatuslineItem,
-    StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome, UiCommand, UiEvent, UsageScope,
+    ModelOption, Notice, NoticeTone, ProviderError, ReasoningEffort, RecoveredTurn, ResumeRefusal,
+    SessionCursor, SessionScope, SkillBinding, StatuslineItem, StatuslineToggles, ToolResultStatus,
+    TurnId, TurnOutcome, UiCommand, UiEvent, UsageScope,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
 use ofx_trace::trace_log;
@@ -1451,20 +1451,25 @@ async fn finished<T>(slot: &mut Option<BoxFuture<'static, T>>) -> T {
     }
 }
 
-async fn next_question(requests: &mut Option<QuestionRequests>) -> QuestionRequest {
+async fn next_question(requests: &mut Option<QuestionRequests>) -> QuestionEvent {
     match requests {
         Some(requests) => requests.next().await,
         None => std::future::pending().await,
     }
 }
 
-fn relay_question(state: &ControllerState, turn: Option<TurnId>, request: QuestionRequest) {
-    match turn {
-        Some(turn_id) => state.emit(UiEvent::QuestionRequested { turn_id, request }),
-        None => {
+fn relay_question(state: &ControllerState, turn: Option<TurnId>, event: QuestionEvent) {
+    match (event, turn) {
+        (QuestionEvent::Asked(request), Some(turn_id)) => {
+            state.emit(UiEvent::QuestionRequested { turn_id, request });
+        }
+        (QuestionEvent::Asked(request), None) => {
             if let Some(questions) = state.setup.questions() {
                 questions.resolve(request.id, None);
             }
+        }
+        (QuestionEvent::Withdrawn(request_id), _) => {
+            state.emit(UiEvent::QuestionWithdrawn { request_id });
         }
     }
 }
@@ -8596,7 +8601,7 @@ mod tests {
 
     const QUESTION_ARGUMENTS: &str = r#"{"questions":[{"question":"Proceed?","options":[{"label":"Yes","description":"Go ahead"},{"label":"No"}]}]}"#;
 
-    async fn asked(harness: &mut Harness) -> (TurnId, QuestionRequest) {
+    async fn asked(harness: &mut Harness) -> (TurnId, ofx_contract::QuestionRequest) {
         let Some(UiEvent::QuestionRequested { turn_id, request }) = harness
             .until(|event| matches!(event, UiEvent::QuestionRequested { .. }))
             .await

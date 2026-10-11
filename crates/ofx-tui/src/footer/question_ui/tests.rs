@@ -23,8 +23,10 @@ fn prompt(entries: &[(&str, Vec<QuestionOption>)]) -> QuestionPrompt {
             .map(|(question, options)| QuestionBatchEntry {
                 question: (*question).to_owned(),
                 options: options.clone(),
+                submission: ofx_contract::QuestionSubmission::Label,
             })
             .collect(),
+        source: ofx_contract::QuestionSource::AgentQuestion,
     })
 }
 
