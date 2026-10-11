@@ -2,6 +2,7 @@ use std::env;
 use std::os::unix::ffi::OsStrExt;
 
 use ofx_trace::trace_log;
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::auth_runtime::{PreparationError, classify_vercel_failure, preparation_error};
@@ -279,7 +280,9 @@ impl GatewaySources<'_> {
 
     pub async fn refreshed(&self) -> GatewayResolution {
         let login = match self.login {
-            Some(login) if self.needs_login() => login.load_credential().await,
+            Some(login) if self.needs_login() => {
+                login.load_credential(&CancellationToken::new()).await
+            }
             _ => Ok(None),
         };
         self.resolve(login, "refresh_if_needed")

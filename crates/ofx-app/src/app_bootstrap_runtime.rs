@@ -636,7 +636,7 @@ impl Profile {
                     GatewayRefusal::Preparation(error) => ConnectError::GatewayPreparation(error),
                 })?;
                 (
-                    crate::gateway_login::gateway_credential(&key, login),
+                    crate::gateway_login::gateway_credential(&key, login, refreshes),
                     CredentialSource::Gateway(key.source),
                     key.display_team().map(str::to_owned),
                 )

@@ -274,7 +274,7 @@ impl DetachedRefreshes {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn start(self: &Arc<Self>) -> Option<RunningRefresh> {
+    pub(crate) fn start(self: &Arc<Self>) -> Option<RunningRefresh> {
         let mut state = self.state();
         if state.closed {
             return None;
@@ -327,7 +327,7 @@ impl DetachedRefreshes {
     }
 }
 
-struct RunningRefresh(Arc<DetachedRefreshes>);
+pub(crate) struct RunningRefresh(Arc<DetachedRefreshes>);
 
 impl Drop for RunningRefresh {
     fn drop(&mut self) {

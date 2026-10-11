@@ -1,4 +1,5 @@
 use ofx_trace::trace_log;
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use super::{GatewayKey, GatewaySource};
@@ -20,7 +21,10 @@ impl VercelOAuth {
             .map(|session| credential(session, None)))
     }
 
-    pub async fn load_credential(&self) -> Result<Option<GatewayKey>, VercelError> {
+    pub async fn load_credential(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<GatewayKey>, VercelError> {
         self.require_source_storage()?;
         let Some(session) = self.store().load_unlocked()? else {
             return Ok(None);
@@ -28,7 +32,12 @@ impl VercelOAuth {
         if !session.expired(now_ms()) {
             return Ok(Some(credential(session, None)));
         }
-        let Some(mutation) = self.store().begin_existing_mutation().await? else {
+        let begun = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(VercelError::Cancelled),
+            begun = self.store().begin_existing_mutation() => begun,
+        };
+        let Some(mutation) = begun? else {
             return Ok(None);
         };
         let Some(mut session) = mutation.load()? else {
@@ -36,7 +45,8 @@ impl VercelOAuth {
         };
         let mut refreshed_at_ms = None;
         if session.expired(now_ms()) {
-            self.refresh_session(&mutation, &mut session).await?;
+            self.refresh_session(&mutation, &mut session, cancel)
+                .await?;
             refreshed_at_ms = Some(now_ms());
         }
         Ok(Some(credential(session, refreshed_at_ms)))
@@ -54,11 +64,19 @@ impl VercelOAuth {
         &self,
         mutation: &Mutation,
         session: &mut Session,
+        cancel: &CancellationToken,
     ) -> Result<(), VercelError> {
         mutation.require_writable()?;
         let transport = self.transport()?;
-        let metadata = device::discover(transport, &session.issuer).await?;
+        let metadata = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(VercelError::Cancelled),
+            metadata = device::discover(transport, &session.issuer) => metadata?,
+        };
         oauth_session::validate_e2e_endpoint(&session.issuer, &metadata.token_endpoint)?;
+        if cancel.is_cancelled() {
+            return Err(VercelError::Cancelled);
+        }
         let refreshed = match device::refresh_token(
             transport,
             &metadata,

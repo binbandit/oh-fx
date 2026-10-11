@@ -64,7 +64,10 @@ impl fmt::Debug for GatewayAccess {
 }
 
 pub trait GatewayRefresh: Send + Sync {
-    fn refresh(&self) -> BoxFuture<'_, Result<Option<GatewayAccess>, String>>;
+    fn refresh<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>>;
 }
 
 pub struct GatewayCredential {
@@ -166,7 +169,7 @@ impl GatewayProvider {
         lock(&self.secrets).clone()
     }
 
-    async fn refresh_if_due(&self, sink: &mut dyn StreamSink) {
+    async fn refresh_if_due(&self, sink: &mut dyn StreamSink, cancel: &CancellationToken) {
         let Some(refresh) = &self.refresh else {
             return;
         };
@@ -182,7 +185,7 @@ impl GatewayProvider {
         if !due {
             return;
         }
-        let fresh = match refresh.refresh().await {
+        let fresh = match refresh.refresh(cancel).await {
             Ok(Some(fresh)) if fresh.team == team => fresh,
             Ok(None) => return,
             Ok(Some(_)) => {
@@ -272,10 +275,9 @@ impl GatewayProvider {
             Some(body) => body,
             None => self.build(request).map_err(request_failure)?,
         };
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(ProviderError::cancelled()),
-            () = self.refresh_if_due(sink) => {}
+        self.refresh_if_due(sink, cancel).await;
+        if cancel.is_cancelled() {
+            return Err(ProviderError::cancelled());
         }
         let (secret, team) = {
             let current = lock(&self.current);

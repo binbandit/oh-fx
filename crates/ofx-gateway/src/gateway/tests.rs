@@ -674,7 +674,10 @@ impl ScriptedRefresh {
 }
 
 impl GatewayRefresh for ScriptedRefresh {
-    fn refresh(&self) -> BoxFuture<'_, Result<Option<GatewayAccess>, String>> {
+    fn refresh<'a>(
+        &'a self,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let answer = lock(&self.answer).take().unwrap_or(Ok(None));
         Box::pin(async move { answer })
@@ -684,8 +687,37 @@ impl GatewayRefresh for ScriptedRefresh {
 struct StalledRefresh;
 
 impl GatewayRefresh for StalledRefresh {
-    fn refresh(&self) -> BoxFuture<'_, Result<Option<GatewayAccess>, String>> {
-        Box::pin(std::future::pending())
+    fn refresh<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        Box::pin(async move {
+            cancel.cancelled().await;
+            Ok(None)
+        })
+    }
+}
+
+#[derive(Default)]
+struct SavingRefresh {
+    saved: std::sync::atomic::AtomicBool,
+}
+
+impl GatewayRefresh for SavingRefresh {
+    fn refresh<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        Box::pin(async move {
+            cancel.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.saved.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(GatewayAccess::new(
+                "login-new-token".to_owned(),
+                Some("team_1".to_owned()),
+                i64::MAX,
+            )))
+        })
     }
 }
 
@@ -806,5 +838,29 @@ async fn cancelling_a_turn_stops_a_pending_login_refresh_without_sending() {
     .unwrap_err();
     stopping.await.unwrap();
     assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_waits_for_a_refresh_that_is_saving_and_then_sends_nothing() {
+    let server = FakeServer::start([]);
+    let refresh = Arc::new(SavingRefresh::default());
+    let gateway = signed_in(&server, 0, Arc::<SavingRefresh>::clone(&refresh));
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let cancel = CancellationToken::new();
+    let stopper = cancel.clone();
+    let stopping = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        stopper.cancel();
+    });
+    let mut sink = |_: StreamEvent| {};
+    let error = gateway
+        .stream(&request, &mut sink, &cancel)
+        .await
+        .unwrap_err();
+    stopping.await.unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert!(refresh.saved.load(std::sync::atomic::Ordering::SeqCst));
     assert!(server.requests().is_empty());
 }
