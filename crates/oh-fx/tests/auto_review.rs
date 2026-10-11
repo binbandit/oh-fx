@@ -65,8 +65,13 @@ impl Home {
             .env("PATH", "/usr/bin:/bin")
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("PORTKEY_API_KEY", PORTKEY_KEY)
+            .env("OH_FX_TRACE_LOG", self.root.join("trace.log"))
             .stdin(Stdio::null());
         command
+    }
+
+    fn trace_log(&self) -> String {
+        fs::read_to_string(self.root.join("trace.log")).expect("read the trace log")
     }
 }
 
@@ -289,6 +294,43 @@ fn a_caution_holds_the_command_and_returns_the_advice_to_the_model() {
     assert_eq!(
         result(&output)["tool_calls"][0],
         json!({"name": "shell", "status": "error", "action": "run", "error": {"category": "rejected", "code": "rejected"}})
+    );
+}
+
+#[test]
+fn a_held_command_asked_again_in_the_same_turn_keeps_its_hold_without_a_second_review() {
+    let server = FakeServer::start([
+        run("touch marker"),
+        decision(r#"{"decision":"caution","rationale":"Not requested."}"#),
+        run("touch marker"),
+        Reply::sse(&chat_text_events(&["Held twice."])),
+    ]);
+    let home = Home::new(&settings(&server.base_url(), None));
+
+    let output = home.ask("create the marker file");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!home.workspace.join("marker").exists());
+    assert_eq!(server.requests().len(), 4);
+    let log = home.trace_log();
+    let held = "call_id=call_1 tool_name=shell permission_mode=auto decision=deny approval_source=denied outside_workspace=false";
+    assert_eq!(
+        log.matches(" [permission] event=permission_decision turn_id=1 step_id=")
+            .count(),
+        2,
+        "{log}"
+    );
+    assert_eq!(log.matches(held).count(), 4, "{log}");
+    assert_eq!(
+        log.matches(" [permission] event=turn_permission_denial_preserved turn_id=1 step_id=2 call_id=call_1 tool_name=shell\n").count(),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        log.matches("result_kind=permission_denied reason=review_caution")
+            .count(),
+        2,
+        "{log}"
     );
 }
 

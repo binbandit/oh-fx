@@ -198,6 +198,21 @@ fn a_denied_prompt_writes_the_users_denial_to_the_trace() {
     );
     assert!(log.contains(&denied), "{denied}\n{log}");
     assert!(!log.contains("event=execution_start"), "{log}");
+    let call = "turn_id=1 step_id=1 call_id=call_1 tool_name=read_file permission_mode=ask";
+    for line in [
+        format!(
+            " [permission] event=before_permission_wait {call} local_grants=0 outside_workspace=true\n"
+        ),
+        format!(" [permission] event=permission_requested {call} outside_workspace=true\n"),
+        format!(
+            " [permission] event=after_permission_decision {call} decision=deny approval_source=denied outside_workspace=true\n"
+        ),
+        format!(
+            " [permission] event=permission_decision {call} decision=deny approval_source=denied outside_workspace=true\n"
+        ),
+    ] {
+        assert!(log.contains(&line), "{line}\n{log}");
+    }
 }
 
 #[test]

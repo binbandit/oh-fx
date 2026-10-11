@@ -7,7 +7,7 @@ use crate::applicable_target::ApplicableTarget;
 use crate::auto_classifier::ReviewFailure;
 use crate::ids::ToolCallId;
 use crate::stream_provider::BoxFuture;
-use crate::types::{ChatMessage, FileChangeStats, ToolCall, Usage};
+use crate::types::{ChatMessage, FileChangeStats, PermissionMode, ToolCall, Usage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PathAccess {
@@ -196,8 +196,29 @@ impl From<ApprovalDecision> for ApprovalAnswer {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionTraceFacts {
+    pub mode: PermissionMode,
+    pub local_grants: usize,
+    pub outside_workspace: &'static str,
+}
+
+impl Default for PermissionTraceFacts {
+    fn default() -> Self {
+        Self {
+            mode: PermissionMode::Ask,
+            local_grants: 0,
+            outside_workspace: "unknown",
+        }
+    }
+}
+
 pub trait PermissionGate: Send + Sync {
     fn admit(&self, call: &ToolCall) -> Admission;
+
+    fn trace_facts(&self, _action: GatedAction<'_>) -> PermissionTraceFacts {
+        PermissionTraceFacts::default()
+    }
 
     fn applicable_target(&self, call: &ToolCall) -> Option<ApplicableTarget>;
 
