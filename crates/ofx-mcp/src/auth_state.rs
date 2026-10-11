@@ -268,7 +268,14 @@ mod tests {
         let state = AuthState::default();
         let epoch = state.begin_connection().unwrap();
         state.credentials_loaded(epoch, true).unwrap();
-        state.authenticated(grant());
+        state
+            .publish(
+                state.generation(),
+                &CancellationToken::new(),
+                grant(),
+                |_| Ok(()),
+            )
+            .unwrap();
         state.store_pending(Challenge {
             scope: Some("tools.call".to_owned()),
             ..Challenge::default()

@@ -61,6 +61,28 @@ pub(crate) async fn logout(
     } else {
         None
     };
+    let fenced = tokio::spawn(log_out(Arc::clone(server), store, lookup, stored));
+    let Some((deleted, grant)) = fenced.await.map_err(|_| McpError::Cancelled)?? else {
+        return Ok(LogoutResult::default());
+    };
+    let revocation_failed = match &grant {
+        Some(grant) => revocation_failed(grant, options).await,
+        None => false,
+    };
+    Ok(LogoutResult {
+        removed: true,
+        revocation_failed,
+        repaired_entries: deleted.repaired_entries,
+        local_only: false,
+    })
+}
+
+async fn log_out(
+    server: Arc<Server>,
+    store: CredentialStore,
+    lookup: GrantLookup,
+    stored: Option<Credentials>,
+) -> Result<Option<(DeleteResult, Option<Credentials>)>, McpError> {
     let detached = server.auth.begin_logout().await?;
     let deleted = match delete(&store, &lookup).await {
         Ok(deleted) => deleted,
@@ -72,22 +94,13 @@ pub(crate) async fn logout(
     let grant = detached.grant().cloned().or(stored);
     if deleted.removed == 0 && deleted.repaired_entries == 0 && grant.is_none() {
         server.auth.restore_after_logout(detached);
-        return Ok(LogoutResult::default());
+        return Ok(None);
     }
     drop(detached);
     server.auth.commit_logout();
     server.log_out().await;
     server.auth.finish_logout();
-    let revocation_failed = match &grant {
-        Some(grant) => revocation_failed(grant, options).await,
-        None => false,
-    };
-    Ok(LogoutResult {
-        removed: true,
-        revocation_failed,
-        repaired_entries: deleted.repaired_entries,
-        local_only: false,
-    })
+    Ok(Some((deleted, grant)))
 }
 
 async fn delete(store: &CredentialStore, lookup: &GrantLookup) -> Result<DeleteResult, McpError> {

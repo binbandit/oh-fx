@@ -241,7 +241,7 @@ async fn an_authorization_during_the_fence_fails_before_any_request() {
     let server = FakeServer::start(authority_reply).await;
     let profile = Profile::new();
     let config = config(&server.url);
-    let state = AuthState::default();
+    let state = Arc::new(AuthState::default());
     let detached = state.begin_logout().await.unwrap();
     let opened = Mutex::new(false);
     let open = |_: &str| {
@@ -349,4 +349,136 @@ async fn requests_during_the_fence_fail_with_authority_changed() {
         Some("Bearer stored-access")
     );
     state.restore_after_logout(detached);
+}
+
+fn stored_token(profile: &Profile) -> Option<String> {
+    std::fs::read_to_string(profile.file())
+        .ok()
+        .and_then(|text| {
+            let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+            value["credentials"][0]["access_token"]
+                .as_str()
+                .map(str::to_owned)
+        })
+}
+
+#[tokio::test]
+async fn a_refresh_inside_the_fence_window_neither_saves_nor_installs() {
+    let release = Arc::new(Notify::new());
+    let held = Arc::clone(&release);
+    let server = FakeServer::start(move |request| {
+        if request.path == "/token" {
+            return Reply::json(RENEWED).released_by(&held);
+        }
+        mcp_reply(request)
+    })
+    .await;
+    let profile = Profile::new();
+    let config = config(&server.url);
+    profile
+        .store()
+        .save(
+            &GrantLookup::for_server(&config).unwrap(),
+            &grant(&server.url, 1),
+        )
+        .unwrap();
+    let state = Arc::new(AuthState::default());
+    let auth = Arc::new(
+        HttpAuth::resolve(
+            &config,
+            Some(profile.store()),
+            &state,
+            || Ok(oauth()),
+            &|_| None,
+        )
+        .await
+        .ok()
+        .unwrap(),
+    );
+    let requesting = Arc::clone(&auth);
+    let url = server.url.clone();
+    let request = tokio::spawn(async move {
+        requesting
+            .apply(oauth().get(url))
+            .await
+            .unwrap()
+            .build()
+            .unwrap()
+            .headers()
+            .get("authorization")
+            .map(|value| value.to_str().unwrap().to_owned())
+    });
+    assert!(server.wait_for(|request| request.path == "/token").await);
+    let detached = state.begin_logout().await.unwrap();
+    release.notify_one();
+    assert_eq!(
+        request.await.unwrap().as_deref(),
+        Some("Bearer stored-access")
+    );
+    assert!(state.grant().is_none());
+    assert_eq!(stored_token(&profile).as_deref(), Some("stored-access"));
+    state.restore_after_logout(detached);
+    assert_eq!(
+        state.authentication(&config),
+        AuthenticationState::Authenticated
+    );
+    assert!(state.grant().is_none());
+}
+
+#[tokio::test]
+async fn an_authorization_inside_the_fence_window_is_refused() {
+    let release = Arc::new(Notify::new());
+    let held = Arc::clone(&release);
+    let server = FakeServer::start(move |request| {
+        let reply = authority_reply(request);
+        if request.path == "/token" {
+            return reply.released_by(&held);
+        }
+        reply
+    })
+    .await;
+    let profile = Profile::new();
+    let config = McpServerConfig::remote("remote", TransportType::Http, &server.url);
+    let state = Arc::new(AuthState::default());
+    let authorizing = {
+        let state = Arc::clone(&state);
+        let config = config.clone();
+        let options = profile.options();
+        tokio::spawn(async move {
+            let open = |url: &str| {
+                let (_, query) = url.split_once('?').unwrap();
+                let callback = format!(
+                    "{}?code=the-code&state={}",
+                    query_value(query, "redirect_uri").unwrap().as_str(),
+                    query_value(query, "state").unwrap().as_str()
+                );
+                tokio::spawn(async move {
+                    let _ = oauth().get(callback).send().await;
+                });
+                true
+            };
+            authenticate(
+                &config,
+                &options,
+                &state,
+                GrantUse::ThisSession,
+                &open,
+                &tokio_util::sync::CancellationToken::new(),
+                &|_| None,
+            )
+            .await
+        })
+    };
+    assert!(server.wait_for(|request| request.path == "/token").await);
+    let detached = state.begin_logout().await.unwrap();
+    release.notify_one();
+    assert_eq!(
+        authorizing.await.unwrap(),
+        Err(McpError::McpAuthorityChanged)
+    );
+    assert!(state.grant().is_none());
+    assert_eq!(stored_token(&profile), None);
+    state.restore_after_logout(detached);
+    assert!(state.grant().is_none());
+    assert_eq!(state.check_authority(), Ok(()));
 }

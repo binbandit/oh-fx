@@ -182,3 +182,24 @@ async fn a_response_over_256_kib_fails() {
         Err(McpError::McpAuthDocumentTooLarge)
     );
 }
+
+#[tokio::test]
+async fn the_first_failure_is_the_one_reported() {
+    let calls = Arc::new(Mutex::new(0_usize));
+    let large = "x".repeat(256 * 1024 + 1);
+    let server = FakeServer::start(move |_| {
+        let mut calls = calls.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            Reply::status(200).body(&large)
+        } else {
+            Reply::status(400)
+        }
+    })
+    .await;
+    assert_eq!(
+        revoke_credentials(&http(), &grant(Some(revoke_url(&server)))).await,
+        Err(McpError::McpAuthDocumentTooLarge)
+    );
+    assert_eq!(server.requests().len(), 2);
+}

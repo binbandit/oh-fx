@@ -162,6 +162,9 @@ impl HttpAuth {
 
     pub(crate) async fn apply(&self, builder: RequestBuilder) -> Result<RequestBuilder, McpError> {
         self.state.check_authority()?;
+        if !self.current() {
+            return Err(McpError::McpAuthorityChanged);
+        }
         let builder = self.apply_static(builder);
         match &self.stored {
             Some(stored) => Ok(builder.header(AUTHORIZATION, stored.authorization().await?)),

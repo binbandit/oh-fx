@@ -36,6 +36,12 @@ enum State {
     Stopped,
 }
 
+enum Install {
+    Replaced(State),
+    Stopped,
+    Outdated,
+}
+
 struct StartAttempt<'a>(&'a Server);
 
 impl Drop for StartAttempt<'_> {
@@ -191,33 +197,35 @@ impl Server {
             client: Arc::new(client),
             stop: CancellationToken::new(),
         };
-        let replaced = {
+        let installed = {
             let mut state = lock(&self.state);
-            let outdated = connection
+            if connection
                 .client
                 .transport
                 .http_auth()
-                .is_some_and(|auth| !auth.current());
-            if outdated || matches!(*state, State::Stopped) {
-                Err(outdated)
+                .is_some_and(|auth| !auth.current())
+            {
+                Install::Outdated
+            } else if matches!(*state, State::Stopped) {
+                Install::Stopped
             } else {
                 self.features
                     .reset(connection.client.server_info().capabilities);
-                Ok(std::mem::replace(
+                Install::Replaced(std::mem::replace(
                     &mut *state,
                     State::Ready(connection.clone()),
                 ))
             }
         };
-        let replaced = match replaced {
-            Ok(replaced) => replaced,
-            Err(outdated) => {
+        let replaced = match installed {
+            Install::Replaced(replaced) => replaced,
+            Install::Stopped => {
                 connection.client.shutdown(ShutdownMode::Immediate).await;
-                return if outdated {
-                    Err(StartupFailure::from(McpError::McpAuthorityChanged))
-                } else {
-                    Ok(())
-                };
+                return Ok(());
+            }
+            Install::Outdated => {
+                connection.client.shutdown(ShutdownMode::Immediate).await;
+                return Err(StartupFailure::from(McpError::McpAuthorityChanged));
             }
         };
         self.catalog_generation.fetch_add(1, Ordering::AcqRel);

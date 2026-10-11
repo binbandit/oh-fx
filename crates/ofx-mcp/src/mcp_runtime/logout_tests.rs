@@ -196,6 +196,8 @@ async fn a_logout_closes_the_session_deletes_the_grant_and_revokes_it() {
         runtime.model_catalog()[0].availability,
         Availability::Unavailable
     );
+    let summary = runtime.render_summary();
+    assert!(summary.contains("0 ready"), "{summary}");
     for secret in SECRETS {
         assert!(!health.contains(secret));
         assert!(!runtime.render_summary().contains(secret));
@@ -317,7 +319,14 @@ async fn unreadable_entries_or_a_session_grant_still_log_out() {
     assert!(matches!(runtime.current()[0].lifecycle(), Lifecycle::Idle));
     let session = Fixture::start(200).await;
     let runtime = session.connected(true).await;
-    runtime.current()[0].auth.authenticated(session.grant(true));
+    let auth = &runtime.current()[0].auth;
+    auth.publish(
+        auth.generation(),
+        &tokio_util::sync::CancellationToken::new(),
+        session.grant(true),
+        |_| Ok(()),
+    )
+    .unwrap();
     std::fs::remove_file(session.file()).unwrap();
     assert_eq!(runtime.logout_server("remote").await, Ok(logged_out(false)));
     assert_eq!(session.revocations().len(), 2);
@@ -391,9 +400,51 @@ async fn logout_refuses_unknown_local_profileless_and_starting_servers() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    assert!(matches!(
+        starting.current()[0].lifecycle(),
+        Lifecycle::Starting
+    ));
     assert_eq!(
         starting.logout_server("remote").await,
         Err(McpError::McpDiscoveryInProgress)
     );
     settling.abandon().await;
+}
+
+#[tokio::test]
+async fn a_server_that_needs_authentication_logs_out_and_drops_its_challenge() {
+    let server = FakeServer::start(|request| {
+        if request.path == "/revoke" {
+            return Reply::status(200);
+        }
+        Reply::status(401).header("WWW-Authenticate", r#"Bearer scope="tools.call""#)
+    })
+    .await;
+    let data = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(data.path()).unwrap().join("oh-fx");
+    let fixture = Fixture {
+        server,
+        _data: data,
+        root,
+    };
+    let config = fixture.config();
+    fixture.save(&config, true);
+    let runtime = fixture.runtime(vec![config], true);
+    runtime.connect(StartupPhase::All).await;
+    let health = runtime.render_health();
+    assert!(
+        health.contains("auth=required status=needs_auth"),
+        "{health}"
+    );
+    assert_eq!(runtime.logout_server("remote").await, Ok(logged_out(false)));
+    let health = runtime.render_health();
+    assert!(
+        health.contains("state=disconnected auth=none status=unavailable\n"),
+        "{health}"
+    );
+    assert_eq!(
+        runtime.current()[0].auth.pending(),
+        crate::mcp_auth::Challenge::default()
+    );
+    assert_eq!(fixture.revocations().len(), 2);
 }
