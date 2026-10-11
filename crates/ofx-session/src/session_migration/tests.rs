@@ -638,6 +638,7 @@ fn request_checkpoints_a_turn_or_a_clear_settles_are_read_and_dropped() {
 mod archive;
 pub(crate) mod checkpoints;
 pub(crate) mod replacements;
+mod trace_lines;
 mod turn_fields;
 mod upgrades;
 mod usage;

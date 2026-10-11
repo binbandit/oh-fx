@@ -25,6 +25,7 @@ use crate::session_log::{
     ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint, RECOVERY_FILE,
 };
 use crate::session_summary_codec::{SessionSource, SessionSummary};
+use crate::session_trace::rejected;
 use crate::session_usage::UsageSnapshot;
 use crate::session_usage_sidecar;
 
@@ -333,7 +334,7 @@ fn turn_events(
         }
     }
     if steering.next().is_some() {
-        return Err(SessionError::InvalidConversationEvent);
+        return Err(rejected("steering-boundary"));
     }
     let files: Vec<FileEvidence> = files
         .into_iter()

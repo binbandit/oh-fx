@@ -3,6 +3,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
 
 use ofx_config::{AdvisoryLock, PrivateDir};
+use ofx_trace::trace_log;
 use sha2::{Digest, Sha256};
 
 use super::SessionStore;
@@ -19,7 +20,7 @@ use crate::session_error::SessionError;
 use crate::session_layout::{generate_session_id, is_valid_session_id};
 use crate::session_log::managed_file::{
     Access, create_managed_file, create_private_dir, lock_with_deadline, open_managed_file,
-    publish_dir, read_managed_file, remove_created_dir, sync_dir,
+    publish_dir, read_managed_file, remove_dir_tree, sync_dir,
 };
 use crate::session_log::{
     ArchivedTurn, ConversationRecovery, MANIFEST_FILE, RecoveredArtifact, RecoveredLog,
@@ -28,6 +29,7 @@ use crate::session_log::{
 };
 use crate::session_migration::{holds_schema_v3, read_schema_v3};
 use crate::session_store_types::{SessionRecovery, SessionRecoveryStatus};
+use crate::session_trace::SESSION;
 use crate::session_usage::UsageSnapshot;
 use crate::session_usage_sidecar;
 
@@ -223,15 +225,43 @@ fn publish_recovery(
     let unverified = match staged {
         Ok(unverified) => unverified,
         Err(error) => {
-            remove_created_dir(sessions, &staging);
+            discard_staged(sessions, &staging);
             return Err(error);
         }
     };
-    if publish_dir(sessions, &staging, recovered_id).is_err() {
-        remove_created_dir(sessions, &staging);
+    if let Err(error) = publish_dir(sessions, &staging, recovered_id) {
+        trace_log!(
+            SESSION,
+            "event=session_recovery_target_promotion_failed target={recovered_id} err={error}"
+        );
+        discard_staged(sessions, &staging);
         return Err(SessionError::SessionRecoveryIndeterminate);
     }
     Ok(unverified)
+}
+
+fn discard_staged(sessions: &PrivateDir, staging: &str) {
+    let (stage, error) = match remove_dir_tree(sessions, staging) {
+        Err(error) => ("delete", error),
+        Ok(()) => match sync_dir(sessions) {
+            Ok(()) => {
+                trace_log!(
+                    SESSION,
+                    "event=recovery_staging_discard disposition=discarded"
+                );
+                return;
+            }
+            Err(error) => ("sync", error),
+        },
+    };
+    trace_log!(
+        SESSION,
+        "event=recovery_staging_discard disposition=indeterminate stage={stage} err={error}"
+    );
+    trace_log!(
+        SESSION,
+        "event=session_recovery_unpublished_target_cleanup disposition=indeterminate"
+    );
 }
 
 fn stage_recovery(
@@ -270,12 +300,21 @@ fn prompt(turn: &ArchivedTurn) -> Option<&str> {
 }
 
 fn verified(sessions: &PrivateDir, id: &str, log: &RecoveredLog) -> bool {
-    sessions
+    let archive = sessions
         .open_child(id)
-        .ok()
-        .flatten()
-        .and_then(|dir| load_archive(&dir, id, SessionError::SessionNotFound).ok())
-        .is_some_and(|archive| archive.turns == log.turns)
+        .map_err(SessionError::from)
+        .and_then(|dir| dir.ok_or(SessionError::SessionNotFound))
+        .and_then(|dir| load_archive(&dir, id, SessionError::SessionNotFound));
+    match archive {
+        Ok(archive) => archive.turns == log.turns,
+        Err(error) => {
+            trace_log!(
+                SESSION,
+                "event=session_recovery_target_indeterminate target={id} verify_err={error}"
+            );
+            false
+        }
+    }
 }
 
 fn copy_missing_artifact(

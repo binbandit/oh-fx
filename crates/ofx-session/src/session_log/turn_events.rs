@@ -13,6 +13,7 @@ use crate::session_event::{
     ToolResultEvent, TurnCompletedEvent, UserEvent,
 };
 use crate::session_log::conversation_progress::ProgressPoint;
+use crate::session_trace::rejected;
 
 pub(crate) struct TurnArtifacts<'a> {
     pub(crate) dir: &'a PrivateDir,
@@ -38,7 +39,7 @@ pub(crate) fn turn_events(
         .iter()
         .any(|entry| entry.after_tool_step_count > turn.steps.len())
     {
-        return Err(SessionError::InvalidConversationEvent);
+        return Err(rejected("steering-boundary"));
     }
     let mut steering = steering.iter().peekable();
     let user = match artifacts.work_id {
@@ -134,10 +135,10 @@ fn step_events(
     for result in &step.tool_results {
         let handle = make_handle(result.call_id, result.tool_name, result.output);
         store_result(artifacts.dir, &handle, result.output)?;
-        let stored_bytes = u64::try_from(result.output.len())
-            .map_err(|_| SessionError::InvalidConversationEvent)?;
-        let output_bytes = u64::try_from(result.output_bytes)
-            .map_err(|_| SessionError::InvalidConversationEvent)?;
+        let stored_bytes =
+            u64::try_from(result.output.len()).map_err(|_| rejected("tool-result-stored-bytes"))?;
+        let output_bytes =
+            u64::try_from(result.output_bytes).map_err(|_| rejected("tool-result-output-bytes"))?;
         let mut event = ToolResultEvent::new(
             result.call_id,
             result.tool_name,

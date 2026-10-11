@@ -1,9 +1,12 @@
 use ofx_config::PrivateDir;
+use ofx_trace::trace_log;
 
 use crate::json_fields::{Json, parse_json};
+use crate::session_error::SessionError;
 use crate::session_event::{ConversationEvent, UserEvent};
 use crate::session_log::managed_file::read_managed_file;
 use crate::session_log::{SavedHistory, SavedTurn};
+use crate::session_trace::SESSION;
 
 const MAX_TITLE_WORDS: usize = 8;
 pub const MAX_TITLE_BYTES: usize = 240;
@@ -45,8 +48,26 @@ pub(crate) fn history_title<'a>(
 }
 
 pub(crate) fn read_sidecar_title(dir: &PrivateDir) -> Option<String> {
-    let bytes = read_managed_file(dir, SIDECAR_FILE, MAX_SIDECAR_BYTES).ok()??;
-    let sidecar = parse_json(&bytes).ok()?;
+    let bytes = match read_managed_file(dir, SIDECAR_FILE, MAX_SIDECAR_BYTES) {
+        Ok(bytes) => bytes?,
+        Err(SessionError::SessionPathUnsafe) => return None,
+        Err(error) => {
+            trace_log!(SESSION, "event=display_sidecar_unreadable err={error}");
+            return None;
+        }
+    };
+    let title = sidecar_title(&bytes);
+    if title.is_none() {
+        trace_log!(
+            SESSION,
+            "event=display_sidecar_invalid err=InvalidDisplayMetadata"
+        );
+    }
+    title
+}
+
+fn sidecar_title(bytes: &[u8]) -> Option<String> {
+    let sidecar = parse_json(bytes).ok()?;
     let optional_text =
         |key| matches!(sidecar.get(key)?, Json::Null | Json::String(_)).then_some(());
     (sidecar.get("schema_version")?.as_u64()? == SIDECAR_SCHEMA_VERSION).then_some(())?;

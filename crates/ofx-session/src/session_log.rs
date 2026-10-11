@@ -19,6 +19,7 @@ use ofx_contract::{
     HistoryCut, HistoryTurn, ReasoningEffort, RecoveryPoint, RestoredHistory, TurnEnd, TurnStop,
 };
 use ofx_text::lowercase_hex;
+use ofx_trace::trace_log;
 
 use crate::fx_sessions::{ImportSource, seal, untouched_import};
 use crate::history_snapshot::{CacheWriter, HistoryCache};
@@ -34,6 +35,7 @@ use crate::session_error::SessionError;
 use crate::session_event::{ContextCheckpointEvent, ConversationEvent, ToolResultEvent};
 use crate::session_layout::is_valid_session_id;
 use crate::session_replay::History;
+use crate::session_trace::SESSION;
 use crate::session_usage::{Usage, UsageSnapshot};
 use crate::session_usage_sidecar;
 
@@ -51,7 +53,7 @@ pub(crate) use conversation_recovery::{
 use conversation_writer::{ConversationWriter, LogScan, scan_log};
 use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
-    open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_session_dir,
+    open_managed_file, publish_dir, read_managed_file, remove_created_dir, remove_dir_tree,
     same_directory, sync_dir,
 };
 use turn_events::{TurnArtifacts, turn_events};
@@ -799,28 +801,55 @@ pub(crate) fn work_reply(
     Ok(reply)
 }
 
-pub(crate) fn delete_session(sessions: &PrivateDir, session: WritableSession) -> SessionDisposal {
+pub(crate) fn delete_session(
+    sessions: &PrivateDir,
+    session: WritableSession,
+    event: &str,
+) -> SessionDisposal {
     let id = session.metadata.id.clone();
-    let named = match sessions.open_child(&id) {
-        Ok(Some(named)) => named,
-        Ok(None) => return SessionDisposal::Retained,
-        Err(_) => return SessionDisposal::Indeterminate,
-    };
-    match same_directory(&named, &session.owned.dir) {
+    let owned = sessions
+        .open_child(&id)
+        .map_err(SessionError::from)
+        .and_then(|named| match named {
+            Some(named) => same_directory(&named, &session.owned.dir),
+            None => Ok(false),
+        });
+    match owned {
         Ok(true) => {}
-        Ok(false) => return SessionDisposal::Retained,
-        Err(_) => return SessionDisposal::Indeterminate,
+        Ok(false) => {
+            trace_log!(
+                SESSION,
+                "event={event} disposition=retained reason=store_root_mismatch"
+            );
+            return SessionDisposal::Retained;
+        }
+        Err(error) => {
+            trace_log!(
+                SESSION,
+                "event={event} disposition=retained reason=store_root_unverified err={error}"
+            );
+            return SessionDisposal::Retained;
+        }
     }
-    drop(named);
-    let removed = remove_session_dir(sessions, &id);
-    if removed.is_ok() {
-        session.forget_usage_recovery();
-    }
+    let removed = remove_dir_tree(sessions, &id);
+    let (stage, error) = match removed {
+        Err(error) => ("delete", error),
+        Ok(()) => match sync_dir(sessions) {
+            Ok(()) => {
+                session.forget_usage_recovery();
+                drop(session);
+                trace_log!(SESSION, "event={event} disposition=discarded");
+                return SessionDisposal::Discarded;
+            }
+            Err(error) => ("sync", error),
+        },
+    };
     drop(session);
-    match removed {
-        Ok(()) => SessionDisposal::Discarded,
-        Err(_) => SessionDisposal::Indeterminate,
-    }
+    trace_log!(
+        SESSION,
+        "event={event} disposition=indeterminate stage={stage} err={error}"
+    );
+    SessionDisposal::Indeterminate
 }
 
 pub(crate) fn read_metadata(dir: &PrivateDir, id: &str) -> Result<SessionMetadata, SessionError> {
