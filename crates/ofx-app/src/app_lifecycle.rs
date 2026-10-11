@@ -375,6 +375,7 @@ fn agent_work(
         let controller = Controller::new(
             setup,
             Arc::new(move |event| events.send(event)),
+            Arc::new(NativeClipboard),
             persistence,
             pick_at_start,
             steering,
