@@ -6256,29 +6256,23 @@ mod tests {
     #[tokio::test]
     async fn signing_out_stops_a_title_request_still_running_on_the_removed_login() {
         let title_held = Gate::default();
-        let listing_held = Gate::default();
         let codex = FakeServer::start([
-            codex_text("Fix the renderer").after(&title_held),
-            codex_text("done"),
+            codex_text("Fix the renderer")
+                .after(&title_held)
+                .for_body_containing(&format!(r#""model":"{CODEX_TITLE_MODEL}""#)),
+            codex_text("done").for_body_containing(&format!(r#""model":"{CODEX_MODEL}""#)),
         ]);
-        let catalog = FakeServer::start([
-            catalog_version(),
-            catalog_listing(false).after(&listing_held),
-            catalog_listing(false),
-        ]);
-        let mut settings = codex_settings();
-        settings["effort"] = json!("low");
-        let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
+        let catalog = codex_catalog(false, 1);
+        let mut harness = Harness::codex_saved(&codex, &catalog, &codex_settings()).await;
         harness.submit("please fix the renderer");
         within(async {
-            while codex.requests().is_empty() {
+            while title_requests(&codex).is_empty() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await;
-        assert_eq!(title_requests(&codex).len(), 1);
-        listing_held.open();
         within(harness.until(finished(TurnOutcome::Completed))).await;
+        assert_eq!(title_requests(&codex).len(), 1);
         notices_of(&mut harness, "/logout codex").await;
         title_held.open();
         let named = timeout(

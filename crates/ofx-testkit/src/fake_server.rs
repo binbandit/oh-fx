@@ -48,6 +48,10 @@ pub enum Reply {
         gate: Gate,
         reply: Box<Reply>,
     },
+    Matching {
+        needle: String,
+        reply: Box<Reply>,
+    },
     Raw(Vec<u8>),
 }
 
@@ -86,6 +90,28 @@ impl Reply {
         Self::Gated {
             gate: gate.clone(),
             reply: Box::new(self),
+        }
+    }
+
+    #[must_use]
+    pub fn for_body_containing(self, needle: &str) -> Self {
+        Self::Matching {
+            needle: needle.to_owned(),
+            reply: Box::new(self),
+        }
+    }
+
+    fn accepts(&self, body: &[u8]) -> bool {
+        match self {
+            Self::Matching { needle, reply } => {
+                (needle.is_empty()
+                    || body
+                        .windows(needle.len())
+                        .any(|window| window == needle.as_bytes()))
+                    && reply.accepts(body)
+            }
+            Self::Gated { reply, .. } => reply.accepts(body),
+            _ => true,
         }
     }
 
@@ -381,16 +407,26 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
     };
     let reply = {
         let mut state = lock(&state);
+        let chosen = state
+            .replies
+            .iter()
+            .position(|reply| reply.accepts(&request.body));
         state.requests.push(request);
-        state.replies.pop_front()
+        chosen.and_then(|index| state.replies.remove(index))
     };
     let mut reply = reply.unwrap_or_else(|| Reply::status(500, "no scripted reply"));
-    while let Reply::Gated { gate, reply: held } = reply {
-        if !gate.passed(&mut signal).await {
-            return;
-        }
-        reply = *held;
-    }
+    let reply = loop {
+        reply = match reply {
+            Reply::Gated { gate, reply: held } => {
+                if !gate.passed(&mut signal).await {
+                    return;
+                }
+                *held
+            }
+            Reply::Matching { reply: held, .. } => *held,
+            settled => break settled,
+        };
+    };
     match reply {
         Reply::Status {
             status,
@@ -439,7 +475,7 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
             let _ = stream.write_all(head.as_bytes()).await;
             let _ = stream.write_all(body.as_bytes()).await;
         }
-        Reply::Disconnect | Reply::Gated { .. } => {}
+        Reply::Disconnect | Reply::Gated { .. } | Reply::Matching { .. } => {}
         Reply::Raw(bytes) => {
             let _ = stream.write_all(&bytes).await;
         }
@@ -647,6 +683,35 @@ mod tests {
         assert_eq!(requests[0].path, "/v1/chat/completions");
         assert_eq!(requests[0].header("x-key"), Some("secret"));
         assert_eq!(requests[0].json(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn matching_replies_go_to_the_request_that_carries_their_needle_whatever_the_order() {
+        let held = Gate::default();
+        let server = FakeServer::start([
+            Reply::status(200, "title")
+                .after(&held)
+                .for_body_containing(r#""model":"title""#),
+            Reply::status(200, "turn").for_body_containing(r#""model":"turn""#),
+            Reply::status(200, "any"),
+        ]);
+        let post = |model: &str| {
+            let body = format!(r#"{{"model":"{model}"}}"#);
+            format!(
+                "POST /v1/responses HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let turn = exchange(&server, &post("turn"));
+        assert!(turn.ends_with("turn"), "{turn}");
+        let other = exchange(&server, &post("other"));
+        assert!(other.ends_with("any"), "{other}");
+        let missing = exchange(&server, &post("turn"));
+        assert!(missing.ends_with("no scripted reply"), "{missing}");
+        held.open();
+        let title = exchange(&server, &post("title"));
+        assert!(title.ends_with("title"), "{title}");
+        assert_eq!(server.requests().len(), 4);
     }
 
     #[test]
