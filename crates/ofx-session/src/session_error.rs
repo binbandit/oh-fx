@@ -92,6 +92,8 @@ pub enum SessionError {
     FxSessionUnreadable,
     #[error("InvalidUsageSidecar")]
     InvalidUsageSidecar,
+    #[error("InvalidUsageRecoveryIndex")]
+    InvalidUsageRecoveryIndex,
     #[error("UsageSidecarTooLarge")]
     UsageSidecarTooLarge,
     #[error("InvalidUsageSnapshot")]

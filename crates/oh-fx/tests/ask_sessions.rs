@@ -311,6 +311,39 @@ fn every_request_a_session_sends_is_published_with_its_exact_usage() {
 }
 
 #[test]
+fn usage_a_session_could_not_publish_is_reported_through_its_recovery_marker() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["one"]))]);
+    let home = Home::new(&server.base_url());
+    let data = home.root.join("data/oh-fx");
+    fs::create_dir_all(&data).expect("create the data directory");
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("make it private");
+    std::os::unix::fs::symlink(home.root.join("elsewhere"), data.join("usage.jsonl"))
+        .expect("link the ledger away");
+    let id = session_id(&home.ask_json(&["first"], &[]));
+    assert!(data.join("usage-recovery").join(&id).exists());
+    let snapshot = &home.usage(&id)["snapshot"];
+    assert_eq!(snapshot["billing"], "pending");
+    assert_eq!(
+        snapshot["publication_backlog"].as_array().map(Vec::len),
+        Some(1)
+    );
+
+    fs::remove_file(data.join("usage.jsonl")).expect("unlink the ledger");
+    let report: Value = serde_json::from_slice(
+        &home
+            .command(&["usage", "--json", "--period", "24h"])
+            .output()
+            .expect("run oh-fx usage")
+            .stdout,
+    )
+    .expect("a usage report");
+    assert_eq!(report["completeness"], "pending");
+    assert_eq!(report["coverage"]["status"], "partial");
+    assert_eq!(report["totals"]["input_tokens"], 12);
+    assert_eq!(report["models"][0]["model"], "portkey/@openai/gpt-4o");
+}
+
+#[test]
 fn ask_saves_the_conversation_language_of_its_prompt() {
     let server = FakeServer::start([
         Reply::sse(&chat_text_events(&["один"])),

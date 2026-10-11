@@ -1,8 +1,8 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use ofx_contract::{GenerationFact, UsageCoverage};
+use ofx_contract::{GenerationFact, PendingMarker, UsageCoverage};
 
 use super::*;
 
@@ -48,7 +48,7 @@ impl Profile {
     fn report(&self, scope: UsageScope, snapshot_time_ms: i64) -> UsageReport {
         ProfileUsage::open(&self.data())
             .unwrap()
-            .report(scope, snapshot_time_ms)
+            .report(scope, snapshot_time_ms, &UsageRecovery::default())
             .unwrap()
     }
 }
@@ -99,7 +99,7 @@ fn an_empty_profile_has_not_started_tracking() {
     let root = tempfile::tempdir().unwrap();
     let report = ProfileUsage::open(&root.path().join("missing/oh-fx"))
         .unwrap()
-        .report(UsageScope::Days30, NOW)
+        .report(UsageScope::Days30, NOW, &UsageRecovery::default())
         .unwrap();
     assert_eq!(report.coverage, UsageCoverage::NotStarted);
     assert_eq!(report.completeness, UsageCompleteness::Complete);
@@ -113,7 +113,7 @@ fn errors_keep_upstream_names() {
     fs::set_permissions(profile.data(), fs::Permissions::from_mode(0o750)).unwrap();
     let error = ProfileUsage::open(&profile.data())
         .unwrap()
-        .report(UsageScope::Days30, NOW)
+        .report(UsageScope::Days30, NOW, &UsageRecovery::default())
         .unwrap_err();
     assert_eq!(error.to_string(), "PrivateStatePermissionsUnsupported");
     assert_eq!(
@@ -160,4 +160,80 @@ fn publishing_appends_once_reports_conflicts_and_stops_when_abandoned() {
         ProfileUsageError::Store(UsageStoreError::LockAbandoned)
     );
     assert!(abandoned.ledger_unavailable());
+}
+
+fn recovered_fact() -> GenerationFact {
+    GenerationFact {
+        id: "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        created_at_ms: NOW - 1,
+        model: "provider/model".to_owned(),
+        input_tokens: 5,
+        output_tokens: 2,
+        cache_read_tokens: 1,
+        cache_write_tokens: 0,
+        reasoning_tokens: None,
+        billable_web_search_calls: 1,
+        total_cost: 0.25,
+    }
+}
+
+fn recovered_report(data: &Path, recovery: &UsageRecovery) -> UsageReport {
+    ProfileUsage::open(data)
+        .unwrap()
+        .report(UsageScope::Hours24, NOW + 1, recovery)
+        .unwrap()
+}
+
+#[test]
+fn the_first_recovered_fact_starts_partial_coverage_and_stays_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let recovery = UsageRecovery {
+        facts: vec![recovered_fact()],
+        ..UsageRecovery::default()
+    };
+    let report = recovered_report(&root.path().join("oh-fx"), &recovery);
+    assert_eq!(report.coverage, UsageCoverage::Partial);
+    assert_eq!(report.coverage_started_at_ms, Some(NOW - 1));
+    assert_eq!(report.completeness, UsageCompleteness::Pending);
+    assert_eq!(report.totals.unwrap().total_tokens, 7);
+}
+
+#[test]
+fn a_recovered_fact_the_ledger_accepted_counts_once_and_completes() {
+    let profile = Profile::with_ledger(&[FACT]);
+    let recovery = UsageRecovery {
+        facts: vec![recovered_fact()],
+        pending: vec![PendingMarker {
+            id: "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+            observed_at_ms: NOW - 1,
+        }],
+        ..UsageRecovery::default()
+    };
+    let report = recovered_report(&profile.data(), &recovery);
+    assert_eq!(report.completeness, UsageCompleteness::Complete);
+    assert_eq!(report.totals.unwrap().total_tokens, 7);
+    assert_eq!(report.coverage_started_at_ms, Some(NOW - 2));
+}
+
+#[test]
+fn older_recovered_records_extend_coverage_and_unknown_recovery_is_incomplete() {
+    let profile = Profile::with_ledger(&[]);
+    let recovery = UsageRecovery {
+        incidents: vec![UsageIncident {
+            occurred_at_ms: NOW - 10,
+            completeness: UsageCompleteness::Incomplete,
+        }],
+        ..UsageRecovery::default()
+    };
+    let report = recovered_report(&profile.data(), &recovery);
+    assert_eq!(report.coverage_started_at_ms, Some(NOW - 10));
+    assert_eq!(report.completeness, UsageCompleteness::Incomplete);
+
+    let unknown = UsageRecovery {
+        unknown_pending: true,
+        ..UsageRecovery::default()
+    };
+    let report = recovered_report(&profile.data(), &unknown);
+    assert_eq!(report.coverage_started_at_ms, Some(NOW - 2));
+    assert_eq!(report.completeness, UsageCompleteness::Incomplete);
 }
