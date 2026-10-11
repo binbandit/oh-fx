@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Controller, ControllerState};
 use crate::app_bootstrap_runtime::{Intent, Login, Refusal, Route, provider_label};
+use crate::app_commands::Work;
 use crate::app_session_runtime::session_route;
 use crate::user_settings;
 
@@ -65,6 +66,27 @@ impl ControllerState {
         }
     }
 
+    fn withdraw_sign_in(&mut self) -> bool {
+        self.sign_in.take().inspect(SignInControl::cancel).is_some()
+    }
+
+    pub(super) fn cancel_sign_in_during_work(&mut self, work: Work, stop: &CancellationToken) {
+        if self.withdraw_sign_in() {
+            self.drop_waiting_prompts();
+        } else if matches!(work, Work::Turn) {
+            self.worker.request_interactive_cancel();
+            stop.cancel();
+            self.drop_waiting_prompts();
+        }
+    }
+
+    fn drop_waiting_prompts(&self) {
+        if self.worker.has_waiting_prompts() {
+            self.worker.clear();
+            self.emit(UiEvent::HeldPromptDropped);
+        }
+    }
+
     pub(crate) fn sign_in_busy(&self, provider: &str) {
         if ProviderId::parse(provider) == Some(ProviderId::Codex) {
             self.notice(NoticeTone::Warning, AUTH_TOPIC, SIGN_IN_BUSY);
@@ -111,18 +133,17 @@ impl Controller {
     }
 
     pub(super) async fn cancel_sign_in(&mut self) {
-        if !self.signing_in() {
+        if !self.state.withdraw_sign_in() {
             return;
         }
-        self.state.steer_sign_in(SignInControl::cancel);
         let result = signed_in(&mut self.sign_in).await;
         self.finish_sign_in(result).await;
-        self.drop_waiting_prompts();
+        self.state.drop_waiting_prompts();
     }
 
     pub(super) async fn finish_sign_in(&mut self, result: Result<(), ChatGptError>) {
         self.sign_in = None;
-        self.state.sign_in = None;
+        let withdrawn = self.state.sign_in.take().is_none();
         self.state.emit(UiEvent::SignInEnded);
         match result {
             Ok(()) => {
@@ -130,17 +151,20 @@ impl Controller {
                     .then(|| self.state.model.clone());
                 self.switch(ProviderId::Codex, Intent::AfterSignIn(current.as_deref()))
                     .await;
-                if self.state.setup.provider() != ProviderId::Codex {
-                    self.drop_waiting_prompts();
+                if !withdrawn && self.state.setup.provider() != ProviderId::Codex {
+                    self.state.drop_waiting_prompts();
                 }
             }
-            Err(ChatGptError::Cancelled) => self.drop_waiting_prompts(),
+            Err(ChatGptError::Cancelled) if withdrawn => {}
+            Err(ChatGptError::Cancelled) => self.state.drop_waiting_prompts(),
             Err(error) => {
                 trace_log!(
                     AUTH_SCOPE,
                     "login failed source={CHATGPT_SOURCE} err={error}"
                 );
-                self.drop_waiting_prompts();
+                if !withdrawn {
+                    self.state.drop_waiting_prompts();
+                }
                 self.state.emit(UiEvent::Notice {
                     notice: sign_in_notice(error),
                 });
@@ -150,14 +174,7 @@ impl Controller {
 
     pub(super) fn drop_held_prompts(&mut self) {
         if self.state.setup.login() == Login::Missing {
-            self.drop_waiting_prompts();
-        }
-    }
-
-    fn drop_waiting_prompts(&mut self) {
-        if self.state.worker.has_waiting_prompts() {
-            self.state.worker.clear();
-            self.state.emit(UiEvent::HeldPromptDropped);
+            self.state.drop_waiting_prompts();
         }
     }
 
