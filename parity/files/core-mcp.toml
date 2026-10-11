@@ -51,8 +51,9 @@ note = "Launch preparation, the private cidfile, and cleanup match upstream, inc
 
 [[file]]
 upstream = "src/core/mcp/elicitation.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-mcp/src/elicitation.rs", "crates/ofx-mcp/src/elicitation/form.rs", "crates/ofx-mcp/src/elicitation/secret.rs", "crates/ofx-mcp/src/elicitation/uri.rs", "crates/ofx-mcp/src/fmt_int.rs"]
+note = "Request parsing for the 2025-06-18 and 2025-11-25 wires, form schemas with their limits, patterns, exact number bounds, formats and defaults, secret-field refusal and URL classification exist, and the refusal of server requests uses them; capabilities, response validation, URL-required errors and completion correlation are missing. The ACP projection and wire, and the modern capability fallback, belong to the ACP and 2026-07-28 protocol work."
 
 [[file]]
 upstream = "src/core/mcp/elicitation_interaction.zig"
@@ -132,25 +133,27 @@ note = "Health rendering, the /mcp summary with its needs auth count and /mcp au
 
 [[file]]
 upstream = "src/core/mcp/json_number.zig"
-status = "partial"
+status = "ported"
 modules = ["crates/ofx-mcp/src/json_number.rs"]
-note = "Exact parsing and non-negative integers for ttlMs and size exist, read from serde_json values as docs/differences/mcp.md records; ordering and multipleOf are missing until elicitation needs them."
+note = "Exact parsing, ordering, integer checks and multipleOf exist, read from serde_json values as docs/differences/mcp.md records."
 
 [[file]]
 upstream = "src/core/mcp/json_schema_pattern.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/json_schema_pattern.rs", "crates/ofx-mcp/src/fmt_int.rs"]
+note = "Patterns and texts arrive as Rust strings, so upstream's InvalidUtf8 cannot occur."
 
 [[file]]
 upstream = "src/core/mcp/json_schema_unicode_letter.zig"
-status = "todo"
-modules = []
+status = "ported"
+modules = ["crates/ofx-mcp/src/json_schema_unicode_letter.rs"]
+note = "The same Unicode 13.0 Letter ranges (general categories Lu, Ll, Lt, Lm and Lo of DerivedGeneralCategory.txt, used under the Unicode licence) as upstream's table, whose header records the source file's checksum; they are kept as plain first and last pairs rather than upstream's packed spans."
 
 [[file]]
 upstream = "src/core/mcp/legacy_elicitation_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/legacy_elicitation_runtime.rs"]
-note = "Server requests the client does not serve are refused; elicitation forms, URL elicitation and their completion tracking are missing."
+note = "Server requests the client does not serve are refused, and an elicitation request is checked against its negotiated wire before it is refused; elicitation forms, URL elicitation and their completion tracking are missing."
 
 [[file]]
 upstream = "src/core/mcp/legacy_http_sse.zig"

@@ -46,11 +46,10 @@ impl McpClient {
         let request = TransportRequest {
             send_cancellation: true,
             progress: options.progress,
-            server_requests: if self.wire.is_some() {
-                ServerRequestPolicy::RefuseElicitation
-            } else {
-                ServerRequestPolicy::Reject
-            },
+            server_requests: self.wire.map_or(
+                ServerRequestPolicy::Reject,
+                ServerRequestPolicy::RefuseElicitation,
+            ),
             ..TransportRequest::new(id, body, frame_cap, deadline)
         };
         let response = self.transport.request(request).await?;

@@ -278,8 +278,12 @@ impl StdioDispatcher {
             PendingMeta {
                 max_frame_bytes: request.max_response_bytes,
                 progress: request.progress.clone(),
-                elicitation: (request.server_requests == ServerRequestPolicy::RefuseElicitation)
-                    .then(|| Arc::new(ElicitationContext::default())),
+                elicitation: match request.server_requests {
+                    ServerRequestPolicy::RefuseElicitation(wire) => {
+                        Some(Arc::new(ElicitationContext::new(wire)))
+                    }
+                    ServerRequestPolicy::Reject => None,
+                },
             },
         );
         shared
