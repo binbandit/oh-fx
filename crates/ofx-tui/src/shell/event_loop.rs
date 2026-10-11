@@ -89,6 +89,7 @@ impl Shell<'_> {
             self.apply_pending_resize(now_ms);
         }
         self.drain_ui_events();
+        self.refresh_mcp_menu(now_ms);
         self.settle_clipboard();
         if self.collect_file_picker_facts() {
             self.mark_dirty();

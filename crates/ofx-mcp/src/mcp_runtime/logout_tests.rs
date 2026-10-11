@@ -253,11 +253,8 @@ async fn a_logout_closes_the_session_deletes_the_grant_and_revokes_it() {
         runtime.model_catalog()[0].availability,
         Availability::Unavailable
     );
-    let summary = runtime.render_summary();
-    assert!(summary.contains("0 ready"), "{summary}");
     for secret in SECRETS {
         assert!(!health.contains(secret));
-        assert!(!runtime.render_summary().contains(secret));
     }
     let before = fixture.initializes().len();
     let server = Arc::clone(&runtime.current()[0]);

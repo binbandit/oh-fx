@@ -1216,6 +1216,8 @@ impl Presenter {
             | UiEvent::WorkspaceMenuOpened { .. }
             | UiEvent::UsageMenu { .. }
             | UiEvent::SettingsMenuOpened { .. }
+            | UiEvent::McpMenuOpened { .. }
+            | UiEvent::McpMenuRefreshed { .. }
             | UiEvent::SettingsChanged { .. }
             | UiEvent::PromptHistoryChanged { .. }
             | UiEvent::HelpRequested
@@ -1233,7 +1235,11 @@ impl Presenter {
             | UiEvent::RecoveryContinuing { .. }
             | UiEvent::ExitRequested => Ok(()),
         };
-        if let Err(error) = &written {
+        self.record(&written)
+    }
+
+    fn record(&mut self, written: &io::Result<()>) -> bool {
+        if let Err(error) = written {
             self.write_error
                 .get_or_insert(crate::write_error_name(error));
         }

@@ -81,7 +81,7 @@ impl Shell<'_> {
         if self.route_full_transcript_input(&event)? {
             return Ok(());
         }
-        if requests_upgrade(&event) {
+        if requests_upgrade(&event) && self.mcp_menu.is_none() {
             self.apply_ready_upgrade();
             return Ok(());
         }
@@ -103,6 +103,9 @@ impl Shell<'_> {
         }
         if self.workspace_menu.is_some() {
             return self.handle_workspace_menu_input(&event);
+        }
+        if self.mcp_menu_owns(&event) {
+            return Ok(());
         }
         if self.settings_menu_owns(&event) {
             return Ok(());

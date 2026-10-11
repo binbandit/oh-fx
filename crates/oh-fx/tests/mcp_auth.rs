@@ -698,19 +698,31 @@ fn shown(session: &PtySession, needle: &str) -> String {
         .unwrap_or_else(|screen| panic!("expected {needle:?} on screen:\n{screen}"))
 }
 
-fn listed_once_settled(session: &PtySession, command: &[u8], expected: &str) {
-    for _ in 0..50 {
-        session.send(command);
-        if session
-            .wait_for(Duration::from_millis(300), |screen| {
-                screen.contains(expected)
-            })
-            .is_ok()
-        {
-            return;
-        }
-    }
-    panic!("expected {expected:?} on screen:\n{}", session.screen());
+const MENU_HINT: &str = "esc close";
+
+fn server_row(name: &str, state: &str, meta: &str) -> String {
+    format!("  {name:<22}{state:<22}{meta}")
+}
+
+fn menu_shows(session: &PtySession, row: &str) {
+    session.send(b"/mcp\r");
+    session
+        .wait_for(SHELL_WAIT, |screen| {
+            screen.contains(MENU_HINT) && screen.contains(row)
+        })
+        .unwrap_or_else(|screen| panic!("expected {row:?} in the MCP menu:\n{screen}"));
+}
+
+fn close_menu(session: &PtySession) {
+    session.send(b"\x1b");
+    session
+        .wait_for(SHELL_WAIT, |screen| !screen.contains(MENU_HINT))
+        .unwrap_or_else(|screen| panic!("the MCP menu stayed open:\n{screen}"));
+}
+
+fn settled_menu(session: &PtySession, row: &str) {
+    menu_shows(session, row);
+    close_menu(session);
 }
 
 fn wait_for_file(path: &Path) -> String {
@@ -730,7 +742,10 @@ fn mcp_auth_in_the_shell_confirms_opens_the_browser_and_reconnects_the_server() 
     let home = Home::new(&authority.origin);
     let model = FakeServer::start([]);
     let session = home.shell(&model, &json!({}));
-    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    settled_menu(
+        &session,
+        &server_row("fixture", "Needs authentication", "HTTP · Profile"),
+    );
     session.send(b"/mcp auth fixture\r");
     shown(
         &session,
@@ -754,11 +769,7 @@ fn mcp_auth_in_the_shell_confirms_opens_the_browser_and_reconnects_the_server() 
     ));
     assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
     shown(&session, "Authenticated MCP server 'fixture'.");
-    listed_once_settled(
-        &session,
-        b"/mcp list\r",
-        "state=ready auth=authenticated status=ready",
-    );
+    menu_shows(&session, &server_row("fixture", "Ready", "HTTP · Profile"));
     let screen = session.screen();
     for secret in [ACCESS, REFRESH, "browser-code", "authorize?"] {
         assert!(!screen.contains(secret), "{screen}");
@@ -788,7 +799,10 @@ fn a_project_server_authenticated_in_the_shell_uses_its_grant_for_the_session() 
         &model,
         &json!({home.workspace().display().to_string(): {"enabledMcpjsonServers": ["project"]}}),
     );
-    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    settled_menu(
+        &session,
+        &server_row("project", "Needs authentication", "HTTP · Project"),
+    );
     session.send(b"/mcp auth project --open\r");
     shown(&session, "Waiting for MCP authentication for 'project'.");
     let url = wait_for_file(&home.opened()).trim().to_owned();
@@ -799,11 +813,7 @@ fn a_project_server_authenticated_in_the_shell_uses_its_grant_for_the_session() 
     ));
     assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
     shown(&session, "Authenticated MCP server 'project'.");
-    listed_once_settled(
-        &session,
-        b"/mcp list\r",
-        "state=ready auth=authenticated status=ready",
-    );
+    settled_menu(&session, &server_row("project", "Ready", "HTTP · Project"));
 }
 
 fn logout(home: &Home) -> std::process::Output {
@@ -985,7 +995,10 @@ fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
     let home = Home::new(&authority.origin);
     let model = FakeServer::start([]);
     let session = home.shell(&model, &json!({}));
-    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    settled_menu(
+        &session,
+        &server_row("fixture", "Needs authentication", "HTTP · Profile"),
+    );
     session.send(b"/mcp auth fixture --open\r");
     let url = wait_for_file(&home.opened()).trim().to_owned();
     fs::remove_file(home.opened()).expect("test step");
@@ -995,11 +1008,7 @@ fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
         query(&url, "state")
     ));
     shown(&session, "Authenticated MCP server 'fixture'.");
-    listed_once_settled(
-        &session,
-        b"/mcp list\r",
-        "state=ready auth=authenticated status=ready",
-    );
+    settled_menu(&session, &server_row("fixture", "Ready", "HTTP · Profile"));
     let mut stored: Value =
         serde_json::from_str(&fs::read_to_string(home.store()).expect("test step"))
             .expect("test step");
@@ -1013,11 +1022,11 @@ fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
         &session,
         "Logged out of MCP server 'fixture'. Removed 1 unreadable MCP credential entry.",
     );
-    listed_once_settled(
+    menu_shows(
         &session,
-        b"/mcp list\r",
-        "state=disconnected auth=none status=unavailable",
+        &server_row("fixture", "Disconnected", "HTTP · Profile"),
     );
+    close_menu(&session);
     assert!(!home.store().exists());
     assert_eq!(authority.revocations().len(), 2);
     assert!(
@@ -1066,7 +1075,10 @@ fn mcp_logout_in_the_shell_waits_for_a_pending_authentication() {
     let home = Home::new(&authority.origin);
     let model = FakeServer::start([]);
     let session = home.shell(&model, &json!({}));
-    listed_once_settled(&session, b"/mcp\r", "1 needs auth");
+    settled_menu(
+        &session,
+        &server_row("fixture", "Needs authentication", "HTTP · Profile"),
+    );
     session.send(b"/mcp auth fixture --open\r");
     wait_for_file(&home.opened());
     session.send(b"/mcp logout fixture\r");

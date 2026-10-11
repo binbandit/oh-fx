@@ -34,6 +34,7 @@ impl Shell<'_> {
                 self.settings_menu = None;
                 self.statusline_menu = None;
                 self.workspace_menu = None;
+                self.mcp_menu = None;
                 self.model_menu = None;
                 self.close_picker();
                 self.usage_menu =

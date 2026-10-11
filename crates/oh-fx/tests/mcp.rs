@@ -1026,17 +1026,46 @@ fn shown(session: &PtySession, needle: &str) -> String {
         .unwrap_or_else(|screen| panic!("expected {needle:?} on screen:\n{screen}"))
 }
 
-fn summary_once_settled(session: &PtySession, expected: &str) {
-    for _ in 0..50 {
-        session.send(b"/mcp\r");
-        let settled = session.wait_for(Duration::from_millis(300), |screen| {
-            screen.contains(expected)
-        });
-        if settled.is_ok() {
-            return;
-        }
-    }
-    panic!("expected {expected:?} on screen:\n{}", session.screen());
+const MENU_HINT: &str = "esc close";
+
+fn server_row(name: &str, state: &str, meta: &str) -> String {
+    format!("  {name:<22}{state:<22}{meta}")
+}
+
+fn menu_shows(session: &PtySession, command: &[u8], rows: &[String]) -> String {
+    session.send(command);
+    session
+        .wait_for(SHELL_WAIT, |screen| {
+            screen.contains(MENU_HINT) && rows.iter().all(|row| screen.contains(row.as_str()))
+        })
+        .unwrap_or_else(|screen| panic!("expected {rows:?} in the MCP menu:\n{screen}"))
+}
+
+fn settled_menu(session: &PtySession, rows: &[String]) {
+    menu_shows(session, b"/mcp\r", rows);
+    close_menu(session);
+}
+
+fn inspect(session: &PtySession, facts: &[&str]) {
+    session.send(b"\r");
+    session
+        .wait_for(SHELL_WAIT, |screen| {
+            facts.iter().all(|fact| screen.contains(fact))
+        })
+        .unwrap_or_else(|screen| panic!("expected {facts:?} in the server details:\n{screen}"));
+    session.send(b"\x1b");
+    shown(session, MENU_HINT);
+}
+
+fn close_menu(session: &PtySession) {
+    session.send(b"\x1b");
+    session
+        .wait_for(SHELL_WAIT, |screen| !screen.contains(MENU_HINT))
+        .unwrap_or_else(|screen| panic!("the MCP menu stayed open:\n{screen}"));
+}
+
+fn ready_docs() -> Vec<String> {
+    vec![server_row("docs", "Ready", "stdio · Profile")]
 }
 
 fn exit(mut session: PtySession) {
@@ -1050,25 +1079,37 @@ fn exit(mut session: PtySession) {
 }
 
 #[test]
-fn the_mcp_command_summarizes_lists_and_reloads_profile_servers() {
+fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url());
     home.profile_servers(&fixture(&home));
     let session = home.shell();
-    summary_once_settled(
-        &session,
-        "MCP: 1 server — 1 ready, 0 connecting, 0 needs auth, 0 failed. Use /mcp list for details.",
+    let fixture_row = server_row("fixture", "Ready", "stdio · Profile");
+    let screen = menu_shows(&session, b"/mcp\r", std::slice::from_ref(&fixture_row));
+    assert!(screen.contains("MCP 1  [Servers]"), "{screen}");
+    assert!(
+        screen.contains("↑↓ move  enter inspect  c help  esc close"),
+        "{screen}"
     );
-    session.send(b"/mcp list\r");
-    shown(&session, "MCP health (1 server):");
-    shown(
+    let profile = home.root.join("config/oh-fx/mcp.json");
+    inspect(
         &session,
-        "fixture source=profile scope=profile policy=optional transport=stdio state=ready auth=none status=ready",
+        &[
+            "  Server              fixture",
+            "  State               Ready",
+            &format!("  Source              Profile · {}", profile.display()),
+            "  Transport           stdio",
+            "  Policy              optional",
+            "  Capabilities        tools=1 resources=0 templates=0 prompts=0",
+        ],
     );
-    shown(
-        &session,
-        "tools=1 resources=0 templates=0 prompts=0 cache=fresh subscription=unavailable",
-    );
+    session.send(b"c");
+    shown(&session, "  servers: enter inspect");
+    session.send(b"\x1b");
+    shown(&session, MENU_HINT);
+    close_menu(&session);
+    menu_shows(&session, b"/mcp list\r", &[fixture_row]);
+    close_menu(&session);
     session.send(b"/mcp path\r");
     shown(
         &session,
@@ -1087,7 +1128,12 @@ fn the_mcp_command_summarizes_lists_and_reloads_profile_servers() {
         "MCP reconnection started. Your existing MCP servers will stay active while the new configuration is checked.",
     );
     shown(&session, "MCP configuration reloaded successfully.");
-    summary_once_settled(&session, "MCP: 2 servers — 2 ready");
+    let both = [
+        server_row("fixture", "Ready", "stdio · Profile"),
+        server_row("second", "Ready", "stdio · Profile"),
+    ];
+    menu_shows(&session, b"/mcp\r", &both);
+    close_menu(&session);
     session.send(b"/mcp wat\r");
     shown(
         &session,
@@ -1111,11 +1157,14 @@ fn the_mcp_command_approves_a_project_server_and_starts_it() {
         &session,
         "Skipped unapproved project MCP servers: docs. Approve with /mcp trust approve <name>.",
     );
-    summary_once_settled(&session, "Pending approval: docs.");
+    settled_menu(
+        &session,
+        &[server_row("docs", "Pending trust", "stdio · Project")],
+    );
     session.send(b"/mcp trust approve docs\r");
     shown(&session, "Approving project MCP server 'docs'.");
     shown(&session, "MCP configuration reloaded successfully.");
-    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    settled_menu(&session, &[server_row("docs", "Ready", "stdio · Project")]);
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(home.root.join("config/oh-fx/settings.json")).expect("read settings"),
     )
@@ -1135,12 +1184,12 @@ fn the_mcp_command_lists_resources_and_resource_templates() {
     let script = home.script("docs.sh", RESOURCE_SERVER);
     home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
     let session = home.shell();
-    summary_once_settled(&session, "MCP: 1 server — 1 ready");
-    session.send(b"/mcp list\r");
-    shown(
+    menu_shows(&session, b"/mcp\r", &ready_docs());
+    inspect(
         &session,
-        "tools=0 resources=unknown templates=unknown prompts=0 cache=fresh",
+        &["  Capabilities        tools=0 resources=? templates=? prompts=0"],
     );
+    close_menu(&session);
     session.send(b"/mcp resource list docs\r");
     shown(&session, "MCP resources from docs (2):");
     shown(&session, "docs :: memory://notes — Team notes");
@@ -1148,11 +1197,12 @@ fn the_mcp_command_lists_resources_and_resource_templates() {
     session.send(b"/mcp resource templates docs\r");
     shown(&session, "MCP resource templates from docs (1):");
     shown(&session, "docs :: memory://{id} — by id");
-    session.send(b"/mcp list\r");
-    shown(
+    menu_shows(&session, b"/mcp\r", &ready_docs());
+    inspect(
         &session,
-        "tools=0 resources=2 templates=1 prompts=0 cache=fresh",
+        &["  Capabilities        tools=0 resources=2 templates=1 prompts=0"],
     );
+    close_menu(&session);
     session.send(b"/mcp resource list missing\r");
     shown(&session, "MCP resource listing failed: McpServerNotFound.");
     exit(session);
@@ -1165,21 +1215,22 @@ fn the_mcp_command_lists_prompts() {
     let script = home.script("docs.sh", PROMPT_SERVER);
     home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
     let session = home.shell();
-    summary_once_settled(&session, "MCP: 1 server — 1 ready");
-    session.send(b"/mcp list\r");
-    shown(
+    menu_shows(&session, b"/mcp\r", &ready_docs());
+    inspect(
         &session,
-        "tools=0 resources=0 templates=0 prompts=unknown cache=fresh",
+        &["  Capabilities        tools=0 resources=0 templates=0 prompts=?"],
     );
+    close_menu(&session);
     session.send(b"/mcp prompt list docs\r");
     shown(&session, "MCP prompts from docs (2):");
     shown(&session, "docs :: explain — Explain code");
     shown(&session, "docs :: review — Review [focus*, depth]");
-    session.send(b"/mcp list\r");
-    shown(
+    menu_shows(&session, b"/mcp\r", &ready_docs());
+    inspect(
         &session,
-        "tools=0 resources=0 templates=0 prompts=2 cache=fresh",
+        &["  Capabilities        tools=0 resources=0 templates=0 prompts=2"],
     );
+    close_menu(&session);
     session.send(b"/mcp prompt list missing\r");
     shown(&session, "MCP prompt listing failed: McpServerNotFound.");
     exit(session);
@@ -1192,7 +1243,7 @@ fn the_mcp_command_gets_a_prompt() {
     let script = home.script("docs.sh", PROMPT_SERVER);
     home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
     let session = home.shell();
-    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    settled_menu(&session, &ready_docs());
     session.send(b"/mcp prompt get docs review {\"focus\":\"security\"}\r");
     shown(&session, "[untrusted MCP prompt content] docs :: review");
     shown(&session, "Review the change");
@@ -1215,7 +1266,7 @@ fn the_mcp_command_completes_prompt_and_resource_arguments() {
     let script = home.script("docs.sh", PROMPT_SERVER);
     home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
     let session = home.shell();
-    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    settled_menu(&session, &ready_docs());
     session.send(b"/mcp prompt complete docs review focus b\r");
     shown(&session, "MCP completions from docs (2 of 3):");
     shown(&session, "balpha");
@@ -1237,7 +1288,7 @@ fn the_mcp_command_reads_a_resource() {
     let script = home.script("docs.sh", RESOURCE_SERVER);
     home.profile_servers(&json!({"docs": {"command": "/bin/sh", "args": [script]}}));
     let session = home.shell();
-    summary_once_settled(&session, "MCP: 1 server — 1 ready");
+    settled_menu(&session, &ready_docs());
     session.send(b"/mcp resource read docs memory://plan\r");
     shown(
         &session,

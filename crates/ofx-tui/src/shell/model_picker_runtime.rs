@@ -96,7 +96,8 @@ impl Shell<'_> {
     }
 
     pub(super) fn toggle_model_shortcut(&mut self) {
-        if self.exit_model_shortcut()
+        if self.mcp_menu.is_some()
+            || self.exit_model_shortcut()
             || self.cancel_model_menu()
             || self.skills_menu_visible()
             || self.help_menu.is_some()
