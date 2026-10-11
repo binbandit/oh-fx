@@ -149,6 +149,7 @@ fn tool(call: &ToolCall, content: &str, status: ToolResultStatus) -> ChatMessage
         tool_name: call.name.clone(),
         content: content.to_owned(),
         status,
+        images: Vec::new(),
     }
 }
 

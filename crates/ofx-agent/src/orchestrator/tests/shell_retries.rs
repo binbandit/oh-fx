@@ -279,6 +279,7 @@ async fn repeated_shell_validation_failures_complete_the_turn_with_the_upstream_
             tool_name: "shell".to_owned(),
             content: INVALID_SHELL_REQUEST.to_owned(),
             status: ToolResultStatus::Failure,
+            images: Vec::new(),
         })
     );
     assert_eq!(agent.last_assistant_reply().as_deref(), Some(""));

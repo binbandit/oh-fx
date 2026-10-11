@@ -22,6 +22,7 @@ fn saved_step() -> Vec<ChatMessage> {
             tool_name: "echo".to_owned(),
             content: "saved output".to_owned(),
             status: ToolResultStatus::Success,
+            images: Vec::new(),
         },
     ]
 }

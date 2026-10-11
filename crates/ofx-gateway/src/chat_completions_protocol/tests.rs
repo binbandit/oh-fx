@@ -131,6 +131,7 @@ fn tool_result(id: &str, name: &str, content: &str) -> ChatMessage {
         tool_name: name.to_owned(),
         content: content.to_owned(),
         status: ToolResultStatus::Success,
+        images: Vec::new(),
     }
 }
 

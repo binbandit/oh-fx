@@ -112,8 +112,9 @@ pub use types::{
     PermissionMode, PermissionRule, ProviderBilling, ProviderReplay, QuestionBatchEntry,
     QuestionOption, ReasoningEffort, ReplaySource, RouteRecoveryKind, RouteRecoveryStatus,
     ToolArgumentDiagnostic, ToolArgumentIntegrity, ToolCall, ToolChoice, ToolExecutionProvenance,
-    ToolResultStatus, ToolStatusDetail, TurnPresentationOutcome, TurnSummary, TurnTokenProgress,
-    Usage, is_valid_reasoning_effort, valid_credential_account_id, valid_gateway_generation_id,
+    ToolImage, ToolResultStatus, ToolStatusDetail, TurnPresentationOutcome, TurnSummary,
+    TurnTokenProgress, Usage, is_valid_reasoning_effort, valid_credential_account_id,
+    valid_gateway_generation_id,
 };
 pub use ui::{
     ApprovalOrigin, ApprovalRequest, CatalogRetry, CompactionActivity, CompactionEnd, HistoryEntry,

@@ -4,8 +4,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_contract::{
     ChatMessage, DuplicateKeys, ImageAttachment, Json, ModelRequest, ProviderReplay, ReplaySource,
-    ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolResultStatus, ToolSpec,
-    parse_strict_json, tool_permission_denial_reason,
+    ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolImage, ToolResultStatus,
+    ToolSpec, parse_strict_json, tool_permission_denial_reason,
 };
 use ofx_images::{AttachmentError, load_verified_snapshot};
 
@@ -16,6 +16,8 @@ use crate::vercel_model_policy::parallel_tool_calls;
 
 pub(crate) const REPLAY_PROVIDER: &str = "gateway";
 const MAX_REPLAY_BYTES: usize = 4 * 1024 * 1024;
+const TOOL_IMAGE_FOLLOW_UP: &str = "Attached image(s) from the tool result.";
+const TOOL_ERROR_PREFIX: &str = "Tool error: ";
 const USER_AGENT_MODEL: &str = "zai/glm-5.2";
 const HIGHEST_REASONING_TIER: &str = "xhigh";
 
@@ -304,6 +306,7 @@ impl PromptWriter<'_> {
                         .position(|message| !matches!(message, ChatMessage::Tool { .. }))
                         .map_or(messages.len(), |offset| index + offset);
                     self.tool_results(&messages[index..end]);
+                    self.tool_image_follow_up(&messages[index..end]);
                     index = end;
                     continue;
                 }
@@ -399,6 +402,7 @@ impl PromptWriter<'_> {
                 tool_name,
                 content,
                 status,
+                images,
             } = result
             else {
                 continue;
@@ -412,16 +416,59 @@ impl PromptWriter<'_> {
             self.out.push_str(",\"toolName\":");
             push_json_string(self.out, tool_name);
             let failed = *status == ToolResultStatus::Failure;
-            self.out.push_str(
-                if failed && tool_permission_denial_reason(content).is_some() {
-                    ",\"output\":{\"type\":\"execution-denied\",\"reason\":"
-                } else if failed {
-                    ",\"output\":{\"type\":\"error-text\",\"value\":"
+            let denied = failed && tool_permission_denial_reason(content).is_some();
+            if !images.is_empty() && !denied {
+                self.out
+                    .push_str(",\"output\":{\"type\":\"content\",\"value\":[");
+                if failed {
+                    self.text_part(&format!("{TOOL_ERROR_PREFIX}{content}"));
                 } else {
-                    ",\"output\":{\"type\":\"text\",\"value\":"
-                },
-            );
+                    self.text_part(content);
+                }
+                self.out.push_str("]}}");
+                continue;
+            }
+            self.out.push_str(if denied {
+                ",\"output\":{\"type\":\"execution-denied\",\"reason\":"
+            } else if failed {
+                ",\"output\":{\"type\":\"error-text\",\"value\":"
+            } else {
+                ",\"output\":{\"type\":\"text\",\"value\":"
+            });
             push_json_string(self.out, content);
+            self.out.push_str("}}");
+        }
+        self.out.push_str("]}");
+    }
+
+    fn tool_image_follow_up(&mut self, results: &[ChatMessage]) {
+        let sent: Vec<&ToolImage> = results
+            .iter()
+            .filter_map(|result| match result {
+                ChatMessage::Tool {
+                    content,
+                    status,
+                    images,
+                    ..
+                } if !(*status == ToolResultStatus::Failure
+                    && tool_permission_denial_reason(content).is_some()) =>
+                {
+                    Some(images)
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if sent.is_empty() {
+            return;
+        }
+        self.out.push_str(",{\"role\":\"user\",\"content\":[");
+        self.text_part(TOOL_IMAGE_FOLLOW_UP);
+        for image in sent {
+            self.out.push_str(",{\"type\":\"file\",\"mediaType\":");
+            push_json_string(self.out, &image.mime_type);
+            self.out.push_str(",\"data\":{\"type\":\"data\",\"data\":");
+            push_json_string(self.out, &image.data);
             self.out.push_str("}}");
         }
         self.out.push_str("]}");

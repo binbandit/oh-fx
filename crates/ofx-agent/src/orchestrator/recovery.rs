@@ -269,7 +269,7 @@ impl Agent {
             let tool_name = trailing_tool(restart.messages()).unwrap_or_default();
             gateway_trace::assistant_prefill_recovery(turn.trace, tool_name, attempt);
             turn.continuation = Some(PREFILL_CONTINUATION);
-            restart.resend(self.request_messages(turn));
+            restart.resend(self.step_messages(turn));
         }
         rejected
     }
@@ -298,7 +298,7 @@ impl Agent {
         if strategy != turn.recovery {
             turn.recovery = strategy;
             request.tool_choice = recovery_tool_choice(strategy);
-            restart.resend(self.request_messages(turn));
+            restart.resend(self.step_messages(turn));
         }
         turn.recovery_cause = Some(cause);
     }
@@ -368,6 +368,7 @@ mod tests {
                 tool_name: "subagent".to_owned(),
                 content: "failed".to_owned(),
                 status: ToolResultStatus::Failure,
+                images: Vec::new(),
             },
         ];
         assert!(rejects_prefill(&rejected(400, detail)));

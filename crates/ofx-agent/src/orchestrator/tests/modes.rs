@@ -101,6 +101,7 @@ async fn a_call_the_mode_blocks_is_rejected_with_its_policy_message_and_never_ru
             tool_name: "mutate".to_owned(),
             content: r#"{"error":{"type":"tool_execution_failed","tool_name":"mutate","message":"Inspection mode blocks mutations.","suggestion":"Do not retry the same tool call unchanged. Adjust the request or use an allowed alternative."}}"#.to_owned(),
             status: ToolResultStatus::Failure,
+            images: Vec::new(),
         })
     );
 }
@@ -177,6 +178,7 @@ async fn work_tools_given_to_a_child_keep_its_modes_projection_and_denials() {
             tool_name: "mutate".to_owned(),
             content: r#"{"error":{"type":"tool_execution_failed","tool_name":"mutate","message":"Inspection mode blocks mutations.","suggestion":"Do not retry the same tool call unchanged. Adjust the request or use an allowed alternative."}}"#.to_owned(),
             status: ToolResultStatus::Failure,
+            images: Vec::new(),
         })
     );
 }

@@ -22,6 +22,7 @@ fn result(call: &ToolCall, status: ToolResultStatus) -> ChatMessage {
         tool_name: call.name.clone(),
         content: "PROVIDER_RESULT_SECRET".to_owned(),
         status,
+        images: Vec::new(),
     }
 }
 

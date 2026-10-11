@@ -19,8 +19,8 @@ note = "Filesystem grep files schema, ordering, output caps and literal/path fil
 [[file]]
 upstream = "src/tools/filesystem/read_file.zig"
 status = "partial"
-modules = ["crates/ofx-tools/src/filesystem/read_file.rs"]
-note = "Bounded text reads and line selection exist, and each read reports whether the model saw the whole file; image attachment results are absent."
+modules = ["crates/ofx-tools/src/filesystem/read_file.rs", "crates/ofx-tools/src/filesystem/read_file/image_result.rs"]
+note = "Bounded text reads and line selection exist, each read reports whether the model saw the whole file, and PNG, JPEG, GIF, and WebP files within the 5 MiB encoded and 8000-pixel limits are attached to the result, with upstream's not-attached guidance otherwise."
 
 [[file]]
 upstream = "src/tools/filesystem/write_file.zig"
