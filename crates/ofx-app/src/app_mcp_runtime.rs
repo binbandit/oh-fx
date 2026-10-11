@@ -304,6 +304,24 @@ impl McpHost {
         waiting
     }
 
+    pub(crate) fn logout(&self, server: String) -> Option<String> {
+        if self.authentication_pending(&server) {
+            return Some(mcp_auth_notices::logout_busy(&server));
+        }
+        let runtime = Arc::clone(&self.runtime);
+        self.show_when_ready(async move {
+            let result = runtime.logout_server(&server).await;
+            mcp_auth_notices::logout_completion(&server, &result)
+        });
+        None
+    }
+
+    fn authentication_pending(&self, server: &str) -> bool {
+        lock(&self.authentication)
+            .as_ref()
+            .is_some_and(|pending| pending.server == server && !pending.task.is_finished())
+    }
+
     fn discard_authentication(&self, reason: &str) {
         let Some(pending) = lock(&self.authentication).take() else {
             return;
@@ -611,6 +629,47 @@ mod tests {
         assert_eq!(
             host.begin_authentication("absent".to_owned()),
             "MCP authentication for 'absent' failed: McpServerNotFound."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_logout_waits_for_a_pending_authentication_of_the_same_server() {
+        let (host, events, _listener, _data) = hanging_host();
+        assert_eq!(
+            host.begin_authentication("docs".to_owned()),
+            mcp_auth_notices::waiting("docs")
+        );
+        assert_eq!(
+            host.logout("docs".to_owned()),
+            Some(mcp_auth_notices::logout_busy("docs"))
+        );
+        host.discard_authentication("reload");
+        assert_eq!(host.logout("docs".to_owned()), None);
+        for _ in 0..200 {
+            if lock(&events)
+                .iter()
+                .any(|event| matches!(event, UiEvent::Notice { notice } if notice.body.contains("logout") || notice.body.contains("stored MCP credentials")))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let notices: Vec<(NoticeTone, String, String)> = lock(&events)
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::Notice { notice } if !notice.body.starts_with("MCP configuration") => {
+                    Some((notice.tone, notice.topic.clone(), notice.body.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            [(
+                NoticeTone::Neutral,
+                TOPIC.to_owned(),
+                "No stored MCP credentials found for 'docs'.".to_owned()
+            )]
         );
     }
 }
