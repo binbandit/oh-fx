@@ -1026,18 +1026,34 @@ fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
             .iter()
             .any(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str()))
     );
+    let before = authority.mcp_authorizations().len();
     session.send(b"/mcp auth fixture --open\r");
     let url = wait_for_file(&home.opened()).trim().to_owned();
-    visit(&format!(
+    let page = visit(&format!(
         "{}?code=browser-code&state={}",
         query(&url, "redirect_uri"),
         query(&url, "state")
     ));
-    listed_once_settled(
-        &session,
-        b"/mcp list\r",
-        "state=ready auth=authenticated status=ready",
-    );
+    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+    let bearer = format!("Bearer {ACCESS}");
+    let signed_in_again = |authority: &Authority| {
+        authority.mcp_authorizations()[before..]
+            .iter()
+            .any(|sent| sent.as_deref() == Some(bearer.as_str()))
+    };
+    let started = Instant::now();
+    while started.elapsed() < SHELL_WAIT && !(signed_in_again(&authority) && home.store().exists())
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(home.store().exists());
+    assert!(signed_in_again(&authority));
+    session
+        .wait_for(SHELL_WAIT, |screen| {
+            screen.rfind("Authenticated MCP server 'fixture'.")
+                > screen.rfind("Logged out of MCP server 'fixture'.")
+        })
+        .unwrap_or_else(|screen| panic!("expected a second sign-in on screen:\n{screen}"));
     let screen = session.screen();
     for secret in [ACCESS, REFRESH, "browser-code", "token="] {
         assert!(!screen.contains(secret), "{screen}");
@@ -1058,6 +1074,36 @@ fn mcp_logout_in_the_shell_waits_for_a_pending_authentication() {
         &session,
         "MCP authentication for 'fixture' is still in progress. Wait for it to finish before logging out.",
     );
-    assert!(!home.store().exists());
+    thread::sleep(Duration::from_millis(500));
+    let screen = session.screen();
+    assert!(
+        !screen.contains("No stored MCP credentials found for 'fixture'."),
+        "{screen}"
+    );
+    assert!(authority.revocations().is_empty());
+}
+
+#[test]
+fn mcp_logout_reports_a_store_failure_and_traces_it_without_secrets() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let (granted, _, _) = authorize(&home, "fixture");
+    assert!(granted.status.success());
+    fs::write(home.store(), "{").expect("test step");
+    let output = logout(&home);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "oh-fx mcp logout failed: UnexpectedEndOfInput.\n"
+    );
+    assert!(output.stdout.is_empty());
+    let trace = fs::read_to_string(home.root.join("trace.log")).expect("the trace log");
+    assert!(
+        trace.contains(
+            "stored credential load skipped during logout server=fixture err=UnexpectedEndOfInput"
+        ),
+        "{trace}"
+    );
+    assert_secret_free(&home, &output);
     assert!(authority.revocations().is_empty());
 }

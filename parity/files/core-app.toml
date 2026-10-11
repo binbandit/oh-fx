@@ -61,7 +61,7 @@ modules = []
 upstream = "src/core/app/app_mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-app/src/app_mcp_runtime.rs", "crates/ofx-app/src/mcp_model_catalog.rs"]
-note = "Background reloads, authority reductions after trust changes and their notices exist, and so does the command-path authentication task with its busy admission, its discard on reload, authority reduction and shutdown with upstream's trace line, the browser opener and the reconnection after it, and the background logout task with upstream's busy admission, and the model catalog baseline that the shell's change notice compares against lives in mcp_model_catalog.rs; the MCP menu with its authentication completions and log out action, the project trust prompt, the Slack setup origin and elicitation hosting are missing."
+note = "Background reloads, authority reductions after trust changes and their notices exist, and so does the command-path authentication task with its busy admission, its discard on reload, authority reduction and shutdown with upstream's trace line, the browser opener and the reconnection after it, the background logout task with upstream's busy admission, and the model catalog baseline that the shell's change notice compares against lives in mcp_model_catalog.rs; the MCP menu with its authentication completions and log out action, the project trust prompt, the Slack setup origin and elicitation hosting are missing."
 
 [[file]]
 upstream = "src/core/app/app_notification_runtime.zig"

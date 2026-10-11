@@ -162,9 +162,13 @@ mod tests {
             ),
             "Logged out of MCP server 'docs'.\n"
         );
-        let unsafe_name = logged_out("a\u{1b}[2Jb", removed);
-        assert!(!unsafe_name.contains('\u{1b}'), "{unsafe_name}");
-        let long = logged_out(&"x".repeat(200), removed);
-        assert!(long.len() < 200, "{long}");
+        assert_eq!(
+            logged_out("a\u{1b}[2Jb", removed),
+            "Logged out of MCP server 'a\\x1b[2Jb'.\n"
+        );
+        assert_eq!(
+            logged_out(&"x".repeat(200), removed),
+            format!("Logged out of MCP server '{}...'.\n", "x".repeat(157))
+        );
     }
 }
