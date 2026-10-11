@@ -14,4 +14,7 @@ pub use launch::{
 };
 pub use launcher::{is_terminal_launcher_invocation, run_terminal_launcher};
 pub use marker::{is_terminal_control_invocation, run_terminal_control};
-pub use registry::{InspectResult, Outcome, StartRequest, Terminals};
+pub use registry::{
+    CloseResult, InspectResult, Outcome, ReadResult, ScreenResult, StartRequest, Terminals,
+    WriteResult,
+};

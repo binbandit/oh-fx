@@ -1,10 +1,14 @@
 use std::future;
+use std::io;
 use std::os::fd::OwnedFd;
 use std::process::{Child, ChildStderr};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use ofx_vt::Grid;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep_until};
@@ -12,14 +16,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::control::{ControlKind, StartupFailure};
 use super::launch::{ControlFrame, LaunchedTerminal, Liveness, read_control_frame};
-use super::output::read_available;
+use super::output::{Drained, Unread, read_available};
 use crate::terminal_contracts::{
-    Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, StructuredErrorCode,
+    ClosePolicy, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, StructuredErrorCode,
 };
-use crate::terminal_store::{DurableTerminal, Termination, now_ms};
+use crate::terminal_store::{DurableTerminal, StoreError, Termination, now_ms};
 
 const OUTPUT_POLL: Duration = Duration::from_millis(50);
 const READ_BUFFER_BYTES: usize = 256 * 1024;
+const GRACEFUL_CLOSE: Duration = Duration::from_millis(800);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SessionLost;
@@ -33,6 +38,7 @@ pub(super) struct Session {
     state: Mutex<State>,
     settled: Condvar,
     changed: watch::Sender<u64>,
+    writes: Mutex<()>,
 }
 
 struct State {
@@ -42,7 +48,11 @@ struct State {
     start_failure: Option<StructuredErrorCode>,
     shell_group: Option<Pid>,
     shell_ready_seen: bool,
+    close_committed: bool,
     ending_with_owner: bool,
+    unread: Unread,
+    grid: Option<Grid>,
+    master: Option<Arc<OwnedFd>>,
     liveness: Option<Liveness>,
     backend: Backend,
 }
@@ -56,7 +66,9 @@ enum Backend {
 
 impl State {
     fn persist_lost(&mut self) {
-        let _ = self.durable.persist_lost(now_ms());
+        if !self.close_committed {
+            let _ = self.durable.persist_lost(now_ms());
+        }
         self.lifecycle = Lifecycle::Lost;
         self.start_failure
             .get_or_insert(StructuredErrorCode::SessionLost);
@@ -64,7 +76,7 @@ impl State {
 }
 
 impl Session {
-    pub(super) fn new(durable: DurableTerminal) -> Self {
+    pub(super) fn new(durable: DurableTerminal, grid: Option<Grid>) -> Self {
         let record = durable.record();
         Self {
             id: record.session_id.clone(),
@@ -79,12 +91,17 @@ impl Session {
                 start_failure: None,
                 shell_group: None,
                 shell_ready_seen: false,
+                close_committed: false,
                 ending_with_owner: false,
+                unread: Unread::default(),
+                grid,
+                master: None,
                 liveness: None,
                 backend: Backend::Finished,
             }),
             settled: Condvar::new(),
             changed: watch::Sender::new(0),
+            writes: Mutex::new(()),
         }
     }
 
@@ -112,12 +129,12 @@ impl Session {
         let master = Arc::new(master);
         {
             let mut state = self.lock();
+            state.master = Some(Arc::clone(&master));
             state.liveness = Some(liveness);
             state.backend = Backend::Reading;
         }
         let output = {
             let session = Arc::clone(self);
-            let master = Arc::clone(&master);
             thread::Builder::new().spawn(move || session.drain_output(&master))
         };
         let Ok(output) = output else {
@@ -128,8 +145,7 @@ impl Session {
         };
         let control = {
             let session = Arc::clone(self);
-            thread::Builder::new()
-                .spawn(move || session.run_control(control, launcher, master, output))
+            thread::Builder::new().spawn(move || session.run_control(control, launcher, output))
         };
         if control.is_err() {
             self.wait_output_done();
@@ -183,6 +199,31 @@ impl Session {
             .unwrap_or(StructuredErrorCode::SessionLost)
     }
 
+    fn is_live(&self) -> bool {
+        self.lock().lifecycle.is_live()
+    }
+
+    pub(super) fn drain(&self) -> Drained {
+        self.lock().unread.drain()
+    }
+
+    pub(super) fn screen_text(&self) -> Option<Vec<u8>> {
+        self.lock().grid.as_ref().map(Grid::screen_text)
+    }
+
+    pub(super) fn write(&self, bytes: &[u8]) -> Result<u32, StructuredErrorCode> {
+        let _writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
+        let master = {
+            let state = self.lock();
+            match (&state.master, state.lifecycle, state.close_committed) {
+                (Some(master), Lifecycle::Running, false) => Arc::clone(master),
+                _ => return Err(StructuredErrorCode::InvalidLifecycle),
+            }
+        };
+        write_all(&master, bytes).map_err(|_| StructuredErrorCode::InvalidRequest)?;
+        u32::try_from(bytes.len()).map_err(|_| StructuredErrorCode::InvalidRequest)
+    }
+
     pub(super) async fn wait_for(
         &self,
         condition: ReturnCondition,
@@ -203,7 +244,7 @@ impl Session {
                 if condition == ReturnCondition::Started && state.lifecycle == Lifecycle::Running {
                     return Ok(ReturnOutcome::Started);
                 }
-                if state.lifecycle == Lifecycle::Lost {
+                if !state.lifecycle.is_live() {
                     return Err(SessionLost);
                 }
             }
@@ -251,6 +292,52 @@ impl Session {
         }
     }
 
+    pub(super) fn is_closing(&self) -> bool {
+        self.lock().close_committed
+    }
+
+    pub(super) async fn close(
+        &self,
+        policy: ClosePolicy,
+    ) -> Result<SessionFacts, StructuredErrorCode> {
+        {
+            let _writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = self.lock();
+            if state.close_committed {
+                return Err(StructuredErrorCode::AuthorityDenied);
+            }
+            state.close_committed = true;
+        }
+        let mut still_live = self.is_live();
+        if still_live {
+            let signal = match policy {
+                ClosePolicy::Graceful => Signal::TERM,
+                ClosePolicy::Force => Signal::KILL,
+            };
+            if !self.signal_group(signal) {
+                self.mark_lost();
+            }
+        }
+        if policy == ClosePolicy::Graceful && still_live {
+            self.settle_before(Instant::now() + GRACEFUL_CLOSE).await;
+            still_live = self.is_live();
+            if still_live && !self.signal_group(Signal::KILL) {
+                self.mark_lost();
+            }
+        }
+        if still_live && !self.settle_before(Instant::now() + GRACEFUL_CLOSE).await {
+            self.mark_lost();
+        }
+        self.finalize_backend().await;
+        self.lock()
+            .durable
+            .close(now_ms())
+            .map_err(StoreError::code)?;
+        self.lock().lifecycle = Lifecycle::Closed;
+        self.notify();
+        Ok(self.facts())
+    }
+
     pub(super) fn hang_up_for_exit(&self) -> bool {
         {
             let mut state = self.lock();
@@ -275,23 +362,35 @@ impl Session {
         }
     }
 
-    fn signal_group(&self, signal: Signal) {
+    fn signal_group(&self, signal: Signal) -> bool {
         let group = {
             let state = self.lock();
             if !state.lifecycle.is_live() {
-                return;
+                return false;
             }
             state.shell_group
         };
-        if let Some(group) = group {
-            let _ = kill_process_group(group, signal);
-        }
+        group.is_some_and(|group| kill_process_group(group, signal).is_ok())
     }
 
     fn drain_output(&self, master: &OwnedFd) {
         let mut buffer = vec![0; READ_BUFFER_BYTES];
-        while read_available(master, &mut buffer, OUTPUT_POLL).is_ok() {}
+        while let Ok(count) = read_available(master, &mut buffer, OUTPUT_POLL) {
+            if count != 0 {
+                self.append_output(&buffer[..count]);
+            }
+        }
         self.finish_output();
+    }
+
+    fn append_output(&self, bytes: &[u8]) {
+        let mut state = self.lock();
+        state.unread.append(bytes);
+        if let Some(grid) = state.grid.as_mut()
+            && grid.feed(bytes).is_err()
+        {
+            state.grid = None;
+        }
     }
 
     fn finish_output(&self) {
@@ -314,10 +413,9 @@ impl Session {
     }
 
     fn run_control(
-        &self,
+        self: &Arc<Self>,
         mut control: ChildStderr,
         mut launcher: Launcher,
-        master: Arc<OwnedFd>,
         output: thread::JoinHandle<()>,
     ) {
         loop {
@@ -347,7 +445,6 @@ impl Session {
             Ok(status) if !reported && !status.success() => self.mark_lost(),
             Ok(_) => {}
         }
-        drop(master);
         self.wait_output_done();
         let _ = output.join();
         self.finish_backend();
@@ -355,6 +452,7 @@ impl Session {
 
     fn finish_backend(&self) {
         let mut state = self.lock();
+        state.master = None;
         state.liveness = None;
         state.backend = Backend::Finished;
         drop(state);
@@ -366,7 +464,15 @@ impl Session {
         state.term.is_some() || state.start_failure.is_some()
     }
 
-    fn handle_control(&self, frame: ControlFrame) {
+    fn handle_control(self: &Arc<Self>, frame: ControlFrame) {
+        if self.lock().close_committed
+            && !matches!(
+                frame.kind,
+                ControlKind::CommandExited | ControlKind::CommandSignal
+            )
+        {
+            return;
+        }
         match frame.kind {
             ControlKind::Prepared => {}
             ControlKind::ShellReady => {
@@ -408,7 +514,7 @@ impl Session {
         }
     }
 
-    fn command_started(&self, raw_pid: u32) {
+    fn command_started(self: &Arc<Self>, raw_pid: u32) {
         let valid = {
             let state = self.lock();
             state.lifecycle == Lifecycle::Starting
@@ -434,12 +540,53 @@ impl Session {
             }
         }
         self.notify();
+        if let Some(deadline_ms) = self.timeout_deadline() {
+            let session = Arc::clone(self);
+            let watcher = thread::Builder::new().spawn(move || session.expire_at(deadline_ms));
+            if watcher.is_err() {
+                self.mark_lost();
+            }
+        }
         if !self.release_command() {
             self.fail_closed(StructuredErrorCode::SessionLost);
         }
     }
 
+    fn timeout_deadline(&self) -> Option<i64> {
+        let state = self.lock();
+        if state.lifecycle == Lifecycle::Running {
+            state.durable.record().timeout_at_ms
+        } else {
+            None
+        }
+    }
+
+    fn expire_at(&self, deadline_ms: i64) {
+        let mut state = self.lock();
+        loop {
+            if !state.lifecycle.is_live() || state.ending_with_owner {
+                return;
+            }
+            let remaining = deadline_ms.saturating_sub(now_ms());
+            let Some(remaining) = u64::try_from(remaining).ok().filter(|&ms| ms != 0) else {
+                break;
+            };
+            state = self
+                .settled
+                .wait_timeout(state, Duration::from_millis(remaining))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        let _ = state.durable.mark_timed_out(now_ms());
+        drop(state);
+        self.notify();
+        if !self.signal_group(Signal::KILL) {
+            self.mark_lost();
+        }
+    }
+
     fn release_command(&self) -> bool {
+        let _writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut state = self.lock();
         if state.lifecycle != Lifecycle::Running {
             return false;
@@ -452,7 +599,11 @@ impl Session {
 
     fn set_term(&self, term: Termination) {
         let mut state = self.lock();
-        if state.ending_with_owner && state.lifecycle == Lifecycle::Running {
+        if state.close_committed {
+            state.term = Some(term);
+            state.lifecycle = Lifecycle::Closed;
+            state.liveness = None;
+        } else if state.ending_with_owner && state.lifecycle == Lifecycle::Running {
             state.term = Some(term);
             state.persist_lost();
             state.liveness = None;
@@ -500,6 +651,25 @@ async fn sleep_until_or_never(deadline: Option<Instant>) {
         Some(deadline) => sleep_until(deadline).await,
         None => future::pending().await,
     }
+}
+
+fn write_all(master: &OwnedFd, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match rustix::io::write(master, bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) => bytes = &bytes[count..],
+            Err(Errno::INTR) => {}
+            Err(Errno::AGAIN) => {
+                let mut fds = [PollFd::new(master, PollFlags::OUT)];
+                match poll(&mut fds, None::<&Timespec>) {
+                    Ok(_) | Err(Errno::INTR) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 struct Launcher(Child);
