@@ -1,5 +1,5 @@
 use super::*;
-use crate::session_usage::Usage;
+use crate::session_usage::{MAX_MODEL_BYTES, Usage};
 
 const NOW: i64 = 1_775_045_467_000;
 const GATEWAY_ID: &str = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -178,6 +178,39 @@ fn the_sixteenth_pending_generation_is_the_capacity_boundary() {
     assert_eq!(over.incidents, [incomplete_at(NOW)]);
     assert_eq!(over.settled_through_sequence, 17);
     assert_eq!(over.validate(), Ok(()));
+}
+
+#[test]
+fn a_backlog_record_that_would_pass_the_identifier_budget_is_refused() {
+    let long = ProviderBilling {
+        model: format!("codex/{}", "m".repeat(MAX_MODEL_BYTES - "codex/".len())),
+        ..billing("response")
+    };
+    let mut usage = Usage::fresh();
+    for index in 0..7 {
+        let billed = ProviderBilling {
+            generation_id: format!("response-{index}"),
+            ..long.clone()
+        };
+        settle(&mut usage, &codex(), &billed);
+    }
+    let fitting = usage.snapshot(NOW);
+    assert_eq!(fitting.billing, Availability::Pending);
+    assert_eq!(fitting.publication_backlog.len(), 7);
+    assert_eq!(fitting.validate(), Ok(()));
+
+    let over = ProviderBilling {
+        generation_id: "response-7".to_owned(),
+        ..long
+    };
+    settle(&mut usage, &codex(), &over);
+    let refused = usage.snapshot(NOW);
+    assert_eq!(refused.billing, Availability::Incomplete);
+    assert_eq!(refused.pending.len(), 8);
+    assert_eq!(refused.publication_backlog.len(), 7);
+    assert_eq!(refused.incidents, [incomplete_at(100), incomplete_at(NOW)]);
+    assert!(refused.identifier_bytes() <= MAX_IDENTIFIER_BYTES);
+    assert_eq!(refused.validate(), Ok(()));
 }
 
 #[test]

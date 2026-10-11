@@ -120,6 +120,10 @@ impl UsageSnapshot {
         if !self.pending.iter().any(|pending| pending.id == fact.id) {
             return Ok(());
         }
+        let identifier_bytes = self
+            .identifier_bytes()
+            .saturating_add(fact.id.len())
+            .saturating_add(fact.model.len());
         let refusal = match self
             .publication_backlog
             .iter()
@@ -127,7 +131,9 @@ impl UsageSnapshot {
         {
             Some(existing) if *existing == fact => return Ok(()),
             Some(_) => UsageSnapshotError::Invalid,
-            None if self.publication_backlog.len() == MAX_PUBLICATION_BACKLOG => {
+            None if self.publication_backlog.len() == MAX_PUBLICATION_BACKLOG
+                || identifier_bytes > MAX_IDENTIFIER_BYTES =>
+            {
                 UsageSnapshotError::CapacityExceeded
             }
             None => {

@@ -248,3 +248,34 @@ fn an_exact_request_is_saved_with_its_generation_waiting_for_publication() {
     assert_eq!(usage.pending, saved.pending);
     assert_eq!(usage.publication_backlog, saved.publication_backlog);
 }
+
+#[test]
+fn a_backlog_past_the_identifier_budget_leaves_the_next_request_running() {
+    let fixture = Fixture::new();
+    let mut session = fixture.start("budget");
+    let codex = SavedProvider::new(ProviderId::Codex, None).unwrap();
+    for index in 0..8 {
+        let ticket = session.begin_request().unwrap();
+        let billing = ProviderBilling {
+            generation_id: format!("response-{index}"),
+            created_at_ms: 1_000,
+            model: format!("codex/{}", "m".repeat(1018)),
+            total_cost: 0.0,
+            input_tokens: 17,
+            output_tokens: 7,
+            cache_read_tokens: 5,
+            cache_write_tokens: 0,
+            reasoning_tokens: Some(3),
+            billable_web_search_calls: 0,
+        };
+        session
+            .finish_exact_request(ticket, &billing, &codex)
+            .unwrap();
+    }
+    let usage = saved(&fixture, "budget");
+    assert_eq!(usage.billing, Availability::Incomplete);
+    assert_eq!(usage.pending.len(), 8);
+    assert_eq!(usage.publication_backlog.len(), 7);
+    let ticket = session.begin_request().unwrap();
+    assert_eq!(ticket.sequence, 9);
+}
