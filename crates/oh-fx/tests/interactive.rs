@@ -1,9 +1,13 @@
+use std::collections::VecDeque;
 use std::fmt::Write;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,6 +18,9 @@ use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
 const APPROVAL_ARMING: Duration = Duration::from_millis(700);
+const RELAYED_SKILLS: usize = 40;
+const RELAY_HOLD: Duration = Duration::from_millis(750);
+const RELAY_POLL: Duration = Duration::from_millis(10);
 const CANCELLATION: &str = "■ Cancelled · What can oh-fx do differently?";
 const SIGTERM: i32 = 15;
 const SIGNAL_RESTORE: &[u8] = b"\x1b[<u\x1b[>4;0m\x1b[?2004l\x1b[?2031l\x1b[?25h";
@@ -1498,17 +1505,122 @@ fn install_pack(home: &Home) -> PathBuf {
     fs::canonicalize(pack).expect("canonicalize install source")
 }
 
-fn lock_install_pack(home: &Home) -> fs::File {
+fn assert_no_failed_install(session: &PtySession) {
+    let transcript = String::from_utf8_lossy(&session.output()).into_owned();
+    assert!(!transcript.contains("Failed to install."), "{transcript}");
+}
+
+fn hold_install_lock(home: &Home, name: &str) -> fs::File {
     let locks = home.root.join("config/oh-fx/.skill-install-locks");
-    fs::create_dir(&locks).expect("create private install lock directory");
+    fs::create_dir_all(&locks).expect("create private install lock directory");
     fs::set_permissions(&locks, fs::Permissions::from_mode(0o700))
         .expect("make lock directory private");
-    let file = fs::File::create(locks.join("install-pack")).expect("create owned install lock");
+    let file = fs::File::create(locks.join(name)).expect("create owned install lock");
     file.set_permissions(fs::Permissions::from_mode(0o600))
         .expect("make lock file private");
     rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
         .expect("hold the install lock");
     file
+}
+
+struct InstallRelay {
+    source: PathBuf,
+    installed: PathBuf,
+    walked: Vec<String>,
+    locks: VecDeque<fs::File>,
+    held: Arc<AtomicUsize>,
+    stop: Option<mpsc::Sender<()>>,
+    releaser: Option<thread::JoinHandle<(usize, VecDeque<fs::File>)>>,
+}
+
+impl InstallRelay {
+    fn new(home: &Home) -> Self {
+        let source = home.workspace.join("relay-pack");
+        fs::create_dir(&source).expect("create the relayed install source");
+        for index in 1..=RELAYED_SKILLS {
+            fs::create_dir(source.join(format!("relay-{index:02}")))
+                .expect("create a relayed skill");
+        }
+        let mut walked = Vec::new();
+        for entry in fs::read_dir(&source).expect("list the relayed install source") {
+            let entry = entry.expect("read a relayed install entry");
+            walked.push(entry.file_name().into_string().expect("a UTF-8 skill name"));
+        }
+        for (position, directory) in walked.iter().enumerate() {
+            let name = if position == 0 {
+                "new-skill".to_owned()
+            } else {
+                format!("relay-skill-{position:02}")
+            };
+            fs::write(
+                source.join(directory).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: relayed install\n---\nRELAY\n"),
+            )
+            .expect("write relayed skill metadata");
+        }
+        let locks = walked
+            .iter()
+            .map(|name| hold_install_lock(home, name))
+            .collect::<VecDeque<_>>();
+        Self {
+            source: fs::canonicalize(source).expect("canonicalize the relayed install source"),
+            installed: home.root.join("config/oh-fx/skills"),
+            walked,
+            held: Arc::new(AtomicUsize::new(locks.len())),
+            locks,
+            stop: None,
+            releaser: None,
+        }
+    }
+
+    fn start(&mut self) -> &Path {
+        let mut locks = std::mem::take(&mut self.locks);
+        let walked = self.walked.clone();
+        let installed = self.installed.clone();
+        let held = Arc::clone(&self.held);
+        let (stop, stopped) = mpsc::channel::<()>();
+        self.stop = Some(stop);
+        self.releaser = Some(thread::spawn(move || {
+            let running = |wait: Duration| {
+                matches!(stopped.recv_timeout(wait), Err(RecvTimeoutError::Timeout))
+            };
+            let mut next = 0_usize;
+            while !locks.is_empty() {
+                if let Some(previous) = next.checked_sub(1).map(|previous| &walked[previous]) {
+                    while !installed.join(previous).exists() {
+                        if !running(RELAY_POLL) {
+                            return (next, locks);
+                        }
+                    }
+                }
+                if !running(RELAY_HOLD) {
+                    return (next, locks);
+                }
+                locks.pop_front();
+                held.fetch_sub(1, Ordering::SeqCst);
+                next += 1;
+            }
+            (next, locks)
+        }));
+        &self.source
+    }
+
+    fn holding(&self) -> bool {
+        self.held.load(Ordering::SeqCst) > 0
+    }
+
+    fn finish(mut self) {
+        self.stop.take();
+        let Some(releaser) = self.releaser.take() else {
+            return;
+        };
+        let (next, remaining) = releaser.join().expect("the install relay ends");
+        for skipped in self.walked.iter().skip(next + 1) {
+            fs::remove_file(self.source.join(skipped).join("SKILL.md"))
+                .expect("withdraw a skill the install has not reached");
+        }
+        drop(remaining);
+    }
 }
 
 #[test]
@@ -1569,19 +1681,21 @@ fn native_cancel_stays_live_while_an_install_waits_for_its_lock() {
         &chat_text_events(&["Held stream.\n\n"])[..2],
     )]);
     let home = Home::with_settings(&settings(&server.base_url()));
-    let source = install_pack(&home);
-    let lock = lock_install_pack(&home);
+    let mut relay = InstallRelay::new(&home);
     let mut session = home.shell(36, 120);
     session.send(b"keep streaming\r");
     wait(&session, "Held stream.");
+    let source = relay.start();
     session.send(format!("/skills install {}\r/stats\r", source.display()).as_bytes());
     wait(&session, "* stats: ansi_bytes=");
     session.send(b"\x03");
     let cancelled = wait(&session, CANCELLATION);
+    assert!(relay.holding(), "{cancelled}");
     assert!(!cancelled.contains("Installed: new-skill"), "{cancelled}");
     assert!(!cancelled.contains("Failed to install."), "{cancelled}");
-    drop(lock);
+    relay.finish();
     wait(&session, "Installed: new-skill");
+    assert_no_failed_install(&session);
     session.send(b"\x1b");
     session
         .wait_for(WAIT, |screen| {
@@ -1606,11 +1720,11 @@ fn native_approval_stays_live_while_an_install_waits_for_its_lock() {
     ]);
     let home = Home::with_settings(&settings(&server.base_url()));
     fs::write(home.root.join("notes.txt"), "APPROVED OUTSIDE CONTENT").unwrap();
-    let source = install_pack(&home);
-    let lock = lock_install_pack(&home);
+    let mut relay = InstallRelay::new(&home);
     let mut session = home.shell(40, 120);
     session.send(b"read outside notes\r");
     wait(&session, "Thinking");
+    let source = relay.start();
     session.send(format!("/skills install {}\r/stats\r", source.display()).as_bytes());
     wait(&session, "* stats: ansi_bytes=");
     gate.open();
@@ -1618,12 +1732,14 @@ fn native_approval_stays_live_while_an_install_waits_for_its_lock() {
     thread::sleep(APPROVAL_ARMING);
     session.send(b"1\r");
     let approved = wait(&session, "Approved stream.");
+    assert!(relay.holding(), "{approved}");
     assert!(!approved.contains("Installed: new-skill"), "{approved}");
     assert!(!approved.contains("Failed to install."), "{approved}");
     assert_eq!(server.requests().len(), 2);
     assert!(last_tool_result(&server.requests()[1]).contains("APPROVED OUTSIDE CONTENT"));
-    drop(lock);
+    relay.finish();
     wait(&session, "Installed: new-skill");
+    assert_no_failed_install(&session);
     session.send(b"\x03");
     wait(&session, CANCELLATION);
     session.send(b"\x1b");
