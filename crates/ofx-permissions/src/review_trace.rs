@@ -147,3 +147,6 @@ impl<'a> Composing<'a> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests;

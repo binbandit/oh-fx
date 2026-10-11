@@ -53,6 +53,10 @@ impl RequestId {
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 #[cfg(test)]

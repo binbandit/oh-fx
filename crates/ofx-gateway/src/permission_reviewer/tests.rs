@@ -707,3 +707,68 @@ fn gateway_review_bodies_require_the_decision_and_send_no_provider_options() {
         })
     );
 }
+
+#[test]
+fn review_transport_lines_name_upstreams_failure_kinds_and_finish_reasons() {
+    let http = [
+        ProviderErrorKind::InvalidRequest,
+        ProviderErrorKind::Unauthorized,
+        ProviderErrorKind::Forbidden,
+        ProviderErrorKind::RequestTooLarge,
+        ProviderErrorKind::RateLimited,
+        ProviderErrorKind::ServerError,
+        ProviderErrorKind::BadGateway,
+        ProviderErrorKind::Unavailable,
+        ProviderErrorKind::GatewayTimeout,
+        ProviderErrorKind::ProviderError,
+    ]
+    .map(failure_kind);
+    assert_eq!(
+        http,
+        [
+            "invalid_request",
+            "unauthorized",
+            "forbidden",
+            "request_too_large",
+            "rate_limited",
+            "server_error",
+            "bad_gateway",
+            "unavailable",
+            "gateway_timeout",
+            "provider_error",
+        ]
+        .map(Some)
+    );
+    for kind in [
+        ProviderErrorKind::ConnectionFailed,
+        ProviderErrorKind::ConnectivityLost,
+        ProviderErrorKind::TransportInterrupted,
+        ProviderErrorKind::Timeout,
+        ProviderErrorKind::StreamStalled,
+        ProviderErrorKind::Protocol,
+        ProviderErrorKind::Cancelled,
+    ] {
+        assert_eq!(failure_kind(kind), None, "{kind:?}");
+    }
+    assert_eq!(
+        [FinishReason::Stop, FinishReason::ToolCalls].map(finish_name),
+        ["stop", "tool_calls"]
+    );
+    let outcomes = [
+        ReviewTransportOutcome::Completion(Box::new(undecided())),
+        ReviewTransportOutcome::TransientFailure,
+        ReviewTransportOutcome::PermanentFailure,
+        ReviewTransportOutcome::TimedOut,
+        ReviewTransportOutcome::Cancelled,
+    ];
+    assert_eq!(
+        outcomes.each_ref().map(outcome_name),
+        [
+            "completion",
+            "transient_failure",
+            "permanent_failure",
+            "timed_out",
+            "cancelled",
+        ]
+    );
+}

@@ -730,7 +730,9 @@ fn announce_settings(
 
 fn acknowledge_full_access(paths: Option<&ProfilePaths>) -> Result<(), String> {
     let paths = paths.ok_or_else(|| HOME_NOT_SET.to_owned())?;
-    save_yolo_acknowledged(paths).map_err(|failure| failure.error.to_string())
+    save_yolo_acknowledged(paths)
+        .map(drop)
+        .map_err(|failure| failure.error.to_string())
 }
 
 fn requested_reasoning(

@@ -364,14 +364,16 @@ fn streamed_or_malformed_verdicts_are_retried_once_and_then_hold_the_command() {
 
 #[test]
 fn reviewer_failures_hold_the_command_without_retrying_a_custom_connection() {
-    for (reply, cause) in [
+    for (reply, cause, transport) in [
         (
             Reply::status(500, r#"{"error":{"message":"reviewer down"}}"#),
             "transport_permanent",
+            "transport result=permanent_failure reason=provider_failure failure_kind=server_error",
         ),
         (
             Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
             "transport_permanent",
+            "transport result=permanent_failure reason=provider_failure failure_kind=rate_limited",
         ),
         (
             Reply::sse(&chat_tool_call_events(
@@ -380,6 +382,7 @@ fn reviewer_failures_hold_the_command_without_retrying_a_custom_connection() {
                 r#"{"decision":"clear"}"#,
             )),
             "transport_permanent",
+            "transport result=permanent_failure reason=transport_error error=InvalidToolName",
         ),
     ] {
         let server = FakeServer::start([
@@ -398,6 +401,19 @@ fn reviewer_failures_hold_the_command_without_retrying_a_custom_connection() {
         assert_eq!(
             last_tool_result(&requests[2]),
             unavailable(cause, UNAVAILABLE, UNAVAILABLE_SUGGESTION)
+        );
+        let log = home.trace_log();
+        let lines = permission_lines(&log);
+        assert!(lines.contains(&transport), "{transport}\n{log}");
+        assert!(
+            lines.iter().any(|line| line.starts_with(&format!(
+                "result tool_name=shell decision=unavailable fallback_reason={cause} recovery=agent_replan elapsed_ms="
+            ))),
+            "{log}"
+        );
+        assert!(
+            !log.contains("reviewer down") && !log.contains("slow down"),
+            "{log}"
         );
     }
 }

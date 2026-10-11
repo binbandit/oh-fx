@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
 use ofx_config::{
-    ProfilePaths, SettingsWriteFailure, save_permission_mode, save_yolo_acknowledged,
+    CommitOutcome, ProfilePaths, SettingsWriteFailure, save_permission_mode, save_yolo_acknowledged,
 };
 use ofx_contract::{
     LivePermissionMode, Notice, NoticeTone, PermissionGate, PermissionMode, UiEvent,
 };
 use ofx_permissions::PermissionPolicy;
+use ofx_trace::trace_log;
 
 use crate::app_agent_runtime::Emit;
 use crate::user_settings::{self, Unsaved, unsaved_notice};
 
+const PERMISSION: &str = "permission";
 const PERMISSIONS_TOPIC: &str = "permissions";
 const MODE_PREFERENCE_TOPIC: &str = "permission-mode";
 const ACKNOWLEDGMENT_TOPIC: &str = "full-access-acknowledgment";
@@ -118,8 +120,22 @@ impl PermissionRuntime {
         }
         self.yolo_acknowledgment_attempted = true;
         match self.save(save_yolo_acknowledged) {
-            Ok(()) => self.yolo_acknowledged = true,
-            Err(failure) => self.report_unsaved(ACKNOWLEDGMENT_TOPIC, &failure),
+            Ok(outcome) => {
+                trace_log!(
+                    PERMISSION,
+                    "interactive_yolo_acknowledgment_persisted outcome={}",
+                    outcome_name(&outcome)
+                );
+                self.yolo_acknowledged = true;
+            }
+            Err(failure) => {
+                trace_log!(
+                    PERMISSION,
+                    "interactive_yolo_acknowledgment_persist_failed err={}",
+                    unsaved_name(&failure)
+                );
+                self.report_unsaved(ACKNOWLEDGMENT_TOPIC, &failure);
+            }
         }
     }
 
@@ -144,15 +160,32 @@ impl PermissionRuntime {
 
     fn persist_mode(&self) {
         let mode = self.mode.get();
-        if let Err(failure) = self.save(|paths| save_permission_mode(paths, mode)) {
-            self.report_unsaved(MODE_PREFERENCE_TOPIC, &failure);
+        let label = mode_label(mode);
+        match self.save(|paths| save_permission_mode(paths, mode)) {
+            Ok(outcome) => trace_log!(
+                PERMISSION,
+                "interactive_permission_mode_persisted mode={label} outcome={}",
+                outcome_name(&outcome)
+            ),
+            Err(failure) => {
+                trace_log!(
+                    PERMISSION,
+                    "interactive_permission_mode_persist_failed mode={label} err={}",
+                    unsaved_name(&failure)
+                );
+                self.report_unsaved(MODE_PREFERENCE_TOPIC, &failure);
+            }
         }
+        trace_log!(
+            PERMISSION,
+            "interactive_permission_mode_selected mode={label}"
+        );
     }
 
-    fn save(
+    fn save<T>(
         &self,
-        commit: impl FnOnce(&ProfilePaths) -> Result<(), SettingsWriteFailure>,
-    ) -> Result<(), Unsaved> {
+        commit: impl FnOnce(&ProfilePaths) -> Result<T, SettingsWriteFailure>,
+    ) -> Result<T, Unsaved> {
         user_settings::save(self.preferences.as_ref(), commit)
     }
 
@@ -166,6 +199,28 @@ impl PermissionRuntime {
         (self.emit)(UiEvent::Notice {
             notice: Notice::new(tone, topic, body),
         });
+    }
+}
+
+const fn mode_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Ask => "ask",
+        PermissionMode::Auto => "auto",
+        PermissionMode::Yolo => "yolo",
+    }
+}
+
+const fn outcome_name(outcome: &CommitOutcome) -> &'static str {
+    match outcome {
+        CommitOutcome::Unchanged => "unchanged",
+        CommitOutcome::Committed { .. } => "committed",
+    }
+}
+
+fn unsaved_name(unsaved: &Unsaved) -> String {
+    match unsaved {
+        Unsaved::HomeNotSet => "HomeNotSet".to_owned(),
+        Unsaved::Failed(failure) => failure.error.to_string(),
     }
 }
 
