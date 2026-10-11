@@ -9,9 +9,13 @@ use tokio::time::Instant;
 
 use crate::auth_state::AuthState;
 use crate::catalog_freshness::SnapshotMetadata;
+use crate::elicitation::{
+    URL_REQUIRED_ERROR_CODE, UrlRequest, completed_elicitation, parse_url_required,
+};
 use crate::error::McpError;
 use crate::feature_catalog::Invalidation;
-use crate::features::tools::ToolCatalog;
+use crate::features::tools::{ToolCallOutcome, ToolCatalog};
+use crate::legacy_url_completion::UrlCompletions;
 use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
@@ -43,6 +47,8 @@ pub(crate) struct McpClient {
     pub(crate) transport: Transport,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
+    url_elicitation: bool,
+    pub(crate) url_completions: UrlCompletions,
     pub(crate) operation_timeout: Duration,
     pub(crate) tools: Mutex<ToolSnapshot>,
     pub(crate) tools_invalidation: Invalidation,
@@ -78,14 +84,22 @@ impl McpClient {
             TransportType::Http => connect_http(config, options, deadline, auth).await?,
             TransportType::Sse => connect_sse(config, options, deadline, auth).await?,
         };
-        Ok(Self::from_connected(config, connected))
+        let url_elicitation = connected.wire == Some(ElicitationWire::LegacyMcp2025_11)
+            && options.elicitation.is_some();
+        Ok(Self::from_connected(config, connected, url_elicitation))
     }
 
-    fn from_connected(config: &McpServerConfig, connected: Connected) -> Self {
+    fn from_connected(
+        config: &McpServerConfig,
+        connected: Connected,
+        url_elicitation: bool,
+    ) -> Self {
         Self {
             transport: connected.transport,
             info: connected.info,
             wire: connected.wire,
+            url_elicitation,
+            url_completions: UrlCompletions::default(),
             operation_timeout: Duration::from_millis(config.operation_timeout_ms.into()),
             tools: Mutex::new(ToolSnapshot {
                 catalog: Arc::new(connected.listing.catalog),
@@ -139,7 +153,28 @@ impl McpClient {
         }
     }
 
+    pub(crate) fn url_required(
+        &self,
+        outcome: &ToolCallOutcome,
+    ) -> Option<Vec<(String, UrlRequest)>> {
+        let ToolCallOutcome::ProtocolFailure(error) = outcome else {
+            return None;
+        };
+        if self.wire != Some(ElicitationWire::LegacyMcp2025_11)
+            || error.code != URL_REQUIRED_ERROR_CODE
+        {
+            return None;
+        }
+        parse_url_required(error.data.as_ref()?).ok()
+    }
+
     fn classify_notification(&self, value: &Value) -> Option<ServerNotification> {
+        if self.url_elicitation
+            && let Some(id) = completed_elicitation(value)
+        {
+            self.url_completions.record(id);
+            return None;
+        }
         let method = value.get("method").and_then(Value::as_str)?.to_owned();
         let capabilities = self.info.capabilities;
         match method.as_str() {

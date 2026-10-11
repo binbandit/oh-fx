@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::elicitation::parse_request;
+use crate::legacy_url_completion::UrlCompletions;
 use crate::protocol_negotiation::ElicitationWire;
 
 #[derive(Default)]
@@ -52,10 +53,10 @@ impl Script {
         let browser = Arc::clone(self);
         InputResponder::new(
             Arc::clone(self) as Arc<dyn QuestionAsker>,
-            Arc::new(move |url: &str| {
+            move |url: &str| {
                 browser.opened.lock().unwrap().push(url.to_owned());
                 browser.open_results.lock().unwrap().pop().unwrap_or(true)
-            }),
+            },
         )
     }
 }
@@ -568,6 +569,10 @@ async fn url_browser_failure_supports_manual_continuation_and_bounded_retry() {
     assert_eq!(exhausted.opened().len(), 3);
     let cancelled = Script::new(&["Open URL", "Cancel"]).opening(&[false]);
     assert_eq!(respond(&cancelled, AUTHORIZE).await.unwrap(), CANCEL);
+    let unknown = Script::new(&["Open URL", "maybe", "Continue manually"]).opening(&[false]);
+    assert_eq!(respond(&unknown, AUTHORIZE).await.unwrap(), ACCEPT);
+    assert_eq!(unknown.asked().len(), 3);
+    assert_eq!(unknown.opened().len(), 1);
 }
 
 #[tokio::test]
@@ -597,4 +602,152 @@ async fn url_hosts_are_shown_terminal_safe_with_their_warning() {
         classify_host("ex\u{e4}mple.test".as_bytes()),
         HostClassification::NonAscii
     );
+}
+
+fn url_required(ids: &[&str]) -> Vec<(String, UrlRequest)> {
+    ids.iter()
+        .map(|id| {
+            let RequestKind::Url(url) = request(&format!(
+                r#"{{"mode":"url","message":"Connect {id}","url":"https://{id}.test/","elicitationId":"{id}"}}"#
+            ))
+            .kind
+            else {
+                panic!("a URL request");
+            };
+            ((*id).to_owned(), url)
+        })
+        .collect()
+}
+
+fn interaction<'a>(
+    responder: &'a InputResponder,
+    finished: &'a CancellationToken,
+) -> Interaction<'a> {
+    Interaction {
+        responder,
+        server_name: "fixture",
+        deadline: Instant::now() + Duration::from_mins(1),
+        finished,
+    }
+}
+
+#[tokio::test]
+async fn url_consent_covers_every_request_and_a_cancel_ends_it() {
+    let finished = CancellationToken::new();
+    let accepted = Script::new(&["Open URL", "Open URL"]);
+    let responder = accepted.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .consent_to_urls(&url_required(&["one", "two"]))
+            .await,
+        Ok(UrlConsent::Accepted)
+    );
+    assert_eq!(
+        accepted.opened(),
+        ["https://one.test/", "https://two.test/"]
+    );
+    let declined = Script::new(&["Decline", "Open URL"]);
+    let responder = declined.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .consent_to_urls(&url_required(&["one", "two"]))
+            .await,
+        Ok(UrlConsent::Declined)
+    );
+    assert_eq!(declined.asked().len(), 2);
+    let cancelled = Script::new(&[]);
+    let responder = cancelled.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .consent_to_urls(&url_required(&["one", "two"]))
+            .await,
+        Ok(UrlConsent::Cancelled)
+    );
+    assert_eq!(cancelled.asked().len(), 1);
+}
+
+#[tokio::test]
+async fn legacy_url_completion_is_separate_from_consent_and_supports_manual_retry() {
+    let finished = CancellationToken::new();
+    let completions = UrlCompletions::default();
+    let ids = ["first".to_owned(), "second".to_owned()];
+    let manual = Script::new(&["I completed it / Retry"]);
+    let responder = manual.responder();
+    let waiter = completions.wait_for(&ids).unwrap();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Ok(true)
+    );
+    let asked = manual.asked();
+    assert_eq!(
+        asked[0].question,
+        "Complete the browser flow requested by MCP server fixture. oh-fx will continue automatically if the server confirms every URL request. Otherwise choose I completed it / Retry, or Cancel."
+    );
+    assert!(manual.opened().is_empty());
+    let cancelled = Script::new(&["Cancel"]);
+    let responder = cancelled.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Ok(false)
+    );
+    let unknown = Script::new(&["maybe"]);
+    let responder = unknown.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Err(InteractionError::InvalidAnswer)
+    );
+    let waiting = Arc::new(Script {
+        hang: true,
+        ..Script::default()
+    });
+    let responder = waiting.responder();
+    let asking = interaction(&responder, &finished);
+    let awaited = asking.await_completion(&waiter);
+    tokio::pin!(awaited);
+    tokio::select! {
+        biased;
+        _ = &mut awaited => panic!("nothing completed yet"),
+        () = std::future::ready(()) => {}
+    }
+    completions.record("first");
+    completions.record("second");
+    assert_eq!(awaited.await, Ok(true));
+}
+
+#[tokio::test]
+async fn a_closed_connection_ends_the_completion_wait_as_cancelled() {
+    let finished = CancellationToken::new();
+    let completions = UrlCompletions::default();
+    let waiter = completions.wait_for(&["open".to_owned()]).unwrap();
+    let waiting = Arc::new(Script {
+        hang: true,
+        ..Script::default()
+    });
+    let responder = waiting.responder();
+    let asking = interaction(&responder, &finished);
+    let awaited = asking.await_completion(&waiter);
+    tokio::pin!(awaited);
+    tokio::select! {
+        biased;
+        _ = &mut awaited => panic!("the connection is still open"),
+        () = std::future::ready(()) => {}
+    }
+    completions.close();
+    assert_eq!(awaited.await, Ok(false));
+    assert_eq!(waiting.asked().len(), 1);
+    let unasked = Script::new(&["I completed it / Retry"]);
+    let responder = unasked.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Ok(false)
+    );
+    assert!(unasked.asked().is_empty());
 }

@@ -172,3 +172,157 @@ async fn a_logout_makes_an_open_elicitation_stale() {
     assert!(!owner.current());
     server.stop(crate::transport::ShutdownMode::Immediate).await;
 }
+
+const URL_REQUIRED_SERVER: &str = r#"reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+calls=0
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      reply "$id" '{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"fixture","version":"1"}}' ;;
+    *'"method":"tools/list"'*)
+      if [ "$calls" -gt 0 ] && [ "$CHANGE" = 1 ]; then
+        reply "$id" '{"tools":[{"name":"connect","description":"changed","inputSchema":{"type":"object"}}]}'
+      else
+        reply "$id" '{"tools":[{"name":"connect","inputSchema":{"type":"object"}}]}'
+      fi ;;
+    *'"method":"tools/call"'*)
+      calls=$((calls + 1))
+      if [ "$calls" -le "${ROUNDS:-1}" ]; then
+        if [ "$CHANGE" = 1 ]; then
+          printf '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n'
+        fi
+        if [ "$NOTIFY" = 1 ]; then
+          printf '{"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":"e1"}}\n'
+        fi
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32042,"message":"URL required","data":{"elicitations":[{"mode":"url","message":"Connect","url":"https://example.test/connect","elicitationId":"e1"}]}}}\n' "$id"
+      else
+        reply "$id" '{"content":[{"type":"text","text":"connected"}]}'
+      fi ;;
+  esac
+done
+"#;
+
+async fn connect_through_url(
+    notify: bool,
+    answers: Option<&Arc<crate::test_support::ScriptedAnswers>>,
+) -> crate::features::tools::ToolCallOutcome {
+    connect_with(&[("NOTIFY", if notify { "1" } else { "0" })], answers).await
+}
+
+async fn connect_with(
+    environment: &[(&str, &str)],
+    answers: Option<&Arc<crate::test_support::ScriptedAnswers>>,
+) -> crate::features::tools::ToolCallOutcome {
+    let options = ConnectOptions {
+        elicitation: answers
+            .map(|answers| crate::test_support::operation_elicitation(answers).responder),
+        ..ConnectOptions::default()
+    };
+    let mut config = McpServerConfig::stdio(
+        "fixture",
+        "/bin/sh",
+        vec!["-c".to_owned(), URL_REQUIRED_SERVER.to_owned()],
+    );
+    config.env.extend(
+        environment
+            .iter()
+            .map(|(key, value)| crate::mcp_contract::EnvVar {
+                key: (*key).to_owned(),
+                value: (*value).to_owned(),
+            }),
+    );
+    let server = Arc::new(Server::new(config, options, Arc::new(AtomicU64::new(0))));
+    server.start().await.unwrap();
+    let Lifecycle::Ready(client) = server.lifecycle() else {
+        panic!("the fixture is ready");
+    };
+    let advertised = super::Advertised {
+        tool: client.tool_catalog().get("connect").unwrap().clone(),
+        instructions: None,
+    };
+    let outcome = server.call(&advertised, "{}", CallOptions::default()).await;
+    server.stop(crate::transport::ShutdownMode::Immediate).await;
+    let Ok(outcome) = outcome else {
+        panic!("the call returns an outcome");
+    };
+    outcome
+}
+
+fn connected(outcome: &crate::features::tools::ToolCallOutcome) -> bool {
+    matches!(outcome, crate::features::tools::ToolCallOutcome::Complete(result) if result.result["content"][0]["text"] == "connected")
+}
+
+#[tokio::test]
+async fn a_completed_url_elicitation_retries_the_call_without_asking_again() {
+    let answers = crate::test_support::ScriptedAnswers::new(&["Open URL"]);
+    let outcome = connect_through_url(true, Some(&answers)).await;
+    assert!(connected(&outcome));
+    assert_eq!(answers.questions().len(), 1);
+    assert!(answers.questions()[0].starts_with(
+        "MCP server fixture requests an external browser action. Target host: example.test\nComplete URL: https://example.test/connect"
+    ));
+}
+
+#[tokio::test]
+async fn an_unconfirmed_url_elicitation_retries_once_the_user_says_so() {
+    let answers =
+        crate::test_support::ScriptedAnswers::new(&["Open URL", "I completed it / Retry"]);
+    let outcome = connect_through_url(false, Some(&answers)).await;
+    assert!(connected(&outcome));
+    assert_eq!(answers.questions().len(), 2);
+}
+
+#[tokio::test]
+async fn a_declined_url_elicitation_ends_the_call_and_without_a_responder_it_is_returned() {
+    let answers = crate::test_support::ScriptedAnswers::new(&["Decline"]);
+    assert!(matches!(
+        connect_through_url(true, Some(&answers)).await,
+        crate::features::tools::ToolCallOutcome::UrlElicitationEnded(
+            "MCP URL elicitation was declined"
+        )
+    ));
+    let cancelled = crate::test_support::ScriptedAnswers::new(&["Open URL", "Cancel"]);
+    assert!(matches!(
+        connect_through_url(false, Some(&cancelled)).await,
+        crate::features::tools::ToolCallOutcome::UrlElicitationEnded(
+            "MCP URL elicitation was cancelled"
+        )
+    ));
+    let crate::features::tools::ToolCallOutcome::InputRequired(requests) =
+        connect_through_url(true, None).await
+    else {
+        panic!("the URL-required result is returned");
+    };
+    assert_eq!(
+        requests,
+        r#"{"e1":{"method":"elicitation/create","params":{"mode":"url","message":"Connect","url":"https://example.test/connect","elicitationId":"e1"}}}"#
+    );
+}
+
+#[tokio::test]
+async fn a_url_elicitation_is_retried_at_most_eight_times() {
+    let answers = crate::test_support::ScriptedAnswers::new(&["Open URL"; 8]);
+    assert!(connected(
+        &connect_with(&[("NOTIFY", "1"), ("ROUNDS", "8")], Some(&answers)).await
+    ));
+    assert_eq!(answers.questions().len(), 8);
+    let answers = crate::test_support::ScriptedAnswers::new(&["Open URL"; 8]);
+    assert!(matches!(
+        connect_with(&[("NOTIFY", "1"), ("ROUNDS", "9")], Some(&answers)).await,
+        crate::features::tools::ToolCallOutcome::InputRoundsExceeded
+    ));
+    assert_eq!(answers.questions().len(), 8);
+}
+
+#[tokio::test]
+async fn a_tool_list_change_during_the_url_flow_cancels_the_retry() {
+    let answers = crate::test_support::ScriptedAnswers::new(&["Open URL"]);
+    assert!(matches!(
+        connect_with(&[("NOTIFY", "1"), ("CHANGE", "1")], Some(&answers)).await,
+        crate::features::tools::ToolCallOutcome::UrlElicitationEnded(
+            "MCP URL elicitation was cancelled"
+        )
+    ));
+    assert_eq!(answers.questions().len(), 1);
+}

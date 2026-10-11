@@ -31,10 +31,7 @@ fn answering(
     let context = ElicitationContext::new(
         wire,
         OperationElicitation {
-            responder: InputResponder::new(
-                Arc::new(Answers(Mutex::new(answers))),
-                Arc::new(|_: &str| true),
-            ),
+            responder: InputResponder::new(Arc::new(Answers(Mutex::new(answers))), |_: &str| true),
             server_name: "fixture".to_owned(),
             owner: Box::new(Owner(Arc::clone(&current))),
         },
@@ -185,7 +182,7 @@ async fn a_finished_operation_cancels_its_open_question() {
     let context = ElicitationContext::new(
         ElicitationWire::LegacyMcp2025_11,
         OperationElicitation {
-            responder: InputResponder::new(Arc::new(Silent), Arc::new(|_: &str| true)),
+            responder: InputResponder::new(Arc::new(Silent), |_: &str| true),
             server_name: "fixture".to_owned(),
             owner: Box::new(Owner(Arc::new(AtomicBool::new(true)))),
         },
@@ -268,7 +265,7 @@ fn desk_context(desk: &Arc<Desk>) -> Arc<ElicitationContext> {
             OperationElicitation {
                 responder: InputResponder::new(
                     Arc::clone(desk) as Arc<dyn QuestionAsker>,
-                    Arc::new(|_: &str| true),
+                    |_: &str| true,
                 ),
                 server_name: "fixture".to_owned(),
                 owner: Box::new(Owner(Arc::new(AtomicBool::new(true)))),
@@ -394,4 +391,33 @@ async fn a_queued_form_gets_its_whole_window_once_it_is_asked() {
             r#"{"jsonrpc":"2.0","id":9,"result":{"action":"accept","content":{"day":"Monday"}}}"#,
         ]
     );
+}
+
+#[tokio::test]
+async fn a_url_flow_waits_for_the_open_form_and_ends_when_its_connection_closes() {
+    let answers = crate::test_support::ScriptedAnswers::new(&["Open URL"]);
+    let responder = crate::test_support::operation_elicitation(&answers).responder;
+    let completions = UrlCompletions::default();
+    let requests = crate::elicitation::parse_url_required(&serde_json::json!({
+        "elicitations": [{
+            "mode": "url",
+            "message": "Connect",
+            "url": "https://example.test/connect",
+            "elicitationId": "e1"
+        }]
+    }))
+    .unwrap();
+    let open_form = responder
+        .take_turn(&CancellationToken::new())
+        .await
+        .unwrap();
+    let owner = Owner(Arc::new(AtomicBool::new(true)));
+    let flow = coordinate_url_required(&responder, "fixture", &completions, &requests, &owner);
+    tokio::pin!(flow);
+    assert!(futures_poll(&mut flow).await.is_none());
+    assert!(answers.questions().is_empty());
+    completions.close();
+    assert_eq!(flow.await.unwrap(), UrlRetry::Cancelled);
+    drop(open_form);
+    assert!(answers.questions().is_empty());
 }

@@ -1,4 +1,5 @@
 use std::fmt::{self, Write as _};
+use std::future::Future;
 use std::sync::Arc;
 
 use ofx_contract::{QuestionAsker, QuestionBatchEntry, QuestionOption, QuestionSubmission};
@@ -14,6 +15,7 @@ use crate::elicitation::{
     validate_field_json,
 };
 use crate::json_number::{Number, NumberError};
+use crate::legacy_url_completion::{Completion, Waiter};
 use crate::timing::timeout_at;
 
 const MAX_FORM_ATTEMPTS: usize = 8;
@@ -40,7 +42,7 @@ impl fmt::Display for InteractionError {
 
 type Outcome<T> = Result<T, InteractionError>;
 
-pub(crate) type UrlOpener = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+type UrlOpener = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 #[derive(Clone)]
 pub struct InputResponder {
@@ -52,10 +54,13 @@ pub struct InputResponder {
 }
 
 impl InputResponder {
-    pub fn new(questioner: Arc<dyn QuestionAsker>, browser: UrlOpener) -> Self {
+    pub fn new(
+        questioner: Arc<dyn QuestionAsker>,
+        browser: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
             questioner,
-            browser,
+            browser: Arc::new(browser),
             capabilities: ElicitationCapabilities {
                 form: true,
                 url: true,
@@ -103,6 +108,13 @@ pub(crate) struct Interaction<'a> {
     pub(crate) server_name: &'a str,
     pub(crate) deadline: Instant,
     pub(crate) finished: &'a CancellationToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlConsent {
+    Accepted,
+    Declined,
+    Cancelled,
 }
 
 enum FieldAnswer {
@@ -379,6 +391,50 @@ impl Interaction<'_> {
         Ok(FieldAnswer::Value(json))
     }
 
+    pub(crate) async fn consent_to_urls(
+        &self,
+        requests: &[(String, UrlRequest)],
+    ) -> Outcome<UrlConsent> {
+        let mut consent = UrlConsent::Accepted;
+        for (_, url) in requests {
+            match self.answer_url(url).await? {
+                Answer::Cancel => return Ok(UrlConsent::Cancelled),
+                Answer::Decline => consent = UrlConsent::Declined,
+                Answer::AcceptForm(_) | Answer::AcceptUrl => {}
+            }
+        }
+        Ok(consent)
+    }
+
+    pub(crate) async fn await_completion(&self, waiter: &Waiter<'_>) -> Outcome<bool> {
+        match waiter.status() {
+            Completion::Completed => return Ok(true),
+            Completion::Cancelled => return Ok(false),
+            Completion::Pending => {}
+        }
+        let server = terminal_safe(self.server_name)?;
+        let question = format!(
+            "Complete the browser flow requested by MCP server {server}. oh-fx will continue automatically if the server confirms every URL request. Otherwise choose I completed it / Retry, or Cancel."
+        );
+        let answer = self
+            .ask_until(
+                question,
+                labels(&["I completed it / Retry", "Cancel"]),
+                QuestionSubmission::Label,
+                waiter.settled(),
+            )
+            .await?;
+        if waiter.status() == Completion::Completed {
+            return Ok(true);
+        }
+        match answer {
+            Single::Cancelled => Ok(false),
+            Single::Answer(answer) if answer == "I completed it / Retry" => Ok(true),
+            Single::Answer(answer) if answer == "Cancel" => Ok(false),
+            Single::Invalid | Single::Answer(_) => Err(InteractionError::InvalidAnswer),
+        }
+    }
+
     async fn answer_url(&self, request: &UrlRequest) -> Outcome<Answer> {
         let server = terminal_safe(self.server_name)?;
         let host = terminal_safe_bytes(&request.host)?;
@@ -583,6 +639,17 @@ impl Interaction<'_> {
         options: Vec<QuestionOption>,
         submission: QuestionSubmission,
     ) -> Outcome<Single> {
+        self.ask_until(question, options, submission, std::future::pending())
+            .await
+    }
+
+    async fn ask_until(
+        &self,
+        question: String,
+        options: Vec<QuestionOption>,
+        submission: QuestionSubmission,
+        interrupted: impl Future<Output = ()>,
+    ) -> Outcome<Single> {
         let asked = self.responder.questioner.ask(vec![QuestionBatchEntry {
             question,
             options,
@@ -593,6 +660,7 @@ impl Interaction<'_> {
                 answers.map_err(|_| InteractionError::McpInputTimedOut)?
             }
             () = self.finished.cancelled() => None,
+            () = interrupted => None,
         };
         Ok(match answers {
             None => Single::Cancelled,

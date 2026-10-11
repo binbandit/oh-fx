@@ -21,6 +21,7 @@ mod legacy_elicitation_runtime;
 mod legacy_http_sse;
 mod legacy_sse;
 mod legacy_streamable_http;
+mod legacy_url_completion;
 mod local_inspection;
 mod mcp_auth;
 mod mcp_auth_store;
