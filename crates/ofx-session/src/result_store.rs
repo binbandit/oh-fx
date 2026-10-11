@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io::Write as _;
 
 use ofx_config::PrivateDir;
@@ -220,15 +221,39 @@ impl ResultReader {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayUnavailable {
+    SizeUnsupported,
+    Missing,
+    SizeMismatch,
+    NotText,
+    Unreadable(SessionError),
+}
+
+impl fmt::Display for ReplayUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SizeUnsupported => formatter.write_str("ResultSizeUnsupported"),
+            Self::Missing => formatter.write_str("FileNotFound"),
+            Self::SizeMismatch => formatter.write_str("ResultSizeMismatch"),
+            Self::NotText => formatter.write_str("InvalidUtf8"),
+            Self::Unreadable(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
 pub(crate) fn read_for_replay(
     session: &PrivateDir,
     handle: &str,
     expected_bytes: u64,
-) -> Option<String> {
+) -> Result<String, ReplayUnavailable> {
     let expected = usize::try_from(expected_bytes)
         .ok()
-        .filter(|bytes| *bytes <= STORED_TEXT_MAX_BYTES)?;
-    let reader = ResultReader::open(session, handle).ok()??;
+        .filter(|bytes| *bytes <= STORED_TEXT_MAX_BYTES)
+        .ok_or(ReplayUnavailable::SizeUnsupported)?;
+    let reader = ResultReader::open(session, handle)
+        .map_err(ReplayUnavailable::Unreadable)?
+        .ok_or(ReplayUnavailable::Missing)?;
     read_opened_for_replay(&reader, expected, expected_bytes)
 }
 
@@ -236,15 +261,22 @@ fn read_opened_for_replay(
     reader: &ResultReader,
     expected: usize,
     expected_bytes: u64,
-) -> Option<String> {
+) -> Result<String, ReplayUnavailable> {
     if reader.size != expected {
-        return None;
+        return Err(ReplayUnavailable::SizeMismatch);
     }
-    let bytes = reader.read_page(0, expected).ok()?;
-    if bytes.len() != expected || reader.file.metadata().ok()?.len() != expected_bytes {
-        return None;
+    let bytes = reader
+        .read_page(0, expected)
+        .map_err(ReplayUnavailable::Unreadable)?;
+    let length = reader
+        .file
+        .metadata()
+        .map_err(|error| ReplayUnavailable::Unreadable(error.into()))?
+        .len();
+    if bytes.len() != expected || length != expected_bytes {
+        return Err(ReplayUnavailable::SizeMismatch);
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes).map_err(|_| ReplayUnavailable::NotText)
 }
 
 pub(crate) fn preview(text: &str) -> &str {
@@ -407,8 +439,8 @@ mod tests {
         );
         assert_eq!(preview(&text).len(), PREVIEW_BYTES);
         let bytes = u64::try_from(text.len()).unwrap();
-        assert_eq!(read_for_replay(&dir, &handle, bytes), Some(text));
-        assert_eq!(read_for_replay(&dir, &handle, bytes - 1), None);
+        assert_eq!(read_for_replay(&dir, &handle, bytes).ok(), Some(text));
+        assert_eq!(read_for_replay(&dir, &handle, bytes - 1).ok(), None);
     }
 
     #[test]
@@ -435,16 +467,16 @@ mod tests {
     #[test]
     fn replay_reads_refuse_missing_linked_and_resized_results() {
         let (root, dir) = session();
-        assert_eq!(read_for_replay(&dir, "result-x-0-0.txt", 4), None);
+        assert_eq!(read_for_replay(&dir, "result-x-0-0.txt", 4).ok(), None);
         let handle = make_handle("c", "t", "body");
         store_result(&dir, &handle, "body").unwrap();
         let results = root.path().join("session/tool-results");
         std::fs::write(results.join(&handle), "bodies").unwrap();
-        assert_eq!(read_for_replay(&dir, &handle, 4), None);
+        assert_eq!(read_for_replay(&dir, &handle, 4).ok(), None);
         std::fs::remove_file(results.join(&handle)).unwrap();
         std::fs::write(root.path().join("outside"), "body").unwrap();
         symlink(root.path().join("outside"), results.join(&handle)).unwrap();
-        assert_eq!(read_for_replay(&dir, &handle, 4), None);
+        assert_eq!(read_for_replay(&dir, &handle, 4).ok(), None);
         assert_eq!(
             store_result(&dir, "../outside", "x"),
             Err(SessionError::InvalidConversationEvent)
@@ -465,7 +497,7 @@ mod tests {
             text.as_bytes()
         );
         assert_eq!(
-            read_for_replay(&dir, &handle, u64::try_from(text.len()).unwrap()),
+            read_for_replay(&dir, &handle, u64::try_from(text.len()).unwrap()).ok(),
             None
         );
         let reader = ResultReader::open(&dir, &handle).unwrap().unwrap();
@@ -525,7 +557,10 @@ mod tests {
             "same",
         )
         .unwrap();
-        assert_eq!(read_for_replay(&dir, &handle, 4), Some("same".to_owned()));
+        assert_eq!(
+            read_for_replay(&dir, &handle, 4).ok(),
+            Some("same".to_owned())
+        );
     }
 
     #[test]
@@ -543,7 +578,10 @@ mod tests {
             .write_all(b"extra")
             .unwrap();
         assert_eq!(reader.read_page(0, 20).unwrap(), b"body");
-        assert_eq!(read_opened_for_replay(&reader, 4, 4), None);
+        assert_eq!(
+            read_opened_for_replay(&reader, 4, 4),
+            Err(ReplayUnavailable::SizeMismatch)
+        );
     }
 
     #[test]

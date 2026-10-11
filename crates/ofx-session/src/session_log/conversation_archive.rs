@@ -2,6 +2,7 @@ use std::mem;
 
 use ofx_config::PrivateDir;
 use ofx_contract::{FileEvidence, ToolResultStatus};
+use ofx_trace::trace_log;
 use serde_json::Value;
 
 use super::conversation_writer::scan_log;
@@ -17,6 +18,7 @@ use crate::session_event::{
 use crate::session_migration::{archive_schema_v3, holds_schema_v3};
 use crate::session_replay::History;
 use crate::session_summary_codec::SessionSource;
+use crate::session_trace::SESSION;
 use crate::session_usage_sidecar;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +127,16 @@ fn read_conversation(
     unreadable_log: Option<SessionError>,
 ) -> Result<(SessionMetadata, ArchiveBuilder), SessionError> {
     let metadata = read_metadata(dir, id)?;
-    let archive = read_turns(dir).map_err(|error| unreadable_log.unwrap_or(error))?;
+    let archive = read_turns(dir).map_err(|error| match unreadable_log {
+        Some(unreadable) => {
+            trace_log!(
+                SESSION,
+                "conversation detail history unavailable id={id} err={error}"
+            );
+            unreadable
+        }
+        None => error,
+    })?;
     session_usage_sidecar::load_conversation(dir, id, metadata.updated_at_ms)?;
     read_checkpoint(dir, archive.checkpoint_seq())?;
     Ok((metadata, archive))
@@ -351,7 +362,12 @@ impl ArchiveBuilder {
         }
         let tool_call = self.calls.pop();
         self.pending_assistant = None;
-        self.pending_replay = None;
+        if self.pending_replay.take().is_some() {
+            trace_log!(
+                SESSION,
+                "provider replay omitted reason=interrupted_association"
+            );
+        }
         let user = self
             .user
             .take()

@@ -1,6 +1,7 @@
 use std::io::Write as _;
 
 use ofx_config::PrivateDir;
+use ofx_trace::trace_log;
 
 use super::LegacySession;
 use super::durable_turn::{
@@ -25,7 +26,7 @@ use crate::session_log::{
     ConversationProgress, EVENTS_FILE, MANIFEST_FILE, ProgressPoint, RECOVERY_FILE,
 };
 use crate::session_summary_codec::{SessionSource, SessionSummary};
-use crate::session_trace::rejected;
+use crate::session_trace::{SESSION, rejected};
 use crate::session_usage::UsageSnapshot;
 use crate::session_usage_sidecar;
 
@@ -63,9 +64,29 @@ pub(super) enum Purpose {
 struct Results {
     purpose: Purpose,
     stored: Vec<StoredResult>,
+    discarded_files: usize,
 }
 
 impl Results {
+    fn trace_import(&self, id: &str, archived_recovery: bool) {
+        if self.purpose != Purpose::Import {
+            return;
+        }
+        if archived_recovery {
+            trace_log!(
+                SESSION,
+                "legacy recovery archived session_id={id} reason=unverifiable_route_authority"
+            );
+        }
+        if self.discarded_files > 0 {
+            trace_log!(
+                SESSION,
+                "legacy import discarded file evidence count={} reason=empty_path",
+                self.discarded_files
+            );
+        }
+    }
+
     fn output(&mut self, call_id: &str, tool_name: &str, bytes: Vec<u8>) -> String {
         if self.purpose == Purpose::Listing {
             return LISTED_OUTPUT.to_owned();
@@ -122,6 +143,7 @@ impl LegacySession {
         let mut results = Results {
             purpose,
             stored: Vec::new(),
+            discarded_files: 0,
         };
         let mut log = LogBuilder {
             state: ConversationState::default(),
@@ -148,6 +170,7 @@ impl LegacySession {
             };
             log.append(batch)?;
         }
+        results.trace_import(&metadata.id, self.archived_recovery);
         let seq = u64::try_from(log.events.len())
             .map_err(|_| SessionError::ConversationSequenceOverflow)?;
         let file = match &self.recovery {
@@ -336,10 +359,12 @@ fn turn_events(
     if steering.next().is_some() {
         return Err(rejected("steering-boundary"));
     }
+    let listed = files.len();
     let files: Vec<FileEvidence> = files
         .into_iter()
         .filter(|file| !file.path.is_empty())
         .collect();
+    results.discarded_files += listed - files.len();
     match close {
         TurnClose::Replied(reply, provider_replay) => {
             if !reply.is_empty() || provider_replay.is_some() || ends_standalone {
@@ -474,6 +499,14 @@ fn shown_presentation(
         })
         .flatten();
     if let Some(handle) = packed {
+        if results.purpose == Purpose::Import {
+            trace_log!(
+                SESSION,
+                "event=diff_content_spilled call_id={call_id} previous_bytes={} after_bytes={}",
+                size(&previous_content),
+                size(&after_content)
+            );
+        }
         shown.content_handle = Some(handle);
         return Ok(Box::new(shown));
     }
