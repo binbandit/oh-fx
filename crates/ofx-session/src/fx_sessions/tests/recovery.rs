@@ -6,7 +6,12 @@ use std::path::Path;
 use ofx_config::PrivateDir;
 
 use super::{Home, Saved, shell_turn, snapshot};
+use crate::result_store::make_handle;
 use crate::session_error::SessionError;
+use crate::session_log::read_checkpoint;
+use crate::session_migration::tests::checkpoints::checkpoint_frame_007;
+use crate::session_migration::tests::replacements::reply_007;
+use crate::session_migration::tests::{LegacyLog, reply};
 use crate::session_store::SessionStore;
 use crate::session_store_types::{SessionRecovery, SessionRecoveryStatus};
 
@@ -273,4 +278,97 @@ fn a_session_that_cannot_be_recovered_names_why() {
         .unwrap()
         .unwrap();
     assert_eq!(store.recover("busy"), Err(SessionError::SessionBusy));
+}
+
+#[test]
+fn a_schema_v3_session_is_recovered_from_the_log_its_watermark_commits() {
+    let home = Home::new();
+    let store = store(&home);
+    let two_turns = LegacyLog::started("fx-v3", WORKSPACE)
+        .turn(&reply("first", "one"))
+        .turn(&reply("second", "two"));
+    let committed = two_turns.frame_count();
+    two_turns
+        .turn(&reply("third", "uncommitted"))
+        .committed_through(committed)
+        .write(&home.fx_sessions());
+    let before = snapshot(&home.fx_profile());
+
+    let copy = store.recover("fx-v3").unwrap();
+    assert_eq!(copy, recovered("fx-v3", &copy, 2));
+    assert_eq!(snapshot(&home.fx_profile()), before);
+    store.migrate("fx-v3").unwrap();
+    let turns = |id: &str| {
+        store
+            .load(id)
+            .unwrap()
+            .history
+            .turns
+            .into_iter()
+            .map(|turn| turn.events)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(turns(&copy.recovered_session_id), turns("fx-v3"));
+
+    LegacyLog::started("own-v3", WORKSPACE)
+        .turn(&reply("kept", "here"))
+        .write(&home.own_sessions());
+    let own = store.recover("own-v3").unwrap();
+    assert_eq!(own, recovered("own-v3", &own, 1));
+}
+
+const CHECKPOINT_OUTPUT: &str = "test result: ok. 12 passed\n";
+
+fn checkpoint_output_session(home: &Home, id: &str, stored: Option<&[u8]>) -> String {
+    let handle = make_handle("call_1", "run_command", CHECKPOINT_OUTPUT);
+    let result = format!(
+        "{{\"tool_call_id\":\"call_1\",\"tool_name\":\"run_command\",\"status\":\"success\",\"output\":\"\",\"output_handle\":\"{handle}\",\"preview\":\"test result\",\"output_bytes\":{bytes},\"stored_output_bytes\":{bytes},\"truncated\":false,\"provider_native\":false,\"created_at_ms\":15,\"permission_feedback\":[],\"committed_file_presentation\":null,\"command_output_replay\":null,\"command_process_presentation\":{{\"kind\":\"exit_code\",\"value\":0}},\"terminal_action_presentation\":null}}",
+        bytes = CHECKPOINT_OUTPUT.len()
+    );
+    LegacyLog::started_007(id)
+        .turn(&reply_007("first", "done"))
+        .frame("recovery_checkpoint_set", &checkpoint_frame_007(&result))
+        .write(&home.fx_sessions());
+    if let Some(bytes) = stored {
+        let session = home.fx_sessions().join(id);
+        private_dirs(&session, "tool-results");
+        private_file(&session.join("tool-results").join(&handle), bytes);
+    }
+    handle
+}
+
+#[test]
+fn a_schema_v3_checkpoint_keeps_the_saved_output_only_it_names() {
+    let home = Home::new();
+    let store = store(&home);
+    let handle =
+        checkpoint_output_session(&home, "fx-checkpoint", Some(CHECKPOINT_OUTPUT.as_bytes()));
+    let before = snapshot(&home.fx_profile());
+
+    let copy = store.recover("fx-checkpoint").unwrap();
+    assert_eq!(copy, recovered("fx-checkpoint", &copy, 1));
+    let copied = home.own_sessions().join(&copy.recovered_session_id);
+    assert_eq!(
+        fs::read(copied.join("tool-results").join(&handle)).unwrap(),
+        CHECKPOINT_OUTPUT.as_bytes()
+    );
+    let dir = PrivateDir::open_existing(&copied).unwrap().unwrap();
+    let mut checkpoint = read_checkpoint(&dir, 3).unwrap().unwrap();
+    checkpoint.restore_outputs(&dir);
+    assert_eq!(
+        checkpoint.interrupted_turn().steps[0].tool_results[0].output,
+        CHECKPOINT_OUTPUT
+    );
+    assert_eq!(snapshot(&home.fx_profile()), before);
+
+    let changed = CHECKPOINT_OUTPUT.replace("ok", "no");
+    checkpoint_output_session(&home, "fx-checkpoint-missing", None);
+    checkpoint_output_session(&home, "fx-checkpoint-changed", Some(changed.as_bytes()));
+    for id in ["fx-checkpoint-missing", "fx-checkpoint-changed"] {
+        assert_eq!(
+            store.recover(id),
+            Err(SessionError::SessionRecoveryBoundaryInvalid),
+            "{id}"
+        );
+    }
 }

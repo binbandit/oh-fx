@@ -37,6 +37,7 @@ pub(crate) struct Converted {
     history_len: usize,
     results: Vec<StoredResult>,
     recovery: Option<Vec<u8>>,
+    checkpoint_outputs: Vec<(String, u64)>,
     usage: Option<UsageSnapshot>,
     source_bytes: u64,
 }
@@ -152,6 +153,21 @@ impl LegacySession {
             Some(checkpoint) => recovery_file(checkpoint, seq)?,
             None => None,
         };
+        let checkpoint_outputs = match (&self.recovery, &file) {
+            (Some(checkpoint), Some(_)) => checkpoint
+                .execution
+                .steps
+                .iter()
+                .flat_map(|step| &step.results)
+                .filter_map(|result| {
+                    result
+                        .output_handle
+                        .clone()
+                        .map(|handle| (handle, result.stored_output_bytes))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let recovery = file.map(|file| {
             results
                 .stored
@@ -167,6 +183,7 @@ impl LegacySession {
             history_len,
             results: results.stored,
             recovery,
+            checkpoint_outputs,
             usage: self.usage,
             source_bytes,
         })
@@ -208,6 +225,24 @@ impl LogBuilder {
 impl Converted {
     pub(crate) fn source_bytes(&self) -> u64 {
         self.source_bytes
+    }
+
+    pub(crate) fn history_len(&self) -> usize {
+        self.history_len
+    }
+
+    pub(crate) fn events(&self) -> &[ConversationEvent] {
+        &self.events
+    }
+
+    pub(crate) fn checkpoint_outputs(&self) -> &[(String, u64)] {
+        &self.checkpoint_outputs
+    }
+
+    #[must_use]
+    pub(crate) fn rebound(mut self, id: &str) -> Self {
+        id.clone_into(&mut self.metadata.id);
+        self
     }
 
     pub(crate) fn summary(&self, title: Option<String>) -> SessionSummary {

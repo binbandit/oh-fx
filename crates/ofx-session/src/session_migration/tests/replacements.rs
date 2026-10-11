@@ -54,7 +54,7 @@ fn permissions_007() -> String {
     )
 }
 
-pub(super) fn reply_007(prompt: &str, answer: &str) -> String {
+pub(crate) fn reply_007(prompt: &str, answer: &str) -> String {
     format!(
         "{{\"kind\":\"assistant\",\"user\":{{\"text\":\"{prompt}\",\"images\":[]}},\"assistant\":\"{answer}\",\"execution\":{{\"schema_version\":4,\"tool_steps\":[],\"files\":[]}}}}"
     )
@@ -85,7 +85,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 impl LegacyLog {
-    pub(super) fn started_007(id: &str) -> Self {
+    pub(crate) fn started_007(id: &str) -> Self {
         Self::with_preferences(id, "/work", PREFERENCES_007)
     }
 
