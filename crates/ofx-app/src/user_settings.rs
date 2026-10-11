@@ -11,10 +11,10 @@ pub(crate) enum Unsaved {
     Failed(SettingsWriteFailure),
 }
 
-pub(crate) fn save(
+pub(crate) fn save<T>(
     preferences: Option<&ProfilePaths>,
-    commit: impl FnOnce(&ProfilePaths) -> Result<(), SettingsWriteFailure>,
-) -> Result<(), Unsaved> {
+    commit: impl FnOnce(&ProfilePaths) -> Result<T, SettingsWriteFailure>,
+) -> Result<T, Unsaved> {
     let paths = preferences.ok_or(Unsaved::HomeNotSet)?;
     commit(paths).map_err(Unsaved::Failed)
 }

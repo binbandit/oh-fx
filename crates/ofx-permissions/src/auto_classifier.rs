@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::auto_classifier_context::root_user_request_context;
+use crate::review_trace::Composing;
 
 pub(crate) use evidence::{Action, PriorToolResults, Target, select_prior_tool_results};
 
@@ -84,7 +85,14 @@ impl Reviewer {
             ReviewView::Normal => None,
             ReviewView::Contextual => root_user_request_context(subject.trusted_root_context),
         };
+        let composing = Composing::start(
+            view.as_str(),
+            (subject.model, self.transport.model(subject.model)),
+            (subject.batch.len(), contextual_root.map_or(0, str::len)),
+            subject.call.id.as_str(),
+        );
         if !valid_review_turn(subject, view, contextual_root) {
+            composing.failed("invalid_context");
             return fail(ReviewFailure::InvalidContext);
         }
         let evidence = evidence::serialize(subject);
@@ -92,6 +100,7 @@ impl Reviewer {
             return fail(ReviewFailure::ConstructionTimedOut);
         }
         if !evidence.action_complete {
+            composing.failed("evidence_incomplete");
             return Some(Reviewed {
                 verdict: ReviewVerdict::EvidenceIncomplete,
                 usage: Usage::default(),
@@ -119,20 +128,23 @@ impl Reviewer {
         let Some(body) = self.transport.request_body(&request) else {
             return fail(ReviewFailure::ConstructionFailed);
         };
-        self.send(&request, &body, deadline, cancel).await
+        composing.ready(body.len());
+        self.send(&request, &body, (deadline, &composing), cancel)
+            .await
     }
 
     async fn send(
         &self,
         request: &ModelRequest<'_>,
         body: &str,
-        deadline: Instant,
+        (deadline, composing): (Instant, &Composing<'_>),
         cancel: &CancellationToken,
     ) -> Option<Reviewed> {
         let mut usage = Usage::default();
         let mut recovery_available = true;
         let mut transport_retry_available = true;
         let mut send_deadline = deadline;
+        let mut attempt = 1;
         loop {
             if cancel.is_cancelled() {
                 return None;
@@ -140,6 +152,7 @@ impl Reviewer {
             if Instant::now() >= send_deadline {
                 return Some(unavailable(ReviewFailure::ConstructionTimedOut, usage));
             }
+            composing.send(attempt);
             let outcome = tokio::select! {
                 biased;
                 () = cancel.cancelled() => return None,
@@ -167,7 +180,10 @@ impl Reviewer {
                     }
                     match parse_completion(&completion) {
                         Err(failure) if recovery_available && failure.is_malformed_completion() => {
+                            let content = completion.content.as_deref().map_or(0, str::len);
+                            composing.format_retry(failure, completion.tool_calls.len(), content);
                             recovery_available = false;
+                            attempt += 1;
                             continue;
                         }
                         parsed => {
@@ -183,6 +199,8 @@ impl Reviewer {
                 return Some(unavailable(failure, usage));
             }
             transport_retry_available = false;
+            attempt += 1;
+            composing.transport_retry(failure);
             send_deadline = Instant::now() + self.timeout;
         }
     }

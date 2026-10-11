@@ -4,10 +4,13 @@ use ofx_contract::{
     BoxFuture, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
     ProviderErrorKind, ReviewTransport, ReviewTransportOutcome, StreamEvent, Usage,
 };
+use ofx_trace::trace_log;
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::GatewayProvider;
 
+const PERMISSION: &str = "permission";
+const SINGLE_TRANSPORT_ATTEMPT: usize = 1;
 const CODEX_REVIEWER_MODEL: &str = "gpt-5.6-luna";
 const GATEWAY_REVIEWER_MODEL: &str = "openai/gpt-5.6-luna";
 const MAX_REVIEW_OUTPUT_TOKENS: u32 = 2048;
@@ -147,9 +150,21 @@ impl ReviewTransport for GatewayReviewTransport {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ReviewTransportOutcome> {
         Box::pin(async move {
+            trace_log!(
+                PERMISSION,
+                "event=auto_review_transport_start model={} retry_count={SINGLE_TRANSPORT_ATTEMPT}",
+                request.model
+            );
             match self.provider.review(request, body, cancel).await {
-                Ok(completion) => ReviewTransportOutcome::Completion(Box::new(completion)),
-                Err(error) => gateway_failure(&error),
+                Ok(completion) => {
+                    trace_completion(finish_name(completion.finish_reason), &completion);
+                    ReviewTransportOutcome::Completion(Box::new(completion))
+                }
+                Err(error) => {
+                    let outcome = gateway_failure(&error);
+                    trace_gateway_failure(&outcome, &error);
+                    outcome
+                }
             }
         })
     }
@@ -188,9 +203,109 @@ fn send<'a>(
             .stream_body(request, body, &mut discarded, cancel)
             .await
         {
-            Ok(completion) => ReviewTransportOutcome::Completion(Box::new(completion)),
-            Err(error) => failure(&error),
+            Ok(completion) => {
+                trace_completion(finish_name(completion.finish_reason), &completion);
+                ReviewTransportOutcome::Completion(Box::new(completion))
+            }
+            Err(error) => {
+                let outcome = failure(&error);
+                trace_failure(&outcome, &error);
+                outcome
+            }
         }
+    })
+}
+
+fn trace_completion(finish_reason: &str, completion: &Completion) {
+    trace_log!(
+        PERMISSION,
+        "event=auto_review_transport result=completion finish_reason={finish_reason} tool_calls={} content_bytes={}",
+        completion.tool_calls.len(),
+        completion.content.as_deref().map_or(0, str::len)
+    );
+}
+
+fn trace_gateway_failure(outcome: &ReviewTransportOutcome, error: &ProviderError) {
+    match error.status {
+        Some(status) => trace_log!(
+            PERMISSION,
+            "event=auto_review_transport result={} http_status={status}",
+            outcome_name(outcome)
+        ),
+        None => trace_failure(outcome, error),
+    }
+}
+
+const fn outcome_name(outcome: &ReviewTransportOutcome) -> &'static str {
+    match outcome {
+        ReviewTransportOutcome::Completion(_) => "completion",
+        ReviewTransportOutcome::TransientFailure => "transient_failure",
+        ReviewTransportOutcome::PermanentFailure => "permanent_failure",
+        ReviewTransportOutcome::TimedOut => "timed_out",
+        ReviewTransportOutcome::Cancelled => "cancelled",
+    }
+}
+
+fn trace_failure(outcome: &ReviewTransportOutcome, error: &ProviderError) {
+    if let ReviewTransportOutcome::Completion(completion) = outcome {
+        let finish = if error.code == OUTPUT_TRUNCATED {
+            "length"
+        } else {
+            "absent"
+        };
+        return trace_completion(finish, completion);
+    }
+    let result = outcome_name(outcome);
+    if error.code == CONTENT_FILTERED {
+        trace_log!(
+            PERMISSION,
+            "event=auto_review_transport result={result} reason=content_filter"
+        );
+    } else if error.code == PROVIDER_ERROR && error.status.is_none() {
+        trace_log!(
+            PERMISSION,
+            "event=auto_review_transport result={result} reason=provider_error"
+        );
+    } else if let Some(kind) = error.status.and(failure_kind(error.kind)) {
+        trace_log!(
+            PERMISSION,
+            "event=auto_review_transport result={result} reason=provider_failure failure_kind={kind}"
+        );
+    } else {
+        trace_log!(
+            PERMISSION,
+            "event=auto_review_transport result={result} reason=transport_error error={}",
+            error.code
+        );
+    }
+}
+
+const fn finish_name(reason: FinishReason) -> &'static str {
+    match reason {
+        FinishReason::Stop => "stop",
+        FinishReason::ToolCalls => "tool_calls",
+    }
+}
+
+const fn failure_kind(kind: ProviderErrorKind) -> Option<&'static str> {
+    Some(match kind {
+        ProviderErrorKind::InvalidRequest => "invalid_request",
+        ProviderErrorKind::Unauthorized => "unauthorized",
+        ProviderErrorKind::Forbidden => "forbidden",
+        ProviderErrorKind::RequestTooLarge => "request_too_large",
+        ProviderErrorKind::RateLimited => "rate_limited",
+        ProviderErrorKind::ServerError => "server_error",
+        ProviderErrorKind::BadGateway => "bad_gateway",
+        ProviderErrorKind::Unavailable => "unavailable",
+        ProviderErrorKind::GatewayTimeout => "gateway_timeout",
+        ProviderErrorKind::ProviderError => "provider_error",
+        ProviderErrorKind::ConnectionFailed
+        | ProviderErrorKind::ConnectivityLost
+        | ProviderErrorKind::TransportInterrupted
+        | ProviderErrorKind::Timeout
+        | ProviderErrorKind::StreamStalled
+        | ProviderErrorKind::Protocol
+        | ProviderErrorKind::Cancelled => return None,
     })
 }
 

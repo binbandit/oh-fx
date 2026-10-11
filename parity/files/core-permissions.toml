@@ -20,7 +20,7 @@ note = "Structured request replacement/clearing and review display exist; full f
 upstream = "src/core/permissions/auto_classifier.zig"
 status = "partial"
 modules = ["crates/ofx-permissions/src/auto_classifier.rs"]
-note = "Automatic reviews, failure holds and prior-result context exist; native subagent-origin authority policy and terminal receiver evidence are absent."
+note = "Automatic reviews, failure holds and prior-result context exist, with the compose, send and retry trace lines; native subagent-origin authority policy and terminal receiver evidence are absent."
 
 [[file]]
 upstream = "src/core/permissions/auto_classifier_context.zig"
