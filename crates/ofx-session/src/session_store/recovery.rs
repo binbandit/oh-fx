@@ -159,10 +159,18 @@ fn recover_schema_v3(
     let recovered_id = generate_session_id().ok_or(SessionError::SessionStartFailed)?;
     let converted = converted.rebound(&recovered_id);
     let log = converted_log(converted.events())?;
+    let checkpoint_outputs: Vec<RecoveredArtifact> = converted
+        .checkpoint_outputs()
+        .iter()
+        .map(|(handle, bytes)| RecoveredArtifact::ToolOutput {
+            handle: handle.clone(),
+            bytes: *bytes,
+        })
+        .collect();
     let unverified = publish_recovery(sessions, &recovered_id, |copy| {
         converted.write(copy)?;
         let mut unverified = false;
-        for artifact in &log.artifacts {
+        for artifact in log.artifacts.iter().chain(&checkpoint_outputs) {
             unverified |= copy_missing_artifact(source, copy, artifact)?;
         }
         Ok(unverified)
