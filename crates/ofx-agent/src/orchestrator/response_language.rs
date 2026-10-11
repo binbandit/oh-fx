@@ -87,7 +87,8 @@ impl Agent {
             .language
             .correction_attempted
             .then_some(RESPONSE_LANGUAGE_CORRECTION_CONTROL);
-        let mut messages = self.request_history();
+        let mut messages =
+            self.request_history(turn.history_replays.as_deref().unwrap_or_default());
         let mut notes = turn
             .continuation
             .into_iter()

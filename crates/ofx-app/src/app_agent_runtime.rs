@@ -1689,6 +1689,7 @@ mod tests {
     };
     use crate::codex_provider::SubscriptionEndpoints;
 
+    mod history_replay;
     mod sign_out;
     mod steering;
     mod trace;
