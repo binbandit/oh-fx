@@ -57,6 +57,9 @@ impl Fixture {
                 gateway_models: ofx_gateway::GatewayModelsEndpoints {
                     models: format!("{}/coding-agent/v1/models", catalog.base_url()),
                 },
+                gateway_credits: ofx_gateway::GatewayCreditsEndpoints {
+                    credits: format!("{}/coding-agent/v1/credits", catalog.base_url()),
+                },
             },
             lookup: |_| None,
         }
