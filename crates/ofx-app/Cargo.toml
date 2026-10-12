@@ -19,6 +19,7 @@ ofx-http.workspace = true
 ofx-mcp.workspace = true
 ofx-permissions.workspace = true
 ofx-session.workspace = true
+ofx-shell.workspace = true
 ofx-skills.workspace = true
 ofx-text.workspace = true
 ofx-tools.workspace = true
