@@ -1,0 +1,345 @@
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use ofx_testkit::{FakeServer, Reply, chat_text_events};
+use serde_json::{Value, json};
+
+const FIXTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../ofx-session/tests/fixtures/sessions_v2"
+);
+const LISTED: [&str; 4] = [
+    "hDoX4WdPFWDK",
+    "pgdu6JEc1UOO",
+    "U9K-4ZzltsUh",
+    "nJI52ukeF2bU",
+];
+
+struct Home {
+    _directory: tempfile::TempDir,
+    root: PathBuf,
+}
+
+impl Home {
+    fn new(base_url: &str) -> Self {
+        let directory = tempfile::tempdir().expect("create a temporary home");
+        let root = fs::canonicalize(directory.path()).expect("canonicalize the home");
+        for name in ["config/oh-fx", "workspace", "elsewhere"] {
+            fs::create_dir_all(root.join(name)).expect("create a directory");
+        }
+        let settings = json!({
+            "provider": "local",
+            "model": "local-model",
+            "providers": {"local": {
+                "protocol": "openai-chat-completions",
+                "base_url": base_url,
+                "auth": {"type": "none"},
+                "models": ["local-model"],
+            }},
+        });
+        fs::write(
+            root.join("config/oh-fx/settings.json"),
+            settings.to_string(),
+        )
+        .expect("write settings");
+        Self {
+            _directory: directory,
+            root,
+        }
+    }
+
+    fn run(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+            .args(args)
+            .current_dir(self.root.join("workspace"))
+            .env_clear()
+            .env("HOME", &self.root)
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("state"))
+            .env("XDG_DATA_HOME", self.root.join("data"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("SHELL", "/bin/sh")
+            .env("OH_FX_AUTO_UPGRADE", "0")
+            .envs(environment.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx")
+    }
+
+    fn listed(&self, args: &[&str], environment: &[(&str, &str)]) -> String {
+        let output = self.run(args, environment);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            text(&output.stderr)
+        );
+        assert_eq!(text(&output.stderr), "", "{args:?}");
+        text(&output.stdout)
+    }
+
+    fn workspace(&self) -> String {
+        self.root
+            .join("workspace")
+            .to_str()
+            .expect("utf-8 path")
+            .to_owned()
+    }
+
+    fn fx_root(&self) -> PathBuf {
+        self.root.join(".fx/sessions/v2")
+    }
+
+    fn own_root(&self) -> PathBuf {
+        self.root.join("data/oh-fx/sessions/v2")
+    }
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8(bytes.to_vec()).expect("utf-8 output")
+}
+
+fn fixture(name: &str) -> Vec<u8> {
+    fs::read(Path::new(FIXTURES).join("listing").join(name)).expect("read a fixture")
+}
+
+fn private_root(root: &Path, levels: usize) {
+    fs::create_dir_all(root).expect("create the v2 root");
+    let mut folder = root.to_path_buf();
+    for _ in 0..levels {
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).expect("make it private");
+        folder.pop();
+    }
+}
+
+fn install(root: &Path, levels: usize, index: &[u8], sessions: &[&str]) {
+    private_root(root, levels);
+    fs::write(root.join("index.jsonl"), index).expect("write the index");
+    for id in sessions {
+        fs::create_dir(root.join(id)).expect("create a session folder");
+        fs::set_permissions(root.join(id), fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+}
+
+fn crc32c(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 0 {
+                crc >> 1
+            } else {
+                (crc >> 1) ^ 0x82F6_3B78
+            };
+        }
+    }
+    !crc
+}
+
+fn put(id: &str, workspace: &str, title: &str, updated_ms: impl std::fmt::Display) -> String {
+    let payload = format!(
+        "{{\"op\":\"put\",\"id\":\"{id}\",\"role\":\"root\",\"host\":\"ask\",\"workspace\":\"{workspace}\",\"title\":\"{title}\",\"language\":\"und-Latn\",\"created\":{updated_ms},\"updated\":{updated_ms},\"turns\":1,\"opened\":[0,0,0,0,0]"
+    );
+    format!(
+        "{payload},\"crc\":\"{:08x}\"}}\n",
+        crc32c(payload.as_bytes())
+    )
+}
+
+fn marked_json(fx: &str) -> String {
+    fx.replace(
+        "\"conversation_language\":\"und-Latn\"}",
+        "\"conversation_language\":\"und-Latn\",\"source\":\"fx\"}",
+    )
+    .replace(
+        "\"conversation_language\":\"und-Cyrl\"}",
+        "\"conversation_language\":\"und-Cyrl\",\"source\":\"fx\"}",
+    )
+}
+
+fn ids(listed: &str) -> Vec<String> {
+    let listed: Value = serde_json::from_str(listed).expect("listing json");
+    listed["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .map(|session| session["id"].as_str().expect("id").to_owned())
+        .collect()
+}
+
+#[test]
+fn the_sessions_fx_saved_on_v2_list_as_fx_lists_them() {
+    let home = Home::new("http://127.0.0.1:9");
+    install(&home.fx_root(), 3, &fixture("index.jsonl"), &LISTED);
+    let expected = marked_json(&text(&fixture("fx-sessions-all.json")));
+    assert_eq!(
+        home.listed(&["--sessions-v2", "sessions", "--all", "--json"], &[]),
+        expected
+    );
+    assert_eq!(
+        home.listed(
+            &["sessions", "--all", "--json"],
+            &[("OH_FX_SESSIONS_V2", "true")]
+        ),
+        expected
+    );
+    let fx_text = text(&fixture("fx-sessions-all.txt"));
+    let marked: String = fx_text
+        .lines()
+        .map(|line| {
+            if line.starts_with("   id=") {
+                format!("{line} | fx\n")
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert_eq!(
+        home.listed(&["--sessions-v2", "sessions", "--all"], &[]),
+        marked
+    );
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..LISTED.len() {
+        let mut args = vec![
+            "--sessions-v2",
+            "sessions",
+            "--all",
+            "--limit",
+            "1",
+            "--json",
+        ];
+        if let Some(cursor) = &cursor {
+            args.extend(["--cursor", cursor.as_str()]);
+        }
+        let page: Value = serde_json::from_str(&home.listed(&args, &[])).expect("page json");
+        seen.extend(ids(&page.to_string()));
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+    }
+    assert_eq!(seen, LISTED);
+    assert_eq!(cursor, None);
+    assert!(!home.own_root().exists());
+}
+
+#[test]
+fn each_store_lists_only_its_own_sessions() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["saved on v1"]))]);
+    let home = Home::new(&server.base_url());
+    let output = home.run(&["ask", "A v1 question."], &[]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    install(&home.fx_root(), 3, &fixture("index.jsonl"), &LISTED);
+    assert_eq!(
+        ids(&home.listed(&["--sessions-v2", "sessions", "--all", "--json"], &[])),
+        LISTED
+    );
+    let v1 = ids(&home.listed(&["sessions", "--all", "--json"], &[]));
+    assert_eq!(v1.len(), 1);
+    assert!(!LISTED.contains(&v1[0].as_str()));
+}
+
+#[test]
+fn session_last_on_v2_describes_the_newest_session_of_the_workspace() {
+    let home = Home::new("http://127.0.0.1:9");
+    let workspace = home.workspace();
+    let elsewhere = home
+        .root
+        .join("elsewhere")
+        .to_str()
+        .expect("utf-8 path")
+        .to_owned();
+    let none = home.run(&["--sessions-v2", "session", "last"], &[]);
+    assert_eq!(none.status.code(), Some(1));
+    assert_eq!(
+        text(&none.stderr),
+        "oh-fx session: no saved sessions for this workspace\n"
+    );
+    let index = [
+        put("fxOlderAaaa1", &workspace, "Older here.", 10),
+        put("fxNewerAaaa2", &workspace, "Newer here.", 20),
+        put("fxElsewhere3", &elsewhere, "Newest elsewhere.", 30),
+    ]
+    .concat();
+    install(
+        &home.fx_root(),
+        3,
+        index.as_bytes(),
+        &["fxOlderAaaa1", "fxNewerAaaa2", "fxElsewhere3"],
+    );
+    assert_eq!(
+        home.listed(&["--sessions-v2", "session", "last", "--json"], &[]),
+        format!(
+            "{{\"kind\":\"session_summary\",\"id\":\"fxNewerAaaa2\",\"title\":\"Newer here.\",\"preview\":null,\"workspace_root\":\"{workspace}\",\"origin_workspace_root\":\"{workspace}\",\"created_at_ms\":20,\"updated_at_ms\":20,\"history_len\":1,\"conversation_language\":\"und-Latn\",\"source\":\"fx\"}}\n"
+        )
+    );
+    install(
+        &home.own_root(),
+        2,
+        put("ownLatestId1", &workspace, "Mine.", 25).as_bytes(),
+        &["ownLatestId1"],
+    );
+    assert_eq!(
+        home.listed(&["--sessions-v2", "session", "last"], &[]),
+        "[session] ownLatestId1\ncreated_at_ms: 25\nupdated_at_ms: 25\nlanguage: und-Latn\nhistory_len: 1\n"
+    );
+}
+
+#[test]
+fn a_put_with_an_out_of_range_number_is_skipped_and_an_underflow_reads_as_zero() {
+    let home = Home::new("http://127.0.0.1:9");
+    let workspace = home.workspace();
+    let index = [
+        put("fxHugeNumbr1", &workspace, "Huge.", "1e9223372036854775807"),
+        put(
+            "fxTinyNumbr2",
+            &workspace,
+            "Tiny.",
+            "1.0e-9223372036854775807",
+        ),
+        put("fxPlainOne03", &workspace, "Plain.", 5),
+    ]
+    .concat();
+    install(
+        &home.fx_root(),
+        3,
+        index.as_bytes(),
+        &["fxHugeNumbr1", "fxTinyNumbr2", "fxPlainOne03"],
+    );
+    assert_eq!(
+        ids(&home.listed(&["--sessions-v2", "sessions", "--all", "--json"], &[])),
+        ["fxPlainOne03", "fxTinyNumbr2"]
+    );
+    assert!(
+        home.listed(&["--sessions-v2", "session", "last", "--json"], &[])
+            .contains("\"id\":\"fxPlainOne03\"")
+    );
+}
+
+#[test]
+fn a_v2_index_that_cannot_be_read_fails_the_listing() {
+    let home = Home::new("http://127.0.0.1:9");
+    let workspace = home.workspace();
+    install(
+        &home.own_root(),
+        2,
+        put("ownSession01", &workspace, "Mine.", 5).as_bytes(),
+        &["ownSession01"],
+    );
+    let index = home.own_root().join("index.jsonl");
+    fs::set_permissions(&index, fs::Permissions::from_mode(0o000)).expect("chmod");
+    if fs::read(&index).is_ok() {
+        return;
+    }
+    let output = home.run(&["--sessions-v2", "sessions", "--json"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stdout),
+        "{\"kind\":\"sessions\",\"error\":\"durable session store is unavailable\",\"code\":\"SessionStoreUnavailable\"}\n"
+    );
+    let output = home.run(&["--sessions-v2", "session", "last"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "oh-fx session: durable session store is unavailable\n"
+    );
+}

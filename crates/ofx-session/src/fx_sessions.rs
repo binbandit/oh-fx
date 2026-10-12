@@ -18,6 +18,7 @@ pub(crate) use remembered::{remembered_session_id, resumed_at};
 
 const PROFILE_DIR: &str = ".fx";
 const SESSIONS_DIR: &str = "sessions";
+const V2_DIR: &str = "v2";
 
 pub struct FxSessions {
     sessions: Option<PrivateDir>,
@@ -107,6 +108,11 @@ fn open_profile(home: &Path) -> Option<PrivateDir> {
     }
     let profile = PrivateDir::open_existing(&home.join(PROFILE_DIR)).ok()??;
     has_private_dir_mode(&profile).ok()?.then_some(profile)
+}
+
+pub(crate) fn open_v2_root(home: &Path) -> Option<PrivateDir> {
+    let root = open_sessions(home)?.open_child(V2_DIR).ok()??;
+    has_private_dir_mode(&root).ok()?.then_some(root)
 }
 
 fn open_sessions(home: &Path) -> Option<PrivateDir> {
