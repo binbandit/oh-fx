@@ -17,6 +17,8 @@ mod input_submit_runtime;
 mod leading_whitespace;
 #[cfg(test)]
 mod lifecycle_tests;
+pub(crate) mod mcp_menu;
+mod mcp_menu_runtime;
 pub(crate) mod model_menu;
 mod model_picker_runtime;
 mod picker_state;
@@ -62,6 +64,7 @@ use input_completion_runtime::{FilePicker, PickerBand};
 use input_history_runtime::HistoryRecorder;
 use input_selection_runtime::ClipboardRuntime;
 use leading_whitespace::LeadingWhitespace;
+use mcp_menu_runtime::McpMenu;
 use model_menu::{CatalogLoad, ModelMenu};
 use picker_state::ModelFlow;
 use provider_picker_runtime::ProviderColumn;
@@ -269,6 +272,7 @@ pub(crate) struct Shell<'a> {
     usage_menu: Option<UsageMenu>,
     workspace_menu: Option<WorkspaceMenuState>,
     settings_menu: Option<SettingsMenu>,
+    mcp_menu: Option<McpMenu>,
     skill_catalog: Option<Box<dyn SkillCatalogSource>>,
     kept_recovery: Option<RecoveryStatus>,
     session_title: Option<String>,
@@ -324,6 +328,15 @@ struct FrameCache {
     drawn_activity: Option<i64>,
     activity_visible: bool,
     composer: Option<ComposerView>,
+}
+
+impl FrameCache {
+    fn stale() -> Self {
+        Self {
+            stale: true,
+            ..Self::default()
+        }
+    }
 }
 
 pub fn run_shell(
@@ -503,6 +516,7 @@ impl<'a> Shell<'a> {
             usage_menu: None,
             workspace_menu: None,
             settings_menu: None,
+            mcp_menu: None,
             skill_catalog,
             kept_recovery: None,
             session_title: None,
@@ -526,10 +540,7 @@ impl<'a> Shell<'a> {
             output: String::new(),
             footer_row: 0,
             should_exit: false,
-            frame: FrameCache {
-                stale: true,
-                ..FrameCache::default()
-            },
+            frame: FrameCache::stale(),
             metrics: Metrics::default(),
             upgrade_status: String::new(),
         };
@@ -804,6 +815,7 @@ impl<'a> Shell<'a> {
             .or_else(|| self.usage_menu_band())
             .or_else(|| self.workspace_menu_band())
             .or_else(|| self.settings_menu_band())
+            .or_else(|| self.mcp_menu_band())
         {
             return (Some(band), hint, false);
         }
@@ -1149,6 +1161,7 @@ impl<'a> Shell<'a> {
             self.input.theme_deadline_ms(now_ms),
             self.input.native_clear_deadline_ms(),
             self.token_redraw_ms().filter(|_| !self.frames_blocked()),
+            self.mcp_menu_refresh_due_ms(),
         ]
         .into_iter()
         .flatten()

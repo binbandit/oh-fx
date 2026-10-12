@@ -4,9 +4,7 @@ use ofx_text::encode_terminal_safe;
 
 use crate::mcp_contract::{ConfigScope, ConfigSource, TransportType, WorkspaceAdmission};
 
-const MAX_PENDING_SUMMARY_NAMES: usize = 4;
 const STARTUP_NAME_BYTES: usize = 128;
-const SUMMARY_NAME_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionState {
@@ -288,69 +286,6 @@ pub(crate) fn render(snapshot: &Snapshot) -> String {
     out
 }
 
-pub(crate) fn render_summary(snapshot: &Snapshot) -> String {
-    if snapshot.servers.is_empty() && snapshot.configuration_issues.is_empty() {
-        return "MCP: no servers configured. Use /mcp add <name> <command> [args...].".to_owned();
-    }
-    let issues = snapshot.configuration_issues.len();
-    if snapshot.servers.is_empty() {
-        return format!(
-            "MCP: {issues} project .mcp.json {}. Use /mcp list for details.",
-            plural(issues, "error", "errors")
-        );
-    }
-    let mut ready = 0;
-    let mut connecting = 0;
-    let mut needs_auth = 0;
-    let mut failed = 0;
-    let mut first_auth = None;
-    let mut pending = Vec::new();
-    for server in &snapshot.servers {
-        if server.source == ConfigSource::Workspace
-            && server.workspace_admission == Some(WorkspaceAdmission::Pending)
-        {
-            pending.push(server.configured_name.as_str());
-        }
-        match server.status() {
-            Status::Ready => ready += 1,
-            Status::Connecting => connecting += 1,
-            Status::NeedsAuth => {
-                needs_auth += 1;
-                first_auth.get_or_insert(server.configured_name.as_str());
-            }
-            Status::Failed => failed += 1,
-            Status::Disabled | Status::Unavailable => {}
-        }
-    }
-    let count = snapshot.servers.len();
-    let mut out = format!(
-        "MCP: {count} {} — {ready} ready, {connecting} connecting, {needs_auth} needs auth, {failed} failed.",
-        plural(count, "server", "servers")
-    );
-    if let Some(name) = first_auth {
-        let _ = write!(out, " Run /mcp auth {name} --open.");
-    }
-    if !pending.is_empty() {
-        out.push_str(" Pending approval: ");
-        let shown = pending.len().min(MAX_PENDING_SUMMARY_NAMES);
-        for (index, name) in pending[..shown].iter().enumerate() {
-            if index > 0 {
-                out.push_str(", ");
-            }
-            out.push_str(&encode_terminal_safe(name.as_bytes(), SUMMARY_NAME_BYTES).text);
-        }
-        if pending.len() > shown {
-            let _ = write!(out, ", +{} more", pending.len() - shown);
-        }
-        out.push('.');
-    }
-    if issues > 0 {
-        let _ = write!(out, " Project .mcp.json errors: {issues}.");
-    }
-    out.push_str(" Use /mcp list for details.");
-    out
-}
-
 pub(crate) fn render_startup_notice(snapshot: &Snapshot) -> Option<String> {
     let status = |wanted| {
         snapshot
@@ -557,73 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_health_summary_reports_actionable_aggregate_state() {
-        assert_eq!(
-            render_summary(&Snapshot::default()),
-            "MCP: no servers configured. Use /mcp add <name> <command> [args...]."
-        );
-        let mut ready = server("ready");
-        ready.connection = ConnectionState::Ready;
-        let mut loading = server("loading");
-        loading.connection = ConnectionState::Connecting;
-        let mut broken = server("broken");
-        broken.connection = ConnectionState::Failed;
-        let mut off = server("off");
-        off.connection = ConnectionState::Disabled;
-        assert_eq!(
-            render_summary(&snapshot(vec![ready, loading, broken, off])),
-            "MCP: 4 servers — 1 ready, 1 connecting, 0 needs auth, 1 failed. Use /mcp list for details."
-        );
-    }
-
-    #[test]
-    fn compact_health_summary_names_pending_workspace_servers() {
-        let workspace = |name: &str, admission| {
-            let mut entry = server(name);
-            entry.source = ConfigSource::Workspace;
-            entry.scope = ConfigScope::Workspace;
-            entry.workspace_admission = Some(admission);
-            entry
-        };
-        let summary = render_summary(&snapshot(vec![
-            workspace("docs", WorkspaceAdmission::Pending),
-            workspace("db\u{1b}", WorkspaceAdmission::Pending),
-            workspace("approved", WorkspaceAdmission::Approved),
-        ]));
-        assert!(
-            summary.contains("Pending approval: docs, db\\x1b."),
-            "{summary}"
-        );
-        assert!(!summary.contains("approved"));
-        let many: Vec<_> = (0..6)
-            .map(|index| workspace(&format!("s{index}"), WorkspaceAdmission::Pending))
-            .collect();
-        assert!(
-            render_summary(&snapshot(many)).contains("Pending approval: s0, s1, s2, s3, +2 more.")
-        );
-    }
-
-    #[test]
-    fn compact_health_summary_counts_project_configuration_errors() {
-        let issues = Snapshot {
-            servers: Vec::new(),
-            configuration_issues: vec!["one".to_owned(), "two".to_owned()],
-        };
-        assert_eq!(
-            render_summary(&issues),
-            "MCP: 2 project .mcp.json errors. Use /mcp list for details."
-        );
-        let mixed = Snapshot {
-            servers: vec![server("plain")],
-            configuration_issues: vec!["one".to_owned()],
-        };
-        assert_eq!(
-            render_summary(&mixed),
-            "MCP: 1 server — 0 ready, 0 connecting, 0 needs auth, 0 failed. Project .mcp.json errors: 1. Use /mcp list for details."
-        );
-    }
-
-    #[test]
     fn startup_notice_names_failures_and_stays_quiet_when_healthy() {
         let mut healthy = server("up");
         healthy.connection = ConnectionState::Ready;
@@ -696,23 +564,6 @@ mod tests {
         assert!(
             rendered.contains("state=ready auth=authenticated status=ready"),
             "{rendered}"
-        );
-    }
-
-    #[test]
-    fn the_summary_counts_and_names_servers_that_need_authentication() {
-        let mut ready = server("ready");
-        ready.connection = ConnectionState::Ready;
-        let mut connecting = server("connecting");
-        connecting.connection = ConnectionState::Connecting;
-        let mut plain = server("plain");
-        plain.connection = ConnectionState::Failed;
-        plain.authentication = AuthenticationState::Required;
-        let mut failed = server("failed");
-        failed.connection = ConnectionState::Failed;
-        assert_eq!(
-            render_summary(&snapshot(vec![ready, connecting, plain, failed])),
-            "MCP: 4 servers — 1 ready, 1 connecting, 1 needs auth, 1 failed. Run /mcp auth plain --open. Use /mcp list for details."
         );
     }
 

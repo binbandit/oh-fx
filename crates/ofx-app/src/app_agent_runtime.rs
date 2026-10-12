@@ -769,6 +769,7 @@ impl Controller {
                         return;
                     }
                 }
+                UiCommand::McpMenu { request } => self.state.handle_mcp_menu(request),
                 UiCommand::ListModels => self.catalog.request(),
                 UiCommand::SelectProvider { provider } => self.select_provider(&provider).await,
                 UiCommand::SignIn { provider } => self.choose_login(&provider).await,
@@ -1499,6 +1500,7 @@ fn run_deferred(
             effort,
             fast_mode,
         }),
+        UiCommand::McpMenu { request } => return state.handle_mcp_menu(request),
         UiCommand::ListModels => return catalog.request(),
         UiCommand::SelectProvider { .. } => return state.provider_busy(),
         UiCommand::SignIn { provider } => return state.sign_in_busy(&provider),
@@ -1700,9 +1702,10 @@ mod tests {
     use ofx_config::{PrivateDir, ProfilePaths, Settings};
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
-        PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot, SkillMenuFocus,
-        StatuslineItem, StatuslineToggles, StopAction, ToolResultStatus, TurnId, TurnOutcome,
-        TurnPresentationOutcome, UsageCoverage, UsageMenuUpdate, UsageReport,
+        McpMenuAdmission, McpMenuConnection, McpMenuServer, McpMenuSnapshot, McpMenuSource,
+        McpMenuTransport, PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot,
+        SkillMenuFocus, StatuslineItem, StatuslineToggles, StopAction, ToolResultStatus, TurnId,
+        TurnOutcome, TurnPresentationOutcome, UsageCoverage, UsageMenuUpdate, UsageReport,
         format_tool_execution_error_json,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
@@ -8628,6 +8631,17 @@ done
         matches!(event, UiEvent::Notice { notice } if notice.topic == "mcp")
     }
 
+    async fn mcp_menu(harness: &mut Harness, command: &str) -> McpMenuSnapshot {
+        harness.command(command);
+        let shown = harness
+            .until(|event| matches!(event, UiEvent::McpMenuOpened { .. }))
+            .await;
+        match shown.last() {
+            Some(UiEvent::McpMenuOpened { snapshot }) => snapshot.clone(),
+            other => panic!("expected the MCP menu, got {other:?}"),
+        }
+    }
+
     async fn mcp_notices(harness: &mut Harness, count: usize) -> Vec<String> {
         let mut notices = Vec::new();
         while notices.len() < count {
@@ -8651,10 +8665,9 @@ done
                 "{command}"
             );
         }
-        harness.command("/mcp");
         assert_eq!(
-            mcp_notices(&mut harness, 1).await,
-            ["mcp|MCP: no servers configured. Use /mcp add <name> <command> [args...]."]
+            mcp_menu(&mut harness, "/mcp").await,
+            McpMenuSnapshot::default()
         );
         harness.command("/mcp resource list");
         let shown = harness
@@ -8694,12 +8707,14 @@ done
         .unwrap();
         let setup = agent_setup(&home, &server).await;
         let mut harness = Harness::with_setup(home, setup);
-        harness.command("/mcp");
+        let menu = mcp_menu(&mut harness, "/mcp").await;
+        assert_eq!(menu.servers.len(), 1);
+        assert_eq!(menu.servers[0].name, "docs");
+        assert_eq!(menu.servers[0].source, McpMenuSource::Project);
+        assert_eq!(menu.servers[0].admission, Some(McpMenuAdmission::Pending));
         assert_eq!(
-            mcp_notices(&mut harness, 1).await,
-            [
-                "mcp|MCP: 1 server — 0 ready, 0 connecting, 0 needs auth, 0 failed. Pending approval: docs. Use /mcp list for details."
-            ]
+            menu.profile_config.as_deref(),
+            harness.home.path().join("config/mcp.json").to_str()
         );
         harness.command("/mcp trust approve docs");
         assert_eq!(
@@ -8717,23 +8732,18 @@ done
             settings["workspaces"][workspace.to_string_lossy().as_ref()]["enabledMcpjsonServers"],
             json!(["docs"])
         );
-        harness.command("/mcp list");
-        let listing = mcp_notices(&mut harness, 1).await.pop().unwrap();
-        assert!(
-            listing.contains(
-                "docs source=workspace scope=workspace policy=optional transport=stdio state=ready"
-            ),
-            "{listing}"
-        );
-        assert!(listing.contains("    admission=approved\n"), "{listing}");
+        let docs = docs_server(&mut harness).await;
+        assert_eq!(docs.connection, McpMenuConnection::Ready);
+        assert_eq!(docs.transport, McpMenuTransport::Stdio);
+        assert!(!docs.required);
+        assert_eq!(docs.admission, Some(McpMenuAdmission::Approved));
         harness.command("/mcp trust reject docs");
         let notices = mcp_notices(&mut harness, 2).await;
         assert_eq!(notices[0], "mcp|Rejecting project MCP server 'docs'.");
         assert_eq!(notices[1], "mcp|MCP configuration reloaded successfully.");
-        harness.command("/mcp list");
-        let listing = mcp_notices(&mut harness, 1).await.pop().unwrap();
-        assert!(listing.contains("state=disabled"), "{listing}");
-        assert!(listing.contains("    admission=rejected\n"), "{listing}");
+        let docs = docs_server(&mut harness).await;
+        assert_eq!(docs.connection, McpMenuConnection::Disabled);
+        assert_eq!(docs.admission, Some(McpMenuAdmission::Rejected));
     }
 
     async fn approved_docs_harness() -> (Harness, std::path::PathBuf) {
@@ -8765,9 +8775,10 @@ done
         fs::write(&path, settings.to_string()).unwrap();
     }
 
-    async fn docs_listing(harness: &mut Harness) -> String {
-        harness.command("/mcp list");
-        mcp_notices(harness, 1).await.pop().unwrap()
+    async fn docs_server(harness: &mut Harness) -> McpMenuServer {
+        let mut menu = mcp_menu(harness, "/mcp list").await;
+        assert_eq!(menu.servers.len(), 1);
+        menu.servers.remove(0)
     }
 
     #[tokio::test]
@@ -8778,13 +8789,16 @@ done
             &workspace,
             json!({"disabledMcpjsonServers": ["docs"]}),
         );
-        assert!(docs_listing(&mut harness).await.contains("state=ready"));
+        assert_eq!(
+            docs_server(&mut harness).await.connection,
+            McpMenuConnection::Ready
+        );
         harness.command("/mcp trust reject docs");
         let notices = mcp_notices(&mut harness, 2).await;
         assert_eq!(notices[0], "mcp|Rejecting project MCP server 'docs'.");
-        let listing = docs_listing(&mut harness).await;
-        assert!(listing.contains("state=disabled"), "{listing}");
-        assert!(listing.contains("    admission=rejected\n"), "{listing}");
+        let docs = docs_server(&mut harness).await;
+        assert_eq!(docs.connection, McpMenuConnection::Disabled);
+        assert_eq!(docs.admission, Some(McpMenuAdmission::Rejected));
     }
 
     #[tokio::test]
@@ -8793,9 +8807,9 @@ done
         save_workspace_choices(&harness, &workspace, json!({}));
         harness.command("/mcp trust reset");
         mcp_notices(&mut harness, 2).await;
-        let listing = docs_listing(&mut harness).await;
-        assert!(!listing.contains("state=ready"), "{listing}");
-        assert!(!listing.contains("admission=approved"), "{listing}");
+        let docs = docs_server(&mut harness).await;
+        assert_ne!(docs.connection, McpMenuConnection::Ready);
+        assert_ne!(docs.admission, Some(McpMenuAdmission::Approved));
     }
 
     const STALLING_MCP_SERVER: &str = r#"

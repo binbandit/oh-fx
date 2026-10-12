@@ -82,6 +82,7 @@ impl Shell<'_> {
         self.statusline_menu = None;
         self.usage_menu = None;
         self.workspace_menu = None;
+        self.mcp_menu = None;
         self.close_picker();
         self.settings_menu = Some(SettingsMenu::new(snapshot));
         self.invalidate();

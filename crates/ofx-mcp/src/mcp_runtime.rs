@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use self::menu::ReloadMarks;
 use crate::error::McpError;
 use crate::feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
 use crate::features::common::ResourceContent;
@@ -322,10 +323,6 @@ impl McpRuntime {
             .collect()
     }
 
-    pub fn render_summary(&self) -> String {
-        health::render_summary(&self.snapshot_health())
-    }
-
     pub fn startup_notice(&self) -> Option<String> {
         health::render_startup_notice(&self.snapshot_health())
     }
@@ -496,6 +493,13 @@ impl McpRuntime {
             desired.push(Arc::clone(&server));
             fresh.push(server);
         }
+        let marks = ReloadMarks::set(
+            current
+                .iter()
+                .filter(|server| !desired.iter().any(|kept| Arc::ptr_eq(kept, server)))
+                .cloned()
+                .collect(),
+        );
         let mut unpublished = Unpublished {
             servers: &fresh,
             armed: true,
@@ -525,6 +529,7 @@ impl McpRuntime {
         }
         let previous = std::mem::replace(&mut *lock(&self.servers), desired.clone());
         unpublished.armed = false;
+        drop(marks);
         *lock(&self.workspace_diagnostics) = candidate.workspace_diagnostics;
         if installs {
             self.installed.store(true, Ordering::Release);
@@ -547,6 +552,13 @@ impl McpRuntime {
     }
 
     async fn refresh_catalogs(&self, servers: &[Arc<Server>]) {
+        let _marks = ReloadMarks::set(
+            servers
+                .iter()
+                .filter(|server| matches!(server.lifecycle(), Lifecycle::Ready(_)))
+                .cloned()
+                .collect(),
+        );
         for server in servers {
             let Lifecycle::Ready(client) = server.lifecycle() else {
                 continue;
@@ -556,6 +568,7 @@ impl McpRuntime {
             server
                 .refresh_tools(&client, Instant::now() + client.operation_timeout)
                 .await;
+            server.mark_reload_pending(false);
         }
     }
 
@@ -826,6 +839,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 mod authentication;
+mod menu;
 
 #[cfg(test)]
 mod logout_tests;
@@ -1646,10 +1660,6 @@ done
         let state = tempfile::tempdir().unwrap();
         let runtime = runtime(Vec::new());
         assert_eq!(runtime.render_health(), "No MCP servers configured.\n");
-        assert_eq!(
-            runtime.render_summary(),
-            "MCP: no servers configured. Use /mcp add <name> <command> [args...]."
-        );
         let mut candidate = load(vec![config("fixture", SERVER, state.path())]);
         candidate.workspace_diagnostics = vec![WorkspaceDiagnostic::new(
             WorkspaceDiagnosticCause::InvalidJson,
@@ -1662,10 +1672,6 @@ done
         assert!(health.starts_with(
             "MCP health (1 server):\n  fixture source=profile scope=profile policy=optional transport=stdio state=ready auth=none status=ready\n    negotiated_name=fixture negotiated_version=1.0 protocol=2025-11-25\n    tools=3 resources=0 templates=0 prompts=0 cache=fresh subscription=active\n    retry_attempt=0 retry_in_ms=none discovery=completed\nProject MCP configuration errors:\n"
         ), "{health}");
-        assert_eq!(
-            runtime.render_summary(),
-            "MCP: 1 server — 1 ready, 0 connecting, 0 needs auth, 0 failed. Project .mcp.json errors: 1. Use /mcp list for details."
-        );
         runtime.shutdown(ShutdownMode::Immediate).await;
     }
 
