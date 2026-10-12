@@ -484,6 +484,13 @@ fn the_argument_form_keeps_its_state_through_completion_and_can_be_cancelled() {
         field_count: 2,
     });
     assert_eq!(state.argument_index, 1);
+    for (delta, index) in [(1, 0), (-1, 1)] {
+        state.apply(Event::MoveArgument {
+            delta,
+            field_count: 2,
+        });
+        assert_eq!(state.argument_index, index);
+    }
     assert_eq!(
         state.apply(Event::RequestCompletion),
         Some(Effect::Complete { generation: 2 })

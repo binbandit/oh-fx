@@ -9,6 +9,7 @@ use crate::footer::mcp_menu_presentation::{Item, McpMenuArgumentField};
 use crate::input::{Action as InputAction, InputEvent};
 
 const INCOMPLETE: &str = "Complete every required MCP argument.";
+const CTRL_Z: u8 = 26;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ArgumentForm {
@@ -103,6 +104,11 @@ impl Shell<'_> {
                 InputAction::CursorUp | InputAction::CursorDown => {}
                 _ => return false,
             },
+            InputEvent::Raw(raw) if raw.byte == CTRL_Z => return false,
+            InputEvent::Paste(_)
+            | InputEvent::TextDropped(_)
+            | InputEvent::NativeClearProbe
+            | InputEvent::NativeClearDetected => return false,
             _ if pending => {}
             InputEvent::Raw(raw) => match raw.byte {
                 b'\t' => {
@@ -117,11 +123,7 @@ impl Shell<'_> {
                 }
                 _ => return self.route_mcp_form_byte(*raw),
             },
-            InputEvent::Text(_)
-            | InputEvent::Paste(_)
-            | InputEvent::TextDropped(_)
-            | InputEvent::NativeClearProbe
-            | InputEvent::NativeClearDetected => return false,
+            InputEvent::Text(_) => return false,
         }
         true
     }
@@ -164,9 +166,12 @@ impl Shell<'_> {
                 ArgumentTarget::Template {
                     server,
                     uri_template,
-                } => McpMenuPreviewTarget::Resource {
-                    server,
-                    uri: uri_template,
+                } => match expand_template(&uri_template, |_| None) {
+                    Ok(uri) => McpMenuPreviewTarget::Resource { server, uri },
+                    Err(error) => {
+                        self.refuse_mcp_menu_preview(error);
+                        return;
+                    }
                 },
             };
             self.begin_mcp_menu_preview(preview);
@@ -230,6 +235,7 @@ impl Shell<'_> {
         }
         let argument = context.remove(index);
         menu.completing = Some(index);
+        menu.feedback = None;
         self.send(UiCommand::McpMenu {
             request: McpMenuRequest::Complete {
                 generation,

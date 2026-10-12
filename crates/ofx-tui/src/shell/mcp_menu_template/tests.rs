@@ -29,6 +29,10 @@ fn every_resource_template_argument_is_a_required_field_and_expands_encoded() {
 
 #[test]
 fn template_operators_follow_their_prefixes_and_separators() {
+    assert_eq!(
+        expand_template("{city}", |_| Some("Zürich é")),
+        Ok("Z%C3%BCrich%20%C3%A9".to_owned())
+    );
     let lookup = |name: &str| match name {
         "a" => Some("x/y"),
         "b" => Some(""),

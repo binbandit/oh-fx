@@ -1389,14 +1389,27 @@ fn the_form_asks_for_every_required_value_and_keeps_one_an_empty_draft_would_cle
         "{screen}"
     );
     assert_eq!(requests(&test).len(), 1);
+    let screen = press(&mut test, b"\t");
+    assert!(screen.contains("  Completing MCP argument…"), "{screen}");
+    test.deliver(outcome(
+        2,
+        McpMenuOutcome::Failed,
+        "MCP completion failed: McpCompletionEmpty",
+    ));
+    let screen = test.screen();
+    assert!(
+        screen.contains("  MCP completion failed: McpCompletionEmpty"),
+        "{screen}"
+    );
+    assert_eq!(state(&test).screen, Screen::Arguments);
     press(&mut test, b"beta\r");
     assert_eq!(fields(&test), ["beta"]);
-    assert_eq!(requests(&test).len(), 2);
+    assert_eq!(requests(&test).len(), 3);
     escape(&mut test);
     assert_eq!(state(&test).screen, Screen::Browse);
     assert_eq!(
         requests(&test).last(),
-        Some(&cancel(2, McpMenuCancel::Back))
+        Some(&cancel(3, McpMenuCancel::Back))
     );
     press(&mut test, b"\r");
     assert_eq!(fields(&test), [""]);

@@ -19,7 +19,7 @@ while IFS= read -r line; do
     *'"method":"prompts/list"'*) reply "$id" '{"prompts":[{"name":"review","arguments":[{"name":"topic","required":true},{"name":"tone"}]}]}' ;;
     *'"method":"resources/list"'*) reply "$id" '{"resources":[]}' ;;
     *'"method":"resources/templates/list"'*) reply "$id" '{"resourceTemplates":[{"uriTemplate":"custom://project/{path}","name":"project"}]}' ;;
-    *'"method":"completion/complete"'*'"name":"tone"'*) reply "$id" '{"completion":{"values":[]}}' ;;
+    *'"method":"completion/complete"'*'"name":"empty"'*) reply "$id" '{"completion":{"values":[]}}' ;;
     *'"method":"completion/complete"'*'"topic":"alpha"'*) reply "$id" '{"completion":{"values":["friendly","formal"]}}' ;;
     *'"method":"completion/complete"'*'ref/resource'*) reply "$id" '{"completion":{"values":["src/lib"]}}' ;;
     *'"method":"completion/complete"'*) reply "$id" '{"completion":{"values":["alpha","beta"]}}' ;;
@@ -129,6 +129,12 @@ async fn a_completion_takes_the_servers_first_value_with_the_other_fields_as_con
                 argument("tone", ""),
                 vec![argument("topic", "alpha")]
             )
+            .await,
+        Ok("friendly".to_owned())
+    );
+    assert_eq!(
+        fixture
+            .complete(5, prompt(), argument("empty", ""), Vec::new())
             .await,
         Err("MCP completion failed: McpCompletionEmpty".to_owned())
     );
