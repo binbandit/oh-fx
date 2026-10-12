@@ -456,41 +456,84 @@ impl PtySession {
 
 #[cfg(target_os = "macos")]
 fn stacks(pid: Pid) -> String {
-    let Ok(directory) = tempfile::tempdir() else {
-        return String::new();
+    let directory = match tempfile::tempdir() {
+        Ok(directory) => directory,
+        Err(error) => return format!("sample unavailable: {error}\n"),
     };
     let report = directory.path().join("sample.txt");
-    let _ = Command::new("sample")
+    let sampled = Command::new("sample")
         .arg(pid.as_raw_nonzero().to_string())
         .args(["2", "-mayDie", "-file"])
         .arg(&report)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    std::fs::read_to_string(report).unwrap_or_default()
+        .output();
+    match (sampled, std::fs::read_to_string(&report)) {
+        (_, Ok(stacks)) => stacks,
+        (Ok(output), Err(error)) => format!(
+            "sample report unavailable: {error}\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        (Err(error), Err(_)) => format!("sample unavailable: {error}\n"),
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn stacks(pid: Pid) -> String {
     use std::fmt::Write as _;
-    let tasks = format!("/proc/{}/task", pid.as_raw_nonzero());
-    let Ok(entries) = std::fs::read_dir(tasks) else {
-        return String::new();
+    let pid = pid.as_raw_nonzero().to_string();
+    let mut report = debugger_stacks(&pid);
+    let tasks = format!("/proc/{pid}/task");
+    let entries = match std::fs::read_dir(&tasks) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let _ = writeln!(report, "{tasks} unavailable: {error}");
+            return report;
+        }
     };
-    let mut report = String::new();
     for entry in entries.flatten() {
         let task = entry.path();
-        let read = |name: &str| std::fs::read_to_string(task.join(name)).unwrap_or_default();
-        let _ = write!(
+        let read = |name: &str| {
+            std::fs::read_to_string(task.join(name)).map_or_else(
+                |error| format!("{name} unavailable: {error}"),
+                |text| text.trim_end().to_owned(),
+            )
+        };
+        let stat = read("stat");
+        let state = stat
+            .rfind(')')
+            .and_then(|end| stat[end + 1..].split_whitespace().next())
+            .unwrap_or(&stat);
+        let _ = writeln!(
             report,
-            "{} {} wchan={}\n{}",
+            "{} comm={} state={} wchan={} syscall={}\n{}",
             task.display(),
-            read("comm").trim_end(),
+            read("comm"),
+            state,
             read("wchan"),
+            read("syscall"),
             read("stack")
         );
     }
     report
+}
+
+#[cfg(not(target_os = "macos"))]
+fn debugger_stacks(pid: &str) -> String {
+    let attempts: [(&str, &[&str]); 2] = [
+        ("eu-stack", &["-p", pid]),
+        ("gdb", &["-p", pid, "-batch", "-ex", "thread apply all bt"]),
+    ];
+    for (program, arguments) in attempts {
+        if let Ok(output) = Command::new(program).args(arguments).output() {
+            return format!(
+                "{program}:\n{}{}\n",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    "no eu-stack or gdb on PATH, so only what /proc shows each thread blocked in follows\n"
+        .to_owned()
 }
 
 impl Drop for PtySession {
