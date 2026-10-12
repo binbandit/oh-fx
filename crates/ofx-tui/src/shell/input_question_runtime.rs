@@ -1,4 +1,4 @@
-use ofx_contract::{AttentionKind, QuestionRequest, RequestId, TurnId, UiCommand};
+use ofx_contract::{AttentionKind, QuestionRequest, QuestionSource, RequestId, TurnId, UiCommand};
 
 use super::Shell;
 use super::question_prompt::{Decision, FreeformEdit, Insertion, QuestionPrompt};
@@ -43,6 +43,16 @@ impl Shell<'_> {
             self.attention_required(turn_id, AttentionKind::Question);
         }
         self.invalidate();
+    }
+
+    pub(super) fn question_withdrawn(&mut self, request_id: RequestId) {
+        if self
+            .question
+            .as_ref()
+            .is_some_and(|prompt| prompt.request_id == request_id)
+        {
+            self.dismiss_question();
+        }
     }
 
     pub(super) fn dismiss_question(&mut self) {
@@ -242,9 +252,11 @@ impl Shell<'_> {
             return;
         }
         if let Some(prompt) = self.question.take() {
-            self.push_entry(Entry::QuestionResolution {
-                answers: prompt.resolutions(),
-            });
+            if prompt.source == QuestionSource::AgentQuestion {
+                self.push_entry(Entry::QuestionResolution {
+                    answers: prompt.resolutions(),
+                });
+            }
             self.answer_question(prompt.request_id, Some(prompt.answers()));
         }
     }
@@ -254,8 +266,16 @@ impl Shell<'_> {
             return;
         };
         self.gestures.disarm_escape_clear();
-        self.cancel_visible_turn_noting(Entry::QuestionCancelled);
-        self.answer_question(prompt.request_id, None);
+        match prompt.source {
+            QuestionSource::AgentQuestion => {
+                self.cancel_visible_turn_noting(Entry::QuestionCancelled);
+                self.answer_question(prompt.request_id, None);
+            }
+            QuestionSource::McpElicitation => {
+                self.answer_question(prompt.request_id, None);
+                self.cancel_visible_turn();
+            }
+        }
     }
 
     fn answer_question(&mut self, request_id: RequestId, answers: Option<Vec<String>>) {

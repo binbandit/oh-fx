@@ -341,7 +341,9 @@ mod tests {
                                 description: None,
                             })
                             .collect(),
+                        submission: ofx_contract::QuestionSubmission::Label,
                     }],
+                    source: ofx_contract::QuestionSource::AgentQuestion,
                 },
             });
             if !viewer_first {

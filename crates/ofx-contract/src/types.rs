@@ -9,7 +9,7 @@ use ofx_text::{is_terminal_safe, mask_secrets};
 
 use crate::ids::ToolCallId;
 
-pub use question_batch::{QuestionBatchEntry, QuestionOption};
+pub use question_batch::{QuestionBatchEntry, QuestionOption, QuestionSubmission};
 pub(crate) use tool_argument_integrity::ToolArgumentFailure;
 pub use tool_argument_integrity::{ArgumentShape, ToolArgumentDiagnostic, ToolArgumentIntegrity};
 

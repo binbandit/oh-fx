@@ -455,7 +455,7 @@ impl Profile {
         let permissions =
             self.reviewed_policy(&permission_mode, &route.reviewer, additional_roots.clone());
         let approvals = interactive.then(ApprovalQueue::shared);
-        let elicitation = launch.mcp_questioner.clone().map(InputResponder::new);
+        let elicitation = elicitation_responder(questions.as_ref(), launch.mcp_questioner.take());
         let (mcp, tools) =
             self.mcp_runtime(tools, &skills.search(), &limits, interactive, elicitation)?;
         let children = ChildFactory {
@@ -1236,6 +1236,16 @@ impl AgentSetup {
             }
             None => agent,
         }
+    }
+}
+
+fn elicitation_responder(
+    questions: Option<&Questions>,
+    questioner: Option<Arc<dyn QuestionAsker>>,
+) -> Option<InputResponder> {
+    match questions {
+        Some(questions) => Some(InputResponder::new(questions.elicitation()).with_compact_forms()),
+        None => questioner.map(InputResponder::new),
     }
 }
 

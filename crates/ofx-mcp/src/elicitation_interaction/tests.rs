@@ -57,11 +57,14 @@ fn request(params: &str) -> Request {
 const DECLINE: &str = r#"{"action":"decline"}"#;
 const CANCEL: &str = r#"{"action":"cancel"}"#;
 
-async fn respond_as(script: &Arc<Script>, server_name: &str, params: &str) -> Outcome<String> {
-    let responder = InputResponder::new(Arc::clone(script) as Arc<dyn QuestionAsker>);
+async fn respond_with(
+    responder: &InputResponder,
+    server_name: &str,
+    params: &str,
+) -> Outcome<String> {
     let finished = CancellationToken::new();
     Interaction {
-        responder: &responder,
+        responder,
         server_name,
         deadline: Instant::now() + Duration::from_mins(1),
         finished: &finished,
@@ -71,8 +74,19 @@ async fn respond_as(script: &Arc<Script>, server_name: &str, params: &str) -> Ou
     .map(|answer| answer.to_json())
 }
 
+async fn respond_as(script: &Arc<Script>, server_name: &str, params: &str) -> Outcome<String> {
+    let responder = InputResponder::new(Arc::clone(script) as Arc<dyn QuestionAsker>);
+    respond_with(&responder, server_name, params).await
+}
+
 async fn respond(script: &Arc<Script>, params: &str) -> Outcome<String> {
     respond_as(script, "fixture", params).await
+}
+
+async fn respond_compactly(script: &Arc<Script>, params: &str) -> Outcome<String> {
+    let responder =
+        InputResponder::new(Arc::clone(script) as Arc<dyn QuestionAsker>).with_compact_forms();
+    respond_with(&responder, "fixture", params).await
 }
 
 const PROFILE: &str = r#"{"message":"Profile","requestedSchema":{"type":"object","properties":{"name":{"type":"string","minLength":3},"ratio":{"type":"number","minimum":0,"maximum":1},"age":{"type":"integer","minimum":18},"active":{"type":"boolean"},"color":{"type":"string","oneOf":[{"const":"red","title":"Red"},{"const":"blue","title":"Blue"}]},"tags":{"type":"array","items":{"type":"string","anyOf":[{"const":"a","title":"A"},{"const":"b","title":"B"}]},"minItems":1}},"required":["name","ratio","age","active","color","tags"]}}"#;
@@ -357,4 +371,123 @@ async fn an_unanswered_question_times_out_or_ends_with_its_operation() {
         InteractionError::Elicitation(ElicitationError::LimitExceeded).to_string(),
         "LimitExceeded"
     );
+}
+
+fn reviewed(script: &Script) -> bool {
+    script
+        .asked()
+        .iter()
+        .any(|entry| entry.question.contains("Current values:"))
+}
+
+#[tokio::test]
+async fn compact_form_submits_a_choice_or_declines_without_a_review() {
+    let params = r#"{"message":"Name","requestedSchema":{"type":"object","properties":{"name":{"type":"string","enum":["Decline"]}},"required":["name"]}}"#;
+    for (answer, expected) in [
+        (
+            r#"{"option":0}"#,
+            r#"{"action":"accept","content":{"name":"Decline"}}"#,
+        ),
+        (r#"{"option":1}"#, DECLINE),
+        (r#"{"option":2}"#, CANCEL),
+    ] {
+        let script = Script::new(&[answer]);
+        assert_eq!(respond_compactly(&script, params).await.unwrap(), expected);
+        assert_eq!(script.remaining(), 0);
+        assert!(!reviewed(&script));
+        let asked = script.asked();
+        assert_eq!(asked[0].submission, QuestionSubmission::Choice);
+        assert_eq!(
+            asked[0].question,
+            "MCP server fixture requests name (required)\n\nReason: Name\nChoose an option to submit."
+        );
+        let options: Vec<_> = asked[0]
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(options, ["[1] Decline", "Decline", "Cancel"]);
+    }
+    for answer in [r#"{"option":3}"#, "Decline", r#"{"option":0,"extra":1}"#] {
+        let script = Script::new(&[answer, "Cancel"]);
+        assert_eq!(respond_compactly(&script, params).await.unwrap(), CANCEL);
+    }
+}
+
+#[tokio::test]
+async fn compact_form_defaults_skip_and_choice_labels_preserve_exact_values() {
+    let params = r#"{"message":"Choose","requestedSchema":{"type":"object","properties":{"name":{"type":"string","description":"Pick one","default":"b","oneOf":[{"const":"a","title":"Decline"},{"const":"b","title":"Cancel"},{"const":"c","title":"Decline"}]}}}}"#;
+    for (answer, content) in [
+        (r#"{"option":0}"#, r#"{"name":"a"}"#),
+        (r#"{"option":1}"#, r#"{"name":"b"}"#),
+        (r#"{"option":2}"#, r#"{"name":"c"}"#),
+        (r#"{"option":3}"#, r#"{"name":"b"}"#),
+        (r#"{"option":4}"#, "{}"),
+    ] {
+        let script = Script::new(&[answer]);
+        assert_eq!(
+            respond_compactly(&script, params).await.unwrap(),
+            format!(r#"{{"action":"accept","content":{content}}}"#)
+        );
+        assert_eq!(script.remaining(), 0);
+        let asked = script.asked();
+        assert_eq!(
+            asked[0].question,
+            "MCP server fixture requests name (optional)\nPick one\nReason: Choose\nChoose an option to submit."
+        );
+        let options: Vec<_> = asked[0]
+            .options
+            .iter()
+            .map(|option| (option.label.as_str(), option.description.as_deref()))
+            .collect();
+        assert_eq!(
+            options,
+            [
+                ("[1] Decline", None),
+                ("[2] Cancel", None),
+                ("[3] Decline", None),
+                ("Use default", Some("\"b\"")),
+                ("Skip", Some("Submit without this optional field")),
+                ("Decline", None),
+                ("Cancel", None),
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn compact_form_keeps_review_for_short_text_numbers_and_booleans() {
+    for (kind, answer, value) in [
+        ("string", "x", "\"x\""),
+        ("number", "0.5", "0.5"),
+        ("integer", "1", "1"),
+        ("boolean", "True", "true"),
+    ] {
+        let params = format!(
+            r#"{{"message":"Value","requestedSchema":{{"type":"object","properties":{{"value":{{"type":"{kind}"}}}},"required":["value"]}}}}"#
+        );
+        let script = Script::new(&[answer, "Submit"]);
+        assert_eq!(
+            respond_compactly(&script, &params).await.unwrap(),
+            format!(r#"{{"action":"accept","content":{{"value":{value}}}}}"#)
+        );
+        assert!(reviewed(&script));
+        assert_eq!(script.remaining(), 0);
+    }
+}
+
+#[tokio::test]
+async fn compact_form_keeps_review_for_four_choices() {
+    let script = Script::new(&["[1] a", "Submit"]);
+    assert_eq!(
+        respond_compactly(
+            &script,
+            r#"{"message":"Choose","requestedSchema":{"type":"object","properties":{"name":{"type":"string","enum":["a","b","c","d"]}},"required":["name"]}}"#
+        )
+        .await
+        .unwrap(),
+        r#"{"action":"accept","content":{"name":"a"}}"#
+    );
+    assert!(reviewed(&script));
+    assert_eq!(script.asked()[0].submission, QuestionSubmission::Label);
 }

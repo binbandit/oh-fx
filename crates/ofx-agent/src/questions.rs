@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ofx_contract::{BoxFuture, QuestionAsker, QuestionBatchEntry, QuestionRequest, RequestId};
+use ofx_contract::{
+    BoxFuture, QuestionAsker, QuestionBatchEntry, QuestionRequest, QuestionSource, RequestId,
+};
 use tokio::sync::{Notify, oneshot};
 
 type Answers = Option<Vec<String>>;
@@ -27,7 +29,14 @@ struct State {
     issued: u64,
     closed: bool,
     unannounced: VecDeque<QuestionRequest>,
+    withdrawn: VecDeque<RequestId>,
     pending: HashMap<RequestId, oneshot::Sender<Answers>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestionEvent {
+    Asked(QuestionRequest),
+    Withdrawn(RequestId),
 }
 
 struct Pending {
@@ -50,10 +59,16 @@ impl Questions {
         let sender = lock(&self.shared).pending.remove(&id);
         sender.is_some_and(|sender| sender.send(answers).is_ok())
     }
-}
 
-impl QuestionAsker for Questions {
-    fn ask(&self, entries: Vec<QuestionBatchEntry>) -> BoxFuture<'static, Answers> {
+    pub fn elicitation(&self) -> Arc<dyn QuestionAsker> {
+        Arc::new(Elicitation(self.clone()))
+    }
+
+    fn ask_from(
+        &self,
+        source: QuestionSource,
+        entries: Vec<QuestionBatchEntry>,
+    ) -> BoxFuture<'static, Answers> {
         let mut state = lock(&self.shared);
         if state.closed {
             return Box::pin(async { None });
@@ -62,7 +77,11 @@ impl QuestionAsker for Questions {
         state.issued += 1;
         let id = RequestId::new(state.issued);
         state.pending.insert(id, sender);
-        state.unannounced.push_back(QuestionRequest { id, entries });
+        state.unannounced.push_back(QuestionRequest {
+            id,
+            entries,
+            source,
+        });
         drop(state);
         self.shared.announced.notify_one();
         let pending = Pending {
@@ -76,12 +95,32 @@ impl QuestionAsker for Questions {
     }
 }
 
+impl QuestionAsker for Questions {
+    fn ask(&self, entries: Vec<QuestionBatchEntry>) -> BoxFuture<'static, Answers> {
+        self.ask_from(QuestionSource::AgentQuestion, entries)
+    }
+}
+
+struct Elicitation(Questions);
+
+impl QuestionAsker for Elicitation {
+    fn ask(&self, entries: Vec<QuestionBatchEntry>) -> BoxFuture<'static, Answers> {
+        self.0.ask_from(QuestionSource::McpElicitation, entries)
+    }
+}
+
 impl QuestionRequests {
-    pub async fn next(&mut self) -> QuestionRequest {
+    pub async fn next(&mut self) -> QuestionEvent {
         loop {
             let announced = self.shared.announced.notified();
-            if let Some(request) = lock(&self.shared).unannounced.pop_front() {
-                return request;
+            {
+                let mut state = lock(&self.shared);
+                if let Some(id) = state.withdrawn.pop_front() {
+                    return QuestionEvent::Withdrawn(id);
+                }
+                if let Some(request) = state.unannounced.pop_front() {
+                    return QuestionEvent::Asked(request);
+                }
             }
             announced.await;
         }
@@ -93,6 +132,7 @@ impl Drop for QuestionRequests {
         let mut state = lock(&self.shared);
         state.closed = true;
         state.unannounced.clear();
+        state.withdrawn.clear();
         state.pending.clear();
     }
 }
@@ -100,8 +140,14 @@ impl Drop for QuestionRequests {
 impl Drop for Pending {
     fn drop(&mut self) {
         let mut state = lock(&self.shared);
-        state.pending.remove(&self.id);
+        let waiting = state.pending.remove(&self.id).is_some();
+        let unannounced = state.unannounced.len();
         state.unannounced.retain(|request| request.id != self.id);
+        if waiting && unannounced == state.unannounced.len() && !state.closed {
+            state.withdrawn.push_back(self.id);
+            drop(state);
+            self.shared.announced.notify_one();
+        }
     }
 }
 
@@ -111,7 +157,7 @@ fn lock(shared: &Shared) -> MutexGuard<'_, State> {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::QuestionOption;
+    use ofx_contract::{QuestionOption, QuestionSubmission};
 
     use super::*;
 
@@ -128,7 +174,15 @@ mod tests {
                     description: None,
                 },
             ],
+            submission: QuestionSubmission::Label,
         }]
+    }
+
+    async fn asked(requests: &mut QuestionRequests) -> QuestionRequest {
+        match requests.next().await {
+            QuestionEvent::Asked(request) => request,
+            QuestionEvent::Withdrawn(id) => panic!("{id:?} was withdrawn"),
+        }
     }
 
     fn is_empty(questions: &Questions) -> bool {
@@ -141,9 +195,9 @@ mod tests {
         let (questions, mut requests) = Questions::new();
         let first = questions.ask(entries("First?"));
         let second = questions.ask(entries("Second?"));
-        let announced = requests.next().await;
+        let announced = asked(&mut requests).await;
         assert_eq!(announced.entries, entries("First?"));
-        let next = requests.next().await;
+        let next = asked(&mut requests).await;
         assert_ne!(announced.id, next.id);
         assert!(questions.resolve(announced.id, Some(vec!["Yes".to_owned()])));
         assert!(!questions.resolve(announced.id, Some(vec!["No".to_owned()])));
@@ -157,7 +211,7 @@ mod tests {
     async fn a_question_asked_while_the_host_waits_wakes_it() {
         let (questions, mut requests) = Questions::new();
         let waiting = tokio::spawn(async move {
-            let announced = requests.next().await;
+            let announced = asked(&mut requests).await;
             (requests, announced)
         });
         tokio::task::yield_now().await;
@@ -174,32 +228,56 @@ mod tests {
         drop(questions.ask(entries("Gone?")));
         assert!(is_empty(&questions));
         let kept = questions.ask(entries("Kept?"));
-        let announced = requests.next().await;
+        let announced = asked(&mut requests).await;
         assert_eq!(announced.entries, entries("Kept?"));
         assert!(questions.resolve(announced.id, None));
         assert_eq!(kept.await, None);
     }
 
     #[tokio::test]
-    async fn an_abandoned_question_cannot_be_answered() {
+    async fn an_abandoned_question_cannot_be_answered_and_is_withdrawn() {
         let (questions, mut requests) = Questions::new();
         let abandoned = questions.ask(entries("Gone?"));
-        let id = requests.next().await.id;
+        let id = asked(&mut requests).await.id;
         drop(abandoned);
         assert!(!questions.resolve(id, Some(vec!["Yes".to_owned()])));
         assert!(is_empty(&questions));
+        assert_eq!(requests.next().await, QuestionEvent::Withdrawn(id));
+        let answered = questions.ask(entries("Answered?"));
+        let id = asked(&mut requests).await.id;
+        assert!(questions.resolve(id, None));
+        assert_eq!(answered.await, None);
+        let next = questions.ask(entries("Next?"));
+        assert_eq!(asked(&mut requests).await.entries, entries("Next?"));
+        drop(next);
     }
 
     #[tokio::test]
     async fn a_closed_host_answers_every_question_with_nothing() {
         let (questions, mut requests) = Questions::new();
         let announced = questions.ask(entries("Announced?"));
-        requests.next().await;
+        asked(&mut requests).await;
         let queued = questions.ask(entries("Queued?"));
         drop(requests);
         assert_eq!(announced.await, None);
         assert_eq!(queued.await, None);
         assert_eq!(questions.ask(entries("Closed?")).await, None);
         assert!(is_empty(&questions));
+    }
+
+    #[tokio::test]
+    async fn elicitation_questions_are_announced_with_their_source() {
+        let (questions, mut requests) = Questions::new();
+        let agent = questions.ask(entries("Agent?"));
+        let elicited = questions.elicitation().ask(entries("Server?"));
+        assert_eq!(
+            asked(&mut requests).await.source,
+            QuestionSource::AgentQuestion
+        );
+        let announced = asked(&mut requests).await;
+        assert_eq!(announced.source, QuestionSource::McpElicitation);
+        assert!(questions.resolve(announced.id, Some(vec!["Yes".to_owned()])));
+        assert_eq!(elicited.await, Some(vec!["Yes".to_owned()]));
+        drop(agent);
     }
 }

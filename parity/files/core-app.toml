@@ -162,7 +162,7 @@ note = "Bracketed text paste is decoded with documented safety differences and a
 upstream = "src/core/app/input_question_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/input_question_runtime.rs"]
-note = "Question choice/freeform input, cancellation, submission and resolution transcript handling exist; route-recovery and MCP-elicitation source-specific submission and cancellation paths are absent."
+note = "Question choice/freeform input, cancellation, submission and resolution transcript handling exist, an MCP elicitation question leaves no resolution or question-cancelled row, and a question its asker stops waiting for is withdrawn from the panel without an answer; the route-recovery source-specific submission and cancellation paths are absent."
 
 [[file]]
 upstream = "src/core/app/input_selection_runtime.zig"

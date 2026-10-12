@@ -120,7 +120,9 @@ mod tests {
                         label: "Alpha".to_owned(),
                         description: None,
                     }],
+                    submission: ofx_contract::QuestionSubmission::Label,
                 }],
+                source: ofx_contract::QuestionSource::AgentQuestion,
             },
         }
     }
