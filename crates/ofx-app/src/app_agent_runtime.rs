@@ -1194,12 +1194,12 @@ impl Controller {
         }
     }
 
-    fn finish_turn(&mut self, report: &TurnReport) {
-        let finished = self
-            .persistence
-            .as_mut()
-            .and_then(|persistence| persistence.finish_turn(report));
-        self.session_notice(finished);
+    fn finish_turn(&self, report: &TurnReport) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        self.session_notice(persistence.finish_turn(report));
+        self.session_notice(persistence.remember_failure());
     }
 
     fn show_startup_notices(&mut self) {
@@ -1296,7 +1296,7 @@ impl Controller {
                     },
                     request = next_question(questions) => relay_question(state, running_turn(), request),
                     Some(()) = recoveries.recv() => {
-                        if let Some(notice) = persistence.as_mut().and_then(Persistence::remember_durable_work) {
+                        if let Some(notice) = persistence.as_ref().and_then(Persistence::remember_failure) {
                             state.emit(UiEvent::Notice { notice });
                         }
                     }
@@ -1802,6 +1802,7 @@ mod tests {
     use crate::codex_provider::SubscriptionEndpoints;
 
     mod history_replay;
+    mod remembered;
     mod sign_out;
     mod steering;
     mod trace;

@@ -73,9 +73,12 @@ impl ConversationLog for SessionLog {
     }
 
     fn record_turn(&mut self, turn: &HistoryTurn<'_>) -> Result<(), LogFailure> {
-        self.session()
+        let mut session = self.session();
+        session
             .record_turn(turn, &self.provider)
-            .map_err(log_failure)
+            .map_err(log_failure)?;
+        session.remember_after_write();
+        Ok(())
     }
 
     fn record_compaction(
@@ -84,15 +87,21 @@ impl ConversationLog for SessionLog {
         cut: HistoryCut,
         active: Option<&HistoryTurn<'_>>,
     ) -> Result<(), LogFailure> {
-        self.session()
+        let mut session = self.session();
+        session
             .record_compaction(checkpoint, cut, active, &self.provider)
-            .map_err(log_failure)
+            .map_err(log_failure)?;
+        session.remember_after_write();
+        Ok(())
     }
 
     fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure> {
-        self.session()
+        let mut session = self.session();
+        session
             .record_recovery(point, &self.provider, self.credential)
-            .map_err(log_failure)
+            .map_err(log_failure)?;
+        session.remember_after_write();
+        Ok(())
     }
 
     fn clear_recovery(&self) -> Result<(), LogFailure> {
