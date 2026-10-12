@@ -277,3 +277,35 @@ async fn a_token_request_already_sent_is_answered_and_saved_after_cancellation()
         "{saved}"
     );
 }
+
+#[tokio::test]
+async fn a_forced_refresh_renews_a_login_that_is_not_yet_due() {
+    let server = refreshed(Reply::status(
+        200,
+        r#"{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600,"scope":"openid offline_access","token_type":"Bearer"}"#,
+    ));
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("oh-fx");
+    write_session(&data, &origin(&server), i64::MAX, TEAM);
+    let oauth = login(&data);
+    let key = oauth
+        .refresh_credential(&CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.secret.as_str(), "new-access");
+    assert_eq!(key.gateway_team(), Some("team_id"));
+    assert_eq!(server.requests().len(), 2);
+    let saved = std::fs::read_to_string(data.join("auth.json")).unwrap();
+    assert!(
+        saved.contains("\"refresh_token\":\"rotated-refresh\""),
+        "{saved}"
+    );
+    let absent = tempfile::tempdir().unwrap();
+    assert!(matches!(
+        login(&absent.path().join("oh-fx"))
+            .refresh_credential(&CancellationToken::new())
+            .await,
+        Ok(None)
+    ));
+}

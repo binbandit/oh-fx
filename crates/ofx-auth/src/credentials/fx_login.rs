@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use super::{GatewayKey, GatewaySource};
-use crate::chatgpt_oauth::REFRESH_SAVE_TIME;
+use crate::chatgpt_oauth::{REFRESH_SAVE_TIME, RefreshMode};
 use crate::login_flow::{VercelError, VercelOAuth};
 use crate::oauth;
 use crate::oauth::device;
@@ -37,6 +37,22 @@ impl VercelOAuth {
         if !session.expired(now_ms()) {
             return Ok(Some(credential(session, None)));
         }
+        self.load_locked(RefreshMode::IfNeeded, cancel).await
+    }
+
+    pub async fn refresh_credential(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<GatewayKey>, VercelError> {
+        self.require_source_storage()?;
+        self.load_locked(RefreshMode::Force, cancel).await
+    }
+
+    async fn load_locked(
+        &self,
+        mode: RefreshMode,
+        cancel: &CancellationToken,
+    ) -> Result<Option<GatewayKey>, VercelError> {
         let begun = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(VercelError::Cancelled),
@@ -49,7 +65,7 @@ impl VercelOAuth {
             return Ok(None);
         };
         let mut refreshed_at_ms = None;
-        if session.expired(now_ms()) {
+        if mode == RefreshMode::Force || session.expired(now_ms()) {
             self.refresh_session(&mutation, &mut session, cancel)
                 .await?;
             refreshed_at_ms = Some(now_ms());

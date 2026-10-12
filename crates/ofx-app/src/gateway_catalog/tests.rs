@@ -134,6 +134,7 @@ struct Renewed;
 impl GatewayRefresh for Renewed {
     fn refresh<'a>(
         &'a self,
+        _: bool,
         _: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
         Box::pin(async {
