@@ -588,3 +588,55 @@ fn answers_are_validated_against_their_request_and_written_as_upstream_does() {
         Err(ElicitationError::InvalidResponse)
     );
 }
+
+#[test]
+fn url_required_errors_parse_their_url_elicitations_and_render_them_keyed_by_id() {
+    let data = json!({"elicitations":[{"mode":"url","message":"Authorize","url":"https://example.test/connect","elicitationId":"url-1"}]});
+    let required = parse_url_required(&data).unwrap();
+    assert_eq!(required.len(), 1);
+    assert_eq!(required[0].0, "url-1");
+    assert_eq!(
+        render_url_required(&required).unwrap(),
+        r#"{"url-1":{"method":"elicitation/create","params":{"mode":"url","message":"Authorize","url":"https://example.test/connect","elicitationId":"url-1"}}}"#
+    );
+    for invalid in [
+        json!({"elicitations":[{"mode":"form","message":"No","requestedSchema":{"type":"object","properties":{}}}]}),
+        json!({"elicitations":[{"mode":"url","message":"One","url":"https://example.test/one","elicitationId":"same"},{"mode":"url","message":"Two","url":"https://example.test/two","elicitationId":"same"}]}),
+        json!({"elicitations":[]}),
+        json!({"elicitations":[7]}),
+        json!([]),
+    ] {
+        assert_eq!(
+            parse_url_required(&invalid).err(),
+            Some(ElicitationError::InvalidRequest),
+            "{invalid}"
+        );
+    }
+    let insecure = json!({"elicitations":[{"mode":"url","message":"No","url":"http://example.test/","elicitationId":"e"}]});
+    assert_eq!(
+        parse_url_required(&insecure).err(),
+        Some(ElicitationError::InsecureUrl)
+    );
+}
+
+#[test]
+fn completion_notifications_validate_the_full_bounded_envelope() {
+    for malformed in [
+        json!(null),
+        json!({}),
+        json!({"method":"notifications/elicitation/complete","params":{"elicitationId":"id"}}),
+        json!({"jsonrpc":"1.0","method":"notifications/elicitation/complete","params":{"elicitationId":"id"}}),
+        json!({"jsonrpc":2,"method":"notifications/elicitation/complete","params":{"elicitationId":"id"}}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/completed","params":{"elicitationId":"id"}}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete"}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":[]}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{}}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":7}}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":""}}),
+        json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":"x".repeat(257)}}),
+    ] {
+        assert_eq!(completed_elicitation(&malformed), None, "{malformed}");
+    }
+    let valid = json!({"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":"matching-id"}});
+    assert_eq!(completed_elicitation(&valid), Some("matching-id"));
+}

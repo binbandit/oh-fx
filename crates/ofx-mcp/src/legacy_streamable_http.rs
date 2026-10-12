@@ -1328,7 +1328,7 @@ mod tests {
         assert!(
             initialize
                 .body
-                .contains("\"capabilities\":{\"elicitation\":{\"form\":{}}}")
+                .contains("\"capabilities\":{\"elicitation\":{\"form\":{},\"url\":{}}}")
         );
         client
             .call_tool(

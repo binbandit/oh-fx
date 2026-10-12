@@ -133,6 +133,9 @@ pub(crate) struct ToolCallResult {
 pub(crate) enum ToolCallOutcome {
     Complete(ToolCallResult),
     ProtocolFailure(RpcError),
+    InputRequired(String),
+    InputRoundsExceeded,
+    UrlElicitationEnded(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

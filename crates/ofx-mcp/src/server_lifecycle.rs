@@ -11,7 +11,10 @@ use crate::catalog_freshness::Freshness;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
-use crate::legacy_elicitation_runtime::{ElicitationOwner, OperationElicitation};
+use crate::legacy_elicitation_runtime::{
+    ElicitationOwner, MAX_INPUT_ROUNDS, OperationElicitation, URL_CANCELLED, URL_DECLINED,
+    UrlRetry, coordinate_url_required, rendered_url_required,
+};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{
@@ -102,29 +105,51 @@ struct CallOwner {
     client: Weak<McpClient>,
     catalog: Arc<ToolCatalog>,
     auth: Option<u64>,
+    settled_tools: bool,
 }
 
 impl CallOwner {
     fn new(server: &Arc<Server>, client: &Arc<McpClient>) -> Self {
+        Self::bound(server, client, client.tool_catalog(), false)
+    }
+
+    fn retrying(server: &Arc<Server>, client: &Arc<McpClient>, catalog: Arc<ToolCatalog>) -> Self {
+        Self::bound(server, client, catalog, true)
+    }
+
+    fn bound(
+        server: &Arc<Server>,
+        client: &Arc<McpClient>,
+        catalog: Arc<ToolCatalog>,
+        settled_tools: bool,
+    ) -> Self {
         Self {
             server: Arc::downgrade(server),
             client: Arc::downgrade(client),
-            catalog: client.tool_catalog(),
+            catalog,
             auth: server.auth.current_generation().ok(),
+            settled_tools,
         }
+    }
+
+    fn connected(&self) -> Option<Arc<McpClient>> {
+        let (Some(server), Some(client)) = (self.server.upgrade(), self.client.upgrade()) else {
+            return None;
+        };
+        (server.serves(&client)
+            && client.is_running()
+            && self.auth.is_some()
+            && server.auth.current_generation().ok() == self.auth)
+            .then_some(client)
     }
 }
 
 impl ElicitationOwner for CallOwner {
     fn current(&self) -> bool {
-        let (Some(server), Some(client)) = (self.server.upgrade(), self.client.upgrade()) else {
-            return false;
-        };
-        server.serves(&client)
-            && client.is_running()
-            && Arc::ptr_eq(&client.tool_catalog(), &self.catalog)
-            && self.auth.is_some()
-            && server.auth.current_generation().ok() == self.auth
+        self.connected().is_some_and(|client| {
+            Arc::ptr_eq(&client.tool_catalog(), &self.catalog)
+                && !(self.settled_tools && client.tools_invalidation.pending())
+        })
     }
 }
 
@@ -292,18 +317,96 @@ impl Server {
         self: &Arc<Self>,
         advertised: &Advertised,
         arguments_json: &str,
-        mut options: CallOptions,
+        options: CallOptions,
     ) -> Result<ToolCallOutcome, CallFailure> {
-        let deadline =
+        let mut deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
         let client = self.running_client(deadline).await?;
+        let catalog = self.settled_catalog(&client, deadline).await?;
+        let name = &advertised.tool.name;
+        let current = catalog.get(name);
+        let instructions = client.server_info().instructions.as_deref();
+        if current != Some(&advertised.tool) || instructions != advertised.instructions.as_deref() {
+            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
+            return Err(CallFailure::DefinitionChanged);
+        }
+        let CallOptions {
+            max_tool_result_bytes,
+            progress,
+            ..
+        } = options;
+        let mut round = 0;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(McpError::McpRequestTimedOut.into());
+            }
+            let options = CallOptions {
+                max_tool_result_bytes,
+                progress: progress.clone(),
+                elicitation: self.operation_elicitation(&client),
+            };
+            let outcome = client
+                .call_tool(name, arguments_json, options, deadline)
+                .await;
+            if let Err(error) = &outcome
+                && client.transport.lost_authentication(error)
+            {
+                self.authentication_failed(&client);
+            }
+            let outcome = outcome?;
+            let Some(requests) = client.url_required(&outcome) else {
+                return Ok(outcome);
+            };
+            client.receive_pending_notifications();
+            let Some(responder) = &self.options.elicitation else {
+                return Ok(ToolCallOutcome::InputRequired(rendered_url_required(
+                    &requests,
+                )?));
+            };
+            if round >= MAX_INPUT_ROUNDS {
+                return Ok(ToolCallOutcome::InputRoundsExceeded);
+            }
+            let owner = CallOwner::retrying(self, &client, Arc::clone(&catalog));
+            if owner.connected().is_none() {
+                return Err(McpError::Cancelled.into());
+            }
+            match coordinate_url_required(
+                responder,
+                &self.config.name,
+                &client.url_completions,
+                &requests,
+                &owner,
+            )
+            .await?
+            {
+                UrlRetry::Retry => {}
+                UrlRetry::Declined => {
+                    return Ok(ToolCallOutcome::UrlElicitationEnded(URL_DECLINED));
+                }
+                UrlRetry::Cancelled => {
+                    return Ok(ToolCallOutcome::UrlElicitationEnded(URL_CANCELLED));
+                }
+            }
+            round += 1;
+            deadline = Instant::now() + client.operation_timeout;
+            if !Arc::ptr_eq(&self.settled_catalog(&client, deadline).await?, &catalog) {
+                return Err(McpError::McpToolCatalogChanged.into());
+            }
+        }
+    }
+
+    async fn settled_catalog(
+        &self,
+        client: &McpClient,
+        deadline: Instant,
+    ) -> Result<Arc<ToolCatalog>, CallFailure> {
         if client.transport.stream_rejected_authentication() {
-            self.authentication_failed(&client);
+            self.authentication_failed(client);
             return Err(McpError::McpAuthenticationRequired.into());
         }
         let refreshed = client.settled_tools(deadline).await?;
         if let Some(error) = refreshed.lost_authentication {
-            self.authentication_failed(&client);
+            self.authentication_failed(client);
             return Err(error.into());
         }
         if refreshed.replaced {
@@ -312,35 +415,21 @@ impl Server {
         if client.tools_invalidation.pending() {
             return Err(McpError::McpToolCatalogChanged.into());
         }
-        let catalog = refreshed.catalog;
-        let name = &advertised.tool.name;
-        let current = catalog.get(name);
-        let instructions = client.server_info().instructions.as_deref();
-        if current != Some(&advertised.tool) || instructions != advertised.instructions.as_deref() {
-            self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-            return Err(CallFailure::DefinitionChanged);
-        }
-        if Instant::now() >= deadline {
-            return Err(McpError::McpRequestTimedOut.into());
-        }
-        options.elicitation =
-            self.options
-                .elicitation
-                .clone()
-                .map(|responder| OperationElicitation {
-                    responder,
-                    server_name: self.config.name.clone(),
-                    owner: Box::new(CallOwner::new(self, &client)),
-                });
-        let outcome = client
-            .call_tool(name, arguments_json, options, deadline)
-            .await;
-        if let Err(error) = &outcome
-            && client.transport.lost_authentication(error)
-        {
-            self.authentication_failed(&client);
-        }
-        Ok(outcome?)
+        Ok(refreshed.catalog)
+    }
+
+    fn operation_elicitation(
+        self: &Arc<Self>,
+        client: &Arc<McpClient>,
+    ) -> Option<OperationElicitation> {
+        self.options
+            .elicitation
+            .clone()
+            .map(|responder| OperationElicitation {
+                responder,
+                server_name: self.config.name.clone(),
+                owner: Box::new(CallOwner::new(self, client)),
+            })
     }
 
     fn serves(&self, client: &Arc<McpClient>) -> bool {
@@ -543,6 +632,14 @@ impl Server {
 }
 
 async fn watch(server: Weak<Server>, connection: Connection) {
+    tokio::select! {
+        () = follow_notifications(&server, &connection) => {}
+        () = connection.client.closed() => connection.client.receive_pending_notifications(),
+    }
+    connection.client.url_completions.close();
+}
+
+async fn follow_notifications(server: &Weak<Server>, connection: &Connection) {
     loop {
         let Some(notification) = connection
             .stop

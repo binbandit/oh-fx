@@ -1276,9 +1276,15 @@ fn elicitation_responder(
     questioner: Option<Arc<dyn QuestionAsker>>,
 ) -> Option<InputResponder> {
     match questions {
-        Some(questions) => Some(InputResponder::new(questions.elicitation()).with_compact_forms()),
-        None => questioner.map(InputResponder::new),
+        Some(questions) => {
+            Some(InputResponder::new(questions.elicitation(), open_browser).with_compact_forms())
+        }
+        None => questioner.map(|questioner| InputResponder::new(questioner, open_browser)),
     }
+}
+
+fn open_browser(url: &str) -> bool {
+    ofx_auth::browser_allowed() && ofx_auth::open_url_bounded(url)
 }
 
 pub fn user_agent() -> String {
