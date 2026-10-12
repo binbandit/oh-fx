@@ -23,6 +23,7 @@ pub(crate) enum Section {
 pub(crate) enum Screen {
     Browse,
     Details,
+    Preview,
     Add,
     Info,
     Confirm,
@@ -75,6 +76,10 @@ pub(crate) enum Event {
     ClearFilterText,
     ClearFilter,
     CatalogLoaded { generation: u64, item_count: usize },
+    BeginPreview,
+    ScrollPreview { delta: isize, row_count: usize },
+    PreviewLoaded(u64),
+    InsertPreview,
     ActionSucceeded(u64),
     EffectFailed(u64),
 }
@@ -84,6 +89,8 @@ pub(crate) enum Effect {
     Close,
     Action { generation: u64, action: Action },
     LoadCatalog { generation: u64, section: Section },
+    LoadPreview { generation: u64 },
+    Insert { generation: u64 },
     Cancel(u64),
 }
 
@@ -206,17 +213,138 @@ impl McpMenuState {
 
     pub(crate) fn apply(&mut self, event: Event) -> Option<Effect> {
         match event {
-            Event::Back if self.screen == Screen::Browse => return Some(Effect::Close),
-            Event::Back => {
-                self.screen = Screen::Browse;
-                self.confirmation_action = None;
-                let pending = self.pending_generation.take();
-                if pending.is_some() {
-                    self.load_state = LoadState::Cancelled;
-                }
-                return pending.map(Effect::Cancel);
+            Event::Back => return self.back(),
+            Event::RequestAction(action) => return self.request_action(action),
+            Event::CycleSection(delta) => return self.cycle_section(delta),
+            Event::BeginPreview | Event::InsertPreview => return self.preview_effect(event),
+            Event::BeginFilter
+            | Event::AppendFilterByte(_)
+            | Event::DeleteFilterByte
+            | Event::ClearFilterText
+            | Event::ClearFilter => self.filter(event),
+            Event::CatalogLoaded { .. }
+            | Event::PreviewLoaded(_)
+            | Event::ActionSucceeded(_)
+            | Event::EffectFailed(_) => self.complete(event),
+            Event::Move(_)
+            | Event::ScrollPreview { .. }
+            | Event::CycleAddTransport
+            | Event::MoveAddField { .. }
+            | Event::ShowDetails
+            | Event::ShowAdd
+            | Event::ShowInfo
+            | Event::ShowConfirmation(_) => self.navigate(event),
+        }
+        None
+    }
+
+    fn back(&mut self) -> Option<Effect> {
+        if self.screen == Screen::Browse {
+            return Some(Effect::Close);
+        }
+        self.screen = Screen::Browse;
+        self.confirmation_action = None;
+        let pending = self.pending_generation.take();
+        if pending.is_some() {
+            self.load_state = LoadState::Cancelled;
+        }
+        pending.map(Effect::Cancel)
+    }
+
+    fn request_action(&mut self, action: Action) -> Option<Effect> {
+        if requires_confirmation(action)
+            && (self.screen != Screen::Confirm || self.confirmation_action != Some(action))
+        {
+            return None;
+        }
+        Some(self.begin_action(action))
+    }
+
+    fn preview_effect(&mut self, event: Event) -> Option<Effect> {
+        match event {
+            Event::BeginPreview if self.section != Section::Servers => {
+                self.filter_active = false;
+                let generation = self.begin_generation(true);
+                Some(Effect::LoadPreview { generation })
             }
+            Event::InsertPreview if self.screen == Screen::Preview => {
+                let generation = self.begin_generation(false);
+                Some(Effect::Insert { generation })
+            }
+            _ => None,
+        }
+    }
+
+    fn filter(&mut self, event: Event) {
+        match event {
+            Event::BeginFilter
+                if self.screen == Screen::Browse && self.section != Section::Servers =>
+            {
+                self.filter_active = true;
+                self.reset_navigation();
+            }
+            Event::AppendFilterByte(byte)
+                if self.filter_active
+                    && self.query.len() < MAX_QUERY_BYTES
+                    && (0x20..0x7f).contains(&byte) =>
+            {
+                self.query.push(char::from(byte));
+                self.reset_navigation();
+            }
+            Event::DeleteFilterByte if self.filter_active && self.query.pop().is_some() => {
+                self.reset_navigation();
+            }
+            Event::ClearFilterText if self.filter_active => {
+                self.query.clear();
+                self.reset_navigation();
+            }
+            Event::ClearFilter => self.clear_filter(),
+            _ => {}
+        }
+    }
+
+    fn complete(&mut self, event: Event) {
+        match event {
+            Event::CatalogLoaded {
+                generation,
+                item_count,
+            } => {
+                if self.settle(generation, LoadState::Ready) {
+                    self.confirmation_action = None;
+                    self.clamp_selection(item_count, item_count);
+                    self.screen = Screen::Browse;
+                }
+            }
+            Event::PreviewLoaded(generation) => {
+                if self.settle(generation, LoadState::Ready) {
+                    self.screen = Screen::Preview;
+                    self.window_start = 0;
+                }
+            }
+            Event::ActionSucceeded(generation) => {
+                if self.settle(generation, LoadState::Ready) {
+                    self.confirmation_action = None;
+                }
+            }
+            Event::EffectFailed(generation) => {
+                self.settle(generation, LoadState::Failed);
+            }
+            _ => {}
+        }
+    }
+
+    fn navigate(&mut self, event: Event) {
+        match event {
             Event::Move(movement) if self.screen != Screen::Confirm => self.moved(movement),
+            Event::ScrollPreview { delta, row_count }
+                if self.screen == Screen::Preview && row_count > 0 && delta != 0 =>
+            {
+                self.window_start = if delta > 0 {
+                    (self.window_start + 1).min(row_count - 1)
+                } else {
+                    self.window_start.saturating_sub(1)
+                };
+            }
             Event::CycleAddTransport if self.screen == Screen::Add => {
                 self.add_transport = match self.add_transport {
                     McpMenuAddTransport::Local => McpMenuAddTransport::Http,
@@ -239,11 +367,6 @@ impl McpMenuState {
                 self.screen = Screen::Details;
             }
             Event::ShowInfo if self.section == Section::Servers => self.screen = Screen::Info,
-            Event::Move(_)
-            | Event::CycleAddTransport
-            | Event::MoveAddField { .. }
-            | Event::ShowDetails
-            | Event::ShowInfo => {}
             Event::ShowAdd => {
                 self.screen = Screen::Add;
                 self.add_field_index = 0;
@@ -252,59 +375,8 @@ impl McpMenuState {
                 self.screen = Screen::Confirm;
                 self.confirmation_action = Some(action);
             }
-            Event::RequestAction(action)
-                if requires_confirmation(action)
-                    && (self.screen != Screen::Confirm
-                        || self.confirmation_action != Some(action)) => {}
-            Event::RequestAction(action) => return Some(self.begin_action(action)),
-            Event::CycleSection(delta) => return self.cycle_section(delta),
-            Event::BeginFilter => {
-                if self.screen == Screen::Browse && self.section != Section::Servers {
-                    self.filter_active = true;
-                    self.reset_navigation();
-                }
-            }
-            Event::AppendFilterByte(byte) => {
-                if self.filter_active
-                    && self.query.len() < MAX_QUERY_BYTES
-                    && (0x20..0x7f).contains(&byte)
-                {
-                    self.query.push(char::from(byte));
-                    self.reset_navigation();
-                }
-            }
-            Event::DeleteFilterByte => {
-                if self.filter_active && self.query.pop().is_some() {
-                    self.reset_navigation();
-                }
-            }
-            Event::ClearFilterText => {
-                if self.filter_active {
-                    self.query.clear();
-                    self.reset_navigation();
-                }
-            }
-            Event::ClearFilter => self.clear_filter(),
-            Event::CatalogLoaded {
-                generation,
-                item_count,
-            } => {
-                if self.settle(generation, LoadState::Ready) {
-                    self.confirmation_action = None;
-                    self.clamp_selection(item_count, item_count);
-                    self.screen = Screen::Browse;
-                }
-            }
-            Event::ActionSucceeded(generation) => {
-                if self.settle(generation, LoadState::Ready) {
-                    self.confirmation_action = None;
-                }
-            }
-            Event::EffectFailed(generation) => {
-                self.settle(generation, LoadState::Failed);
-            }
+            _ => {}
         }
-        None
     }
 
     pub(crate) fn return_to_servers(&mut self) {

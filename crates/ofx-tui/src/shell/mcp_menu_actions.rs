@@ -75,7 +75,7 @@ impl Shell<'_> {
             Screen::Browse if menu.state.section == Section::Servers => {
                 self.apply_mcp_menu_event(Event::ShowAdd);
             }
-            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm => {}
+            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm | Screen::Preview => {}
         }
     }
 

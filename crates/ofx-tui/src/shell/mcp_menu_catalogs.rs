@@ -1,10 +1,11 @@
 use ofx_contract::{
-    McpMenuCancel, McpMenuCatalog, McpMenuCatalogRequest, McpMenuRequest, UiCommand,
+    McpMenuCancel, McpMenuCatalog, McpMenuCatalogRequest, McpMenuPreview, McpMenuRequest, UiCommand,
 };
 
 use super::Shell;
-use super::mcp_menu::{Event, Section};
-use crate::input::{InputEvent, ShortcutAction};
+use super::mcp_menu::{Effect, Event, Section};
+use crate::composer::InsertResult;
+use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, InputEvent, ShortcutAction};
 
 const LOADING_GRACE_MS: i64 = 200;
 const DELETE: u8 = 0x7f;
@@ -58,6 +59,64 @@ impl Shell<'_> {
                 catalog,
             },
         });
+    }
+
+    pub(super) fn open_mcp_menu_item(&mut self) {
+        let Some(menu) = &self.mcp_menu else {
+            return;
+        };
+        let state = &menu.state;
+        let Some(target) = menu.catalogs.preview_target(
+            state.section,
+            &state.query,
+            state.selected_index,
+            menu.selected_server_name(),
+        ) else {
+            return;
+        };
+        if let Some(Effect::LoadPreview { generation }) =
+            self.apply_mcp_menu_event(Event::BeginPreview)
+        {
+            self.send(UiCommand::McpMenu {
+                request: McpMenuRequest::LoadPreview { generation, target },
+            });
+        }
+    }
+
+    pub(super) fn mcp_menu_previewed(&mut self, generation: u64, preview: McpMenuPreview) {
+        let Some(menu) = &mut self.mcp_menu else {
+            return;
+        };
+        if menu.state.pending_generation != Some(generation) {
+            return;
+        }
+        menu.preview = Some(preview);
+        menu.feedback = None;
+        menu.state.apply(Event::PreviewLoaded(generation));
+        self.invalidate();
+    }
+
+    pub(super) fn insert_mcp_menu_preview(&mut self) {
+        let Some(insert) = self
+            .mcp_menu
+            .as_ref()
+            .and_then(|menu| menu.preview.as_ref())
+            .map(|preview| preview.insert.clone())
+        else {
+            return;
+        };
+        if self.apply_mcp_menu_event(Event::InsertPreview).is_none() {
+            return;
+        }
+        if self
+            .composer
+            .insert_text(&insert, COMPOSER_INPUT_LIMIT_BYTES)
+            == InsertResult::LimitExceeded
+        {
+            self.report_limit();
+        } else {
+            self.mcp_menu = None;
+        }
     }
 
     pub(super) fn cancel_mcp_menu_operation(&mut self, generation: u64, reason: McpMenuCancel) {

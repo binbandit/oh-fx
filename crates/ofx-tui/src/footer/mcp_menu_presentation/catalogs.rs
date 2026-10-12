@@ -1,4 +1,4 @@
-use ofx_contract::{McpMenuPrompt, McpMenuResource};
+use ofx_contract::{McpMenuPreviewTarget, McpMenuPrompt, McpMenuResource};
 use ofx_text::contains_ignore_case;
 
 use super::{McpMenuView, TEXT_INDENT, safe_line, text_row, visible_window_start};
@@ -29,6 +29,44 @@ impl McpMenuCatalogs {
                 .count(),
             Section::Resources => self.resources().filter(|item| item.matches(query)).count(),
             Section::Prompts => self.prompts().filter(|item| item.matches(query)).count(),
+        }
+    }
+
+    pub(crate) fn preview_target(
+        &self,
+        section: Section,
+        query: &str,
+        index: usize,
+        server: Option<String>,
+    ) -> Option<McpMenuPreviewTarget> {
+        let item = match section {
+            Section::Servers => return None,
+            Section::Tools => {
+                return self
+                    .tools
+                    .iter()
+                    .filter(|tool| matches(tool, query))
+                    .nth(index)
+                    .map(|tool| McpMenuPreviewTarget::Tool(tool.clone()));
+            }
+            Section::Resources => self
+                .resources()
+                .filter(|item| item.matches(query))
+                .nth(index),
+            Section::Prompts => self.prompts().filter(|item| item.matches(query)).nth(index),
+        };
+        match item? {
+            Item::Resource(resource) if !resource.template => {
+                Some(McpMenuPreviewTarget::Resource {
+                    server: server?,
+                    uri: resource.uri.clone(),
+                })
+            }
+            Item::Resource(_) => None,
+            Item::Prompt(prompt) => Some(McpMenuPreviewTarget::Prompt {
+                server: server?,
+                name: prompt.name.clone(),
+            }),
         }
     }
 

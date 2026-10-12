@@ -1,8 +1,9 @@
 use ofx_contract::{
     McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication, McpMenuCancel,
     McpMenuCatalog, McpMenuCatalogRequest, McpMenuConnection, McpMenuCounts, McpMenuOutcome,
-    McpMenuRequest, McpMenuResource, McpMenuServer, McpMenuSettled, McpMenuSnapshot, McpMenuSource,
-    McpMenuStatus, McpMenuTransport, McpMenuTrust, UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
+    McpMenuPreview, McpMenuPreviewTarget, McpMenuPrompt, McpMenuRequest, McpMenuResource,
+    McpMenuServer, McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
+    McpMenuTrust, UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
 };
 
 use super::super::mcp_menu::{Action, Event, LoadState, Screen, Section};
@@ -863,7 +864,7 @@ fn tab_and_the_arrows_walk_the_catalog_tabs_of_the_selected_server() {
     assert!(screen.contains("  Server              remote"), "{screen}");
     assert!(screen.contains("custom://alpha"), "{screen}");
     assert!(
-        screen.contains("tab section     / filter     esc back"),
+        screen.contains("tab section     enter open     / filter     esc back"),
         "{screen}"
     );
     press(&mut test, b"arpz");
@@ -1038,4 +1039,154 @@ fn a_reloaded_catalog_clamps_the_selection_to_its_filtered_rows() {
     let screen = test.screen();
     assert!(screen.contains("  a1"), "{screen}");
     assert!(!screen.contains("b1"), "{screen}");
+}
+
+fn preview_request(generation: u64, target: McpMenuPreviewTarget) -> UiCommand {
+    menu(McpMenuRequest::LoadPreview { generation, target })
+}
+
+fn previewed(generation: u64, display: &str, insert: &str) -> UiEvent {
+    UiEvent::McpMenuPreviewed {
+        generation,
+        preview: McpMenuPreview {
+            display: display.to_owned(),
+            insert: insert.to_owned(),
+        },
+    }
+}
+
+#[test]
+fn enter_previews_a_tool_that_scrolls_and_inserts_into_the_composer() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: McpMenuCatalog::Tools(vec!["mcp_docs_echo".to_owned()]),
+    });
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            2,
+            McpMenuPreviewTarget::Tool("mcp_docs_echo".to_owned())
+        ))
+    );
+    let display = format!(
+        "MCP tool schema · untrusted metadata\n\n{}",
+        "word ".repeat(60)
+    );
+    test.deliver(previewed(2, &display, "{\"type\":\"function\"}"));
+    let screen = test.screen();
+    assert!(
+        screen.contains("  MCP tool schema · untrusted metadata"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("↑↓ scroll     i insert     esc back"),
+        "{screen}"
+    );
+    press(&mut test, b"\x1b[B");
+    assert_eq!(state(&test).window_start, 1);
+    press(&mut test, b"\x1b[A\x1b[A");
+    assert_eq!(state(&test).window_start, 0);
+    press(&mut test, b"i");
+    assert!(test.shell.mcp_menu.is_none());
+    assert_eq!(test.shell.composer.text(), "{\"type\":\"function\"}");
+}
+
+#[test]
+fn enter_previews_resources_and_prompts_of_the_selected_server_but_not_templates() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 2,
+        catalog: McpMenuCatalog::Resources(vec![
+            McpMenuResource {
+                uri: "custom://alpha".to_owned(),
+                name: "alpha".to_owned(),
+                title: None,
+                description: None,
+                template: false,
+            },
+            McpMenuResource {
+                uri: "custom://project/{path}".to_owned(),
+                name: "project".to_owned(),
+                title: None,
+                description: None,
+                template: true,
+            },
+        ]),
+    });
+    press(&mut test, b"\x1b[B\r");
+    assert_eq!(requests(&test).len(), 2);
+    press(&mut test, b"\x1b[A\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            3,
+            McpMenuPreviewTarget::Resource {
+                server: "docs".to_owned(),
+                uri: "custom://alpha".to_owned(),
+            }
+        ))
+    );
+    test.deliver(outcome(
+        3,
+        McpMenuOutcome::Failed,
+        "MCP preview failed: McpResourceNotFound",
+    ));
+    let screen = test.screen();
+    assert!(
+        screen.contains("  MCP preview failed: McpResourceNotFound"),
+        "{screen}"
+    );
+    assert!(!screen.contains("custom://alpha"), "{screen}");
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 4,
+        catalog: McpMenuCatalog::Prompts(vec![McpMenuPrompt {
+            name: "review".to_owned(),
+            title: Some("Review".to_owned()),
+            description: None,
+        }]),
+    });
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            5,
+            McpMenuPreviewTarget::Prompt {
+                server: "docs".to_owned(),
+                name: "review".to_owned(),
+            }
+        ))
+    );
+    escape(&mut test);
+    assert!(test.shell.mcp_menu.is_none());
+    assert_eq!(
+        requests(&test).last(),
+        Some(&cancel(5, McpMenuCancel::Closed))
+    );
+}
+
+#[test]
+fn an_insert_past_the_composer_limit_keeps_the_preview_open() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: McpMenuCatalog::Tools(vec!["mcp_docs_echo".to_owned()]),
+    });
+    press(&mut test, b"\r");
+    let insert = "x".repeat(crate::input::COMPOSER_INPUT_LIMIT_BYTES + 1);
+    test.deliver(previewed(
+        2,
+        "MCP tool schema · untrusted metadata",
+        &insert,
+    ));
+    press(&mut test, b"i");
+    assert!(test.shell.mcp_menu.is_some());
+    assert_eq!(state(&test).screen, Screen::Preview);
+    assert_eq!(state(&test).load_state, LoadState::Loading);
+    assert!(test.shell.composer.is_empty());
 }

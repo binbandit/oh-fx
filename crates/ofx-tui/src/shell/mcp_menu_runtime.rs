@@ -1,6 +1,6 @@
 use ofx_contract::{
-    McpMenuCancel, McpMenuOutcome, McpMenuRequest, McpMenuServer, McpMenuSettled, McpMenuSnapshot,
-    UiCommand, UiEvent,
+    McpMenuCancel, McpMenuOutcome, McpMenuPreview, McpMenuRequest, McpMenuServer, McpMenuSettled,
+    McpMenuSnapshot, UiCommand, UiEvent,
 };
 
 use super::Shell;
@@ -9,7 +9,7 @@ use super::mcp_menu::{
 };
 use crate::footer::mcp_menu_presentation::{
     AddFields, MAX_INLINE_ROWS, McpMenuCatalogs, McpMenuView, mcp_menu_hint_row, mcp_menu_rows,
-    menu_row_count, visible_items_for_budget,
+    menu_row_count, preview_visual_row_count, visible_items_for_budget,
 };
 use crate::input::{Action as InputAction, InputEvent};
 use crate::row_text::Row;
@@ -25,6 +25,7 @@ pub(super) struct McpMenu {
     pub(super) add: AddForm,
     pub(super) confirmation_target: Option<String>,
     pub(super) catalogs: McpMenuCatalogs,
+    pub(super) preview: Option<McpMenuPreview>,
     refresh_due_ms: Option<i64>,
     pub(super) reveal_due_ms: Option<i64>,
 }
@@ -50,6 +51,10 @@ impl McpMenu {
             },
             catalogs: &self.catalogs,
             loading_visible: self.reveal_due_ms.is_none(),
+            preview: self
+                .preview
+                .as_ref()
+                .map(|preview| preview.display.as_str()),
         }
     }
 
@@ -112,6 +117,7 @@ impl Shell<'_> {
             add: AddForm::default(),
             confirmation_target: None,
             catalogs: McpMenuCatalogs::default(),
+            preview: None,
             refresh_due_ms: Some(self.now_ms() + REFRESH_INTERVAL_MS),
             reveal_due_ms: None,
         });
@@ -129,6 +135,10 @@ impl Shell<'_> {
                 generation,
                 catalog,
             } => self.mcp_menu_loaded(generation, catalog),
+            UiEvent::McpMenuPreviewed {
+                generation,
+                preview,
+            } => self.mcp_menu_previewed(generation, preview),
             _ => {}
         }
     }
@@ -217,7 +227,7 @@ impl Shell<'_> {
             return None;
         }
         let view = menu.view(self.composer.text());
-        let row_count = menu_row_count(view, self.menu_budget(MAX_INLINE_ROWS));
+        let row_count = menu_row_count(view, self.menu_budget(MAX_INLINE_ROWS), self.cols());
         let rows = mcp_menu_rows(&self.theme, view, self.cols(), row_count);
         let mut band = Vec::with_capacity(rows.len() + 2);
         band.push(Row::new());
@@ -280,6 +290,7 @@ impl Shell<'_> {
                 b'p' | b'P' => self.confirm_mcp_menu_action(Action::TrustApproveAll),
                 b'z' | b'Z' => self.confirm_mcp_menu_action(Action::TrustReset),
                 b'r' | b'R' => self.reload_from_mcp_menu(),
+                b'i' | b'I' => self.insert_mcp_menu_preview(),
                 10 => self.move_mcp_menu(1),
                 11 => self.move_mcp_menu(-1),
                 _ => {}
@@ -339,6 +350,9 @@ impl Shell<'_> {
                 self.mcp_menu_generation = generation;
                 self.load_mcp_menu_catalog(generation, section);
             }
+            Some(Effect::LoadPreview { generation } | Effect::Insert { generation }) => {
+                self.mcp_menu_generation = generation;
+            }
             Some(Effect::Cancel(generation)) => {
                 self.cancel_mcp_menu_operation(generation, McpMenuCancel::Back);
             }
@@ -348,9 +362,19 @@ impl Shell<'_> {
     }
 
     pub(super) fn move_mcp_menu(&mut self, delta: isize) {
+        let cols = self.cols();
         let Some(menu) = &mut self.mcp_menu else {
             return;
         };
+        if menu.state.screen == Screen::Preview {
+            let display = menu
+                .preview
+                .as_ref()
+                .map(|preview| preview.display.as_str());
+            let row_count = preview_visual_row_count(display, cols);
+            menu.state.apply(Event::ScrollPreview { delta, row_count });
+            return;
+        }
         let item_count = menu.view("").item_count();
         menu.state.apply(Event::Move(Move {
             delta,
@@ -365,6 +389,7 @@ impl Shell<'_> {
         };
         let view = menu.view("");
         match menu.state.screen {
+            Screen::Browse if menu.state.section != Section::Servers => self.open_mcp_menu_item(),
             Screen::Browse if view.item_count() > 0 => {
                 self.apply_mcp_menu_event(Event::ShowDetails);
             }
@@ -381,7 +406,7 @@ impl Shell<'_> {
                     self.request_mcp_menu_action(action);
                 }
             }
-            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm => {}
+            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm | Screen::Preview => {}
         }
     }
 

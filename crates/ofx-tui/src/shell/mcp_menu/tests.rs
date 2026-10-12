@@ -413,3 +413,57 @@ fn a_server_leaving_during_a_catalog_returns_to_the_servers() {
     assert!(state.query.is_empty());
     assert_eq!(state.selected_index, 0);
 }
+
+#[test]
+fn a_preview_opens_only_on_its_own_result_and_only_it_can_be_inserted() {
+    let mut state = McpMenuState::open(1);
+    assert_eq!(state.apply(Event::BeginPreview), None);
+    assert_eq!(state.apply(Event::InsertPreview), None);
+    state.apply(Event::CycleSection(1));
+    state.apply(Event::CatalogLoaded {
+        generation: 1,
+        item_count: 2,
+    });
+    state.apply(Event::BeginFilter);
+    assert_eq!(
+        state.apply(Event::BeginPreview),
+        Some(Effect::LoadPreview { generation: 2 })
+    );
+    assert!(!state.filter_active);
+    assert_eq!(state.screen, Screen::Browse);
+    assert_eq!(state.apply(Event::InsertPreview), None);
+    state.apply(Event::PreviewLoaded(9));
+    assert_eq!(state.screen, Screen::Browse);
+    state.window_start = 4;
+    state.apply(Event::PreviewLoaded(2));
+    assert_eq!(state.screen, Screen::Preview);
+    assert_eq!(state.window_start, 0);
+    assert_eq!(state.load_state, LoadState::Ready);
+    assert_eq!(
+        state.apply(Event::InsertPreview),
+        Some(Effect::Insert { generation: 3 })
+    );
+    assert_eq!(state.load_state, LoadState::Loading);
+}
+
+#[test]
+fn preview_scrolling_stays_within_its_visual_rows() {
+    let mut state = McpMenuState::open(1);
+    let scroll = |delta| Event::ScrollPreview {
+        delta,
+        row_count: 3,
+    };
+    state.apply(scroll(1));
+    assert_eq!(state.window_start, 0);
+    state.screen = Screen::Preview;
+    state.apply(scroll(1));
+    assert_eq!(state.window_start, 1);
+    state.apply(scroll(1));
+    state.apply(scroll(1));
+    assert_eq!(state.window_start, 2);
+    state.apply(scroll(-1));
+    assert_eq!(state.window_start, 1);
+    state.apply(scroll(-1));
+    state.apply(scroll(-1));
+    assert_eq!(state.window_start, 0);
+}

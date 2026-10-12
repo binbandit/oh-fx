@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use ofx_contract::{
@@ -12,20 +13,35 @@ use super::settled;
 impl McpHost {
     pub(super) fn load_menu_catalog(&self, generation: u64, request: McpMenuCatalogRequest) {
         let runtime = Arc::clone(&self.runtime);
+        self.start_menu_operation(generation, "catalog", async move {
+            catalog(&runtime, request)
+                .await
+                .map(|catalog| UiEvent::McpMenuLoaded {
+                    generation,
+                    catalog,
+                })
+                .map_err(|error| error.to_string())
+        });
+    }
+
+    pub(super) fn start_menu_operation(
+        &self,
+        generation: u64,
+        kind: &'static str,
+        work: impl Future<Output = Result<UiEvent, String>> + Send + 'static,
+    ) {
+        let runtime = Arc::clone(&self.runtime);
         let emit = Arc::clone(&self.emit);
         let profile = self.profile_config();
         let task = tokio::spawn(async move {
-            emit(match catalog(&runtime, request).await {
-                Ok(catalog) => UiEvent::McpMenuLoaded {
-                    generation,
-                    catalog,
-                },
+            emit(match work.await {
+                Ok(event) => event,
                 Err(error) => settled(
                     &runtime,
                     profile,
                     generation,
                     McpMenuOutcome::Failed,
-                    format!("MCP catalog failed: {error}"),
+                    format!("MCP {kind} failed: {error}"),
                 ),
             });
         });

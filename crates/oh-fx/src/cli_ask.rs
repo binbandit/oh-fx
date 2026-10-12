@@ -1217,6 +1217,7 @@ impl Presenter {
             | UiEvent::McpMenuRefreshed { .. }
             | UiEvent::McpMenuSettled { .. }
             | UiEvent::McpMenuLoaded { .. }
+            | UiEvent::McpMenuPreviewed { .. }
             | UiEvent::SettingsChanged { .. }
             | UiEvent::PromptHistoryChanged { .. }
             | UiEvent::HelpRequested

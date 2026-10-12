@@ -50,8 +50,9 @@ pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use mcp_menu::{
     McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication, McpMenuCancel,
     McpMenuCatalog, McpMenuCatalogRequest, McpMenuConnection, McpMenuCounts, McpMenuOutcome,
-    McpMenuPrompt, McpMenuRequest, McpMenuResource, McpMenuServer, McpMenuSettled, McpMenuSnapshot,
-    McpMenuSource, McpMenuStatus, McpMenuTransport, McpMenuTrust,
+    McpMenuPreview, McpMenuPreviewTarget, McpMenuPrompt, McpMenuRequest, McpMenuResource,
+    McpMenuServer, McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
+    McpMenuTrust,
 };
 pub use mcp_servers::{McpServersCatalog, McpServersSection};
 pub use model_capabilities::{

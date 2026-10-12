@@ -80,7 +80,7 @@ pub use mcp_contract::{
     McpAuthConfig, McpServerConfig, ProfileConfigWarning, ProfileConfigWarningCause, TransportType,
     WorkspaceAdmission,
 };
-pub use mcp_runtime::{McpRuntime, ReloadCancelled, ReloadOutcome, Settling};
+pub use mcp_runtime::{McpRuntime, MenuToolSchema, ReloadCancelled, ReloadOutcome, Settling};
 pub use model_catalog::{
     Availability, BaselineEntry, CatalogSection, ServerSummary, render_change_notice,
     render_model_catalog,
