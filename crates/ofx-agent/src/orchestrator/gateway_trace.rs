@@ -1,4 +1,6 @@
-use ofx_contract::{ModelRecoveryAction, ModelRecoveryCause, ProviderError, RecoveryProgress};
+use ofx_contract::{
+    ModelRecoveryAction, ModelRecoveryCause, ProviderError, RecoveryProgress, ServiceTier,
+};
 use ofx_text::mask_secrets;
 use ofx_trace::{TraceContext, preview, terminal_preview, trace_event, trace_log};
 
@@ -164,6 +166,16 @@ pub(super) fn credential_refresh_failed(
         context,
         "source={source} mode={} err={error}",
         refresh_mode(forced)
+    );
+}
+
+pub(super) fn ultrafast_served_tier(context: TraceContext, served: Option<ServiceTier>) {
+    trace_event!(
+        GATEWAY,
+        "ultrafast_served_tier",
+        context,
+        "requested=ultrafast served={}",
+        served.map_or("unconfirmed", ServiceTier::label)
     );
 }
 

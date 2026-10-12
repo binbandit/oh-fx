@@ -233,6 +233,7 @@ async fn saved_codex_request() {
                 system_prompt: None,
                 reasoning_effort: None,
                 fast_mode: None,
+                ultrafast_mode: false,
                 context_limits: &[],
                 command_timeout: None,
                 executions: &executions,

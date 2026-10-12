@@ -414,6 +414,7 @@ impl Owner {
                     feedback: &feedback,
                     child_id: &origin,
                     parent_id: &parent_id,
+                    parent_ultrafast: agents.defaults().settings.ultrafast_mode,
                 };
                 let mut runtime = runtime.lock_owned().await;
                 let tools = agents.work_tools();

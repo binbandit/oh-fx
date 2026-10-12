@@ -601,7 +601,7 @@ async fn prepare_agent(
     let images = CapturedImages::capture(request.images.to_vec(), cancel)
         .map_err(|error| Failure::code(error.to_string()))?;
     let context_targets = images.context_targets();
-    let (reasoning_effort, fast_mode) = requested_reasoning(
+    let (reasoning_effort, (fast_mode, ultrafast_mode)) = requested_reasoning(
         args,
         profile.settings(),
         resumed.as_ref().map(|(_, resumed)| resumed.preferences()),
@@ -612,6 +612,7 @@ async fn prepare_agent(
         system_prompt: args.system_prompt.clone(),
         reasoning_effort,
         fast_mode,
+        ultrafast_mode,
         context_limits: request.modifiers.context_limit_overrides(),
         command_timeout: args.timeout_ms.map(Duration::from_millis),
         executions: request.executions,
@@ -771,7 +772,7 @@ fn requested_reasoning(
     args: &AskArgs,
     settings: &Settings,
     resumed: Option<&SessionPreferences>,
-) -> (Option<String>, Option<bool>) {
+) -> (Option<String>, (Option<bool>, bool)) {
     let effort = args.effort.clone().unwrap_or_else(|| {
         resumed.map_or_else(
             || settings.reasoning_effort(),
@@ -781,7 +782,11 @@ fn requested_reasoning(
     let fast_mode = args
         .fast
         .or_else(|| resumed.map(|preferences| preferences.fast_mode));
-    (effort.into_named(), fast_mode)
+    let ultrafast_mode = args
+        .ultrafast
+        .or_else(|| resumed.map(|preferences| preferences.ultrafast_mode))
+        .unwrap_or(false);
+    (effort.into_named(), (fast_mode, ultrafast_mode))
 }
 
 fn watch_signals(cancel: CancellationToken) -> ReceivedSignals {
@@ -2246,7 +2251,7 @@ mod tests {
         for (args, effort, fast) in cases {
             assert_eq!(
                 requested_reasoning(&ask_args(args), &saved, None),
-                (effort.map(str::to_owned), fast),
+                (effort.map(str::to_owned), (fast, false)),
                 "{args:?}"
             );
         }
@@ -2256,22 +2261,22 @@ mod tests {
                 &Settings::default(),
                 None
             ),
-            (None, Some(true))
+            (None, (Some(true), false))
         );
         assert_eq!(
             requested_reasoning(&ask_args(&["ask", "hi"]), &Settings::default(), None),
-            (None, None)
+            (None, (None, false))
         );
         let resumed = SessionPreferences {
             provider: ofx_session::SavedProvider::new(ofx_config::ProviderId::Codex, None).unwrap(),
             model: "gpt-5.4".to_owned(),
             effort: ofx_contract::ReasoningEffort::parse("medium").unwrap(),
             fast_mode: false,
-            ultrafast_mode: false,
+            ultrafast_mode: true,
         };
         assert_eq!(
             requested_reasoning(&ask_args(&["ask", "hi"]), &saved, Some(&resumed)),
-            (Some("medium".to_owned()), Some(false))
+            (Some("medium".to_owned()), (Some(false), true))
         );
         assert_eq!(
             requested_reasoning(
@@ -2279,7 +2284,23 @@ mod tests {
                 &saved,
                 Some(&resumed)
             ),
-            (Some("low".to_owned()), Some(true))
+            (Some("low".to_owned()), (Some(true), false))
+        );
+        assert_eq!(
+            requested_reasoning(
+                &ask_args(&["ask", "--ultrafast", "hi"]),
+                &Settings::default(),
+                None
+            ),
+            (None, (Some(false), true))
+        );
+        assert_eq!(
+            requested_reasoning(
+                &ask_args(&["ask", "--no-ultrafast", "hi"]),
+                &saved,
+                Some(&resumed)
+            ),
+            (Some("medium".to_owned()), (Some(false), false))
         );
     }
 

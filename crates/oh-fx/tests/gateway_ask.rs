@@ -254,6 +254,103 @@ fn a_gateway_finish_with_its_generation_and_cost_settles_exact_usage() {
     );
 }
 
+fn ultra_catalog() -> FakeServer {
+    FakeServer::start([Reply::status(
+        200,
+        json!({"data": [{
+            "id": "openai/gpt-6-astra",
+            "type": "language",
+            "owned_by": "openai",
+            "tags": ["tool-use"],
+            "pricing": {"service_tiers": {"ultrafast": {"input": "0.00006", "output": "0.0003"}}},
+        }]})
+        .to_string(),
+    )])
+}
+
+fn finished(unified: &str) -> String {
+    json!({
+        "type": "finish",
+        "finishReason": {"unified": unified},
+        "usage": {"inputTokens": {"total": 12}, "outputTokens": {"total": 3}},
+        "providerMetadata": {"gateway": {"serviceTier": "ultrafast"}},
+    })
+    .to_string()
+}
+
+#[test]
+fn ask_ultrafast_requests_the_ultra_tier_for_the_turn_and_its_subagent() {
+    let catalog = ultra_catalog();
+    let chat = FakeServer::start([
+        Reply::sse(&[
+            json!({
+                "type": "tool-call",
+                "toolCallId": "call_1",
+                "toolName": "subagent",
+                "input": json!({"request": {"action": "run", "task": "inspect auth"}}).to_string(),
+            })
+            .to_string(),
+            finished("tool-calls"),
+        ]),
+        Reply::sse(&[
+            json!({"type": "text-delta", "id": "t", "delta": "child report"}).to_string(),
+            finished("stop"),
+        ]),
+        Reply::sse(&[
+            json!({"type": "text-delta", "id": "t", "delta": "parent done"}).to_string(),
+            finished("stop"),
+        ]),
+    ]);
+    let home = Home::with_settings(&json!({
+        "models": {"gateway": "openai/gpt-6-astra"},
+        "session_titles": false,
+    }));
+    let chat_url = chat_url(&chat);
+    let models_url = format!("http://{}/coding-agent/v1/models", catalog.address());
+    let output = home.run(
+        &["ask", "--ultrafast", "check the auth module"],
+        &[
+            ("AI_GATEWAY_API_KEY", API_KEY),
+            ("OH_FX_E2E_GATEWAY_CHAT_URL", chat_url.as_str()),
+            ("OH_FX_E2E_GATEWAY_MODELS_URL", models_url.as_str()),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "parent done");
+    let requests = chat.requests();
+    assert_eq!(requests.len(), 3);
+    for request in requests {
+        assert_eq!(
+            request.json()["providerOptions"]["openai"],
+            json!({"serviceTier": "ultrafast"})
+        );
+    }
+}
+
+#[test]
+fn ask_ultrafast_on_a_model_without_the_tier_fails_before_any_request() {
+    let catalog = ultra_catalog();
+    let chat = FakeServer::start([]);
+    let home = Home::with_settings(&json!({"models": {"gateway": "zai/glm-5.2"}}));
+    let chat_url = chat_url(&chat);
+    let models_url = format!("http://{}/coding-agent/v1/models", catalog.address());
+    let output = home.run(
+        &["ask", "--no-save", "--ultrafast", "hello"],
+        &[
+            ("AI_GATEWAY_API_KEY", API_KEY),
+            ("OH_FX_E2E_GATEWAY_CHAT_URL", chat_url.as_str()),
+            ("OH_FX_E2E_GATEWAY_MODELS_URL", models_url.as_str()),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("oh-fx: UltrafastUnavailable"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(chat.requests().is_empty());
+}
+
 #[test]
 fn ask_routing_flags_outrank_the_environment_and_settings() {
     let home = Home::with_settings(&json!({

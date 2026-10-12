@@ -150,6 +150,7 @@ fn completion(content: Option<&str>, tool_calls: Vec<ToolCall>) -> Completion {
             output_tokens: Some(3),
         },
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }

@@ -1,6 +1,6 @@
 use ofx_contract::{
-    DuplicateKeys, Json, Object, ProviderBilling, ProviderError, ProviderErrorKind, StreamEvent,
-    StreamSink, Usage, parse_strict_json,
+    DuplicateKeys, Json, Object, ProviderBilling, ProviderError, ProviderErrorKind, ServiceTier,
+    StreamEvent, StreamSink, Usage, parse_strict_json,
 };
 use ofx_http::SseDecoder;
 use ofx_text::mask_secrets;
@@ -101,6 +101,7 @@ pub(crate) struct GatewayCompletion {
     pub(crate) tools: ToolStream,
     pub(crate) replay: Option<String>,
     pub(crate) billing: Option<ProviderBilling>,
+    pub(crate) service_tier: Option<ServiceTier>,
     generation: Generation,
 }
 
@@ -247,6 +248,7 @@ impl Stream<'_> {
                 completion.finish = Some(finish);
                 completion.usage = usage(fields);
                 completion.billing = completion.generation.billing(fields, &completion.tools);
+                completion.service_tier = service_tier(fields);
                 terminated("valid_finish", completion.finish);
                 return Ok(true);
             }
@@ -354,6 +356,18 @@ fn usage(fields: &Object<'_>) -> Usage {
         input_tokens: total("inputTokens"),
         output_tokens: total("outputTokens"),
     }
+}
+
+fn service_tier(fields: &Object<'_>) -> Option<ServiceTier> {
+    fields
+        .get("providerMetadata")
+        .or_else(|| fields.get("provider_metadata"))?
+        .as_object()?
+        .get("gateway")?
+        .as_object()?
+        .get("serviceTier")?
+        .as_str()
+        .and_then(ServiceTier::parse)
 }
 
 fn is_timeout_code(value: Option<&Json<'_>>) -> bool {
