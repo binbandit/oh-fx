@@ -181,7 +181,7 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
         Outcome::CompletePrompt(completion) => host.complete_prompt(completion),
         Outcome::CompleteResource(completion) => host.complete_resource(completion),
         Outcome::Authenticate { server } => {
-            let body = host.begin_authentication(server);
+            let body = host.begin_authentication(&server);
             state.notice(NoticeTone::Neutral, TOPIC, &body);
         }
         Outcome::Logout { server } => {
