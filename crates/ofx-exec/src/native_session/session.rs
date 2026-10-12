@@ -215,10 +215,11 @@ impl Session {
         let _writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
         let master = {
             let state = self.lock();
-            match (&state.master, state.lifecycle, state.close_committed) {
-                (Some(master), Lifecycle::Running, false) => Arc::clone(master),
-                _ => return Err(StructuredErrorCode::InvalidLifecycle),
-            }
+            input_open(&state)?;
+            state
+                .master
+                .clone()
+                .ok_or(StructuredErrorCode::InvalidLifecycle)?
         };
         self.write_all(&master, bytes)?;
         u32::try_from(bytes.len()).map_err(|_| StructuredErrorCode::InvalidRequest)
