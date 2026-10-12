@@ -1,10 +1,12 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use ofx_config::{DurableError, PrivateDir};
 use ofx_trace::trace_log;
 
+use super::doctor::{DoctorReport, doctor};
 use super::listing::{list_items, record_error, store_error, summary_of};
 use crate::fx_sessions::open_v2_root;
 use crate::session_error::SessionError;
@@ -16,9 +18,18 @@ const V2_DIR: &str = "v2";
 const WIRING: &str = "wiring";
 
 pub struct SessionsV2 {
-    own: Option<Manager>,
-    fx: Option<Manager>,
+    data_dir: PathBuf,
+    home: PathBuf,
     workspace_root: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreFault(IoFault);
+
+impl fmt::Display for StoreFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
 }
 
 impl SessionsV2 {
@@ -28,17 +39,26 @@ impl SessionsV2 {
         workspace_root: &str,
     ) -> Result<Self, SessionError> {
         let workspace_root = checked_workspace_root(workspace_root)?;
-        let own = own_root(data_dir).map_err(store_error)?.map(Manager::new);
         trace_log!(WIRING, "action=StoreOpen session=- pid={}", process::id());
         Ok(Self {
-            own,
-            fx: open_v2_root(home).map(Manager::new),
+            data_dir: data_dir.to_path_buf(),
+            home: home.to_path_buf(),
             workspace_root,
         })
     }
 
+    pub fn doctor(&self, limit: usize) -> Result<DoctorReport, StoreFault> {
+        match own_root(&self.data_dir).map_err(StoreFault)? {
+            Some(own) => doctor(&Manager::new(own), limit).map_err(StoreFault),
+            None => Ok(DoctorReport::default()),
+        }
+    }
+
     pub fn catalog(&self) -> Result<SessionCatalog, SessionError> {
-        let mut summaries = match &self.own {
+        let own = own_root(&self.data_dir)
+            .map_err(store_error)?
+            .map(Manager::new);
+        let mut summaries = match &own {
             Some(own) => list_items(own)
                 .map_err(store_error)?
                 .iter()
@@ -61,10 +81,10 @@ impl SessionsV2 {
     }
 
     fn fx_summaries(&self) -> Vec<SessionSummary> {
-        let Some(fx) = &self.fx else {
+        let Some(fx) = open_v2_root(&self.home).map(Manager::new) else {
             return Vec::new();
         };
-        list_items(fx)
+        list_items(&fx)
             .unwrap_or_default()
             .iter()
             .filter_map(|item| summary_of(item, SessionSource::Fx).ok())

@@ -77,7 +77,77 @@ impl<'a> Fields<'a> {
         {
             return Ok(tag);
         }
-        match json::parse(value).ok_or(BadBody)? {
+        Self::tag_value(value)
+    }
+
+    pub(crate) fn opt_tag<T: Tag>(&self, name: &str) -> Result<Option<T>, BadBody> {
+        if self.present(name).is_none() {
+            return Ok(None);
+        }
+        self.req_tag(name).map(Some)
+    }
+
+    pub(crate) fn req_bool(&self, name: &str) -> Result<bool, BadBody> {
+        match json::parse(self.present(name).ok_or(BadBody)?) {
+            Some(Value::Bool(value)) => Ok(value),
+            _ => Err(BadBody),
+        }
+    }
+
+    pub(crate) fn opt_str_list(&self, name: &str) -> Result<Option<Vec<String>>, BadBody> {
+        let Some(value) = self.present(name) else {
+            return Ok(None);
+        };
+        let Some(Value::Array(elements)) = json::parse(value) else {
+            return Err(BadBody);
+        };
+        elements
+            .into_iter()
+            .map(|element| full_string(element).ok_or(BadBody))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    pub(crate) fn opt_struct(
+        &self,
+        name: &str,
+        members: &[&str],
+    ) -> Result<Option<Vec<&'a [u8]>>, BadBody> {
+        let Some(value) = self.present(name) else {
+            return Ok(None);
+        };
+        let Some(Value::Object) = json::parse(value) else {
+            return Err(BadBody);
+        };
+        let start = json::skip_whitespace(value, 0);
+        let object = Self::parse_object(&value[start..]).ok_or(BadBody)?;
+        let mut found: Vec<Option<&'a [u8]>> = vec![None; members.len()];
+        for (field, raw) in object.pairs {
+            let slot = members
+                .iter()
+                .position(|member| *member == field)
+                .ok_or(BadBody)?;
+            if found[slot].replace(raw).is_some() {
+                return Err(BadBody);
+            }
+        }
+        found
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or(BadBody)
+    }
+
+    pub(crate) fn string_value(raw: &[u8]) -> Result<String, BadBody> {
+        full_string(raw).ok_or(BadBody)
+    }
+
+    pub(crate) fn u64_value(raw: &[u8]) -> Result<u64, BadBody> {
+        full_u64(raw).ok_or(BadBody)
+    }
+
+    pub(crate) fn tag_value<T: Tag>(raw: &[u8]) -> Result<T, BadBody> {
+        match json::parse(raw).ok_or(BadBody)? {
             Value::String(text) => T::from_text(&text),
             Value::Number(text) => T::from_text(text),
             _ => None,

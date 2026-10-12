@@ -46,7 +46,10 @@ pub use fx_sessions::FxSessions;
 pub use profile_usage_runtime::{ProfilePublisher, ProfileUsage, ProfileUsageError};
 pub use profile_usage_store::UsageStoreError;
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
-pub use session_adapter::{SESSIONS_V2_VARIABLE, SessionsV2, sessions_v2_variable_is_on};
+pub use session_adapter::{
+    DoctorReport as SessionsV2Doctor, SESSIONS_V2_VARIABLE, SessionsV2,
+    StoreFault as SessionsV2Fault, sessions_v2_variable_is_on,
+};
 pub use session_children::ChildSessions;
 pub use session_codec::recovery_checkpoint::{RecoveryTranscript, RouteCredential};
 pub use session_codec::{SavedProvider, SessionMetadata, SessionPreferences};

@@ -343,3 +343,112 @@ fn a_v2_index_that_cannot_be_read_fails_the_listing() {
         "oh-fx session: durable session store is unavailable\n"
     );
 }
+
+fn copy_fixture(scenario: &str, root: &Path) {
+    copy_tree(&Path::new(FIXTURES).join(scenario), root);
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("create a fixture folder");
+    fs::set_permissions(to, fs::Permissions::from_mode(0o700)).expect("chmod");
+    for entry in fs::read_dir(from).expect("read a fixture folder") {
+        let entry = entry.expect("a fixture entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("a file type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else if entry
+            .path()
+            .extension()
+            .is_none_or(|extension| extension != "json" && extension != "txt")
+        {
+            fs::copy(entry.path(), &target).expect("copy a fixture file");
+            let mode = if from.ends_with("blobs") {
+                0o400
+            } else {
+                0o600
+            };
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode)).expect("chmod");
+        }
+    }
+}
+
+fn doctor_lines(home: &Home, environment: &[(&str, &str)]) -> Vec<String> {
+    let output = home.run(&["--sessions-v2", "doctor"], environment);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    text(&output.stdout)
+        .lines()
+        .filter(|line| {
+            line.split_once("] ").is_some_and(|(_, check)| {
+                ["state:", "session:", "sessions:"]
+                    .iter()
+                    .any(|name| check.starts_with(name))
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn doctor_on_v2_reports_its_sessions_as_fx_reports_them() {
+    let home = Home::new("http://127.0.0.1:9");
+    assert_eq!(
+        doctor_lines(&home, &[]),
+        [
+            "[ok] state: sessions v2",
+            "[warn] sessions: no saved sessions yet"
+        ]
+    );
+    copy_fixture("snapshot_small", &home.own_root());
+    private_root(&home.own_root(), 2);
+    assert_eq!(
+        doctor_lines(&home, &[]),
+        [
+            "[ok] state: sessions v2",
+            "[ok] sessions: 1 saved session(s); latest=PsjMeU3Vl5Ld"
+        ]
+    );
+}
+
+#[test]
+fn doctor_on_v2_warns_about_a_damaged_or_unreadable_log_and_traces_it() {
+    let home = Home::new("http://127.0.0.1:9");
+    copy_fixture("listing", &home.own_root());
+    private_root(&home.own_root(), 2);
+    let log = home.own_root().join("nJI52ukeF2bU/log.jsonl");
+    let mut bytes = fs::read(&log).expect("read a log");
+    let at = bytes
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .expect("a line")
+        + 20;
+    bytes[at] ^= 0x20;
+    fs::write(&log, bytes).expect("damage the log");
+    let unreadable = home.own_root().join("U9K-4ZzltsUh/log.jsonl");
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).expect("chmod");
+    let readable = fs::read(&unreadable).is_ok();
+    let trace = home.root.join("trace.log");
+    let trace_path = trace.to_str().expect("utf-8 path").to_owned();
+    let lines = doctor_lines(&home, &[("OH_FX_TRACE_LOG", &trace_path)]);
+    let mut expected = vec!["[ok] state: sessions v2".to_owned()];
+    if !readable {
+        expected.push("[warn] session: session U9K-4ZzltsUh has a damaged log; `oh-fx session recover U9K-4ZzltsUh` copies its good turns".to_owned());
+    }
+    expected.push("[warn] session: session nJI52ukeF2bU has a damaged log; `oh-fx session recover nJI52ukeF2bU` copies its good turns".to_owned());
+    expected.push("[ok] sessions: 4 saved session(s); latest=hDoX4WdPFWDK".to_owned());
+    assert_eq!(lines, expected);
+    let written = fs::read_to_string(&trace).expect("read the trace");
+    assert!(
+        written.contains(" [wiring] action=StoreOpen session=- pid="),
+        "{written}"
+    );
+    assert!(
+        written.contains(" [wiring] action=StoreClose session=- pid="),
+        "{written}"
+    );
+    if !readable {
+        assert!(
+            written.contains(" [session] event=sessions_v2_doctor_unreadable session=U9K-4ZzltsUh err=AccessDenied\n"),
+            "{written}"
+        );
+    }
+}
