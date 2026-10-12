@@ -86,6 +86,14 @@ impl Fixture {
         panic!("expected {count} settlements: {:?}", lock(&self.events));
     }
 
+    fn choices(&self) -> Value {
+        let settings: Value = serde_json::from_str(
+            &fs::read_to_string(self.paths.config.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        settings["workspaces"][self.workspace.to_string_lossy().as_ref()].clone()
+    }
+
     fn profile(&self) -> Value {
         serde_json::from_str(&fs::read_to_string(self.paths.config.join("mcp.json")).unwrap())
             .unwrap()
@@ -159,6 +167,9 @@ async fn adds_and_removals_that_cannot_run_settle_as_failed_operations() {
         .add_from_menu(4, &local_form("docs", "/bin/true", ""));
     homeless.host.remove_from_menu(5, "docs");
     homeless.host.trust_from_menu(6, McpMenuTrust::ApproveAll);
+    homeless
+        .host
+        .add_from_menu(7, &local_form("bad name", "/bin/true", ""));
     assert_eq!(
         fixture.settled(3).await,
         [
@@ -179,13 +190,22 @@ async fn adds_and_removals_that_cannot_run_settle_as_failed_operations() {
             ),
         ]
     );
+    let homeless_settlements = homeless.settled(4).await;
     assert_eq!(
-        homeless.settled(3).await,
+        homeless_settlements[..3],
         [4, 5, 6].map(|generation| settled(
             generation,
             McpMenuOutcome::Failed,
             "MCP operation failed: HomeNotSet"
         ))
+    );
+    assert_eq!(
+        homeless_settlements[3],
+        settled(
+            7,
+            McpMenuOutcome::Failed,
+            "MCP operation failed: McpInvalidServerName"
+        )
     );
 }
 
@@ -246,14 +266,48 @@ async fn trust_changes_save_the_choice_and_reconnect_only_when_needed() {
         settled(3, McpMenuOutcome::Continuing, TRUST_UPDATED)
     );
     assert_eq!(rejected[4].generation, 3);
-    let settings: Value = serde_json::from_str(
-        &fs::read_to_string(fixture.paths.config.join("settings.json")).unwrap(),
+    assert_eq!(rejected[4].outcome, McpMenuOutcome::Succeeded);
+    assert_eq!(fixture.choices()["disabledMcpjsonServers"], json!(["docs"]));
+    fixture.host.trust_from_menu(4, McpMenuTrust::Reset);
+    let reset = fixture.settled(7).await;
+    assert_eq!(
+        reset[5],
+        settled(4, McpMenuOutcome::Continuing, TRUST_UPDATED)
+    );
+    assert_eq!(reset[6].generation, 4);
+    assert_eq!(reset[6].outcome, McpMenuOutcome::Succeeded);
+    assert_eq!(fixture.choices()["disabledMcpjsonServers"], Value::Null);
+}
+
+#[tokio::test]
+async fn refused_and_uncertain_trust_saves_report_in_the_menu() {
+    let fixture = fixture(true, Vec::new());
+    let mut workspaces = serde_json::Map::new();
+    workspaces.insert(
+        fixture.workspace.to_string_lossy().into_owned(),
+        json!("invalid"),
+    );
+    fs::write(
+        fixture.paths.config.join("settings.json"),
+        json!({"workspaces": workspaces}).to_string(),
     )
     .unwrap();
+    fixture.host.trust_from_menu(1, McpMenuTrust::ApproveAll);
+    fixture.host.settle_trust(2, TrustSaved::Uncertain);
+    let settlements = fixture.settled(3).await;
     assert_eq!(
-        settings["workspaces"][fixture.workspace.to_string_lossy().as_ref()]["disabledMcpjsonServers"],
-        json!(["docs"])
+        settlements[0],
+        settled(
+            1,
+            McpMenuOutcome::Failed,
+            "MCP operation failed: InvalidProjectMcpChoices"
+        )
     );
+    assert_eq!(
+        settlements[1],
+        settled(2, McpMenuOutcome::Continuing, TRUST_UNCERTAIN)
+    );
+    assert_eq!(settlements[2].generation, 2);
 }
 
 #[tokio::test]

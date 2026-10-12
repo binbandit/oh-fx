@@ -20,9 +20,6 @@ const NOT_IN_PROFILE: &str = "McpProfileServerNotFound";
 
 impl McpHost {
     pub(super) fn add_from_menu(&self, generation: u64, form: &McpMenuAddForm) {
-        let Some(path) = self.sources.profile_path() else {
-            return self.fail_menu(generation, HOME_NOT_SET);
-        };
         let mut tokens = Vec::new();
         match form.transport {
             McpMenuAddTransport::Local => {
@@ -40,6 +37,9 @@ impl McpHost {
         let intent = match parse_add_intent(&tokens) {
             Ok(intent) => intent,
             Err(error) => return self.fail_menu(generation, &error.to_string()),
+        };
+        let Some(path) = self.sources.profile_path() else {
+            return self.fail_menu(generation, HOME_NOT_SET);
         };
         match add_profile_server(&path, intent) {
             Ok(_) => self.reload_after_change(generation, SAVED),
@@ -65,7 +65,11 @@ impl McpHost {
             McpMenuTrust::ApproveAll => ProjectMcpAction::ApproveAll,
             McpMenuTrust::Reset => ProjectMcpAction::Reset,
         };
-        match save_project_action(self, &action) {
+        self.settle_trust(generation, save_project_action(self, &action));
+    }
+
+    fn settle_trust(&self, generation: u64, saved: TrustSaved) {
+        match saved {
             TrustSaved::Applied { reducing: true, .. } => {
                 self.continue_menu(generation, TRUST_UPDATED);
                 self.reduce_from_menu(generation, true);
