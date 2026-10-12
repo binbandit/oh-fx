@@ -250,7 +250,52 @@ async fn session_lines_name_speeds_turns_and_errors_without_session_text() {
     ] {
         assert!(written.contains(&line), "{line}{written}");
     }
+    let session_lines: Vec<&str> = written
+        .lines()
+        .filter(|line| line.contains(" [session] "))
+        .collect();
     for text in ["question a", "answer a", "fix the build"] {
-        assert!(!written.contains(text), "{text}\n{written}");
+        assert!(
+            session_lines.iter().all(|line| !line.contains(text)),
+            "{text}\n{written}"
+        );
     }
+    assert!(!written.contains("answer a"), "{written}");
+}
+
+const PROMPT_TRACE_CHILD: &str = "OH_FX_PROMPT_TRACE_CHILD";
+const PROMPT_TRACE_TEST: &str =
+    "app_agent_runtime::tests::trace::an_enqueued_prompt_writes_a_masked_preview";
+const PROMPT_SECRET: &str = "sk-proj-0123456789abcdefghijklmnopqrstuv";
+
+#[tokio::test]
+async fn an_enqueued_prompt_writes_a_masked_preview() {
+    if let Some(root) = std::env::var_os(PROMPT_TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"]))]);
+        let mut harness = Harness::start(&server).await;
+        let prompt = format!("deploy with {PROMPT_SECRET} please");
+        chat(&mut harness, &[prompt.as_str()]).await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([PROMPT_TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(PROMPT_TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    let bytes = format!("deploy with {PROMPT_SECRET} please").len();
+    assert!(
+        written.contains(&format!(
+            " [prompt] enqueue bytes={bytes} stream_active=false queued_before=0 preview=\"deploy with "
+        )),
+        "{written}"
+    );
+    assert!(!written.contains(PROMPT_SECRET), "{written}");
 }

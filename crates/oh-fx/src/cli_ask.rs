@@ -38,6 +38,7 @@ use ofx_session::{
     sessions_v2_variable_is_on,
 };
 use ofx_text::encode_terminal_safe;
+use ofx_trace::trace_log;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -659,6 +660,10 @@ fn new_session_store(profile: &Profile) -> Result<Option<SessionStore>, Failure>
     match open_store(profile) {
         Ok(store) => Ok(Some(store)),
         Err(error) => {
+            trace_log!(
+                "session",
+                "event=ask_session_store_unavailable error={error}"
+            );
             write_stderr(&format!(
                 "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
             ))
@@ -1482,6 +1487,11 @@ impl Presenter {
         if !mem::take(&mut self.response.restarted) {
             return;
         }
+        trace_log!(
+            "agent",
+            "discarding interrupted JSON preview bytes={}",
+            self.output.len().saturating_sub(self.response.start)
+        );
         self.output.truncate(self.response.start);
         self.has_output = !self.output.is_empty();
         self.boundary_pending = self.has_output;

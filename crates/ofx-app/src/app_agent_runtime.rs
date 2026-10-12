@@ -380,7 +380,21 @@ impl ControllerState {
         });
     }
 
-    fn receive_prompt(&mut self, text: String, skills: Vec<SkillBinding>, installing: bool) {
+    fn receive_prompt(
+        &mut self,
+        work: Work,
+        text: String,
+        skills: Vec<SkillBinding>,
+        installing: bool,
+    ) {
+        trace_log!(
+            "prompt",
+            "enqueue bytes={} stream_active={} queued_before={} preview=\"{}\"",
+            text.len(),
+            work == Work::Turn,
+            self.worker.waiting_count(),
+            ofx_trace::preview(&ofx_text::mask_secrets(&text), 120)
+        );
         let signed_out = self.setup.login() == Login::Missing;
         if signed_out {
             self.refuse_signed_out();
@@ -774,8 +788,12 @@ impl Controller {
             match command {
                 UiCommand::Submit { prompt, skills } => {
                     observe_prompt(self.persistence.as_ref(), &prompt);
-                    self.state
-                        .receive_prompt(prompt, skills, self.installation.is_some());
+                    self.state.receive_prompt(
+                        Work::Idle,
+                        prompt,
+                        skills,
+                        self.installation.is_some(),
+                    );
                 }
                 UiCommand::RunCommand { text } => {
                     if !self.run_idle_command(&text, commands).await {
@@ -936,7 +954,7 @@ impl Controller {
                         }
                         Some(UiCommand::Submit { prompt, skills }) => {
                             observe_prompt(persistence.as_ref(), &prompt);
-                            state.receive_prompt(prompt, skills, installation.is_some());
+                            state.receive_prompt(work, prompt, skills, installation.is_some());
                         }
                         Some(UiCommand::CancelCompaction) => cancel.cancel(),
                         Some(command) => {
@@ -1267,7 +1285,7 @@ impl Controller {
                         }
                         Some(UiCommand::Submit { prompt, skills }) => {
                             observe_prompt(persistence.as_ref(), &prompt);
-                            state.receive_prompt(prompt, skills, installation.is_some());
+                            state.receive_prompt(work, prompt, skills, installation.is_some());
                         }
                         Some(UiCommand::Cancel { turn_id }) => {
                             if running_turn() == Some(turn_id) {

@@ -271,6 +271,11 @@ async fn fetch_catalog(
         .fetch(credential, &CancellationToken::new())
         .await
         .map_err(|failure| {
+            trace_log!(
+                "catalog",
+                "provider selection catalog failed provider=codex category={}",
+                failure.label()
+            );
             detail(format!(
                 "could not load the target model catalog ({})",
                 failure.label()

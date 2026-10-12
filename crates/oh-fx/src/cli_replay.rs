@@ -6,6 +6,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use ofx_cli::ReplayArgs;
+use ofx_config::ProfilePaths;
+use ofx_trace::trace_log;
 use ofx_vt::{Grid, GridError};
 use ofx_workspace::{PathError, TapeFrame, TapeHeader, TapeKind, TapeParser};
 use signal_hook::consts::SIGPIPE;
@@ -276,6 +278,21 @@ impl<'t> Replay<'t> {
 
 pub(crate) fn run(args: &ReplayArgs) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
+    if let Ok(workspace_root) = std::env::current_dir().and_then(std::fs::canonicalize) {
+        let paths = ProfilePaths::from_environment();
+        ofx_trace::configure_from_env(
+            &workspace_root,
+            paths.as_ref().map(|paths| paths.state.as_path()),
+        );
+    }
+    trace_log!(
+        "render",
+        "replay_start json={} frames={} golden={} frames_dir={}",
+        args.json,
+        args.frames,
+        args.golden.is_some(),
+        args.frames_dir.is_some()
+    );
     match replay(args, &mut Terminal) {
         Ok(Status::Replayed) => ExitCode::SUCCESS,
         Ok(Status::Failed) => ExitCode::FAILURE,
@@ -303,6 +320,13 @@ fn replay_tape(args: &ReplayArgs, output: &mut impl Output) -> Result<(), Stop> 
         Failure::new(MESSAGE_BYTES, "bad tape", &[b"bad tape"], error.to_string())
     })?;
     let header = parser.header;
+    trace_log!(
+        "render",
+        "replay_header cols={} rows={} version_bytes={}",
+        header.cols,
+        header.rows,
+        header.version.len()
+    );
     let mut replay = Replay::new(&header)?;
     let frames_dir = args.frames_dir.as_deref().map(Path::new);
     if let Some(dir) = frames_dir {
@@ -322,6 +346,13 @@ fn replay_tape(args: &ReplayArgs, output: &mut impl Output) -> Result<(), Stop> 
             Err(_) => break true,
         }
     };
+    trace_log!(
+        "frame_diff",
+        "replay_complete frames={} resizes={} stdout_bytes={}",
+        replay.frames,
+        replay.resizes,
+        replay.stdout_bytes
+    );
     if args.json {
         written(output.stdout(replay.summary_json(&header).as_bytes()))?;
     }
