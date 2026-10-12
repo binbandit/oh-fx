@@ -1,5 +1,6 @@
 use ofx_contract::{HistoryEntry, Notice, NoticeTone};
 use ofx_session::WritableSession;
+use ofx_trace::trace_log;
 
 pub(crate) const RECOVERY_TOPIC: &str = "recovery";
 const CONTINUES_AUTOMATICALLY: &str = "model response recovery paused and continues automatically";
@@ -19,6 +20,11 @@ pub(super) fn shell_recovery(session: &mut WritableSession) -> Option<ShellRecov
     let shown = session.recovery_transcript()?;
     let mut entries = shown.entries;
     if unclean {
+        trace_log!(
+            "session",
+            "event=auto_continue_suppressed reason=unclean_exit turn_id={}",
+            shown.turn_id
+        );
         session.mark_recovery_asked();
         entries.push(warning(NOT_RESTARTED));
         return Some(ShellRecovery {

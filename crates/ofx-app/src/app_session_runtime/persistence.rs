@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ofx_agent::{Agent, ChildStore, TurnFailure, TurnReport};
 use ofx_contract::{Notice, NoticeTone, ReasoningEffort, RecoveredTurn, TurnOutcome, UsageReport};
 use ofx_session::{SessionError, SessionPreferences, SessionStore, fresh_session_report};
+use ofx_trace::trace_log;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -114,24 +115,30 @@ impl Persistence {
     }
 
     pub(crate) fn begin_fresh(&mut self, agent: &mut Agent) -> Option<Notice> {
+        let error = self.start_fresh(agent).err()?;
+        Some(non_durable("session creation failed", error))
+    }
+
+    fn start_fresh(&mut self, agent: &mut Agent) -> Result<(), SessionError> {
         self.close(agent);
-        match LiveSession::start(&self.store, self.preferences.clone(), self.route.clone()) {
-            Ok(live) => {
-                live.attach(agent);
-                self.live = Some(live);
-                self.remember_fresh = true;
-                self.degraded = false;
-                None
-            }
-            Err(error) => Some(non_durable("session creation failed", error)),
-        }
+        let live = LiveSession::start(&self.store, self.preferences.clone(), self.route.clone())?;
+        live.attach(agent);
+        self.live = Some(live);
+        self.remember_fresh = true;
+        self.degraded = false;
+        Ok(())
     }
 
     pub(crate) fn begin_unless_open(&mut self, agent: &mut Agent) -> Option<Notice> {
         if self.live.is_some() {
             return None;
         }
-        self.begin_fresh(agent)
+        let error = self.start_fresh(agent).err()?;
+        trace_log!(
+            "session",
+            "fresh session after picker cancel unavailable err={error}"
+        );
+        Some(non_durable("session creation failed", error))
     }
 
     pub(crate) fn finish_turn(&mut self, report: &TurnReport) -> Option<Notice> {
@@ -139,6 +146,11 @@ impl Persistence {
         if let Some(TurnFailure::Persistence(failure)) = &report.failure
             && report.outcome != TurnOutcome::Failed
         {
+            trace_log!(
+                "session",
+                "shutdown finished prompt persistence failed err={}",
+                failure.code
+            );
             let consequence = if live.session().turn_open() {
                 "New messages are blocked until you reopen the session. The turn may run again."
             } else {
@@ -184,6 +196,7 @@ impl Persistence {
 
     pub(crate) fn select_model(
         &mut self,
+        topic: &str,
         model: &str,
         effort: Option<&ReasoningEffort>,
         fast_mode: bool,
@@ -203,7 +216,12 @@ impl Persistence {
             .session()
             .select_model(model, effort, fast_mode, ultrafast_mode)
             .err()?;
+        trace_log!("session", "{topic} session persistence failed err={error}");
         if std::mem::replace(&mut self.degraded, true) {
+            trace_log!(
+                "session",
+                "canonical persistence remains degraded err={error}"
+            );
             return None;
         }
         Some(non_durable("session persistence degraded", error))
@@ -296,11 +314,14 @@ impl Persistence {
         if let Some(live) = self.live.take() {
             live.finish_publications();
             match self.relaunch.take() {
-                Some(relaunch) => {
-                    if live.session().require_writable().is_ok() {
-                        relaunch.hand_off(live.id(), self.overrides.ultrafast_mode);
-                    }
-                }
+                Some(relaunch) => match live.session().require_writable() {
+                    Ok(()) => relaunch.hand_off(live.id(), self.overrides.ultrafast_mode),
+                    Err(error) => trace_log!(
+                        "session",
+                        "resume handoff boundary invalid session={} err={error}",
+                        live.id()
+                    ),
+                },
                 None if !live.titled() => {
                     live.discard_if_pristine(&self.store);
                 }
@@ -318,6 +339,10 @@ impl Persistence {
 
     pub(super) fn remember(&self, id: &str) -> Option<Notice> {
         let error = self.store.remember_session_id(id).err()?;
+        trace_log!(
+            "session",
+            "event=remember_session_failed id={id} err={error}"
+        );
         Some(Notice::new(
             NoticeTone::Warning,
             SESSION_TOPIC,

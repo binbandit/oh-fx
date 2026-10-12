@@ -16,6 +16,7 @@ use ofx_contract::{
     StatuslineToggles, ToolResultStatus, TurnId, TurnOutcome, UiCommand, UiEvent, UsageScope,
 };
 use ofx_session::{SessionCatalog, SessionError, prompt_display_title};
+use ofx_trace::trace_log;
 use ofx_tui::Clipboard;
 use ofx_workspace::ChangeTracker;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -23,8 +24,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource, Login};
 use crate::app_commands::{
-    CommandEffect, ModelChange, ModelPick, Outcome, Work, change_model, handle_command, listed,
-    refuse_resume_during_turn, rename_session,
+    CommandEffect, FAST_TOPIC, ModelChange, ModelPick, Outcome, ULTRAFAST_TOPIC, Work,
+    capabilities_of, change_model, handle_command, listed, refuse_resume_during_turn,
+    rename_session,
 };
 use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
@@ -47,7 +49,7 @@ use crate::trace_command::{SessionTitleFacts, TraceFacts, start_trace};
 use crate::usage_dashboard_runtime::UsageDashboard;
 use crate::user_settings::{self, unsaved_notice};
 use ofx_cli::{SLASH_REGISTRY, SlashKind};
-use settings_menu::{MenuSettings, SettingsUpdate};
+use settings_menu::{EFFORT_TOPIC, MenuSettings, SettingsUpdate};
 
 mod provider_switch;
 use provider_switch::{PendingSignIn, SignInControl, signed_in};
@@ -146,6 +148,12 @@ impl ControllerState {
         self.speed == Speed::Fast
     }
 
+    fn supports_fast_mode(&self) -> bool {
+        self.setup.models_source().cached().is_some_and(|catalog| {
+            capabilities_of(listed(&catalog), &self.model).supports_fast_mode
+        })
+    }
+
     fn model_controls(&self) -> ModelControls {
         model_controls(
             self.setup.models_source().cached().as_ref(),
@@ -203,6 +211,11 @@ impl ControllerState {
             )
         });
         if let Err(unsaved) = saved {
+            trace_log!(
+                "session",
+                "{topic} settings persistence failed err={}",
+                unsaved.code()
+            );
             self.emit(UiEvent::Notice {
                 notice: unsaved_notice(topic, &unsaved),
             });
@@ -1053,9 +1066,11 @@ impl Controller {
                 });
                 self.state.receive_recovery(recovered);
             }
-            Err(_) => self
-                .state
-                .notice(NoticeTone::Warning, RECOVERY_TOPIC, NOT_CONTINUED),
+            Err(error) => {
+                trace_log!("session", "event=auto_continue_failed err={error}");
+                self.state
+                    .notice(NoticeTone::Warning, RECOVERY_TOPIC, NOT_CONTINUED);
+            }
         }
     }
 
@@ -1546,11 +1561,14 @@ fn apply_change(
     work: Work,
 ) {
     let saves_ultrafast = change.saves_ultrafast();
+    let topic = change_topic(&change);
     let turns_ultrafast_off = matches!(change, ModelChange::WithdrawUltrafast);
+    let speed_line = SpeedLine::of(&change);
     let (fast_before, ultrafast_before) = (state.fast_mode(), state.ultrafast_requested());
     let Outcome::Changed { effort } = change_model(state, change, models, work) else {
         return;
     };
+    speed_line.trace(state, fast_before, ultrafast_before);
     state.config_pending = true;
     let ultrafast = state.ultrafast_requested();
     if let Some(persistence) = persistence.as_mut()
@@ -1561,8 +1579,59 @@ fn apply_change(
         persistence.withdraw_launch_ultrafast();
     }
     let ultrafast = saves_ultrafast.then_some(ultrafast);
-    if let Some(notice) = save_session_preferences(state, persistence, effort.as_ref(), ultrafast) {
+    if let Some(notice) =
+        save_session_preferences(state, persistence, topic, effort.as_ref(), ultrafast)
+    {
         state.emit(UiEvent::Notice { notice });
+    }
+}
+
+fn change_topic(change: &ModelChange) -> &'static str {
+    match change {
+        ModelChange::Query(_) | ModelChange::FromSettings(_) => MODEL_TOPIC,
+        ModelChange::Pick(_) => MODEL_PICKER_TOPIC,
+        ModelChange::ToggleFast => FAST_TOPIC,
+        ModelChange::WithdrawUltrafast => ULTRAFAST_TOPIC,
+        ModelChange::StepEffort(_) => EFFORT_TOPIC,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpeedLine {
+    Fast,
+    Ultrafast,
+    IfChanged,
+}
+
+impl SpeedLine {
+    fn of(change: &ModelChange) -> Self {
+        match change {
+            ModelChange::ToggleFast => Self::Fast,
+            ModelChange::WithdrawUltrafast => Self::Ultrafast,
+            ModelChange::Query(_)
+            | ModelChange::Pick(_)
+            | ModelChange::StepEffort(_)
+            | ModelChange::FromSettings(_) => Self::IfChanged,
+        }
+    }
+
+    fn trace(self, state: &ControllerState, fast_before: bool, ultrafast_before: bool) {
+        let (fast, ultrafast) = (state.fast_mode(), state.ultrafast_requested());
+        let follows = self == Self::IfChanged;
+        if self == Self::Fast || (follows && fast != fast_before) {
+            trace_log!(
+                "session",
+                "fast mode changed old={fast_before} new={fast} ultrafast_old={ultrafast_before} ultrafast_new={ultrafast} model={} supports_fast={}",
+                state.model,
+                state.supports_fast_mode()
+            );
+        } else if self == Self::Ultrafast || (follows && ultrafast != ultrafast_before) {
+            trace_log!(
+                "session",
+                "ultrafast mode changed old={ultrafast_before} new={ultrafast} fast_old={fast_before} fast_new={fast} model={} supports_ultrafast=false",
+                state.model
+            );
+        }
     }
 }
 
@@ -1606,11 +1675,18 @@ fn observe_prompt(persistence: Option<&Persistence>, prompt: &str) {
 fn save_session_preferences(
     state: &ControllerState,
     persistence: &mut Option<Persistence>,
+    topic: &str,
     effort: Option<&ReasoningEffort>,
     ultrafast_mode: Option<bool>,
 ) -> Option<Notice> {
     persistence.as_mut().and_then(|persistence| {
-        persistence.select_model(&state.model, effort, state.fast_mode(), ultrafast_mode)
+        persistence.select_model(
+            topic,
+            &state.model,
+            effort,
+            state.fast_mode(),
+            ultrafast_mode,
+        )
     })
 }
 

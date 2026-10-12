@@ -12,6 +12,7 @@ const IDENTITY: &str = "abababababababababababababababababababababababababababab
 
 fn checkpoint() -> RecoveryCheckpoint {
     RecoveryCheckpoint {
+        turn_id: 7,
         user: "fix the build".to_owned(),
         assistant_source: "Looking at".to_owned(),
         execution: SavedExecution {
