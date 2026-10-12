@@ -56,7 +56,7 @@ note = "The header packs the category tabs and keeps a far active tab as upstrea
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs", "crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
-note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the server screens of composeMcpMenuHintRow, with tab section, and its catalog ladder without enter open until previews land (in mcp_menu_presentation.rs), the status line menu hint ladder, and the model, effort, Fast and provider column projections are implemented, with the composer hidden behind the status line menu; image badges and login picker footer projections are absent."
+note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the server screens of composeMcpMenuHintRow, with tab section, and its catalog and preview ladders (in mcp_menu_presentation.rs), the status line menu hint ladder, and the model, effort, Fast and provider column projections are implemented, with the composer hidden behind the status line menu; image badges and login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"
@@ -68,7 +68,7 @@ note = "No Rust implementation of upstream approval_chrome_rows, approval_panel_
 upstream = "src/ui/footer/mcp_menu_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
-note = "max_inline_rows, menuRowCount, visibleItemsForBudget, the header with the server count and its four tabs, falling back to the active tab, the feedback row in its dim or failure style, the filter row, the selected server's fact row on the Resources and Prompts tabs and All available servers on the Tools tab, the catalog rows with their identity and description columns, their loading, failed and empty states and the empty filter match, the configuration issue row, the server rows with their state label, transport and source, the details facts with the oh-fx profile path, the add form rows, the confirmation texts, the help rows, the empty states and terminal-safe single-line text exist, with the server, add and confirmation screens of the MCP menu hint row from input_presentation.zig and its available-action labels; previews and argument rows arrive with their screens, and the loading row waits for the 200 ms grace, where upstream keeps the previous frame until the catalog arrives or the grace ends."
+note = "max_inline_rows, menuRowCount, visibleItemsForBudget, the header with the server count and its four tabs, falling back to the active tab, the feedback row in its dim or failure style, the filter row, the selected server's fact row on the Resources and Prompts tabs and All available servers on the Tools tab, the catalog rows with their identity and description columns, their loading, failed and empty states and the empty filter match, the configuration issue row, the server rows with their state label, transport and source, the details facts with the oh-fx profile path, the add form rows, the confirmation texts, the help rows, the empty states and terminal-safe single-line text exist, with the server, add and confirmation screens of the MCP menu hint row from input_presentation.zig and its available-action labels; the preview rows with previewVisualRowCount, previewChunk's word-keeping wrap and the window clamp exist, argument rows arrive with their screen, and the loading row waits for the 200 ms grace, where upstream keeps the previous frame until the catalog arrives or the grace ends."
 
 [[file]]
 upstream = "src/ui/footer/model_menu_presentation.zig"
@@ -104,7 +104,7 @@ note = "Question option/freeform panels, hints and resolution rows are implement
 upstream = "src/ui/footer/render_input.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
-note = "Composer input rows, the session menu projection the resume picker draws, the usage menu projection (UsageMenuView) and the MCP menu projection for the servers and the tool, resource and prompt catalogs with their query matches (McpMenuView and McpMenuCatalogs in mcp_menu_presentation.rs) exist, its preview and argument fields arriving with their screens; upstream prepared model, help and settings menu projection adapters are absent."
+note = "Composer input rows, the session menu projection the resume picker draws, the usage menu projection (UsageMenuView) and the MCP menu projection for the servers and the tool, resource and prompt catalogs with their query matches, a resource or prompt list counting only for the server that listed it (McpMenuView and McpMenuCatalogs in mcp_menu_presentation.rs), exist, with its preview, its argument fields arriving with their screen; upstream prepared model, help and settings menu projection adapters are absent."
 
 [[file]]
 upstream = "src/ui/footer/resume_menu_presentation.zig"

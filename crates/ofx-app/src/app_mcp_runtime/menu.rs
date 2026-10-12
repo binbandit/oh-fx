@@ -40,6 +40,9 @@ impl McpHost {
                 generation,
                 catalog,
             } => self.load_menu_catalog(generation, catalog),
+            McpMenuRequest::LoadPreview { generation, target } => {
+                self.load_menu_preview(generation, target);
+            }
             McpMenuRequest::Cancel { generation, reason } => {
                 self.cancel_menu_operation(generation, reason);
             }
@@ -189,6 +192,7 @@ fn authentication_feedback(
 
 mod catalogs;
 mod changes;
+mod previews;
 
 #[cfg(test)]
 mod tests;

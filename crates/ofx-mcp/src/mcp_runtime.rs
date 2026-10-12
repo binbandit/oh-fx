@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+pub use self::menu::MenuToolSchema;
 use self::menu::ReloadMarks;
 use crate::error::McpError;
 use crate::feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};

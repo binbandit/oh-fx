@@ -11,8 +11,10 @@ use crate::shell::mcp_menu::{
 use crate::theme::Theme;
 
 mod catalogs;
+mod preview;
 
 pub(crate) use catalogs::McpMenuCatalogs;
+pub(crate) use preview::preview_visual_row_count;
 
 const HEADER_ROWS: usize = 2;
 const TEXT_INDENT: usize = 2;
@@ -23,11 +25,12 @@ const NO_SERVERS: &str = "No MCP servers configured.";
 const NO_AVAILABLE_SERVERS: &str = "No MCP servers available; configuration errors need attention.";
 const SERVER_GONE: &str = "MCP server is no longer available.";
 const PROJECT_CONFIG: &str = "<workspace>/.mcp.json";
-const INFO_HINTS: [&str; 4] = [
+const INFO_HINTS: [&str; 5] = [
     "servers: a add · r reload · enter inspect",
     "project trust: p approve all · z reset",
     "details: enter sign in · l logout · d remove",
     "project details: a approve · x reject",
+    "catalogs: / filter · enter open · i insert preview",
 ];
 const ROOT_HINTS: [&str; 3] = [
     "↑↓ move  tab section  enter inspect  a add  r reload  c help  esc close",
@@ -35,9 +38,14 @@ const ROOT_HINTS: [&str; 3] = [
     "tab enter a r c esc",
 ];
 const CATALOG_HINTS: [&str; 3] = [
-    "↑↓ navigate     tab section     / filter     esc back",
-    "↑↓ move  tab section  / filter  esc",
-    "tab / esc",
+    "↑↓ navigate     tab section     enter open     / filter     esc back",
+    "↑↓ move  tab section  enter  / filter  esc",
+    "tab enter / esc",
+];
+const PREVIEW_HINTS: [&str; 3] = [
+    "↑↓ scroll     i insert     esc back",
+    "↑↓ scroll  i insert  esc",
+    "↑↓ i esc",
 ];
 const SECTIONS: [(Section, &str); 4] = [
     (Section::Servers, "Servers"),
@@ -73,6 +81,7 @@ pub(crate) struct McpMenuView<'a> {
     pub(crate) add: AddFields<'a>,
     pub(crate) catalogs: &'a McpMenuCatalogs,
     pub(crate) loading_visible: bool,
+    pub(crate) preview: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -87,7 +96,11 @@ impl<'a> McpMenuView<'a> {
     pub(crate) fn item_count(self) -> usize {
         match self.state.section {
             Section::Servers => self.snapshot.servers.len(),
-            section => self.catalogs.count(section, &self.state.query),
+            section => self.catalogs.count(
+                section,
+                &self.state.query,
+                self.selected_server().map(|server| server.name.as_str()),
+            ),
         }
     }
 
@@ -96,7 +109,7 @@ impl<'a> McpMenuView<'a> {
     }
 }
 
-pub(crate) fn menu_row_count(view: McpMenuView<'_>, max_rows: usize) -> usize {
+pub(crate) fn menu_row_count(view: McpMenuView<'_>, max_rows: usize, width: usize) -> usize {
     if max_rows == 0 {
         return 0;
     }
@@ -114,6 +127,7 @@ pub(crate) fn menu_row_count(view: McpMenuView<'_>, max_rows: usize) -> usize {
         Screen::Add => 4,
         Screen::Info => 2 + INFO_HINTS.len(),
         Screen::Confirm => 1,
+        Screen::Preview => preview_visual_row_count(view.preview, width),
     };
     header_rows + body_rows.min(body_budget)
 }
@@ -129,8 +143,11 @@ pub(crate) fn mcp_menu_rows(
     width: usize,
     row_count: usize,
 ) -> Vec<Row> {
+    let body_rows = row_count.saturating_sub(if row_count > 2 { HEADER_ROWS } else { 0 });
+    let preview = (view.state.screen == Screen::Preview)
+        .then(|| preview::preview_lines(view.preview, width, body_rows, view.state.window_start));
     (0..row_count)
-        .map(|row_index| compose_row(theme, view, row_index, width, row_count))
+        .map(|row_index| compose_row(theme, view, row_index, width, row_count, preview.as_deref()))
         .collect()
 }
 
@@ -151,6 +168,7 @@ pub(crate) fn mcp_menu_hint_row(
         Screen::Add => ADD_HINTS,
         Screen::Info => [INFO_ESCAPES[0], INFO_ESCAPES[1], INFO_ESCAPES[1]],
         Screen::Confirm => CONFIRM_HINTS,
+        Screen::Preview => PREVIEW_HINTS,
     };
     let hint = variants
         .into_iter()
@@ -178,6 +196,7 @@ fn compose_row(
     row_index: usize,
     width: usize,
     row_count: usize,
+    preview: Option<&[&str]>,
 ) -> Row {
     if width == 0 || row_index >= row_count {
         return Row::new();
@@ -239,6 +258,11 @@ fn compose_row(
         Screen::Details => details_row(theme, view, body_index, width),
         Screen::Add => add_row(theme, view, body_index, width),
         Screen::Info => info_row(theme, view, body_index, width),
+        Screen::Preview => preview
+            .and_then(|lines| lines.get(body_index))
+            .map_or_else(Row::new, |line| {
+                text_row(line, width, theme.dim, TEXT_INDENT)
+            }),
         Screen::Confirm => text_row(
             confirmation_text(view.state.confirmation_action),
             width,
