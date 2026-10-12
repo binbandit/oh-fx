@@ -179,8 +179,8 @@ note = "Prompt submission, compaction requests, steering a running turn and prom
 [[file]]
 upstream = "src/core/app/model_cache_runtime.zig"
 status = "partial"
-modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-app/src/model_cache_runtime.rs", "crates/ofx-tui/src/shell/model_menu.rs"]
-note = "Codex catalog caching, the model menu catalog with its filtering and vendor navigation, and retryable load failures exist; Vercel and Grok catalogs and the launch warm-up and timed retry are absent as docs/differences/slash-settings.md describes."
+modules = ["crates/ofx-app/src/codex_provider.rs", "crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-app/src/model_cache_runtime.rs", "crates/ofx-app/src/gateway_catalog.rs", "crates/ofx-tui/src/shell/model_menu.rs"]
+note = "Codex and Vercel AI Gateway catalog caching, the gateway's picker view with its catalog note, the capability lookup with its interactive model catalog lookup trace lines, the model menu catalog with its filtering and vendor navigation, and retryable load failures exist. The Grok catalog, the launch warm-up and timed retry, the background refresh, the access-change reload and the diagnostics events are absent, as docs/differences/slash-settings.md and gateway.md describe."
 
 [[file]]
 upstream = "src/core/app/prompt_history_runtime.zig"

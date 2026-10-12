@@ -9,11 +9,13 @@ use ofx_gateway::{CatalogFailure, CodexModel};
 use tokio_util::sync::CancellationToken;
 
 use crate::codex_provider::{CatalogCapabilities, CodexLogin};
+use crate::gateway_catalog::GatewayCatalog;
 
 #[derive(Clone)]
 pub(crate) enum ModelSource {
     Connection(Arc<ProviderDefinition>),
     Codex(Arc<CodexLogin>),
+    Gateway(Arc<GatewayCatalog>),
     Unavailable,
 }
 
@@ -24,6 +26,7 @@ impl ModelSource {
             Self::Codex(login) => login
                 .current()
                 .and_then(|subscription| subscription.capabilities.cached().map(codex_catalog)),
+            Self::Gateway(catalog) => catalog.cached(),
             Self::Unavailable => Some(ModelCatalog::Failed { retry: None }),
         }
     }
@@ -35,6 +38,7 @@ impl ModelSource {
                 Some(subscription) => subscription.capabilities.ready().await,
                 None => std::future::pending().await,
             },
+            Self::Gateway(catalog) => catalog.ready().await,
         }
     }
 
@@ -45,6 +49,7 @@ impl ModelSource {
                 Some(subscription) => subscription_catalog(&subscription.capabilities).await,
                 None => ModelCatalog::Failed { retry: None },
             },
+            Self::Gateway(catalog) => catalog.catalog().await,
             Self::Unavailable => ModelCatalog::Failed { retry: None },
         }
     }
@@ -105,6 +110,7 @@ impl CapabilityResolver for ModelSource {
                 }
                 None => Box::pin(async { CapabilityLookup::CatalogUnavailable }),
             },
+            Self::Gateway(catalog) => Box::pin(catalog.resolve(model, cancel)),
             Self::Unavailable => Box::pin(async { CapabilityLookup::CatalogUnavailable }),
         }
     }

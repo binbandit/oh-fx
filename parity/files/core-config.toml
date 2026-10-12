@@ -31,8 +31,8 @@ note = "Excluded JavaScript host configuration get/set FFI entrypoint."
 [[file]]
 upstream = "src/core/config/model_capabilities.zig"
 status = "partial"
-modules = ["crates/ofx-config/src/model_capabilities.rs", "crates/ofx-contract/src/model_capabilities.rs"]
-note = "Request output bounds, exact reasoning-effort/fast-option resolution, the prompt caching request option, intrinsic Fast identity from model IDs, and image input support from custom connection metadata and Codex input modalities exist; Vercel/Grok catalog resolution and the remaining file/web-search/caching capability metadata are absent."
+modules = ["crates/ofx-config/src/model_capabilities.rs", "crates/ofx-contract/src/model_capabilities.rs", "crates/ofx-gateway/src/vercel_models.rs"]
+note = "Request output bounds, exact reasoning-effort/fast-option resolution, the prompt caching request option, intrinsic Fast identity from model IDs, image input support from custom connection metadata and Codex input modalities, and the Vercel catalog's efforts, Fast mode, context window and image input exist; Grok catalog resolution, the gateway catalog's output limit on requests, and the remaining file/web-search/caching capability metadata are absent."
 
 [[file]]
 upstream = "src/core/config/model_preferences.zig"

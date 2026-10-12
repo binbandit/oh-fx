@@ -38,5 +38,5 @@ pub use permission_reviewer::{
 };
 pub use provider_failure::{HttpFailure, http_failure};
 pub use vercel_models::{
-    GATEWAY_MODELS_PATH, GatewayModel, GatewayModelCatalog, GatewayModelsEndpoints,
+    CatalogView, GATEWAY_MODELS_PATH, GatewayModel, GatewayModelCatalog, GatewayModelsEndpoints,
 };

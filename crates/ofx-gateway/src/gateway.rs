@@ -50,6 +50,18 @@ impl GatewayAccess {
             refresh_after_ms,
         }
     }
+
+    pub fn token(&self) -> &Zeroizing<String> {
+        &self.token
+    }
+
+    pub fn team(&self) -> Option<&str> {
+        self.team.as_deref()
+    }
+
+    pub const fn due_at(&self, now_ms: i64) -> bool {
+        self.refresh_after_ms <= now_ms
+    }
 }
 
 impl fmt::Debug for GatewayAccess {
@@ -167,6 +179,16 @@ impl GatewayProvider {
 
     fn masked(&self) -> Zeroizing<Vec<String>> {
         lock(&self.secrets).clone()
+    }
+
+    pub async fn current_access(&self, cancel: &CancellationToken) -> Option<GatewayAccess> {
+        self.refresh_if_due(&mut |_: StreamEvent| {}, cancel).await;
+        let current = lock(&self.current);
+        Some(GatewayAccess {
+            token: current.secret.clone()?,
+            team: current.team.clone(),
+            refresh_after_ms: current.refresh_after_ms.unwrap_or(i64::MAX),
+        })
     }
 
     async fn refresh_if_due(&self, sink: &mut dyn StreamSink, cancel: &CancellationToken) {

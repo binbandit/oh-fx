@@ -261,3 +261,53 @@ fn the_end_to_end_url_outranks_the_gateway_url_override() {
     );
     assert_eq!(stdout(&output), "other");
 }
+
+#[test]
+fn ask_takes_the_reasoning_effort_the_gateway_catalog_offers() {
+    let chat = FakeServer::start([reply("reasoned"), reply("plain")]);
+    let catalog = FakeServer::start([
+        Reply::status(
+            200,
+            r#"{"data":[{"id":"spacexai/grok-4.7","type":"language","tags":["tool-use"],"reasoning_options":[{"type":"effort","values":["low","high"]}]}]}"#,
+        ),
+        Reply::status(200, r#"{"data":[]}"#),
+    ]);
+    let chat_url = chat_url(&chat);
+    let models_url = format!("http://{}/coding-agent/v1/models", catalog.address());
+    let home = Home::with_settings(&json!({}));
+    let trace = home.root.join("trace.log");
+    let trace_log = trace.display().to_string();
+    let environment = [
+        ("AI_GATEWAY_API_KEY", API_KEY),
+        ("OH_FX_E2E_GATEWAY_CHAT_URL", chat_url.as_str()),
+        ("OH_FX_E2E_GATEWAY_MODELS_URL", models_url.as_str()),
+        ("OH_FX_TRACE_LOG", trace_log.as_str()),
+    ];
+    for expected in [Some("high"), None] {
+        let output = home.run(
+            &["ask", "--no-save", "--effort", "high", "hello"],
+            &environment,
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(!stderr(&output).contains(API_KEY));
+        let requests = chat.requests();
+        let body = requests.last().expect("a chat request").json();
+        assert_eq!(body["reasoning"].as_str(), expected, "{body}");
+    }
+    let lookups = catalog.requests();
+    assert_eq!(lookups.len(), 2);
+    let log = fs::read_to_string(&trace).expect("read the trace log");
+    for outcome in ["ready_hit", "missing_entry"] {
+        assert!(
+            log.contains(&format!(
+                "interactive model catalog lookup outcome={outcome} model={DEFAULT_MODEL}"
+            )),
+            "{log}"
+        );
+    }
+    assert!(!log.contains(API_KEY));
+    assert_eq!(
+        lookups[0].header("authorization"),
+        Some(format!("Bearer {API_KEY}").as_str())
+    );
+}
