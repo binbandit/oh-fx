@@ -217,7 +217,7 @@ impl ControllerState {
                 &provider,
                 &self.model,
                 effort.map(ReasoningEffort::label),
-                self.fast_mode(),
+                (self.fast_mode(), self.ultrafast_requested()),
             )
         });
         if let Err(unsaved) = saved {

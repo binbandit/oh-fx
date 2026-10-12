@@ -280,6 +280,23 @@ fn a_missing_codex_login_shows_the_sign_in_help() {
 }
 
 #[test]
+fn status_reports_the_ultra_request_from_the_setting_or_its_variable() {
+    let mut settings = codex_settings();
+    settings["ultrafast_mode"] = json!(true);
+    let home = Home::new(Some(&settings));
+    let (stdout, _) = home.succeeds(&["status"], &[]);
+    assert!(
+        stdout.contains("[status] ultrafast_requested=true\n"),
+        "{stdout}"
+    );
+    let (stdout, _) = home.succeeds(&["status", "--json"], &[("OH_FX_ULTRAFAST", "0")]);
+    assert!(
+        stdout.contains(r#""ultrafast_requested":false"#),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn the_environment_overrides_the_model_and_names_its_variable() {
     let home = Home::new(Some(&codex_settings()));
     let (stdout, _) = home.succeeds(&["status"], &[("OH_FX_MODEL", " gpt-run ")]);

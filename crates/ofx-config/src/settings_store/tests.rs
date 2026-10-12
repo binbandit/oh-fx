@@ -583,25 +583,25 @@ fn a_missing_migration_snapshot_stops_the_permission_mode_save() {
 fn a_model_preference_saves_the_provider_its_model_and_the_bound_fast_choice() {
     let fixture = Fixture::with_settings("{\"future\":true,\"provider\":\"codex\"}");
     let local = ProviderId::Configured("local".to_owned());
-    save_model_preference(&fixture.paths, &local, "m-1", None, true).unwrap();
+    save_model_preference(&fixture.paths, &local, "m-1", None, (true, false)).unwrap();
     assert_eq!(
         fixture.read(),
-        "{\"future\":true,\"provider\":\"local\",\"models\":{\"local\":\"m-1\"},\"fast_mode\":true,\"fast_mode_model_bound\":true}\n"
+        "{\"future\":true,\"provider\":\"local\",\"models\":{\"local\":\"m-1\"},\"fast_mode\":true,\"fast_mode_model_bound\":true,\"ultrafast_mode\":false}\n"
     );
-    save_model_preference(&fixture.paths, &local, "m-2", None, false).unwrap();
+    save_model_preference(&fixture.paths, &local, "m-2", None, (false, false)).unwrap();
     assert_eq!(
         fixture.read(),
-        "{\"future\":true,\"provider\":\"local\",\"models\":{\"local\":\"m-2\"},\"fast_mode\":false,\"fast_mode_model_bound\":true}\n"
+        "{\"future\":true,\"provider\":\"local\",\"models\":{\"local\":\"m-2\"},\"fast_mode\":false,\"fast_mode_model_bound\":true,\"ultrafast_mode\":false}\n"
     );
     let backups = fixture.copies("backup").len();
-    save_model_preference(&fixture.paths, &local, "m-2", None, false).unwrap();
+    save_model_preference(&fixture.paths, &local, "m-2", None, (false, false)).unwrap();
     assert_eq!(fixture.copies("backup").len(), backups);
     let fresh =
         Fixture::with_settings("{\"codex_model\":\"gpt-5.6-terra\",\"model\":\"gateway/model\"}");
-    save_model_preference(&fresh.paths, &ProviderId::Codex, MODEL, None, true).unwrap();
+    save_model_preference(&fresh.paths, &ProviderId::Codex, MODEL, None, (true, false)).unwrap();
     assert_eq!(
         fresh.read(),
-        "{\"model\":\"gateway/model\",\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":true,\"fast_mode_model_bound\":true}\n"
+        "{\"model\":\"gateway/model\",\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":true,\"fast_mode_model_bound\":true,\"ultrafast_mode\":false}\n"
     );
 }
 
@@ -614,10 +614,17 @@ fn a_model_preference_snapshots_and_removes_workspace_fast_choices() {
         "\"/workspace/c\":{\"permission_mode\":\"ask\"}}}\n"
     );
     let fixture = Fixture::with_settings(original);
-    save_model_preference(&fixture.paths, &ProviderId::Codex, MODEL, None, true).unwrap();
+    save_model_preference(
+        &fixture.paths,
+        &ProviderId::Codex,
+        MODEL,
+        None,
+        (true, false),
+    )
+    .unwrap();
     assert_eq!(
         fixture.read(),
-        "{\"workspaces\":{\"/workspace/a\":{\"effort\":\"low\"},\"/workspace/c\":{\"permission_mode\":\"ask\"}},\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":true,\"fast_mode_model_bound\":true}\n"
+        "{\"workspaces\":{\"/workspace/a\":{\"effort\":\"low\"},\"/workspace/c\":{\"permission_mode\":\"ask\"}},\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":true,\"fast_mode_model_bound\":true,\"ultrafast_mode\":false}\n"
     );
     let snapshot = fixture
         .paths
@@ -630,10 +637,17 @@ fn a_model_preference_snapshots_and_removes_workspace_fast_choices() {
     let bound_only = Fixture::with_settings(
         r#"{"workspaces":{"/workspace":{"fast_mode_model_bound":true,"effort":"low"}}}"#,
     );
-    save_model_preference(&bound_only.paths, &ProviderId::Codex, MODEL, None, false).unwrap();
+    save_model_preference(
+        &bound_only.paths,
+        &ProviderId::Codex,
+        MODEL,
+        None,
+        (false, false),
+    )
+    .unwrap();
     assert_eq!(
         bound_only.read(),
-        "{\"workspaces\":{\"/workspace\":{\"effort\":\"low\"}},\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":false,\"fast_mode_model_bound\":true}\n"
+        "{\"workspaces\":{\"/workspace\":{\"effort\":\"low\"}},\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":false,\"fast_mode_model_bound\":true,\"ultrafast_mode\":false}\n"
     );
     assert!(
         !bound_only
@@ -646,6 +660,33 @@ fn a_model_preference_snapshots_and_removes_workspace_fast_choices() {
 }
 
 #[test]
+fn a_model_preference_saves_the_ultra_request_and_moves_workspace_copies_aside() {
+    let original = concat!(
+        "{\"workspaces\":{\"/workspace/a\":{\"ultrafast_mode\":true,\"effort\":\"low\"}},",
+        "\"ultrafast_mode\":false}"
+    );
+    let fixture = Fixture::with_settings(original);
+    save_model_preference(
+        &fixture.paths,
+        &ProviderId::Codex,
+        MODEL,
+        None,
+        (false, true),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.read(),
+        "{\"workspaces\":{\"/workspace/a\":{\"effort\":\"low\"}},\"ultrafast_mode\":true,\"models\":{\"codex\":\"gpt-6.1-sol\"},\"provider\":\"codex\",\"fast_mode\":false,\"fast_mode_model_bound\":true}\n"
+    );
+    let snapshot = fixture
+        .paths
+        .config
+        .join(BACKUPS_DIRECTORY)
+        .join(ULTRAFAST_MODE_MIGRATION.snapshot);
+    assert_eq!(fs::read_to_string(&snapshot).unwrap(), original);
+}
+
+#[test]
 fn a_picked_effort_is_saved_beside_the_model_and_replaces_workspace_efforts() {
     let original = concat!(
         "{\"effort\":\"low\",\"workspaces\":{",
@@ -654,10 +695,10 @@ fn a_picked_effort_is_saved_beside_the_model_and_replaces_workspace_efforts() {
     );
     let fixture = Fixture::with_settings(original);
     let local = ProviderId::Configured("local".to_owned());
-    save_model_preference(&fixture.paths, &local, "m-1", Some("xhigh"), false).unwrap();
+    save_model_preference(&fixture.paths, &local, "m-1", Some("xhigh"), (false, false)).unwrap();
     assert_eq!(
         fixture.read(),
-        "{\"effort\":\"xhigh\",\"workspaces\":{},\"models\":{\"local\":\"m-1\"},\"provider\":\"local\",\"fast_mode\":false,\"fast_mode_model_bound\":true}\n"
+        "{\"effort\":\"xhigh\",\"workspaces\":{},\"models\":{\"local\":\"m-1\"},\"provider\":\"local\",\"fast_mode\":false,\"fast_mode_model_bound\":true,\"ultrafast_mode\":false}\n"
     );
     let backups = fixture.paths.config.join(BACKUPS_DIRECTORY);
     for migration in [EFFORT_MIGRATION, FAST_MODE_MIGRATION] {
@@ -671,7 +712,7 @@ fn a_picked_effort_is_saved_beside_the_model_and_replaces_workspace_efforts() {
         settings.reasoning_effort(),
         ReasoningEffort::Named("xhigh".to_owned())
     );
-    save_model_preference(&fixture.paths, &local, "m-1", Some("auto"), false).unwrap();
+    save_model_preference(&fixture.paths, &local, "m-1", Some("auto"), (false, false)).unwrap();
     assert!(fixture.read().starts_with("{\"effort\":\"auto\","));
 }
 
@@ -700,7 +741,13 @@ fn a_model_preference_refuses_a_model_settings_cannot_hold() {
     let fixture = Fixture::with_settings(original);
     for model in [" padded", ""] {
         assert_eq!(
-            save_model_preference(&fixture.paths, &ProviderId::Codex, model, None, true),
+            save_model_preference(
+                &fixture.paths,
+                &ProviderId::Codex,
+                model,
+                None,
+                (true, false)
+            ),
             Err(SettingsWriteError::InvalidField.into())
         );
     }

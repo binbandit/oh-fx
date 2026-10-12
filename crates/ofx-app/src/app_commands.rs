@@ -310,6 +310,7 @@ pub(crate) fn change_model(
         ModelChange::ToggleFast | ModelChange::RequestUltrafast => Outcome::Unchanged,
         ModelChange::WithdrawUltrafast => {
             state.withdraw_ultrafast_request();
+            state.save_model_preference(ULTRAFAST_TOPIC, None);
             state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested off");
             Outcome::Changed { effort: None }
         }
@@ -391,6 +392,7 @@ fn request_ultrafast(state: &mut ControllerState, models: &[ModelOption]) -> boo
         return false;
     }
     state.request_ultrafast();
+    state.save_model_preference(ULTRAFAST_TOPIC, None);
     state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested on");
     true
 }

@@ -145,11 +145,11 @@ async fn bootstrap(
     let saved = resumed
         .as_ref()
         .map(|resumed| resumed.session.preferences());
-    let ultrafast_requested = modifiers
-        .ultrafast_mode()
-        .or_else(|| saved.map(|preferences| preferences.ultrafast_mode))
-        .unwrap_or(false);
     let settings = profile.settings();
+    let launch_ultrafast = modifiers.ultrafast_mode().or(settings.ultrafast_override());
+    let ultrafast_requested = launch_ultrafast
+        .or_else(|| saved.map(|preferences| preferences.ultrafast_mode))
+        .unwrap_or_else(|| settings.ultrafast_mode());
     let permission_mode = settings.permission_mode(&|name| env::var(name).ok());
     let setup = profile
         .connect_interactive(
@@ -200,7 +200,7 @@ async fn bootstrap(
                 model: modifiers.model().map(|_| setup.model().to_owned()),
                 effort: modifiers.reasoning_effort().cloned(),
                 fast_mode: modifiers.fast_mode(),
-                ultrafast_mode: modifiers.ultrafast_mode(),
+                ultrafast_mode: launch_ultrafast,
             };
             Some(Persistence::new(
                 store,
@@ -231,10 +231,12 @@ fn failure_line(error: &dyn fmt::Display) -> String {
 
 fn profile_failure_lines(error: &ProfileError) -> Vec<String> {
     let mut lines: Vec<String> = match error {
-        ProfileError::Unusable(diagnostics) => diagnostics
-            .iter()
-            .map(|diagnostic| failure_line(diagnostic))
-            .collect(),
+        ProfileError::Unusable(diagnostics) | ProfileError::UltrafastOverride(diagnostics) => {
+            diagnostics
+                .iter()
+                .map(|diagnostic| failure_line(diagnostic))
+                .collect()
+        }
         ProfileError::WorkspaceUnavailable | ProfileError::Settings(_) => Vec::new(),
     };
     lines.push(failure_line(error));

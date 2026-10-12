@@ -782,10 +782,17 @@ fn requested_reasoning(
     let fast_mode = args
         .fast
         .or_else(|| resumed.map(|preferences| preferences.fast_mode));
-    let ultrafast_mode = args
-        .ultrafast
-        .or_else(|| resumed.map(|preferences| preferences.ultrafast_mode))
-        .unwrap_or(false);
+    let configured = resumed.map_or_else(
+        || settings.ultrafast_mode(),
+        |preferences| {
+            settings
+                .ultrafast_override()
+                .unwrap_or(preferences.ultrafast_mode)
+        },
+    );
+    let defaulted =
+        args.model.is_some() && resumed.is_none() && settings.configured_ultrafast_mode().is_none();
+    let ultrafast_mode = args.ultrafast.unwrap_or(configured && !defaulted);
     (effort.into_named(), (fast_mode, ultrafast_mode))
 }
 

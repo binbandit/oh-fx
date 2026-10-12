@@ -101,6 +101,7 @@ pub(crate) struct StatusReport {
     pub(crate) permission_mode: PermissionMode,
     pub(crate) workspace_root: PathBuf,
     pub(crate) agent_step_limit: u64,
+    pub(crate) ultrafast_requested: bool,
     pub(crate) mcp: LocalConfigInspection,
 }
 
@@ -178,7 +179,10 @@ impl StatusReport {
         line(format_args!("history_turns=0"));
         line(format_args!("session_permission_grants=0"));
         line(format_args!("agent_step_limit={}", self.agent_step_limit));
-        line(format_args!("ultrafast_requested=false"));
+        line(format_args!(
+            "ultrafast_requested={}",
+            self.ultrafast_requested
+        ));
         write_mcp_text(&mut out, "status", &self.mcp);
         out
     }
@@ -244,7 +248,10 @@ impl StatusReport {
         object.insert("history_turns".to_owned(), json!(0));
         object.insert("session_permission_grants".to_owned(), json!(0));
         object.insert("agent_step_limit".to_owned(), json!(self.agent_step_limit));
-        object.insert("ultrafast_requested".to_owned(), json!(false));
+        object.insert(
+            "ultrafast_requested".to_owned(),
+            json!(self.ultrafast_requested),
+        );
         object.insert("mcp".to_owned(), mcp_json(&self.mcp));
         object
     }

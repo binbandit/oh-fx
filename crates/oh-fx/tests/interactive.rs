@@ -555,6 +555,7 @@ fn ultra_mode_on_a_verified_gateway_model_sends_the_ultrafast_tier() {
     wait(&session, "Run /help for commands");
     session.send(b"/ultrafast on\r");
     wait(&session, "ultrafast: requested on");
+    wait_saved(&home, "ultrafast_mode", &json!(true));
     session.send(b"hello\r");
     wait(&session, "Ultra reply.");
     wait(
@@ -651,7 +652,7 @@ fn an_explicit_ultra_request_outlasts_a_resumed_session_saved_without_it() {
     quit(session);
     let ultra = saved_session_ids(&home).pop().expect("the Ultra session");
 
-    let session = gateway(&[], "Run /help for commands");
+    let session = gateway(&["--no-ultrafast"], "Run /help for commands");
     session.send(b"second\r");
     wait(&session, "Second done.");
     quit(session);
