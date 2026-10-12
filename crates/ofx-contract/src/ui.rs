@@ -220,10 +220,17 @@ pub enum ApprovalOrigin {
     Subagent(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionSource {
+    AgentQuestion,
+    McpElicitation,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestionRequest {
     pub id: RequestId,
     pub entries: Vec<QuestionBatchEntry>,
+    pub source: QuestionSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,6 +369,9 @@ pub enum UiEvent {
     QuestionRequested {
         turn_id: TurnId,
         request: QuestionRequest,
+    },
+    QuestionWithdrawn {
+        request_id: RequestId,
     },
     UsageReported {
         turn_id: TurnId,

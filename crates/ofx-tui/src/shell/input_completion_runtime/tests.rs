@@ -386,7 +386,9 @@ fn a_question_hides_the_picker_until_it_is_answered() {
                         description: None,
                     })
                     .collect(),
+                submission: ofx_contract::QuestionSubmission::Label,
             }],
+            source: ofx_contract::QuestionSource::AgentQuestion,
         },
     });
     let screen = test.screen();

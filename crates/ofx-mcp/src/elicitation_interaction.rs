@@ -1,8 +1,9 @@
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
-use ofx_contract::{QuestionAsker, QuestionBatchEntry, QuestionOption};
+use ofx_contract::{QuestionAsker, QuestionBatchEntry, QuestionOption, QuestionSubmission};
 use ofx_text::encode_terminal_safe;
+use serde_json::Value;
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -15,6 +16,7 @@ use crate::json_number::{Number, NumberError};
 use crate::timing::timeout_at;
 
 const MAX_FORM_ATTEMPTS: usize = 8;
+const MAX_COMPACT_CHOICES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InteractionError {
@@ -40,6 +42,7 @@ type Outcome<T> = Result<T, InteractionError>;
 pub struct InputResponder {
     questioner: Arc<dyn QuestionAsker>,
     capabilities: ElicitationCapabilities,
+    compact_forms: bool,
     turn: Arc<Mutex<()>>,
 }
 
@@ -51,8 +54,15 @@ impl InputResponder {
                 form: true,
                 url: false,
             },
+            compact_forms: false,
             turn: Arc::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_compact_forms(mut self) -> Self {
+        self.compact_forms = true;
+        self
     }
 
     pub(crate) fn capabilities(&self) -> ElicitationCapabilities {
@@ -77,6 +87,7 @@ impl fmt::Debug for InputResponder {
         formatter
             .debug_struct("InputResponder")
             .field("capabilities", &self.capabilities)
+            .field("compact_forms", &self.compact_forms)
             .finish_non_exhaustive()
     }
 }
@@ -90,7 +101,14 @@ pub(crate) struct Interaction<'a> {
 
 enum FieldAnswer {
     Cancelled,
+    Declined,
     Value(Option<String>),
+}
+
+enum CompactAction {
+    Value(Option<String>),
+    Decline,
+    Cancel,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -141,6 +159,10 @@ impl Interaction<'_> {
     async fn answer_form(&self, request: &Request, form: &FormSchema) -> Outcome<Answer> {
         let server = terminal_safe(self.server_name)?;
         let message = terminal_safe(&request.message)?;
+        let compact = self.responder.compact_forms
+            && form.fields.len() == 1
+            && form.fields[0].kind == FieldKind::SingleSelect
+            && form.fields[0].choices.len() <= MAX_COMPACT_CHOICES;
         let mut values: Vec<Current> = form
             .fields
             .iter()
@@ -152,12 +174,16 @@ impl Interaction<'_> {
         for _ in 0..MAX_FORM_ATTEMPTS {
             let mut invalid = false;
             for (field, current) in form.fields.iter().zip(&mut values) {
-                match self.answer_field(&server, &message, field, current).await {
+                match self
+                    .answer_field(&server, &message, field, current, compact)
+                    .await
+                {
                     Err(InteractionError::InvalidAnswer) => {
                         invalid = true;
                         break;
                     }
                     Err(error) => return Err(error),
+                    Ok(FieldAnswer::Declined) => return Ok(Answer::Decline),
                     Ok(FieldAnswer::Cancelled) => return Ok(Answer::Cancel),
                     Ok(FieldAnswer::Value(json)) => {
                         current.json = json;
@@ -178,9 +204,16 @@ impl Interaction<'_> {
                 }
                 continue;
             }
+            if compact {
+                return Ok(response);
+            }
             let review = review_question(&server, &message, form, &values)?;
             let answer = match self
-                .ask_single(review, labels(&["Submit", "Edit", "Decline", "Cancel"]))
+                .ask_single(
+                    review,
+                    labels(&["Submit", "Edit", "Decline", "Cancel"]),
+                    QuestionSubmission::Label,
+                )
                 .await?
             {
                 Single::Cancelled => return Ok(Answer::Cancel),
@@ -203,7 +236,11 @@ impl Interaction<'_> {
         message: &str,
         field: &Field,
         current: &Current,
+        compact: bool,
     ) -> Outcome<FieldAnswer> {
+        if compact && !current.answered {
+            return self.answer_compact_field(server, message, field).await;
+        }
         if current.answered {
             match self.keep_current_value(server, field, current).await? {
                 Some(true) => return Ok(FieldAnswer::Value(current.json.clone())),
@@ -280,6 +317,62 @@ impl Interaction<'_> {
             other => InteractionError::Elicitation(other),
         })?;
         Ok(FieldAnswer::Value(Some(value)))
+    }
+
+    async fn answer_compact_field(
+        &self,
+        server: &str,
+        message: &str,
+        field: &Field,
+    ) -> Outcome<FieldAnswer> {
+        let name = terminal_safe(field.display_name())?;
+        let description = terminal_safe(field.description.as_deref().unwrap_or(""))?;
+        let question = format!(
+            "MCP server {server} requests {name}{}\n{description}\nReason: {message}\nChoose an option to submit.",
+            necessity(field)
+        );
+        let mut options = Vec::new();
+        let mut actions = Vec::new();
+        for (index, choice) in field.choices.iter().enumerate() {
+            options.push(choice_label(index, &choice.title)?);
+            actions.push(CompactAction::Value(Some(json_string(&choice.value))));
+        }
+        if let Some(default) = &field.default_json {
+            options.push(described("Use default", Some(terminal_safe(default)?)));
+            actions.push(CompactAction::Value(Some(default.clone())));
+        }
+        if !field.required {
+            options.push(described(
+                "Skip",
+                Some("Submit without this optional field".to_owned()),
+            ));
+            actions.push(CompactAction::Value(None));
+        }
+        options.extend(labels(&["Decline", "Cancel"]));
+        actions.extend([CompactAction::Decline, CompactAction::Cancel]);
+        let answer = match self
+            .ask_single(question, options, QuestionSubmission::Choice)
+            .await?
+        {
+            Single::Cancelled => return Ok(FieldAnswer::Cancelled),
+            Single::Invalid => return Err(InteractionError::InvalidAnswer),
+            Single::Answer(answer) => answer,
+        };
+        let action = chosen_option(&answer)
+            .and_then(|index| actions.into_iter().nth(index))
+            .ok_or(InteractionError::InvalidAnswer)?;
+        let json = match action {
+            CompactAction::Decline => return Ok(FieldAnswer::Declined),
+            CompactAction::Cancel => return Ok(FieldAnswer::Cancelled),
+            CompactAction::Value(json) => json,
+        };
+        if let Some(value) = &json {
+            validate_field_json(field, value).map_err(|error| match error {
+                ElicitationError::InvalidResponse => InteractionError::InvalidAnswer,
+                other => InteractionError::Elicitation(other),
+            })?;
+        }
+        Ok(FieldAnswer::Value(json))
     }
 
     async fn keep_current_value(
@@ -399,7 +492,8 @@ impl Interaction<'_> {
             "A response for MCP server {server} did not satisfy the requested form constraints. Edit the form or cancel?"
         );
         Ok(matches!(
-            self.ask_single(question, labels(&["Edit", "Cancel"])).await?,
+            self.ask_single(question, labels(&["Edit", "Cancel"]), QuestionSubmission::Label)
+                .await?,
             Single::Answer(answer) if answer == "Edit"
         ))
     }
@@ -409,18 +503,27 @@ impl Interaction<'_> {
         question: String,
         options: Vec<QuestionOption>,
     ) -> Outcome<Option<String>> {
-        match self.ask_single(question, options).await? {
+        match self
+            .ask_single(question, options, QuestionSubmission::Label)
+            .await?
+        {
             Single::Cancelled => Ok(None),
             Single::Invalid => Err(InteractionError::InvalidAnswer),
             Single::Answer(answer) => Ok(Some(answer)),
         }
     }
 
-    async fn ask_single(&self, question: String, options: Vec<QuestionOption>) -> Outcome<Single> {
-        let asked = self
-            .responder
-            .questioner
-            .ask(vec![QuestionBatchEntry { question, options }]);
+    async fn ask_single(
+        &self,
+        question: String,
+        options: Vec<QuestionOption>,
+        submission: QuestionSubmission,
+    ) -> Outcome<Single> {
+        let asked = self.responder.questioner.ask(vec![QuestionBatchEntry {
+            question,
+            options,
+            submission,
+        }]);
         let answers = tokio::select! {
             answers = timeout_at(self.deadline, asked) => {
                 answers.map_err(|_| InteractionError::McpInputTimedOut)?
@@ -440,6 +543,19 @@ fn necessity(field: &Field) -> &'static str {
         " (required)"
     } else {
         " (optional)"
+    }
+}
+
+fn chosen_option(answer: &str) -> Option<usize> {
+    let value: Value = serde_json::from_str(answer).ok()?;
+    let object = value.as_object().filter(|object| object.len() == 1)?;
+    usize::try_from(object.get("option")?.as_u64()?).ok()
+}
+
+fn described(label: &str, description: Option<String>) -> QuestionOption {
+    QuestionOption {
+        label: label.to_owned(),
+        description,
     }
 }
 
@@ -490,7 +606,7 @@ fn review_question(
 }
 
 fn json_string(value: &str) -> String {
-    serde_json::Value::from(value).to_string()
+    Value::from(value).to_string()
 }
 
 fn number_answer(answer: &str) -> Outcome<String> {

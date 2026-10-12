@@ -22,7 +22,7 @@ while IFS= read -r line; do
     *'"method":"tools/list"'*)
       reply "$id" '{"tools":[{"name":"profile","description":"Ask for a profile.","inputSchema":{"type":"object"}}]}' ;;
     *'"method":"tools/call"'*)
-      printf '{"jsonrpc":"2.0","id":"ask-1","method":"elicitation/create","params":{"message":"Who are you?","requestedSchema":{"type":"object","properties":{"name":{"type":"string","title":"Name"}},"required":["name"]}}}\n'
+      printf '{"jsonrpc":"2.0","id":"ask-1","method":"elicitation/create","params":%s}\n' "$(cat "$MCP_STATE/params")"
       if [ -f "$MCP_STATE/twice" ]; then
         printf '{"jsonrpc":"2.0","id":"ask-2","method":"elicitation/create","params":{"message":"Where are you?","requestedSchema":{"type":"object","properties":{"city":{"type":"string","title":"City"}},"required":["city"]}}}\n'
         IFS= read -r first
@@ -37,6 +37,8 @@ while IFS= read -r line; do
 done
 "#;
 
+const NAME_FORM: &str = r#"{"message":"Who are you?","requestedSchema":{"type":"object","properties":{"name":{"type":"string","title":"Name"}},"required":["name"]}}"#;
+
 struct Home {
     _directory: tempfile::TempDir,
     root: PathBuf,
@@ -45,6 +47,10 @@ struct Home {
 
 impl Home {
     fn new(server: &FakeServer) -> Self {
+        Self::with(server, "ask", NAME_FORM)
+    }
+
+    fn with(server: &FakeServer, mode: &str, params: &str) -> Self {
         let directory = tempfile::tempdir().expect("create a temporary home");
         let root = fs::canonicalize(directory.path()).expect("canonicalize the home");
         let state = root.join("mcp-state");
@@ -55,8 +61,10 @@ impl Home {
         ] {
             fs::create_dir_all(path).expect("create a directory");
         }
+        fs::write(state.join("params"), params).expect("write the elicitation");
         let settings = json!({
-            "permission_mode": "ask",
+            "permission_mode": mode,
+            "yolo_acknowledged": true,
             "provider": "local",
             "model": "local-model",
             "providers": {
@@ -90,9 +98,14 @@ impl Home {
     }
 
     fn command(&self) -> Command {
+        let mut command = self.shell_command();
+        command.args(["ask", "--full-access", "who am I"]);
+        command
+    }
+
+    fn shell_command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
         command
-            .args(["ask", "--full-access", "who am I"])
             .current_dir(self.root.join("workspace"))
             .env_clear()
             .env("HOME", &self.root)
@@ -224,4 +237,94 @@ fn an_ask_without_a_terminal_advertises_no_elicitation_and_refuses_the_request()
         home.state("answer"),
         "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n"
     );
+}
+
+fn shell(home: &Home) -> PtySession {
+    let session = PtySession::spawn(home.shell_command(), 40, 200).expect("spawn oh-fx in a pty");
+    wait(&session, "Run /help for commands");
+    let ready = format!(
+        "  {:<22}{:<22}{}",
+        "fixture", "Ready", "stdio \u{b7} Profile"
+    );
+    session.send(b"/mcp\r");
+    session
+        .wait_for(WAIT, |screen| {
+            screen.contains("esc close") && screen.contains(&ready)
+        })
+        .unwrap_or_else(|screen| panic!("expected the fixture to be ready:\n{screen}"));
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| !screen.contains("esc close"))
+        .unwrap_or_else(|screen| panic!("the MCP menu stayed open:\n{screen}"));
+    session.send(b"who am I\r");
+    session
+}
+
+fn exit(mut session: PtySession) {
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
+fn the_shell_asks_for_an_mcp_form_in_its_question_panel() {
+    let server = provider();
+    let home = Home::with(&server, "yolo", NAME_FORM);
+    let session = shell(&home);
+    let screen = wait(&session, "MCP server fixture requests Name (required)");
+    assert!(
+        screen.contains("  MCP server fixture requests Name (required)\n  Reason: Who are you?\n"),
+        "{screen}"
+    );
+    session.send(b"Ada\r");
+    let screen = wait(&session, "Choose Submit, Edit, Decline, or Cancel.");
+    for line in [
+        "  Review the completed form requested by MCP server fixture.\n",
+        "  - Name: \"Ada\"\n",
+        "    1) Submit",
+        "    4) Cancel",
+        "    5) Other",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    session.send(b"1");
+    let screen = wait(&session, "done");
+    assert!(!screen.contains("Review the completed form"), "{screen}");
+    assert_eq!(
+        home.state("answer"),
+        "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"result\":{\"action\":\"accept\",\"content\":{\"name\":\"Ada\"}}}\n"
+    );
+    assert!(
+        home.state("initialize")
+            .contains(r#""capabilities":{"elicitation":{"form":{}}}"#)
+    );
+    exit(session);
+}
+
+#[test]
+fn the_shell_submits_a_short_single_choice_form_from_one_panel() {
+    let server = provider();
+    let home = Home::with(
+        &server,
+        "yolo",
+        r#"{"message":"Pick a color","requestedSchema":{"type":"object","properties":{"color":{"type":"string","title":"Color","oneOf":[{"const":"red","title":"Red"},{"const":"blue","title":"Blue"}]}},"required":["color"]}}"#,
+    );
+    let session = shell(&home);
+    let screen = wait(&session, "Choose an option to submit.");
+    for line in [
+        "  MCP server fixture requests Color (required)\n  \n  Reason: Pick a color\n  Choose an option to submit.\n",
+        "    1) [1] Red",
+        "    2) [2] Blue",
+        "    3) Decline",
+        "    4) Cancel",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    assert!(!screen.contains("Other"), "{screen}");
+    session.send(b"2");
+    wait(&session, "done");
+    assert_eq!(
+        home.state("answer"),
+        "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"result\":{\"action\":\"accept\",\"content\":{\"color\":\"blue\"}}}\n"
+    );
+    exit(session);
 }

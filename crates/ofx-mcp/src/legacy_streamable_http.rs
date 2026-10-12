@@ -7,7 +7,7 @@ use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -99,11 +99,27 @@ pub(crate) struct HttpShared {
     notifications: mpsc::UnboundedSender<Value>,
 }
 
+#[derive(Clone, Copy)]
+struct ServerRequests<'a> {
+    context: &'a Arc<ElicitationContext>,
+    shared: &'a Arc<HttpShared>,
+}
+
+struct FinishOnDrop<'a>(Option<&'a ElicitationContext>);
+
+impl Drop for FinishOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(context) = self.0 {
+            context.finish();
+        }
+    }
+}
+
 struct PostOptions<'a> {
     request_id: u64,
     max_response_bytes: usize,
     progress: Option<&'a ProgressSink>,
-    elicitation: Option<&'a ElicitationContext>,
+    elicitation: Option<ServerRequests<'a>>,
     committed: Option<&'a AtomicBool>,
     capture_session: bool,
 }
@@ -224,9 +240,13 @@ impl LegacyHttpClient {
             return Err(McpError::McpConnectionClosed);
         }
         let committed = AtomicBool::new(false);
+        let _finish = FinishOnDrop(request.elicitation.as_deref());
         let options = PostOptions {
             progress: request.progress.as_ref(),
-            elicitation: request.elicitation.as_deref(),
+            elicitation: request.elicitation.as_ref().map(|context| ServerRequests {
+                context,
+                shared: &self.shared,
+            }),
             committed: Some(&committed),
             ..PostOptions::new(request.id, request.max_response_bytes)
         };
@@ -325,6 +345,30 @@ struct CancelOnDrop<'a> {
     id: u64,
     committed: &'a AtomicBool,
     armed: bool,
+}
+
+async fn answer_server_request(
+    event: &Event,
+    requests: Option<ServerRequests<'_>>,
+) -> Result<(), McpError> {
+    let requests = requests.ok_or(McpError::UnsupportedServerRequest)?;
+    let answering = requests.context.begin_answer();
+    let shared = Arc::clone(requests.shared);
+    let frame = event.data.clone();
+    let (answered, outcome) = oneshot::channel();
+    spawn(async move {
+        let context = answering.context();
+        let sent = match context.respond(frame.as_bytes()).await {
+            Ok(response) => {
+                shared
+                    .send_notification(&response, Instant::now() + context.operation_timeout())
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        let _ = answered.send(sent);
+    });
+    outcome.await.unwrap_or(Err(McpError::McpConnectionClosed))
 }
 
 impl Drop for CancelOnDrop<'_> {
@@ -540,8 +584,7 @@ impl HttpShared {
                     EventOutcome::Empty | EventOutcome::ProgressNotification => {}
                     EventOutcome::Notification => self.route_notification(&event.data)?,
                     EventOutcome::ServerRequest => {
-                        self.answer_server_request(&event, options.elicitation)
-                            .await?;
+                        answer_server_request(&event, options.elicitation).await?;
                     }
                     EventOutcome::Final => {
                         validate_final_response(&event.data, request_id)?;
@@ -559,17 +602,6 @@ impl HttpShared {
             });
         }
         Err(McpError::MissingFinalResponse)
-    }
-
-    async fn answer_server_request(
-        &self,
-        event: &Event,
-        elicitation: Option<&ElicitationContext>,
-    ) -> Result<(), McpError> {
-        let context = elicitation.ok_or(McpError::UnsupportedServerRequest)?;
-        let response = context.respond(event.data.as_bytes()).await?;
-        self.send_notification(&response, Instant::now() + context.operation_timeout())
-            .await
     }
 
     async fn listen_once(&self, cursor: &mut StreamCursor) -> Result<bool, McpError> {
@@ -813,7 +845,7 @@ mod tests {
     use crate::server_connection::{McpClient, ServerNotification};
     use crate::server_transport::ConnectOptions;
     use crate::test_support::{FakeServer, RecordedRequest, Reply};
-    use crate::test_support::{ScriptedAnswers, operation_elicitation};
+    use crate::test_support::{ScriptedAnswers, asking_elicitation, operation_elicitation};
     use crate::tool_operations::CallOptions;
 
     type BoxedHandler = Box<dyn Fn(&RecordedRequest) -> Reply + Send + Sync>;
@@ -1134,6 +1166,73 @@ mod tests {
             "{\"jsonrpc\":\"2.0\",\"id\":\"s-1\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
         );
         assert!(answers.questions().is_empty());
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    struct Unanswered(Arc<tokio::sync::Notify>);
+
+    impl ofx_contract::QuestionAsker for Unanswered {
+        fn ask(
+            &self,
+            _entries: Vec<ofx_contract::QuestionBatchEntry>,
+        ) -> ofx_contract::BoxFuture<'static, Option<Vec<String>>> {
+            self.0.notify_one();
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_call_still_answers_its_open_elicitation_with_cancel() {
+        let (answers, mut answered) = mpsc::unbounded_channel();
+        let server = FakeServer::start(move |request| {
+            match (request.method.as_str(), request.method_name().as_deref()) {
+                ("POST", Some("tools/call")) => Reply::sse(&[
+                    "data: {\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"elicitation/create\",\"params\":{\"message\":\"Who?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}}\n\n",
+                ]),
+                ("POST", None) => {
+                    let _ = answers.send(request.body.clone());
+                    Reply::status(202)
+                }
+                _ => session_handler("2025-11-25")(request),
+            }
+        })
+        .await;
+        let shown = Arc::new(tokio::sync::Notify::new());
+        let asker: Arc<dyn ofx_contract::QuestionAsker> = Arc::new(Unanswered(Arc::clone(&shown)));
+        let options = ConnectOptions {
+            elicitation: Some(asking_elicitation(Arc::clone(&asker)).responder),
+            ..ConnectOptions::default()
+        };
+        let client = McpClient::connect(&remote(&server.url), &options)
+            .await
+            .unwrap();
+        let call = client.call_tool(
+            "remote_tool",
+            "{}",
+            CallOptions {
+                elicitation: Some(asking_elicitation(asker)),
+                ..CallOptions::default()
+            },
+            Instant::now() + Duration::from_secs(10),
+        );
+        tokio::select! {
+            _ = call => panic!("the call waits for its form"),
+            () = shown.notified() => {}
+        }
+        let mut bodies = Vec::new();
+        while !bodies
+            .iter()
+            .any(|body: &String| body.contains("\"result\""))
+        {
+            let body = timeout(Duration::from_secs(10), answered.recv())
+                .await
+                .expect("the server hears from the cancelled call")
+                .expect("the server is running");
+            bodies.push(body);
+        }
+        assert!(bodies.contains(
+            &"{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"action\":\"cancel\"}}".to_owned()
+        ));
         client.shutdown(ShutdownMode::ProcessExit).await;
     }
 

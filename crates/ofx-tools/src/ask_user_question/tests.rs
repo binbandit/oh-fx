@@ -253,6 +253,7 @@ fn any_number_and_any_nesting_are_read_as_upstream_reads_them() {
         [vec![QuestionBatchEntry {
             question: "Q?".to_owned(),
             options: vec![option("Yes", None), option("No", None)],
+            submission: QuestionSubmission::Label,
         }]]
     );
     let options = r#"[{"label":"a"},{"label":"b"}]"#;
@@ -321,6 +322,7 @@ fn trimmed_questions_reach_the_user_and_answers_return_in_order() {
                 option("No", None),
                 option("Later", None),
             ],
+            submission: QuestionSubmission::Label,
         }]]
     );
     assert_eq!(
@@ -369,6 +371,7 @@ fn model_supplied_text_is_flattened_and_made_terminal_safe_before_it_is_shown() 
                 option("a  b", None),
                 option("\\u{202e}evil x", None),
             ],
+            submission: QuestionSubmission::Label,
         }]
     );
     assert_eq!(

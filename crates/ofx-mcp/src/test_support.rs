@@ -314,10 +314,14 @@ impl crate::legacy_elicitation_runtime::ElicitationOwner for CurrentOwner {
 pub(crate) fn operation_elicitation(
     answers: &Arc<ScriptedAnswers>,
 ) -> crate::legacy_elicitation_runtime::OperationElicitation {
+    asking_elicitation(Arc::clone(answers) as Arc<dyn ofx_contract::QuestionAsker>)
+}
+
+pub(crate) fn asking_elicitation(
+    asker: Arc<dyn ofx_contract::QuestionAsker>,
+) -> crate::legacy_elicitation_runtime::OperationElicitation {
     crate::legacy_elicitation_runtime::OperationElicitation {
-        responder: crate::elicitation_interaction::InputResponder::new(
-            Arc::clone(answers) as Arc<dyn ofx_contract::QuestionAsker>
-        ),
+        responder: crate::elicitation_interaction::InputResponder::new(asker),
         server_name: "fixture".to_owned(),
         owner: Box::new(CurrentOwner),
     }

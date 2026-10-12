@@ -50,7 +50,9 @@ fn question(turn: u64, id: u64) -> UiEvent {
                     label: "Yes".to_owned(),
                     description: None,
                 }],
+                submission: ofx_contract::QuestionSubmission::Label,
             }],
+            source: ofx_contract::QuestionSource::AgentQuestion,
         },
     }
 }

@@ -59,7 +59,7 @@ note = "Capabilities, request parsing for the 2025-06-18 and 2025-11-25 wires, f
 upstream = "src/core/mcp/elicitation_interaction.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/elicitation_interaction.rs"]
-note = "The form questions, fill choices, kept values, multi-select, the review, bounded retries and the input deadline exist, asked through a QuestionAsker; compact forms, URL consent, the browser and legacy URL completion are missing."
+note = "The form questions, fill choices, kept values, multi-select, the review, compact single-choice forms, bounded retries and the input deadline exist, asked through a QuestionAsker; URL consent, the browser and legacy URL completion are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_catalog.zig"
