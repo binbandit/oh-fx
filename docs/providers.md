@@ -271,7 +271,9 @@ The default model is `spacexai/grok-4.7`. `--model`, `OH_FX_MODEL`, and `models.
 
 Requests go to `https://ai-gateway.vercel.sh/v4/ai/language-model`. `OH_FX_GATEWAY_CHAT_URL` sends them to a local test server instead. Only a loopback `http://` URL with a port is used, and anything else is ignored, because that URL receives the key and the whole request.
 
-`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`. Credits are not available in oh-fx yet.
+`oh-fx status` and `oh-fx doctor` name the active source, such as `auth=AI_GATEWAY_API_KEY`, `auth=oh-fx login`, or `auth=stored API key (profile file)`, and never print its value. With the Vercel sign-in they also print `team=` and, once the access token is due for a refresh, `auth_expired=true`.
+
+`oh-fx credits` (or `oh-fx balance`) prints the AI Gateway balance, usage and plan from `https://ai-gateway.vercel.sh/coding-agent/v1/credits` as `[credits] balance=…`, `[credits] used=…` and `[credits] plan=…`, or `{"kind":"credits","balance":…,"used":…,"plan":…}` with `--json`. It sends the gateway credential, and with the Vercel sign-in it names the chosen team as `?teamId=`. A failure prints `[credits] error: …` on stderr and exits with status 1. With another provider selected it reports `Credits are unavailable for the selected provider.`. For tests, `OH_FX_GATEWAY_BASE_URL` replaces `https://ai-gateway.vercel.sh` and `OH_FX_E2E_GATEWAY_CREDITS_URL` replaces the whole URL; both take only a loopback `http://` URL with a port. `/credits` in the shell is not available in oh-fx yet.
 
 ### List the models
 
