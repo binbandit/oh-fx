@@ -83,7 +83,7 @@ fn keys_authenticate_without_a_team_whatever_their_expiry() {
 
 use ofx_contract::{BoxFuture, ImageInputSupport, ModelCapabilities};
 use ofx_gateway::{GatewayAccess, GatewayCredential, GatewayEndpoints, GatewayRefresh};
-use ofx_testkit::{FakeServer, RefusedPort, Reply};
+use ofx_testkit::{FakeServer, Gate, RefusedPort, Reply};
 
 const LISTING: &str = r#"{"data":[
     {"id":"vendor/plain-1","type":"language","released":1,"tags":["tool-use"]},
@@ -336,4 +336,33 @@ fn the_menu_note_names_the_access_the_catalog_was_loaded_with() {
     ] {
         assert_eq!(note(access), expected);
     }
+}
+
+#[tokio::test]
+async fn a_lookup_cancelled_behind_the_menu_load_returns_at_once_and_the_menu_still_loads() {
+    let gate = Gate::default();
+    let server = FakeServer::start([Reply::status(200, LISTING).after(&gate)]);
+    let catalog = served(&server, api_key());
+    let cancel = CancellationToken::new();
+    let waiting = async {
+        while server.requests().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let lookup = catalog.resolve("zai/glm-5.2", &cancel);
+        tokio::pin!(lookup);
+        tokio::select! {
+            outcome = &mut lookup => panic!("resolved before the catalog answered: {outcome:?}"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+        cancel.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), lookup)
+            .await
+            .expect("the cancelled lookup returns at once");
+        gate.open();
+        outcome
+    };
+    let (listed, outcome) = tokio::join!(catalog.catalog(), waiting);
+    assert_eq!(outcome, CapabilityLookup::Cancelled);
+    assert!(matches!(listed, ModelCatalog::Listed { .. }), "{listed:?}");
+    assert_eq!(server.requests().len(), 1);
 }

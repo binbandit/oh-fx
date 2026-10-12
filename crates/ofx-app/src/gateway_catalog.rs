@@ -183,23 +183,29 @@ impl GatewayCatalog {
     }
 
     async fn listed(&self, cancel: &CancellationToken) -> Result<&Listed, CatalogFailed> {
-        let listed = self
-            .listed
-            .get_or_try_init(|| async {
-                let access = self.credential.access(cancel).await;
-                match self
-                    .catalog
-                    .load(&access, CatalogView::Picker, cancel)
-                    .await
-                {
-                    CatalogFetch::Loaded { models, access, .. } => Ok(Listed {
-                        models,
-                        note: note(access),
-                    }),
-                    CatalogFetch::Failed { failure, .. } => Err(failure),
-                }
-            })
-            .await?;
+        let loading = self.listed.get_or_try_init(|| async {
+            let access = self.credential.access(cancel).await;
+            match self
+                .catalog
+                .load(&access, CatalogView::Picker, cancel)
+                .await
+            {
+                CatalogFetch::Loaded { models, access, .. } => Ok(Listed {
+                    models,
+                    note: note(access),
+                }),
+                CatalogFetch::Failed { failure, .. } => Err(failure),
+            }
+        });
+        let listed = tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(CatalogFailed {
+                failure: CatalogFailure::Cancellation,
+                http_status: None,
+                retryable: false,
+            }),
+            listed = loading => listed,
+        }?;
         self.ready.notify_waiters();
         Ok(listed)
     }
