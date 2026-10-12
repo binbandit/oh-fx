@@ -6,6 +6,7 @@ pub(crate) mod compact_command_menu_presentation;
 pub(crate) mod file_approval;
 pub(crate) mod help_menu_presentation;
 pub(crate) mod input_presentation;
+pub(crate) mod mcp_menu_presentation;
 pub(crate) mod model_menu_presentation;
 mod phrase;
 pub(crate) mod picker_presentation;

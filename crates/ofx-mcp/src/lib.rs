@@ -38,6 +38,7 @@ mod protocol_negotiation;
 mod server_auth;
 mod server_connection;
 mod server_lifecycle;
+mod server_menu;
 mod server_transport;
 mod server_views;
 mod settings_choices;

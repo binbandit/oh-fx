@@ -6,6 +6,7 @@ mod file_evidence;
 mod history_turn;
 mod hooks;
 mod ids;
+mod mcp_menu;
 mod mcp_servers;
 mod model_capabilities;
 mod modes;
@@ -46,6 +47,10 @@ pub use hooks::{
     join_visible_segments,
 };
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
+pub use mcp_menu::{
+    McpMenuAdmission, McpMenuAuthentication, McpMenuConnection, McpMenuCounts, McpMenuRequest,
+    McpMenuServer, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
+};
 pub use mcp_servers::{McpServersCatalog, McpServersSection};
 pub use model_capabilities::{
     CapabilityLookup, CapabilityResolver, ImageInputSupport, ModelCapabilities, intrinsically_fast,
