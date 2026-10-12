@@ -200,6 +200,7 @@ fn collection_writes_its_core_lines() {
         " [core] captured command leader completed during timed_out; termination cleanup continuing\n",
         " [core] command termination requested source=cancelled force=true\n",
         " [core] command termination settlement expired boundary=post_force source=cancelled wait_ready=false\n",
+        " [core] command output drain incomplete reason=termination_settle_deadline err=Timeout\n",
     ] {
         assert!(written.contains(line), "{line}{written}");
     }

@@ -1,7 +1,9 @@
 use std::io;
 use std::sync::Arc;
 
-use crate::command_runner::OutputStream;
+use ofx_trace::trace_log;
+
+use crate::command_runner::{CORE, OutputStream, error_name};
 
 const PENDING_FLUSH_BYTES: usize = 4096;
 
@@ -57,7 +59,12 @@ impl LineEcho {
         if chunk.is_empty() || self.suppressed {
             return;
         }
-        if (self.echo)(chunk).is_err() {
+        if let Err(error) = (self.echo)(chunk) {
+            trace_log!(
+                CORE,
+                "command output presentation suppressed err={}",
+                error_name(&error)
+            );
             self.suppressed = true;
             self.stdout.clear();
             self.stderr.clear();
@@ -118,6 +125,41 @@ mod tests {
         assert_eq!(chunks(&seen), ["x".repeat(PENDING_FLUSH_BYTES)]);
         echo.flush();
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_OUTPUT_ECHO_TRACE_CHILD";
+    const TRACE_TEST: &str =
+        "output_echo::tests::a_failed_echo_writes_its_core_line_without_the_output";
+
+    #[test]
+    fn a_failed_echo_writes_its_core_line_without_the_output() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+            let (mut echo, _) = recorder(0);
+            echo.push(OutputStream::Stdout, b"secret output\n");
+            echo.push(OutputStream::Stdout, b"more output\n");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(
+            written
+                .matches(" [core] command output presentation suppressed err=BrokenPipe\n")
+                .count(),
+            1,
+            "{written}"
+        );
+        assert!(!written.contains("output\n"), "{written}");
     }
 
     #[test]
