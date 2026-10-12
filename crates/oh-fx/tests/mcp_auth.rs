@@ -1107,3 +1107,59 @@ fn mcp_logout_reports_a_store_failure_and_traces_it_without_secrets() {
     assert_secret_free(&home, &output);
     assert!(authority.revocations().is_empty());
 }
+
+#[test]
+fn mcp_list_reports_a_stored_grant_without_connecting() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let listed = |args: &[&str]| {
+        let output = home.command(args).output().expect("test step");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("test step")
+    };
+    let before = listed(&["mcp", "list"]);
+    assert!(
+        before.contains(
+            "fixture source=profile scope=profile policy=optional transport=http state=disconnected auth=none status=unavailable"
+        ),
+        "{before}"
+    );
+    let (output, _, _) = authorize(&home, "fixture");
+    assert!(output.status.success());
+    let requests = authority.paths().len();
+    let after = listed(&["mcp", "list"]);
+    assert!(
+        after.contains(
+            "fixture source=profile scope=profile policy=optional transport=http state=disconnected auth=authenticated status=unavailable"
+        ),
+        "{after}"
+    );
+    assert!(
+        after.contains(
+            "local source=profile scope=profile policy=optional transport=stdio state=disconnected auth=none status=unavailable"
+        ),
+        "{after}"
+    );
+    assert_eq!(authority.paths().len(), requests);
+    let connected = listed(&["mcp", "list", "--connect"]);
+    assert!(
+        connected.contains(
+            "fixture source=profile scope=profile policy=optional transport=http state=ready auth=authenticated status=ready"
+        ),
+        "{connected}"
+    );
+    for secret in [ACCESS, REFRESH] {
+        assert!(!before.contains(secret) && !after.contains(secret) && !connected.contains(secret));
+    }
+    fs::write(home.store(), "{").expect("test step");
+    let broken = home.command(&["mcp", "list"]).output().expect("test step");
+    assert_eq!(broken.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&broken.stderr),
+        "oh-fx mcp list failed: UnexpectedEndOfInput.\n"
+    );
+}

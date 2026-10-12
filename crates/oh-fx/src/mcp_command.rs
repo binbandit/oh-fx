@@ -5,12 +5,14 @@ use std::sync::Arc;
 
 use ofx_app::Profile;
 use ofx_mcp::{
-    AuthenticationOutcome, LogoutResult, McpError, McpRuntime, authentication_error_message,
+    AuthenticationOutcome, LogoutResult, McpError, McpRuntime, ShutdownMode, StartupPhase,
+    authentication_error_message,
 };
 use ofx_text::encode_terminal_safe;
 use tokio_util::sync::CancellationToken;
 
 const NAME_BYTES: usize = 160;
+const NO_SERVERS: &str = "No MCP servers configured.\n";
 
 pub(crate) fn auth(name: &str) -> ExitCode {
     crate::auto_upgrade::announce_and_schedule();
@@ -64,7 +66,43 @@ pub(crate) fn auth(name: &str) -> ExitCode {
     }
 }
 
+pub(crate) fn list(connect: bool) -> ExitCode {
+    crate::auto_upgrade::announce_and_schedule();
+    let runtime = match load_command_runtime() {
+        Ok(Some(runtime)) => runtime,
+        Ok(None) => return written(NO_SERVERS),
+        Err(error) => return failed("list", &error),
+    };
+    let Ok(tokio) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return failed("list", "RuntimeUnavailable");
+    };
+    let listing = tokio.block_on(async {
+        let listed = if connect {
+            runtime.connect(StartupPhase::All).await;
+            Ok(runtime.render_health())
+        } else {
+            runtime
+                .load_stored_credentials_for_health()
+                .await
+                .map(|()| runtime.render_health())
+        };
+        runtime.shutdown(ShutdownMode::Immediate).await;
+        listed
+    });
+    match listing {
+        Ok(listing) => written(&listing),
+        Err(error) => failed("list", &error.to_string()),
+    }
+}
+
 fn load_runtime() -> Result<Arc<McpRuntime>, String> {
+    load_command_runtime()?.ok_or_else(|| McpError::McpServerNotFound.to_string())
+}
+
+fn load_command_runtime() -> Result<Option<Arc<McpRuntime>>, String> {
     let profile = Profile::load().map_err(|error| error.to_string())?;
     let runtime = profile
         .mcp_command_runtime()
@@ -74,7 +112,14 @@ fn load_runtime() -> Result<Arc<McpRuntime>, String> {
         let _ = writeln!(stderr, "oh-fx: {diagnostic}");
     }
     drop(stderr);
-    runtime.ok_or_else(|| McpError::McpServerNotFound.to_string())
+    Ok(runtime)
+}
+
+fn written(text: &str) -> ExitCode {
+    match crate::write_stdout(text) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => crate::write_failed(),
+    }
 }
 
 pub(crate) fn logout(name: &str) -> ExitCode {

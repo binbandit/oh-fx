@@ -438,8 +438,6 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         &["add", "fixture", "node", "server.js"][..],
         &["add", "fixture", "node"],
         &["add", "--transport", "http", "remote", "https://x.test/mcp"],
-        &["list"],
-        &["list", "--connect"],
         &["path"],
         &["remove", "x"],
         &["trust", "approve-all"],
@@ -487,4 +485,15 @@ fn mcp_subcommands_validate_their_operand_shapes() {
         parse_mcp(&os(&["logout", "remote"])).ok(),
         Some(McpOperation::Logout("remote".to_owned()))
     );
+    assert_eq!(
+        parse_mcp(&os(&["list"])).ok(),
+        Some(McpOperation::List { connect: false })
+    );
+    assert_eq!(
+        parse_mcp(&os(&["list", "--connect"])).ok(),
+        Some(McpOperation::List { connect: true })
+    );
+    for args in [&["list", "--connect", "x"][..], &["list", "x"]] {
+        fails(parse_mcp(&os(args)), usage(TopLevelKind::Mcp));
+    }
 }
