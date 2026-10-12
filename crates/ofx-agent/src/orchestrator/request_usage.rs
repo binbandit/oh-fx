@@ -17,6 +17,9 @@ impl<'a> RequestUsage<'a> {
         let Some(log) = self.log else {
             return true;
         };
+        if let Some(begun) = &self.begun {
+            return begun.is_ok();
+        }
         let begun = log.begin_request();
         let admitted = begun.is_ok();
         self.begun = Some(begun);

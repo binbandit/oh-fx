@@ -109,6 +109,7 @@ pub(crate) struct GatewayAttempt<'a> {
     pub(crate) session_id: Option<&'a str>,
     pub(crate) model: &'a str,
     pub(crate) secrets: &'a [String],
+    pub(crate) admits: bool,
 }
 
 impl GatewayAttempt<'_> {
@@ -128,7 +129,9 @@ impl GatewayAttempt<'_> {
             "before_request_open",
             format_args!("{ATTEMPT} attempt_limit=1 retries_used=0 payload_bytes={bytes}"),
         );
-        sink.emit(StreamEvent::Admitted);
+        if self.admits {
+            sink.emit(StreamEvent::Admitted);
+        }
         let mut response = match send(builder, cancel).await {
             Ok(response) => response,
             Err(SendFailure::Cancelled) => return Err(ProviderError::cancelled()),

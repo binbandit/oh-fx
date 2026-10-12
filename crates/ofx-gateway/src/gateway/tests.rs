@@ -927,6 +927,13 @@ async fn a_rejected_login_token_is_refreshed_once_and_the_request_replayed() {
         .position(|event| *event == StreamEvent::RequestReplayed)
         .expect("a replayed request");
     assert!(refreshed < replayed);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| **event == StreamEvent::Admitted)
+            .count(),
+        1
+    );
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
@@ -960,7 +967,7 @@ async fn a_second_rejection_or_a_failed_refresh_ends_the_turn_with_the_rejection
         (vec![Ok(None)], 1, Vec::new()),
     ] {
         let server = FakeServer::start([
-            Reply::status(401, "{}"),
+            Reply::status(401, "login-old-token rejected"),
             Reply::status(401, "login-new-token rejected"),
         ]);
         let refresh = ScriptedRefresh::answering(answers);
@@ -968,7 +975,9 @@ async fn a_second_rejection_or_a_failed_refresh_ends_the_turn_with_the_rejection
         let (result, seen) = run(&gateway, None).await;
         let error = result.unwrap_err();
         assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
-        assert!(!format!("{error:?}").contains("login-new-token"));
+        let shown = format!("{error:?}");
+        assert!(!shown.contains("login-old-token"), "{shown}");
+        assert!(!shown.contains("login-new-token"), "{shown}");
         assert_eq!(refresh.forced(), [true]);
         assert_eq!(server.requests().len(), requests);
         for event in events {
@@ -990,4 +999,58 @@ async fn other_failures_and_keys_without_a_login_are_not_replayed() {
     assert_eq!(rejected.unwrap_err().kind, ProviderErrorKind::Unauthorized);
     assert!(!events.contains(&StreamEvent::RequestReplayed));
     assert_eq!(keyed_server.requests().len(), 1);
+}
+
+struct CancellingRefresh {
+    cancel: CancellationToken,
+}
+
+impl GatewayRefresh for CancellingRefresh {
+    fn refresh<'a>(
+        &'a self,
+        _: bool,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        self.cancel.cancel();
+        Box::pin(async { Ok(Some(fresh_login("login-new-token"))) })
+    }
+}
+
+#[tokio::test]
+async fn a_turn_cancelled_during_the_forced_refresh_ends_cancelled_without_a_replay() {
+    let server = FakeServer::start([Reply::status(401, "{}"), Reply::sse(&[STOP])]);
+    let cancel = CancellationToken::new();
+    let gateway = signed_in(
+        &server,
+        i64::MAX,
+        Arc::new(CancellingRefresh {
+            cancel: cancel.clone(),
+        }),
+    );
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let mut sink = |_: StreamEvent| {};
+    let error = gateway
+        .stream(&request, &mut sink, &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn the_permission_review_is_not_refreshed_or_replayed_after_a_rejection() {
+    let server = FakeServer::start([Reply::status(401, "{}"), Reply::sse(&[STOP])]);
+    let refresh = ScriptedRefresh::new(Ok(Some(fresh_login("login-new-token"))));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let body = gateway.review_body(&request).unwrap();
+    let error = gateway
+        .review(&request, body, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
+    assert_eq!(refresh.calls(), 0);
+    assert_eq!(server.requests().len(), 1);
 }

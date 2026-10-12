@@ -278,7 +278,7 @@ impl GatewayProvider {
     ) -> Result<Completion, ProviderError> {
         let mut discarded = |_: StreamEvent| {};
         let completion = self
-            .attempt(request, Some(body), &mut discarded, cancel)
+            .attempt(request, Some(body), &mut discarded, cancel, false)
             .await?;
         into_review_completion(completion, request.model, &self.masked())
     }
@@ -290,7 +290,7 @@ impl GatewayProvider {
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
-        let completion = self.attempt(request, body, sink, cancel).await?;
+        let completion = self.attempt(request, body, sink, cancel, true).await?;
         into_completion(completion, request.model, &self.masked())
     }
 
@@ -300,6 +300,7 @@ impl GatewayProvider {
         body: Option<String>,
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
+        replayable: bool,
     ) -> Result<GatewayCompletion, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
@@ -312,18 +313,23 @@ impl GatewayProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::cancelled());
         }
-        let replay = self.refresh.as_ref().map(|_| payload.clone());
-        match (self.send(request, payload, sink, cancel).await, replay) {
-            (Err(error), Some(payload)) if rejected(&error) => {
-                if !self.replace_access(true, sink, cancel).await {
-                    return Err(error);
-                }
-                let replayed = self.send(request, payload, sink, cancel).await;
-                sink.emit(StreamEvent::RequestReplayed);
-                replayed
-            }
-            (sent, _) => sent,
+        let error = match self.send(request, payload, sink, cancel, true).await {
+            Err(error) if replayable && self.refresh.is_some() && rejected(&error) => error,
+            sent => return sent,
+        };
+        let renewed = self.replace_access(true, sink, cancel).await;
+        if cancel.is_cancelled() {
+            return Err(ProviderError::cancelled());
         }
+        if !renewed {
+            return Err(error);
+        }
+        let Ok(payload) = self.build(request) else {
+            return Err(error);
+        };
+        let replayed = self.send(request, payload, sink, cancel, false).await;
+        sink.emit(StreamEvent::RequestReplayed);
+        replayed
     }
 
     async fn send(
@@ -332,6 +338,7 @@ impl GatewayProvider {
         payload: String,
         sink: &mut dyn StreamSink,
         cancel: &CancellationToken,
+        admits: bool,
     ) -> Result<GatewayCompletion, ProviderError> {
         let (secret, team) = {
             let current = lock(&self.current);
@@ -346,6 +353,7 @@ impl GatewayProvider {
             session_id: request.session_id,
             model: request.model,
             secrets: &secrets,
+            admits,
         };
         attempt.stream(payload, sink, cancel).await
     }
