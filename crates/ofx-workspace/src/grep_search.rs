@@ -159,6 +159,8 @@ enum GitGrepError {
     Unsupported,
     #[error("GitGrepFailed")]
     Failed,
+    #[error(transparent)]
+    Read(PathError),
 }
 
 trait GrepSink {
@@ -466,7 +468,26 @@ impl MatchCollector {
         }
     }
 
-    fn parse_git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path, raw: &[u8]) {
+    fn parse_git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+        raw: &[u8],
+    ) -> Result<(), PathError> {
+        let kept = self.matches.len();
+        self.collect_git_grep(query, absolute_root, raw)
+            .inspect_err(|_| {
+                self.matches.truncate(kept);
+                self.truncated_reason = None;
+            })
+    }
+
+    fn collect_git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+        raw: &[u8],
+    ) -> Result<(), PathError> {
         let mut validated_files: HashMap<&[u8], CandidateFile> = HashMap::new();
         let mut skipped_paths: HashSet<&[u8]> = HashSet::new();
         let mut scratch = Vec::new();
@@ -510,7 +531,8 @@ impl MatchCollector {
                     absolute_root,
                     path,
                     &mut scratch,
-                ) else {
+                )?
+                else {
                     skipped_paths.insert(path);
                     continue;
                 };
@@ -524,6 +546,7 @@ impl MatchCollector {
                 line: String::from_utf8_lossy(line).into_owned(),
             });
         }
+        Ok(())
     }
 }
 
@@ -536,7 +559,8 @@ impl GrepSink for MatchCollector {
         absolute_root: &Path,
     ) -> Result<bool, GitGrepError> {
         let raw = run_git_grep(query, absolute_root, GitGrepOutput::Lines)?;
-        self.parse_git_grep(query, absolute_root, &raw);
+        self.parse_git_grep(query, absolute_root, &raw)
+            .map_err(GitGrepError::Read)?;
         Ok(!raw.is_empty())
     }
 
@@ -595,7 +619,23 @@ impl LineCounter {
         }
     }
 
-    fn parse_git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path, raw: &[u8]) {
+    fn parse_git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+        raw: &[u8],
+    ) -> Result<(), PathError> {
+        let kept = (self.matching_lines, self.matching_files);
+        self.count_git_grep(query, absolute_root, raw)
+            .inspect_err(|_| (self.matching_lines, self.matching_files) = kept)
+    }
+
+    fn count_git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+        raw: &[u8],
+    ) -> Result<(), PathError> {
         let mut skipped_paths: HashSet<&[u8]> = HashSet::new();
         let mut scratch = Vec::new();
 
@@ -619,7 +659,7 @@ impl LineCounter {
             if line_count == 0 {
                 continue;
             }
-            if validate_matched_git_file(query.workspace_root, absolute_root, path, &mut scratch)
+            if validate_matched_git_file(query.workspace_root, absolute_root, path, &mut scratch)?
                 .is_none()
             {
                 skipped_paths.insert(path);
@@ -627,6 +667,7 @@ impl LineCounter {
             }
             self.add_file(line_count);
         }
+        Ok(())
     }
 }
 
@@ -639,7 +680,8 @@ impl GrepSink for LineCounter {
         absolute_root: &Path,
     ) -> Result<bool, GitGrepError> {
         let raw = run_git_grep(query, absolute_root, GitGrepOutput::Counts)?;
-        self.parse_git_grep(query, absolute_root, &raw);
+        self.parse_git_grep(query, absolute_root, &raw)
+            .map_err(GitGrepError::Read)?;
         Ok(!raw.is_empty())
     }
 
@@ -723,16 +765,18 @@ fn validate_matched_git_file(
     absolute_root: &Path,
     path: &[u8],
     scratch: &mut Vec<u8>,
-) -> Option<CandidateFile> {
+) -> Result<Option<CandidateFile>, PathError> {
     let display_path = absolute_root.join(OsStr::from_bytes(path));
-    let (file, metadata) = locate_file(workspace_root, absolute_root, display_path)?;
+    let Some((file, metadata)) = locate_file(workspace_root, absolute_root, display_path) else {
+        return Ok(None);
+    };
     if metadata.len() > FILE_BYTE_CAP as u64 {
         trace_oversized(&file.display_path);
-        return None;
+        return Ok(None);
     }
-    let read = read_text(&file.read_path, scratch).ok()?;
+    let read = read_text(&file.read_path, scratch)?;
     trace_unread(&file.display_path, read, scratch);
-    (read == TextRead::Text).then_some(file)
+    Ok((read == TextRead::Text).then_some(file))
 }
 
 fn trace_unread(display_path: &Path, read: TextRead, content: &[u8]) {
@@ -1423,6 +1467,32 @@ mod tests {
             assert_eq!(written.matches(&line).count(), 2, "{line}\n{written}");
         }
         assert!(!written.contains("needle"), "{written}");
+    }
+
+    #[test]
+    fn a_matched_file_that_cannot_be_read_fails_the_git_grep_pass() {
+        let workspace = Workspace::new();
+        workspace.write("open.txt", "needle\n");
+        let locked = workspace.write("locked.txt", "needle\n");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let query = query(&workspace.root, None);
+        let mut collector = MatchCollector::default();
+        assert_eq!(
+            collector.parse_git_grep(
+                &query,
+                &workspace.root,
+                b"open.txt\x001\x00needle\nlocked.txt\x001\x00needle\n"
+            ),
+            Err(PathError::AccessDenied)
+        );
+        assert!(collector.matches.is_empty());
+        let mut counter = LineCounter::default();
+        assert_eq!(
+            counter.parse_git_grep(&query, &workspace.root, b"open.txt\x001\nlocked.txt\x001\n"),
+            Err(PathError::AccessDenied)
+        );
+        assert_eq!((counter.matching_lines, counter.matching_files), (0, 0));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]
