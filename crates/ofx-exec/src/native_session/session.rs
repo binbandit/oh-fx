@@ -531,10 +531,22 @@ impl Session {
     fn append_output(&self, bytes: &[u8]) {
         let mut state = self.lock();
         state.unread.append(bytes);
-        if let Some(grid) = state.grid.as_mut()
-            && grid.feed(bytes).is_err()
-        {
+        let Some(grid) = state.grid.as_mut() else {
+            return;
+        };
+        let Ok(replies) = grid.feed_live(bytes) else {
             state.grid = None;
+            return;
+        };
+        if state.close_committed {
+            return;
+        }
+        if let Some(master) = &state.master {
+            for reply in replies {
+                if !write_reply(master, &reply) {
+                    return;
+                }
+            }
         }
     }
 
@@ -800,6 +812,18 @@ async fn sleep_until_or_never(deadline: Option<Instant>) {
         Some(deadline) => sleep_until(deadline).await,
         None => future::pending().await,
     }
+}
+
+fn write_reply(master: &OwnedFd, mut reply: &[u8]) -> bool {
+    while !reply.is_empty() {
+        match rustix::io::write(master, reply) {
+            Ok(0) => return false,
+            Ok(count) => reply = &reply[count..],
+            Err(Errno::INTR) => {}
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 fn input_open(state: &State) -> Result<(), StructuredErrorCode> {

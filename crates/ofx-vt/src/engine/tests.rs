@@ -649,3 +649,54 @@ fn screen_projection_collapses_blank_repaint_rows() {
         "\u{4e2d}".as_bytes()
     );
 }
+
+#[test]
+fn fragmented_live_queries_reply_in_order_and_replays_reply_nothing() {
+    let mut grid = Grid::new(80, 24).unwrap();
+    grid.feed(b"\x1b[3;7H").unwrap();
+    assert!(grid.feed_live(b"\x1b[6").unwrap().is_empty());
+    assert_eq!(
+        grid.feed_live(b"n\x1b[18t").unwrap(),
+        [b"\x1b[3;7R".to_vec(), b"\x1b[8;24;80t".to_vec()]
+    );
+    let mut replayed = Grid::new(80, 24).unwrap();
+    replayed.feed(b"\x1b[6n\x1b[18t\x1b[c").unwrap();
+    assert!(replayed.feed_live(b"").unwrap().is_empty());
+}
+
+#[test]
+fn live_queries_answer_as_upstreams_engine_does() {
+    let mut grid = Grid::new(10, 4).unwrap();
+    let reply = |grid: &mut Grid, query: &[u8]| grid.feed_live(query).unwrap().concat();
+    assert_eq!(reply(&mut grid, b"\x1b[5n"), b"\x1b[0n");
+    assert_eq!(reply(&mut grid, b"\x1b[?5n"), b"");
+    assert_eq!(reply(&mut grid, b"\x1b[2;3H\x1b[?6n"), b"\x1b[?2;3R");
+    assert_eq!(reply(&mut grid, b"\x1b[c"), b"\x1b[?1;2c");
+    assert_eq!(reply(&mut grid, b"\x1b[>c"), b"\x1b[>0;0;0c");
+    assert_eq!(reply(&mut grid, b"\x1b[=c"), b"");
+    assert_eq!(
+        reply(&mut grid, b"\x1b[14t\x1b[16t\x1b[19t\x1b[20t"),
+        b"\x1b[4;0;0t\x1b[6;0;0t\x1b[9;4;10t"
+    );
+    assert_eq!(
+        reply(&mut grid, b"\x1b[2;3r\x1b[?6h\x1b[2;1H\x1b[6n"),
+        b"\x1b[2;1R"
+    );
+    assert_eq!(reply(&mut grid, b"\x1bP$qr\x1b\\"), b"\x1bP1$r2;3r\x1b\\");
+    assert_eq!(reply(&mut grid, b"\x1bP$qm\x1b\\"), b"\x1bP1$r0m\x1b\\");
+    assert_eq!(reply(&mut grid, b"\x1bP$q\"p\x1b\\"), b"\x1bP0$r\x1b\\");
+    assert_eq!(reply(&mut grid, b"\x1bP1;2|AB\x1b\\"), b"");
+    grid.feed(b"\x1bP$q").unwrap();
+    assert_eq!(reply(&mut grid, b"m\x1b\\"), b"\x1bP1$r0m\x1b\\");
+}
+
+#[test]
+fn live_replies_stay_within_their_bounds() {
+    let mut grid = Grid::new(10, 2).unwrap();
+    assert_eq!(
+        grid.feed_live(&b"\x1b[5n".repeat(17)),
+        Err(GridError::ReplyCapacityExceeded)
+    );
+    let mut fitting = Grid::new(10, 2).unwrap();
+    assert_eq!(fitting.feed_live(&b"\x1b[5n".repeat(16)).unwrap().len(), 16);
+}

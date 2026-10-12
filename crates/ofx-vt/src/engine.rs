@@ -18,6 +18,9 @@ const REPLACEMENT_CODEPOINT: u32 = 0xfffd;
 const ESC: u8 = 0x1b;
 const CANCEL: u8 = 0x18;
 const SUBSTITUTE: u8 = 0x1a;
+const MAX_REPLIES: usize = 16;
+const MAX_REPLY_BYTES: usize = 256;
+const MAX_REPLY_TOTAL_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum GridError {
@@ -35,6 +38,14 @@ pub enum GridError {
     ControlStringTooLarge,
     #[error("CombiningPoolCapacityExceeded")]
     CombiningPoolCapacityExceeded,
+    #[error("ReplyEffectCapacityExceeded")]
+    ReplyCapacityExceeded,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Replies {
+    items: Vec<Vec<u8>>,
+    bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +165,8 @@ pub struct Grid {
     csi: Csi,
     osc: ControlString,
     dcs: ControlString,
+    dcs_payload: Vec<u8>,
+    replies: Option<Replies>,
     utf8_buffer: [u8; 4],
     utf8_len: usize,
     utf8_expected: usize,
@@ -184,6 +197,8 @@ impl Grid {
             csi: Csi::default(),
             osc: ControlString::default(),
             dcs: ControlString::default(),
+            dcs_payload: Vec::new(),
+            replies: None,
             utf8_buffer: [0; 4],
             utf8_len: 0,
             utf8_expected: 0,
@@ -261,6 +276,13 @@ impl Grid {
             saved.modes.origin = false;
         }
         Ok(())
+    }
+
+    pub fn feed_live(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, GridError> {
+        self.replies = Some(Replies::default());
+        let fed = self.feed(bytes);
+        let replies = self.replies.take().unwrap_or_default();
+        fed.map(|()| replies.items)
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), GridError> {
@@ -445,13 +467,17 @@ impl Grid {
                     if byte == ESC {
                         self.dcs.saw_esc = true;
                     } else if self.dcs.saw_esc && byte == b'\\' {
+                        let dispatched = self.dispatch_dcs();
                         self.cancel_control_sequence();
+                        dispatched?;
                     } else {
                         if self.dcs.saw_esc {
                             self.dcs.push()?;
+                            self.dcs_payload.push(ESC);
                             self.dcs.saw_esc = false;
                         }
                         self.dcs.push()?;
+                        self.dcs_payload.push(byte);
                     }
                     index += 1;
                 }
@@ -501,9 +527,9 @@ impl Grid {
         if self.csi.has_digit || self.csi.count > 0 {
             self.csi.count += 1;
         }
-        self.dispatch_csi(byte);
+        let dispatched = self.dispatch_csi(byte);
         self.state = ParserState::Normal;
-        Ok(true)
+        dispatched.map(|()| true)
     }
 
     fn dispatch_escape(&mut self, byte: u8) {
@@ -519,6 +545,7 @@ impl Grid {
             }
             b'P' => {
                 self.dcs = ControlString::default();
+                self.dcs_payload.clear();
                 self.state = ParserState::Dcs;
             }
             b'7' => self.save_cursor(),
@@ -547,6 +574,74 @@ impl Grid {
         self.csi = Csi::default();
         self.osc = ControlString::default();
         self.dcs = ControlString::default();
+        self.dcs_payload.clear();
+    }
+
+    fn reply(&mut self, bytes: &[u8]) -> Result<(), GridError> {
+        let Some(replies) = self.replies.as_mut() else {
+            return Ok(());
+        };
+        if bytes.is_empty()
+            || bytes.len() > MAX_REPLY_BYTES
+            || replies.items.len() >= MAX_REPLIES
+            || replies.bytes > MAX_REPLY_TOTAL_BYTES - bytes.len()
+        {
+            return Err(GridError::ReplyCapacityExceeded);
+        }
+        replies.items.push(bytes.to_vec());
+        replies.bytes += bytes.len();
+        Ok(())
+    }
+
+    fn dispatch_dcs(&mut self) -> Result<(), GridError> {
+        let Some(query) = self.dcs_payload.strip_prefix(b"$q") else {
+            return Ok(());
+        };
+        let reply = match query {
+            b"m" => b"\x1bP1$r0m\x1b\\".to_vec(),
+            b"r" => {
+                format!("\x1bP1$r{};{}r\x1b\\", self.scroll_top, self.scroll_bottom).into_bytes()
+            }
+            _ => b"\x1bP0$r\x1b\\".to_vec(),
+        };
+        self.reply(&reply)
+    }
+
+    fn device_status_report(&mut self) -> Result<(), GridError> {
+        let report = self.raw_param(0, 0);
+        if report == 5 && self.csi.private == 0 {
+            return self.reply(b"\x1b[0n");
+        }
+        if report != 6 {
+            return Ok(());
+        }
+        let row = if self.modes.origin {
+            self.cursor.row - self.scroll_top + 1
+        } else {
+            self.cursor.row
+        };
+        let marker = if self.csi.private == b'?' { "?" } else { "" };
+        let reply = format!("\x1b[{marker}{row};{}R", self.cursor.col);
+        self.reply(reply.as_bytes())
+    }
+
+    fn device_attributes(&mut self) -> Result<(), GridError> {
+        match self.csi.private {
+            b'>' => self.reply(b"\x1b[>0;0;0c"),
+            0 => self.reply(b"\x1b[?1;2c"),
+            _ => Ok(()),
+        }
+    }
+
+    fn window_query(&mut self) -> Result<(), GridError> {
+        let reply = match self.raw_param(0, 0) {
+            14 => "\x1b[4;0;0t".to_owned(),
+            16 => "\x1b[6;0;0t".to_owned(),
+            18 => format!("\x1b[8;{};{}t", self.rows, self.cols),
+            19 => format!("\x1b[9;{};{}t", self.rows, self.cols),
+            _ => return Ok(()),
+        };
+        self.reply(reply.as_bytes())
     }
 
     fn complete_pending_utf8(&mut self, bytes: &[u8]) -> Result<usize, GridError> {
@@ -783,8 +878,11 @@ impl Grid {
         }
     }
 
-    fn dispatch_csi(&mut self, final_byte: u8) {
+    fn dispatch_csi(&mut self, final_byte: u8) -> Result<(), GridError> {
         match final_byte {
+            b'n' => return self.device_status_report(),
+            b'c' => return self.device_attributes(),
+            b't' => return self.window_query(),
             b'H' | b'f' => self.position_cursor(self.param(0, 1), self.param(1, 1)),
             b'A' => {
                 self.cursor.row = clamp_sub(self.cursor.row, self.param(0, 1), self.cursor_top());
@@ -850,6 +948,7 @@ impl Grid {
             b'u' if self.csi.private == 0 => self.restore_cursor(),
             _ => {}
         }
+        Ok(())
     }
 
     fn cursor_top(&self) -> u16 {

@@ -53,6 +53,10 @@ const TESTS: &[(&str, fn())] = &[
         a_started_terminal_takes_input_until_it_exits,
     ),
     (
+        "a_terminal_answers_the_commands_queries",
+        a_terminal_answers_the_commands_queries,
+    ),
+    (
         "a_timeout_kills_the_command_and_marks_it_timed_out",
         a_timeout_kills_the_command_and_marks_it_timed_out,
     ),
@@ -655,6 +659,19 @@ fn a_started_terminal_takes_input_until_it_exits() {
         failure_code(fixture.terminals.write(STRANGER, &started.id, "x")),
         StructuredErrorCode::AuthorityDenied
     );
+}
+
+fn a_terminal_answers_the_commands_queries() {
+    let fixture = Fixture::new();
+    let started = fixture.start(
+        "stty raw -echo; printf '\\033[3;7H\\033[6n'; IFS= read -r -t 5 -d R position; \
+         printf '\\033[18t'; IFS= read -r -t 5 -d t size; stty sane; \
+         printf '\\nposition=[%s] size=[%s]\\n' \"${position#?[}\" \"${size#?[}\"",
+        ReturnCondition::Exit,
+    );
+    assert_eq!(started.outcome, ReturnOutcome::Exited(0));
+    let text = fixture.read_text(&started.id);
+    assert!(text.contains("position=[3;7] size=[8;24;80]"), "{text:?}");
 }
 
 fn a_timeout_kills_the_command_and_marks_it_timed_out() {
