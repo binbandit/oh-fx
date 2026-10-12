@@ -126,6 +126,11 @@ struct Pending {
     task: JoinHandle<()>,
 }
 
+struct MenuOperation {
+    generation: u64,
+    task: JoinHandle<()>,
+}
+
 enum AuthenticationRefusal {
     Busy,
     Invalid(McpError),
@@ -143,6 +148,7 @@ pub(crate) struct McpHost {
     emit: Emit,
     pending: Mutex<Option<Pending>>,
     authentication: Mutex<Option<PendingAuthentication>>,
+    menu_operation: Mutex<Option<MenuOperation>>,
 }
 
 impl McpHost {
@@ -153,6 +159,7 @@ impl McpHost {
             emit,
             pending: Mutex::new(None),
             authentication: Mutex::new(None),
+            menu_operation: Mutex::new(None),
         }
     }
 
@@ -390,6 +397,7 @@ impl McpHost {
 impl Drop for McpHost {
     fn drop(&mut self) {
         self.discard_authentication("shutdown");
+        self.discard_menu_operation("shutdown");
         self.cancel_pending();
     }
 }

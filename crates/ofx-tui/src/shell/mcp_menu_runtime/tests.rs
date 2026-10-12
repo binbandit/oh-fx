@@ -1,14 +1,14 @@
 use ofx_contract::{
-    McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication,
-    McpMenuConnection, McpMenuCounts, McpMenuOutcome, McpMenuRequest, McpMenuServer,
-    McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport, McpMenuTrust,
-    UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
+    McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication, McpMenuCancel,
+    McpMenuCatalog, McpMenuCatalogRequest, McpMenuConnection, McpMenuCounts, McpMenuOutcome,
+    McpMenuRequest, McpMenuResource, McpMenuServer, McpMenuSettled, McpMenuSnapshot, McpMenuSource,
+    McpMenuStatus, McpMenuTransport, McpMenuTrust, UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
 };
 
-use super::super::mcp_menu::{Action, Event, LoadState, Screen};
+use super::super::mcp_menu::{Action, Event, LoadState, Screen, Section};
 use crate::shell::test_shell::TestShell;
 
-const ROOT_HINT: &str = "↑↓ move  enter inspect  a add  r reload  c help  esc close";
+const ROOT_HINT: &str = "↑↓ move  tab section  enter inspect  a add  r reload  c help  esc close";
 
 fn server(name: &str, transport: McpMenuTransport, status: McpMenuStatus) -> McpMenuServer {
     McpMenuServer {
@@ -372,6 +372,10 @@ fn a_reopened_menu_ignores_what_the_closed_one_started() {
         test.sent(),
         [
             menu(McpMenuRequest::Reload { generation: 1 }),
+            menu(McpMenuRequest::Cancel {
+                generation: 1,
+                reason: McpMenuCancel::Closed,
+            }),
             menu(McpMenuRequest::Reload { generation: 2 }),
         ]
     );
@@ -810,4 +814,130 @@ fn a_confirmation_stays_bound_to_the_server_it_was_opened_for() {
         press(&mut test, b"\r");
         assert_eq!(requests(&test), [menu(request)]);
     }
+}
+
+fn load(generation: u64, catalog: McpMenuCatalogRequest) -> UiCommand {
+    menu(McpMenuRequest::LoadCatalog {
+        generation,
+        catalog,
+    })
+}
+
+#[test]
+fn tab_and_the_arrows_walk_the_catalog_tabs_of_the_selected_server() {
+    let mut test = opened(&["docs", "remote"]);
+    press(&mut test, b"\x1b[B");
+    press(&mut test, b"\t");
+    press(&mut test, b"\x1b[C");
+    press(&mut test, b"\x1b[C");
+    press(&mut test, b"\x1b[D");
+    assert_eq!(
+        requests(&test),
+        [
+            load(1, McpMenuCatalogRequest::Tools),
+            load(2, McpMenuCatalogRequest::Resources("remote".to_owned())),
+            load(3, McpMenuCatalogRequest::Prompts("remote".to_owned())),
+            load(4, McpMenuCatalogRequest::Resources("remote".to_owned())),
+        ]
+    );
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 3,
+        catalog: McpMenuCatalog::Prompts(Vec::new()),
+    });
+    assert_eq!(state(&test).pending_generation, Some(4));
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 4,
+        catalog: McpMenuCatalog::Resources(vec![McpMenuResource {
+            uri: "custom://alpha".to_owned(),
+            name: "alpha".to_owned(),
+            title: None,
+            description: None,
+            template: false,
+        }]),
+    });
+    let screen = test.screen();
+    assert!(
+        screen.contains("MCP 2  Servers  Tools  [Resources]  Prompts"),
+        "{screen}"
+    );
+    assert!(screen.contains("  Server              remote"), "{screen}");
+    assert!(screen.contains("custom://alpha"), "{screen}");
+    assert!(
+        screen.contains("tab section     / filter     esc back"),
+        "{screen}"
+    );
+    press(&mut test, b"arpz");
+    assert_eq!(requests(&test).len(), 4);
+    assert_eq!(state(&test).screen, Screen::Browse);
+    press(&mut test, b"\x1b[D\x1b[D");
+    let screen = test.screen();
+    assert!(screen.contains(ROOT_HINT), "{screen}");
+    assert_eq!(state(&test).selected_index, 1);
+}
+
+#[test]
+fn the_loading_row_waits_for_its_grace_and_a_menu_without_servers_loads_nothing() {
+    let mut test = opened(&["docs"]);
+    let screen = press(&mut test, b"\t");
+    assert!(!screen.contains("Loading MCP catalog"), "{screen}");
+    test.advance(199);
+    refresh_now(&mut test);
+    assert!(!test.screen().contains("Loading MCP catalog"));
+    test.advance(1);
+    refresh_now(&mut test);
+    assert!(test.screen().contains("  Loading MCP catalog…"));
+    let mut empty = opened(&[]);
+    press(&mut empty, b"\t\t");
+    assert_eq!(requests(&empty), [load(1, McpMenuCatalogRequest::Tools)]);
+    let screen = empty.screen();
+    assert!(screen.contains("  No MCP resources available."), "{screen}");
+    assert_eq!(
+        empty.shell.mcp_menu.as_ref().unwrap().state.load_state,
+        LoadState::Ready
+    );
+}
+
+#[test]
+fn the_filter_takes_typed_keys_until_escape_clears_it() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: McpMenuCatalog::Tools(vec![
+            "mcp_docs_echo".to_owned(),
+            "mcp_docs_read".to_owned(),
+        ]),
+    });
+    let screen = press(&mut test, b"/recz\x7f");
+    assert!(screen.contains("  Filter: rec"), "{screen}");
+    assert!(screen.contains("  No matching MCP items."), "{screen}");
+    let screen = press(&mut test, b"\x7f\x7fea");
+    assert!(screen.contains("  Filter: rea"), "{screen}");
+    assert!(screen.contains("mcp_docs_read"), "{screen}");
+    assert!(!screen.contains("mcp_docs_echo"), "{screen}");
+    assert_eq!(requests(&test).len(), 1);
+    let screen = escape(&mut test);
+    assert!(!screen.contains("Filter:"), "{screen}");
+    assert!(screen.contains("mcp_docs_echo"), "{screen}");
+    assert!(test.shell.mcp_menu.is_some());
+    escape(&mut test);
+    assert!(test.shell.mcp_menu.is_none());
+}
+
+#[test]
+fn a_failed_catalog_reports_in_the_feedback_row() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t\t");
+    test.deliver(outcome(
+        2,
+        McpMenuOutcome::Failed,
+        "MCP catalog failed: McpRequestTimedOut",
+    ));
+    let screen = test.screen();
+    assert!(
+        screen.contains("  MCP catalog failed: McpRequestTimedOut"),
+        "{screen}"
+    );
+    assert_eq!(state(&test).load_state, LoadState::Failed);
+    assert_eq!(state(&test).section, Section::Resources);
 }

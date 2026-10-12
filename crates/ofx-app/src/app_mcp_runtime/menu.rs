@@ -36,6 +36,13 @@ impl McpHost {
             McpMenuRequest::Trust { generation, change } => {
                 self.trust_from_menu(generation, change);
             }
+            McpMenuRequest::LoadCatalog {
+                generation,
+                catalog,
+            } => self.load_menu_catalog(generation, catalog),
+            McpMenuRequest::Cancel { generation, reason } => {
+                self.cancel_menu_operation(generation, reason);
+            }
         }
     }
 
@@ -180,6 +187,7 @@ fn authentication_feedback(
     }
 }
 
+mod catalogs;
 mod changes;
 
 #[cfg(test)]

@@ -183,7 +183,7 @@ fn back_leaves_a_screen_and_closes_from_the_server_list() {
     state.apply(Event::ShowInfo);
     assert_eq!(state.screen, Screen::Info);
     state.apply(Event::RequestAction(Action::Refresh));
-    assert_eq!(state.apply(Event::Back), None);
+    assert_eq!(state.apply(Event::Back), Some(Effect::Cancel(1)));
     assert_eq!(state.screen, Screen::Browse);
     assert_eq!(state.load_state, LoadState::Cancelled);
     assert_eq!(state.pending_generation, None);
@@ -301,4 +301,115 @@ fn returning_to_servers_keeps_the_selected_server_and_drops_the_confirmation() {
     assert_eq!(state.selected_index, 1);
     assert_eq!(state.window_start, 0);
     assert_eq!(state.confirmation_action, None);
+}
+
+#[test]
+fn a_section_change_describes_one_generated_catalog_load() {
+    let mut state = McpMenuState::open(1);
+    assert_eq!(
+        state.apply(Event::CycleSection(1)),
+        Some(Effect::LoadCatalog {
+            generation: 1,
+            section: Section::Tools,
+        })
+    );
+    assert_eq!(state.section, Section::Tools);
+    assert_eq!(state.load_state, LoadState::Loading);
+    assert_eq!(state.pending_generation, Some(1));
+    assert_eq!(
+        state.apply(Event::CycleSection(-1)),
+        Some(Effect::Cancel(1))
+    );
+    assert_eq!(state.section, Section::Servers);
+    assert_eq!(state.load_state, LoadState::Ready);
+    assert_eq!(
+        state.apply(Event::CycleSection(-1)),
+        Some(Effect::LoadCatalog {
+            generation: 2,
+            section: Section::Prompts,
+        })
+    );
+}
+
+#[test]
+fn a_catalog_settles_only_on_its_own_generation() {
+    let mut state = McpMenuState::open(1);
+    state.apply(Event::CycleSection(1));
+    let loading = state.clone();
+    state.apply(Event::CatalogLoaded {
+        generation: 99,
+        item_count: 3,
+    });
+    assert_eq!(state, loading);
+    state.selected_index = 7;
+    state.apply(Event::CatalogLoaded {
+        generation: 1,
+        item_count: 3,
+    });
+    assert_eq!(state.load_state, LoadState::Ready);
+    assert_eq!(state.screen, Screen::Browse);
+    assert_eq!(state.pending_generation, None);
+    assert_eq!(state.selected_index, 2);
+}
+
+#[test]
+fn catalog_sections_keep_the_selected_server_and_its_screens() {
+    let mut state = McpMenuState::open(3);
+    state.apply(moved(1, 3, 3));
+    state.apply(Event::CycleSection(1));
+    state.apply(moved(1, 5, 5));
+    assert_eq!(state.selected_server_index, 1);
+    state.apply(Event::ShowDetails);
+    state.apply(Event::ShowInfo);
+    assert_eq!(state.screen, Screen::Browse);
+    state.apply(Event::CycleSection(-1));
+    assert_eq!(state.section, Section::Servers);
+    assert_eq!(state.selected_index, 1);
+}
+
+#[test]
+fn filtering_is_bounded_printable_and_resets_navigation() {
+    let mut state = McpMenuState::open(1);
+    state.apply(Event::BeginFilter);
+    assert!(!state.filter_active);
+    state.apply(Event::CycleSection(1));
+    state.apply(Event::BeginFilter);
+    for byte in b"query\x01\x7f" {
+        state.apply(Event::AppendFilterByte(*byte));
+    }
+    assert_eq!(state.query, "query");
+    state.selected_index = 4;
+    state.window_start = 3;
+    state.apply(Event::DeleteFilterByte);
+    assert_eq!(state.query, "quer");
+    assert_eq!((state.selected_index, state.window_start), (0, 0));
+    for _ in 0..200 {
+        state.apply(Event::AppendFilterByte(b'x'));
+    }
+    assert_eq!(state.query.len(), 128);
+    state.apply(Event::ClearFilterText);
+    assert!(state.query.is_empty());
+    assert!(state.filter_active);
+    state.apply(Event::AppendFilterByte(b'a'));
+    state.apply(Event::ClearFilter);
+    assert!(!state.filter_active);
+    assert!(state.query.is_empty());
+}
+
+#[test]
+fn a_server_leaving_during_a_catalog_returns_to_the_servers() {
+    let mut state = McpMenuState::open(2);
+    state.apply(moved(1, 2, 2));
+    state.apply(Event::CycleSection(1));
+    state.apply(Event::BeginFilter);
+    state.apply(Event::AppendFilterByte(b'q'));
+    state.selected_server_index = 0;
+    state.selected_server_removed();
+    assert_eq!(state.section, Section::Servers);
+    assert_eq!(state.screen, Screen::Browse);
+    assert_eq!(state.pending_generation, None);
+    assert_eq!(state.load_state, LoadState::Ready);
+    assert!(!state.filter_active);
+    assert!(state.query.is_empty());
+    assert_eq!(state.selected_index, 0);
 }

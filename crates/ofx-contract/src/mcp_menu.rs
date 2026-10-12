@@ -103,6 +103,50 @@ pub enum McpMenuRequest {
         generation: u64,
         change: McpMenuTrust,
     },
+    LoadCatalog {
+        generation: u64,
+        catalog: McpMenuCatalogRequest,
+    },
+    Cancel {
+        generation: u64,
+        reason: McpMenuCancel,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpMenuCatalogRequest {
+    Tools,
+    Resources(String),
+    Prompts(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpMenuCancel {
+    Back,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpMenuCatalog {
+    Tools(Vec<String>),
+    Resources(Vec<McpMenuResource>),
+    Prompts(Vec<McpMenuPrompt>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuResource {
+    pub uri: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub template: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuPrompt {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1169,45 +1169,11 @@ impl Presenter {
             UiEvent::AssistantBoundary { .. } => self.assistant_boundary(),
             UiEvent::Operational { text, .. } => self.write_status(StatusBlock::Operational, &text),
             UiEvent::Recovery { status, .. } => self.recover(status),
-            UiEvent::ToolProvisional {
-                call_id,
-                tool_name,
-                action_label,
-                ..
-            } => self.tool_provisional(call_id, &tool_name, &action_label),
-            UiEvent::ToolStarted {
-                call_id,
-                tool_name,
-                description,
-                ..
-            } => self.tool_started_once(call_id, &tool_name, &description),
+            event @ (UiEvent::ToolProvisional { .. }
+            | UiEvent::ToolStarted { .. }
+            | UiEvent::ToolFinished { .. }
+            | UiEvent::ToolRejected { .. }) => self.tool_event(event),
             UiEvent::ApprovalRequested { request, .. } => self.ask_permission(&request),
-            UiEvent::ToolFinished {
-                call_id,
-                tool_name,
-                arguments,
-                status,
-                content,
-                command_result,
-                ..
-            } => self.tool_finished(
-                &call_id,
-                ToolRecord::finished(
-                    tool_name,
-                    &arguments,
-                    status,
-                    &content,
-                    command_result.as_deref(),
-                ),
-            ),
-            UiEvent::ToolRejected {
-                call_id,
-                tool_name,
-                arguments,
-                reason,
-                description,
-                ..
-            } => self.tool_rejected(&call_id, tool_name, &arguments, reason, description),
             UiEvent::ContextNotice { text, .. } => return self.context_notice(&text),
             UiEvent::SystemNotice { text } => self.system_notice(&text),
             UiEvent::TurnFinished { .. } => {
@@ -1245,6 +1211,7 @@ impl Presenter {
             | UiEvent::McpMenuOpened { .. }
             | UiEvent::McpMenuRefreshed { .. }
             | UiEvent::McpMenuSettled { .. }
+            | UiEvent::McpMenuLoaded { .. }
             | UiEvent::SettingsChanged { .. }
             | UiEvent::PromptHistoryChanged { .. }
             | UiEvent::HelpRequested
@@ -1276,6 +1243,50 @@ impl Presenter {
     fn assistant_text(&mut self, text: &str) -> io::Result<()> {
         self.begin_response();
         self.push_assistant(text)
+    }
+
+    fn tool_event(&mut self, event: UiEvent) -> io::Result<()> {
+        match event {
+            UiEvent::ToolProvisional {
+                call_id,
+                tool_name,
+                action_label,
+                ..
+            } => self.tool_provisional(call_id, &tool_name, &action_label),
+            UiEvent::ToolStarted {
+                call_id,
+                tool_name,
+                description,
+                ..
+            } => self.tool_started_once(call_id, &tool_name, &description),
+            UiEvent::ToolFinished {
+                call_id,
+                tool_name,
+                arguments,
+                status,
+                content,
+                command_result,
+                ..
+            } => self.tool_finished(
+                &call_id,
+                ToolRecord::finished(
+                    tool_name,
+                    &arguments,
+                    status,
+                    &content,
+                    command_result.as_deref(),
+                ),
+            ),
+            UiEvent::ToolRejected {
+                call_id,
+                tool_name,
+                arguments,
+                reason,
+                description,
+                ..
+            } => self.tool_rejected(&call_id, tool_name, &arguments, reason, description),
+            _ => Ok(()),
+        }
     }
 
     fn assistant_boundary(&mut self) -> io::Result<()> {

@@ -1,5 +1,5 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
-use crate::mcp_menu::{McpMenuRequest, McpMenuSettled, McpMenuSnapshot};
+use crate::mcp_menu::{McpMenuCatalog, McpMenuRequest, McpMenuSettled, McpMenuSnapshot};
 use crate::model_capabilities::ModelCapabilities;
 use crate::permission_gate::{
     ApprovalAnswer, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
@@ -445,6 +445,10 @@ pub enum UiEvent {
     McpMenuSettled {
         settled: McpMenuSettled,
         snapshot: McpMenuSnapshot,
+    },
+    McpMenuLoaded {
+        generation: u64,
+        catalog: McpMenuCatalog,
     },
     SettingsChanged {
         snapshot: SettingsSnapshot,
