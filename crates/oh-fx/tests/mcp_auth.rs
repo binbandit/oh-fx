@@ -816,6 +816,58 @@ fn a_project_server_authenticated_in_the_shell_uses_its_grant_for_the_session() 
     settled_menu(&session, &server_row("project", "Ready", "HTTP · Project"));
 }
 
+#[test]
+fn the_mcp_menu_signs_in_a_server_from_its_details() {
+    let authority = Authority::start();
+    let home = Home::new(&authority.origin);
+    let model = FakeServer::start([]);
+    let session = home.shell(&model, &json!({}));
+    menu_shows(
+        &session,
+        &server_row("fixture", "Needs authentication", "HTTP · Profile"),
+    );
+    session.send(b"\r");
+    shown(&session, "enter sign in  c help  esc back");
+    shown(
+        &session,
+        "  Error               Authentication is required or the saved credentials lack access",
+    );
+    session.send(b"\r");
+    let url = wait_for_file(&home.opened()).trim().to_owned();
+    assert!(
+        url.starts_with(&format!("{}/authorize?", authority.origin)),
+        "{url}"
+    );
+    let page = visit(&format!(
+        "{}?code=browser-code&state={}",
+        query(&url, "redirect_uri"),
+        query(&url, "state")
+    ));
+    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+    shown(&session, "  Authenticated MCP server 'fixture'.");
+    shown(&session, "  State               Ready");
+    shown(&session, "c help  esc back");
+    let screen = session.screen();
+    assert!(!screen.contains("enter sign in"), "{screen}");
+    assert!(
+        !screen.contains("Waiting for MCP authentication"),
+        "{screen}"
+    );
+    for secret in [ACCESS, REFRESH, "browser-code", "authorize?"] {
+        assert!(!screen.contains(secret), "{screen}");
+    }
+    session.send(b"\x1b");
+    shown(&session, MENU_HINT);
+    close_menu(&session);
+    assert!(
+        authority
+            .mcp_authorizations()
+            .iter()
+            .any(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str()))
+    );
+    assert_eq!(mode(&home.store()), 0o600);
+}
+
 fn logout(home: &Home) -> std::process::Output {
     home.command(&["mcp", "logout", "fixture"])
         .env("OH_FX_TRACE_LOG", home.root.join("trace.log"))
@@ -1026,6 +1078,10 @@ fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
         &session,
         &server_row("fixture", "Disconnected", "HTTP · Profile"),
     );
+    session.send(b"\r");
+    shown(&session, "enter sign in  c help  esc back");
+    session.send(b"\x1b");
+    shown(&session, MENU_HINT);
     close_menu(&session);
     assert!(!home.store().exists());
     assert_eq!(authority.revocations().len(), 2);

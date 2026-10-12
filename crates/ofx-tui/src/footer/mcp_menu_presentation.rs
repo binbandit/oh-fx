@@ -5,7 +5,7 @@ use ofx_contract::{
 use ofx_text::{encode_terminal_safe_inline, visible_width};
 
 use crate::row_text::{Paint, Row, single_line_ellipsized};
-use crate::shell::mcp_menu::{McpMenuState, Screen};
+use crate::shell::mcp_menu::{Action, LoadState, McpMenuState, Screen, server_action_available};
 use crate::theme::Theme;
 
 const HEADER_ROWS: usize = 2;
@@ -17,20 +17,23 @@ const NO_SERVERS: &str = "No MCP servers configured.";
 const NO_AVAILABLE_SERVERS: &str = "No MCP servers available; configuration errors need attention.";
 const SERVER_GONE: &str = "MCP server is no longer available.";
 const PROJECT_CONFIG: &str = "<workspace>/.mcp.json";
-const INFO_HINTS: [&str; 1] = ["servers: enter inspect"];
-const ROOT_HINTS: [&str; 3] = [
-    "↑↓ move  enter inspect  c help  esc close",
-    "↑↓ move  enter  c help  esc",
-    "enter c esc",
+const INFO_HINTS: [&str; 2] = [
+    "servers: r reload · enter inspect",
+    "details: enter sign in",
 ];
-const DETAILS_HINTS: [&str; 3] = ["c help  esc back", "c help  esc back", "c esc"];
-const INFO_HINTS_ROW: [&str; 3] = ["esc back", "esc", "esc"];
+const ROOT_HINTS: [&str; 3] = [
+    "↑↓ move  enter inspect  r reload  c help  esc close",
+    "↑↓ move  enter  r reload  c help  esc",
+    "enter r c esc",
+];
+const INFO_ESCAPES: [&str; 2] = ["esc back", "esc"];
 pub(crate) const MAX_INLINE_ROWS: usize = 12;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct McpMenuView<'a> {
     pub(crate) state: &'a McpMenuState,
     pub(crate) snapshot: &'a McpMenuSnapshot,
+    pub(crate) feedback: Option<&'a str>,
 }
 
 impl<'a> McpMenuView<'a> {
@@ -87,16 +90,29 @@ pub(crate) fn mcp_menu_hint_row(
     if ctrl_c_pending {
         return Row::styled(CTRL_C_EXIT_HINT, theme.statusline).clipped(width);
     }
-    let variants = match view.state.screen {
+    let details = details_hint(view);
+    let variants: [&str; 3] = match view.state.screen {
         Screen::Browse => ROOT_HINTS,
-        Screen::Details => DETAILS_HINTS,
-        Screen::Info => INFO_HINTS_ROW,
+        Screen::Details => [&details, "c help  esc back", "c esc"],
+        Screen::Info => [INFO_ESCAPES[0], INFO_ESCAPES[1], INFO_ESCAPES[1]],
     };
     let hint = variants
         .into_iter()
         .find(|candidate| visible_width(candidate) <= width)
         .unwrap_or(variants[variants.len() - 1]);
     Row::styled(hint, theme.dim).clipped(width)
+}
+
+fn details_hint(view: McpMenuView<'_>) -> String {
+    let mut hint = String::new();
+    if view
+        .selected_server()
+        .is_some_and(|server| server_action_available(Action::Authenticate, server))
+    {
+        hint.push_str("enter sign in  ");
+    }
+    hint.push_str("c help  esc back");
+    hint
 }
 
 fn compose_row(
@@ -114,12 +130,18 @@ fn compose_row(
     if show_header && row_index == 0 {
         return header_row(theme, view, width);
     }
-    if show_header
-        && row_index == 1
-        && view.state.screen == Screen::Browse
-        && !view.snapshot.configuration_issues.is_empty()
-    {
-        return configuration_issue_row(theme, &view.snapshot.configuration_issues, width);
+    if show_header && row_index == 1 {
+        if let Some(feedback) = view.feedback {
+            let paint = if view.state.load_state == LoadState::Failed {
+                theme.warning
+            } else {
+                theme.dim
+            };
+            return text_row(feedback, width, paint, TEXT_INDENT);
+        }
+        if view.state.screen == Screen::Browse && !view.snapshot.configuration_issues.is_empty() {
+            return configuration_issue_row(theme, &view.snapshot.configuration_issues, width);
+        }
     }
     if row_index < body_start {
         return Row::new();

@@ -49,7 +49,7 @@ pub use hooks::{
 pub use ids::{RequestId, ToolCallId, TurnId, valid_session_id};
 pub use mcp_menu::{
     McpMenuAdmission, McpMenuAuthentication, McpMenuConnection, McpMenuCounts, McpMenuRequest,
-    McpMenuServer, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
+    McpMenuServer, McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
 };
 pub use mcp_servers::{McpServersCatalog, McpServersSection};
 pub use model_capabilities::{
