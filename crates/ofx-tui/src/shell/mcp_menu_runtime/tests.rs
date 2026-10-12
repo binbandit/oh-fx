@@ -648,3 +648,43 @@ fn trust_keys_approve_directly_and_confirm_the_rest() {
         Some(&trust(4, McpMenuTrust::Reject("docs".to_owned())))
     );
 }
+
+#[test]
+fn the_add_form_edits_on_ctrl_d_and_dollar_without_exiting_or_mentioning_a_skill() {
+    let mut test = TestShell::start_with(|options| {
+        options.skill_catalog = Some(Box::new(OneSkill));
+    });
+    test.deliver(UiEvent::McpMenuOpened {
+        snapshot: servers(&["docs"]),
+    });
+    press(&mut test, b"a");
+    press(&mut test, b"\x04");
+    assert!(!test.shell.should_exit);
+    assert_eq!(state(&test).screen, Screen::Add);
+    let screen = press(&mut test, b"$rev");
+    assert_eq!(test.shell.composer.text(), "$rev");
+    assert!(test.shell.skills_menu.is_none(), "{screen}");
+    press(&mut test, b"\x01\x04\x0e\x03");
+    assert_eq!(test.shell.composer.text(), "rev");
+    press(&mut test, b"\r");
+    assert_eq!(state(&test).add_field_index, 1);
+    assert_eq!(test.shell.mcp_menu.as_ref().unwrap().add.name, "rev");
+    assert!(!test.shell.should_exit);
+}
+
+#[test]
+fn a_refresh_that_drops_the_selected_server_keeps_the_add_form() {
+    let mut test = opened(&["docs", "remote"]);
+    press(&mut test, b"a");
+    press(&mut test, b"na");
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["remote"]),
+    });
+    assert_eq!(state(&test).screen, Screen::Add);
+    assert_eq!(state(&test).selected_server_index, 0);
+    press(&mut test, b"pz\r");
+    assert_eq!(state(&test).screen, Screen::Add);
+    assert_eq!(state(&test).add_field_index, 1);
+    assert_eq!(test.shell.mcp_menu.as_ref().unwrap().add.name, "napz");
+    assert!(requests(&test).is_empty(), "{:?}", requests(&test));
+}

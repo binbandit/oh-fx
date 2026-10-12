@@ -163,7 +163,9 @@ impl McpMenuState {
             self.pending_generation = None;
             self.load_state = LoadState::Ready;
         }
-        self.screen = Screen::Browse;
+        if self.screen != Screen::Add {
+            self.screen = Screen::Browse;
+        }
     }
 
     pub(crate) fn apply(&mut self, event: Event) -> Option<Effect> {

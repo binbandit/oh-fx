@@ -2,9 +2,9 @@ use ofx_contract::{McpMenuAddForm, McpMenuAddTransport, McpMenuRequest, McpMenuT
 
 use super::Shell;
 use super::mcp_menu::{Action, Event, Screen, server_action_available};
-use crate::input::{Action as InputAction, InputEvent};
+use crate::input::{Action as InputAction, InputEvent, ShortcutAction};
 
-const CTRL_C: u8 = 3;
+const CTRL_Z: u8 = 26;
 const SERVER_NOT_FOUND: &str = "MCP operation failed: McpServerNotFound";
 
 impl Shell<'_> {
@@ -108,8 +108,13 @@ impl Shell<'_> {
                     self.composer.clear();
                 }
                 b'\r' => self.advance_mcp_add_form(),
-                CTRL_C => {}
-                _ => return false,
+                b'$' => self.insert("$"),
+                CTRL_Z => return false,
+                byte if byte == b' ' || byte.is_ascii_graphic() => return false,
+                _ => match raw.composer_shortcut {
+                    Some(ShortcutAction::InsertNewline | ShortcutAction::HistoryNext) | None => {}
+                    Some(action) => self.route_shortcut(action),
+                },
             },
             InputEvent::Action(decoded) => match decoded.action {
                 InputAction::Escape => {
