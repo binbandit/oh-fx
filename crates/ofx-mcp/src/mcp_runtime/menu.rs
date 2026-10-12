@@ -22,6 +22,22 @@ impl McpRuntime {
             profile_config: None,
         }
     }
+
+    pub fn menu_tool_names(&self) -> Vec<String> {
+        let mut names = lock(&self.names);
+        let mut listed = Vec::new();
+        for server in self.current() {
+            let Some((catalog, _)) = server.catalog() else {
+                continue;
+            };
+            for tool in &catalog.tools {
+                if let Ok(name) = names.name(&self.reserved, &server.config.name, &tool.name) {
+                    listed.push(name);
+                }
+            }
+        }
+        listed
+    }
 }
 
 pub(super) struct ReloadMarks(Vec<Arc<Server>>);

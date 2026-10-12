@@ -19,6 +19,7 @@ mod leading_whitespace;
 mod lifecycle_tests;
 pub(crate) mod mcp_menu;
 mod mcp_menu_actions;
+mod mcp_menu_catalogs;
 mod mcp_menu_runtime;
 pub(crate) mod model_menu;
 mod model_picker_runtime;

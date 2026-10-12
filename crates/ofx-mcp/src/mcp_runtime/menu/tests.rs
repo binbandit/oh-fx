@@ -22,7 +22,7 @@ fn reply(request: &RecordedRequest) -> Reply {
             r#"{{"jsonrpc":"2.0","id":{id},"result":{{"protocolVersion":"2025-11-25","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"remote","version":"1"}}}}}}"#
         )),
         Some("tools/list") => Reply::json(&format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"tools":[]}}}}"#
+            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}},{{"name":"read file","inputSchema":{{"type":"object"}}}}]}}}}"#
         )),
         _ => Reply::status(202),
     }
@@ -168,4 +168,21 @@ async fn a_reload_marks_kept_servers_while_their_catalogs_refresh() {
     ));
     assert!(Arc::ptr_eq(&kept, &runtime.current()[0]));
     assert_eq!(reloading(&runtime), [false]);
+}
+
+#[tokio::test]
+async fn the_menu_lists_the_prefixed_tools_of_ready_servers() {
+    let held = holding_the_second("initialize").await;
+    let runtime = connected(&held.server.url).await;
+    assert_eq!(
+        runtime.menu_tool_names(),
+        ["mcp_remote_echo", "mcp_remote_read_file"]
+    );
+    let idle = McpRuntime::new(
+        NativeConfigLoad::default(),
+        ConnectOptions::default(),
+        Vec::new(),
+        ContextLimits::default(),
+    );
+    assert!(idle.menu_tool_names().is_empty());
 }
