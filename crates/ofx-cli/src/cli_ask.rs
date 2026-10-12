@@ -65,6 +65,8 @@ pub struct AskArgs {
     pub model: Option<OsString>,
     pub effort: Option<ReasoningEffort>,
     pub fast: Option<bool>,
+    pub provider_order: Option<Vec<String>>,
+    pub provider_strict: Option<bool>,
     pub system_prompt: Option<String>,
     pub output: AskOutput,
     pub session: AskSession,
@@ -220,6 +222,8 @@ pub(crate) fn drafting_ask(prompt: String, auto: bool, layout: AskLayout) -> Ask
         model: None,
         effort: None,
         fast: None,
+        provider_order: None,
+        provider_strict: None,
         system_prompt: None,
         output: AskOutput {
             layout,
@@ -244,6 +248,8 @@ pub(crate) fn parse_ask(args: Vec<OsString>) -> Result<AskArgs, AskError> {
             model: None,
             effort: None,
             fast: None,
+            provider_order: None,
+            provider_strict: None,
             system_prompt: None,
             output: AskOutput::default(),
             session: AskSession::default(),
@@ -375,6 +381,8 @@ impl AskParser {
     fn finish(mut self) -> Result<AskArgs, AskError> {
         self.args.effort = self.model_overrides.effort.take();
         self.args.fast = self.model_overrides.fast;
+        self.args.provider_order = self.model_overrides.provider_order.take();
+        self.args.provider_strict = self.model_overrides.provider_strict;
         if self.args.session.continue_recovery {
             let session = &self.args.session;
             if session.resume.is_none()

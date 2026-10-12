@@ -1966,6 +1966,7 @@ mod tests {
                     open_browser: false,
                     context_targets: &[],
                     mcp_questioner: None,
+                    routing_flags: crate::RoutingFlags::default(),
                 },
                 &CancellationToken::new(),
             )

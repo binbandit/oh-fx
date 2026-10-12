@@ -14,8 +14,8 @@ use ofx_agent::{
 };
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
-    ResumedSession, SubscriptionEndpoints, TitleGeneration, WebFetchProgress, default_mode,
-    open_store, recovered_turn, session_lookup_message,
+    ResumedSession, RoutingFlags, SubscriptionEndpoints, TitleGeneration, WebFetchProgress,
+    default_mode, open_store, recovered_turn, session_lookup_message,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskLayout, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -556,6 +556,13 @@ async fn respond(
     Ok(presenter.finish(&report, &model, saved))
 }
 
+fn routing_flags(args: &AskArgs) -> RoutingFlags {
+    RoutingFlags {
+        order: args.provider_order.clone(),
+        strict: args.provider_strict,
+    }
+}
+
 async fn prepare_agent(
     request: &AskRequest<'_>,
     endpoints: SubscriptionEndpoints,
@@ -616,6 +623,7 @@ async fn prepare_agent(
         context_targets: &context_targets,
         mcp_questioner: elicitation_allowed(args)
             .then(|| Arc::new(TerminalQuestions) as Arc<dyn QuestionAsker>),
+        routing_flags: routing_flags(args),
     };
     let setup = profile.connect(launch, cancel).await?;
     let recovered = pending

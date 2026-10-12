@@ -91,6 +91,7 @@ async fn connected(server: &FakeServer, directories: &[&Path]) -> (tempfile::Tem
                 open_browser: false,
                 context_targets: &[],
                 mcp_questioner: None,
+                routing_flags: crate::RoutingFlags::default(),
             },
             &CancellationToken::new(),
         )
