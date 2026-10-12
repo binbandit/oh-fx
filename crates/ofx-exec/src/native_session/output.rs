@@ -1,11 +1,52 @@
 use std::io;
+use std::mem;
 use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 
+const MAX_UNREAD_HEAD_BYTES: usize = 1024 * 1024;
+const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+const ESCAPE: u8 = 0x1b;
 const FOLLOW_UP_POLL: Duration = Duration::from_millis(1);
+
+#[derive(Debug, Default)]
+pub(super) struct Unread {
+    head: Vec<u8>,
+    total: u64,
+    escape: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Drained {
+    pub(super) head: Vec<u8>,
+    pub(super) total_bytes: u64,
+    pub(super) contains_escape: bool,
+    pub(super) incomplete: bool,
+}
+
+impl Unread {
+    pub(super) fn append(&mut self, bytes: &[u8]) {
+        let room = MAX_UNREAD_HEAD_BYTES - self.head.len();
+        self.head.extend_from_slice(&bytes[..room.min(bytes.len())]);
+        self.total = self
+            .total
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        self.escape |= bytes.contains(&ESCAPE);
+    }
+
+    pub(super) fn drain(&mut self) -> Drained {
+        let drained = Drained {
+            head: mem::take(&mut self.head),
+            total_bytes: self.total,
+            contains_escape: self.escape,
+            incomplete: self.total > MAX_JOURNAL_BYTES,
+        };
+        *self = Self::default();
+        drained
+    }
+}
 
 pub(super) fn read_available(
     fd: &OwnedFd,
@@ -55,6 +96,36 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn unread_output_keeps_its_head_counts_everything_and_drains_once() {
+        let mut unread = Unread::default();
+        unread.append(b"first ");
+        unread.append(b"second\x1b[0m");
+        let drained = unread.drain();
+        assert_eq!(drained.head, b"first second\x1b[0m");
+        assert_eq!(drained.total_bytes, 16);
+        assert!(drained.contains_escape);
+        assert!(!drained.incomplete);
+        assert_eq!(
+            unread.drain(),
+            Drained {
+                head: Vec::new(),
+                total_bytes: 0,
+                contains_escape: false,
+                incomplete: false
+            }
+        );
+        let chunk = vec![b'x'; MAX_UNREAD_HEAD_BYTES];
+        for _ in 0..65 {
+            unread.append(&chunk);
+        }
+        let drained = unread.drain();
+        assert_eq!(drained.head.len(), MAX_UNREAD_HEAD_BYTES);
+        assert_eq!(drained.total_bytes, 65 * 1024 * 1024);
+        assert!(drained.incomplete);
+        assert!(!drained.contains_escape);
+    }
 
     #[test]
     fn terminal_output_drain_reads_final_bytes_after_peer_close() {

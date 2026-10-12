@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_WRITE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_AUTHORITY_TEXT_BYTES: usize = 4096;
 pub(crate) const MAX_SHELL_PATH_BYTES: usize = 4096;
 const MAX_DIMENSION: u16 = 4096;
@@ -69,8 +70,13 @@ impl Lifecycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Start,
+    Read,
+    Screen,
+    Write,
     Wait,
     Inspect,
+    List,
+    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +87,9 @@ pub enum StructuredErrorCode {
     StartupFailed,
     SessionLost,
     SessionNotFound,
+    InvalidLifecycle,
     AuthorityDenied,
+    ScreenUnavailable,
     CapacityExceeded,
     Cancelled,
 }
@@ -128,6 +136,12 @@ impl ReturnOutcome {
     pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Exited(_) | Self::Signal(_))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosePolicy {
+    Graceful,
+    Force,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

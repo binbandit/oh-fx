@@ -9,7 +9,9 @@ use ofx_config::{DurableError, PrivateDir};
 use ofx_contract::valid_session_id;
 use serde::{Deserialize, Serialize};
 
-use crate::terminal_contracts::{Dimensions, Lifecycle, LifecycleEvent, ReturnOutcome};
+use crate::terminal_contracts::{
+    Dimensions, Lifecycle, LifecycleEvent, ReturnOutcome, StructuredErrorCode,
+};
 use crate::terminal_recovery::{Disposition, reconcile};
 
 const RECORD_SCHEMA_VERSION: u16 = 2;
@@ -51,7 +53,7 @@ pub enum StoreError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Termination {
+pub(crate) enum Termination {
     Exited(i32),
     Signal(u32),
 }
@@ -61,6 +63,17 @@ impl Termination {
         match self {
             Self::Exited(code) => (0..=255).contains(&code),
             Self::Signal(signal) => (1..=255).contains(&signal),
+        }
+    }
+}
+
+impl StoreError {
+    pub(crate) fn code(self) -> StructuredErrorCode {
+        match self {
+            Self::OwnedByAnotherSession => StructuredErrorCode::AuthorityDenied,
+            Self::InvalidLifecycle => StructuredErrorCode::InvalidLifecycle,
+            Self::CapacityExceeded => StructuredErrorCode::CapacityExceeded,
+            _ => StructuredErrorCode::InvalidRequest,
         }
     }
 }
@@ -76,26 +89,26 @@ impl From<Termination> for ReturnOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TerminalRecord {
-    pub schema_version: u16,
-    pub session_id: String,
-    pub owner_session_id: String,
-    pub host_identity: String,
-    pub shell: String,
-    pub cwd: String,
-    pub command: Option<String>,
+pub(crate) struct TerminalRecord {
+    pub(crate) schema_version: u16,
+    pub(crate) session_id: String,
+    pub(crate) owner_session_id: String,
+    pub(crate) host_identity: String,
+    pub(crate) shell: String,
+    pub(crate) cwd: String,
+    pub(crate) command: Option<String>,
     #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub(crate) timeout_ms: Option<u64>,
     #[serde(default)]
-    pub timeout_at_ms: Option<i64>,
+    pub(crate) timeout_at_ms: Option<i64>,
     #[serde(default)]
-    pub timed_out: bool,
-    pub lifecycle: Lifecycle,
-    pub dimensions: Dimensions,
-    pub pid: Option<String>,
-    pub termination: Option<Termination>,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
+    pub(crate) timed_out: bool,
+    pub(crate) lifecycle: Lifecycle,
+    pub(crate) dimensions: Dimensions,
+    pub(crate) pid: Option<String>,
+    pub(crate) termination: Option<Termination>,
+    pub(crate) created_at_ms: i64,
+    pub(crate) updated_at_ms: i64,
 }
 
 impl TerminalRecord {
@@ -147,13 +160,13 @@ struct SchemaVersion {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NewTerminal<'a> {
-    pub owner_session_id: &'a str,
-    pub shell: &'a str,
-    pub cwd: &'a str,
-    pub command: &'a str,
-    pub timeout_ms: Option<u64>,
-    pub dimensions: Dimensions,
+pub(crate) struct NewTerminal<'a> {
+    pub(crate) owner_session_id: &'a str,
+    pub(crate) shell: &'a str,
+    pub(crate) cwd: &'a str,
+    pub(crate) command: &'a str,
+    pub(crate) timeout_ms: Option<u64>,
+    pub(crate) dimensions: Dimensions,
 }
 
 #[derive(Debug)]
@@ -170,7 +183,7 @@ impl TerminalStore {
         })
     }
 
-    pub fn create(
+    pub(crate) fn create(
         &self,
         terminal: &NewTerminal<'_>,
         now_ms: i64,
@@ -203,7 +216,7 @@ impl TerminalStore {
         Ok(DurableTerminal { directory, record })
     }
 
-    pub fn open(
+    pub(crate) fn open(
         &self,
         owner_session_id: &str,
         session_id: &str,
@@ -229,7 +242,7 @@ impl TerminalStore {
         }
     }
 
-    pub fn reconcile_owner(
+    pub(crate) fn reconcile_owner(
         &self,
         owner_session_id: &str,
         now_ms: i64,
@@ -303,18 +316,18 @@ impl TerminalStore {
 }
 
 #[derive(Debug)]
-pub struct DurableTerminal {
+pub(crate) struct DurableTerminal {
     directory: PrivateDir,
     record: TerminalRecord,
 }
 
 impl DurableTerminal {
     #[must_use]
-    pub fn record(&self) -> &TerminalRecord {
+    pub(crate) fn record(&self) -> &TerminalRecord {
         &self.record
     }
 
-    pub fn mark_started(&mut self, pid: u32, now_ms: i64) -> Result<(), StoreError> {
+    pub(crate) fn mark_started(&mut self, pid: u32, now_ms: i64) -> Result<(), StoreError> {
         self.update(now_ms, |record| {
             if record.lifecycle != Lifecycle::Starting {
                 return Err(StoreError::InvalidLifecycle);
@@ -334,7 +347,7 @@ impl DurableTerminal {
         })
     }
 
-    pub fn mark_timed_out(&mut self, now_ms: i64) -> Result<(), StoreError> {
+    pub(crate) fn mark_timed_out(&mut self, now_ms: i64) -> Result<(), StoreError> {
         if self.record.timed_out {
             return Ok(());
         }
@@ -347,7 +360,7 @@ impl DurableTerminal {
         })
     }
 
-    pub fn persist_termination(
+    pub(crate) fn persist_termination(
         &mut self,
         termination: Termination,
         now_ms: i64,
@@ -365,11 +378,11 @@ impl DurableTerminal {
     }
 
     #[must_use]
-    pub fn termination(&self) -> Option<Termination> {
+    pub(crate) fn termination(&self) -> Option<Termination> {
         self.record.termination
     }
 
-    pub fn persist_lost(&mut self, now_ms: i64) -> Result<(), StoreError> {
+    pub(crate) fn persist_lost(&mut self, now_ms: i64) -> Result<(), StoreError> {
         self.update(now_ms, |record| {
             if record.lifecycle.is_live() {
                 record.lifecycle = transition(record.lifecycle, LifecycleEvent::HostLost)?;
@@ -378,14 +391,14 @@ impl DurableTerminal {
         })
     }
 
-    pub fn close(&mut self, now_ms: i64) -> Result<(), StoreError> {
+    pub(crate) fn close(&mut self, now_ms: i64) -> Result<(), StoreError> {
         self.update(now_ms, |record| {
             record.lifecycle = transition(record.lifecycle, LifecycleEvent::Close)?;
             Ok(())
         })
     }
 
-    pub fn rollback_unreleased_start(&self) -> Result<(), StoreError> {
+    pub(crate) fn rollback_unreleased_start(&self) -> Result<(), StoreError> {
         if self.record.lifecycle != Lifecycle::Starting || self.record.pid.is_some() {
             return Err(StoreError::InvalidLifecycle);
         }
