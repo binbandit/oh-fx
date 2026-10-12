@@ -660,8 +660,7 @@ fn fragmented_live_queries_reply_in_order_and_replays_reply_nothing() {
         [b"\x1b[3;7R".to_vec(), b"\x1b[8;24;80t".to_vec()]
     );
     let mut replayed = Grid::new(80, 24).unwrap();
-    replayed.feed(b"\x1b[6n\x1b[18t\x1b[c").unwrap();
-    assert!(replayed.feed_live(b"").unwrap().is_empty());
+    assert!(replayed.feed(&b"\x1b[5n".repeat(17)).is_ok());
 }
 
 #[test]
@@ -688,6 +687,25 @@ fn live_queries_answer_as_upstreams_engine_does() {
     assert_eq!(reply(&mut grid, b"\x1bP1;2|AB\x1b\\"), b"");
     grid.feed(b"\x1bP$q").unwrap();
     assert_eq!(reply(&mut grid, b"m\x1b\\"), b"\x1bP1$r0m\x1b\\");
+    assert_eq!(reply(&mut grid, b"\x1bP$q\x1bxm\x1b\\"), b"\x1bP0$r\x1b\\");
+    assert_eq!(reply(&mut grid, b"\x1b[?2026h\x1b[5n"), b"");
+    assert_eq!(reply(&mut grid, b"\x1b[?2026l"), b"\x1b[0n");
+}
+
+#[test]
+fn an_origin_mode_cursor_above_the_region_reports_the_regions_first_row() {
+    let mut grid = Grid::new(10, 6).unwrap();
+    assert_eq!(
+        grid.feed_live(b"\x1b[3;5r\x1b[?6h\x1b[1d\x1b[6n").unwrap(),
+        [b"\x1b[1;1R".to_vec()]
+    );
+    let mut restored = Grid::new(10, 6).unwrap();
+    assert_eq!(
+        restored
+            .feed_live(b"\x1b[2;5r\x1b[?6h\x1b7\x1b[4;5r\x1b8\x1b[6n")
+            .unwrap(),
+        [b"\x1b[1;1R".to_vec()]
+    );
 }
 
 #[test]
@@ -695,7 +713,7 @@ fn live_replies_stay_within_their_bounds() {
     let mut grid = Grid::new(10, 2).unwrap();
     assert_eq!(
         grid.feed_live(&b"\x1b[5n".repeat(17)),
-        Err(GridError::ReplyCapacityExceeded)
+        Err(GridError::ReplyEffectCapacityExceeded)
     );
     let mut fitting = Grid::new(10, 2).unwrap();
     assert_eq!(fitting.feed_live(&b"\x1b[5n".repeat(16)).unwrap().len(), 16);

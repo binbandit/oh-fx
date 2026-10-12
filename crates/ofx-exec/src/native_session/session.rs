@@ -864,8 +864,9 @@ mod tests {
     const BLOCKED: Duration = Duration::from_millis(200);
     const DRAINED: Duration = Duration::from_secs(20);
     const PROMPT: Duration = Duration::from_secs(5);
+    const ANSWERED: Duration = Duration::from_secs(5);
 
-    fn running(directory: &Path) -> (Session, UnixStream) {
+    fn running(directory: &Path, grid: Option<Grid>) -> (Session, UnixStream) {
         let durable = TerminalStore::new(directory)
             .unwrap()
             .create(
@@ -883,7 +884,7 @@ mod tests {
                 0,
             )
             .unwrap();
-        let session = Session::new(durable, None);
+        let session = Session::new(durable, grid);
         let (master, terminal) = UnixStream::pair().unwrap();
         master.set_nonblocking(true).unwrap();
         terminal.set_nonblocking(true).unwrap();
@@ -930,7 +931,7 @@ mod tests {
     #[test]
     fn a_running_terminal_takes_input_until_its_close_begins() {
         let directory = tempfile::tempdir().unwrap();
-        let (session, mut terminal) = running(directory.path());
+        let (session, mut terminal) = running(directory.path(), None);
         assert_eq!(session.write(b"ok"), Ok(2));
         assert_eq!(received(&mut terminal), b"ok");
         session.lock().close_committed = true;
@@ -951,7 +952,7 @@ mod tests {
     #[test]
     fn a_write_waiting_for_room_writes_nothing_once_the_close_begins() {
         let directory = tempfile::tempdir().unwrap();
-        let (session, mut terminal) = running(directory.path());
+        let (session, mut terminal) = running(directory.path(), None);
         let session = Arc::new(session);
         let master = session.lock().master.clone().unwrap();
         let filled = fill(&master);
@@ -1043,7 +1044,7 @@ mod tests {
             return;
         }
         let directory = tempfile::tempdir().unwrap();
-        let (session, _terminal) = running(directory.path());
+        let (session, _terminal) = running(directory.path(), None);
         let (shell, member) = group_whose_leader_exited(directory.path());
         let closed = force_close_recorded(&session, shell, getsid(None).unwrap());
         let killed = dead_in_time(member);
@@ -1057,7 +1058,7 @@ mod tests {
     #[test]
     fn a_forced_close_spares_a_group_it_cannot_tie_to_its_terminal() {
         let directory = tempfile::tempdir().unwrap();
-        let (session, _terminal) = running(directory.path());
+        let (session, _terminal) = running(directory.path(), None);
         let (shell, member) = group_whose_leader_exited(directory.path());
         let elsewhere = Pid::from_raw(getsid(None).unwrap().as_raw_nonzero().get() + 1).unwrap();
         let begun = Instant::now();
@@ -1076,7 +1077,7 @@ mod tests {
     #[test]
     fn a_close_stops_reading_a_terminal_that_something_else_holds_open() {
         let directory = tempfile::tempdir().unwrap();
-        let (session, _held) = running(directory.path());
+        let (session, _held) = running(directory.path(), None);
         let session = Arc::new(session);
         let master = session.lock().master.clone().unwrap();
         session.lock().backend = Backend::Reading;
@@ -1112,7 +1113,7 @@ mod tests {
     #[test]
     fn a_close_stops_reading_a_terminal_whose_output_keeps_trickling() {
         let directory = tempfile::tempdir().unwrap();
-        let (session, mut held) = running(directory.path());
+        let (session, mut held) = running(directory.path(), None);
         let session = Arc::new(session);
         let master = session.lock().master.clone().unwrap();
         session.lock().backend = Backend::Reading;
@@ -1171,5 +1172,33 @@ mod tests {
         String::from_utf8_lossy(&state.stdout)
             .trim()
             .starts_with('Z')
+    }
+
+    #[test]
+    fn a_terminal_answers_queries_only_until_its_close_begins_and_never_waits_for_room() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, mut terminal) = running(directory.path(), Some(Grid::new(80, 24).unwrap()));
+        let session = Arc::new(session);
+        session.append_output(b"\x1b[5n");
+        assert_eq!(received(&mut terminal), b"\x1b[0n");
+        let master = session.lock().master.clone().unwrap();
+        let filled = fill(&master);
+        let replying = {
+            let session = Arc::clone(&session);
+            thread::spawn(move || session.append_output(b"\x1b[5n"))
+        };
+        let deadline = Instant::now() + ANSWERED;
+        while !replying.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let returned = replying.is_finished();
+        let drained = drain(&mut terminal);
+        replying.join().unwrap();
+        assert!(returned, "a reply waited for room");
+        assert_eq!(drained, filled);
+        session.lock().close_committed = true;
+        session.append_output(b"\x1b[5n");
+        assert_eq!(received(&mut terminal), b"");
+        assert!(session.lock().grid.is_some());
     }
 }

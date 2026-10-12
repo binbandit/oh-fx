@@ -39,7 +39,7 @@ pub enum GridError {
     #[error("CombiningPoolCapacityExceeded")]
     CombiningPoolCapacityExceeded,
     #[error("ReplyEffectCapacityExceeded")]
-    ReplyCapacityExceeded,
+    ReplyEffectCapacityExceeded,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -133,6 +133,27 @@ impl ControlString {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DeviceControl {
+    saw_esc: bool,
+    payload: Vec<u8>,
+}
+
+impl DeviceControl {
+    fn push(&mut self, byte: u8) -> Result<(), GridError> {
+        if self.payload.len() >= MAX_STRING_BYTES {
+            return Err(GridError::ControlStringTooLarge);
+        }
+        self.payload.push(byte);
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.saw_esc = false;
+        self.payload.clear();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SavedScreen {
     rows: u16,
@@ -164,8 +185,7 @@ pub struct Grid {
     state: ParserState,
     csi: Csi,
     osc: ControlString,
-    dcs: ControlString,
-    dcs_payload: Vec<u8>,
+    dcs: DeviceControl,
     replies: Option<Replies>,
     utf8_buffer: [u8; 4],
     utf8_len: usize,
@@ -196,8 +216,7 @@ impl Grid {
             state: ParserState::Normal,
             csi: Csi::default(),
             osc: ControlString::default(),
-            dcs: ControlString::default(),
-            dcs_payload: Vec::new(),
+            dcs: DeviceControl::default(),
             replies: None,
             utf8_buffer: [0; 4],
             utf8_len: 0,
@@ -472,12 +491,10 @@ impl Grid {
                         dispatched?;
                     } else {
                         if self.dcs.saw_esc {
-                            self.dcs.push()?;
-                            self.dcs_payload.push(ESC);
+                            self.dcs.push(ESC)?;
                             self.dcs.saw_esc = false;
                         }
-                        self.dcs.push()?;
-                        self.dcs_payload.push(byte);
+                        self.dcs.push(byte)?;
                     }
                     index += 1;
                 }
@@ -544,8 +561,7 @@ impl Grid {
                 self.state = ParserState::Osc;
             }
             b'P' => {
-                self.dcs = ControlString::default();
-                self.dcs_payload.clear();
+                self.dcs.reset();
                 self.state = ParserState::Dcs;
             }
             b'7' => self.save_cursor(),
@@ -573,8 +589,7 @@ impl Grid {
         self.state = ParserState::Normal;
         self.csi = Csi::default();
         self.osc = ControlString::default();
-        self.dcs = ControlString::default();
-        self.dcs_payload.clear();
+        self.dcs.reset();
     }
 
     fn reply(&mut self, bytes: &[u8]) -> Result<(), GridError> {
@@ -586,7 +601,7 @@ impl Grid {
             || replies.items.len() >= MAX_REPLIES
             || replies.bytes > MAX_REPLY_TOTAL_BYTES - bytes.len()
         {
-            return Err(GridError::ReplyCapacityExceeded);
+            return Err(GridError::ReplyEffectCapacityExceeded);
         }
         replies.items.push(bytes.to_vec());
         replies.bytes += bytes.len();
@@ -594,7 +609,7 @@ impl Grid {
     }
 
     fn dispatch_dcs(&mut self) -> Result<(), GridError> {
-        let Some(query) = self.dcs_payload.strip_prefix(b"$q") else {
+        let Some(query) = self.dcs.payload.strip_prefix(b"$q") else {
             return Ok(());
         };
         let reply = match query {
@@ -616,7 +631,10 @@ impl Grid {
             return Ok(());
         }
         let row = if self.modes.origin {
-            self.cursor.row - self.scroll_top + 1
+            self.cursor
+                .row
+                .saturating_sub(self.scroll_top)
+                .saturating_add(1)
         } else {
             self.cursor.row
         };
