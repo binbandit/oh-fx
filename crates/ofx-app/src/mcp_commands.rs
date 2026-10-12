@@ -335,15 +335,16 @@ pub(crate) fn render_prompt_listing(
     out
 }
 
-fn apply_project_action(
-    state: &ControllerState,
-    host: &McpHost,
-    action: &ProjectMcpAction,
-    success: &str,
-) {
+pub(crate) enum TrustSaved {
+    Applied { committed: bool, reducing: bool },
+    Uncertain,
+    Refused(String),
+    HomeUnavailable,
+}
+
+pub(crate) fn save_project_action(host: &McpHost, action: &ProjectMcpAction) -> TrustSaved {
     let Some(paths) = host.sources().paths() else {
-        state.notice(NoticeTone::Neutral, TOPIC, HOME_UNAVAILABLE);
-        return;
+        return TrustSaved::HomeUnavailable;
     };
     let reducing = matches!(
         action,
@@ -356,7 +357,33 @@ fn apply_project_action(
         |entry| apply_project_mcp_action_to_entry(entry, action).map(|change| change.changed),
     );
     match saved {
-        Ok(committed) => {
+        Ok(committed) => TrustSaved::Applied {
+            committed,
+            reducing,
+        },
+        Err(WorkspaceSaveError::Settings(failure))
+            if reducing && failure.error == SettingsWriteError::CommitIndeterminate =>
+        {
+            TrustSaved::Uncertain
+        }
+        Err(WorkspaceSaveError::Edit(error)) => TrustSaved::Refused(error.to_string()),
+        Err(WorkspaceSaveError::Settings(failure)) => {
+            TrustSaved::Refused(failure.error.to_string())
+        }
+    }
+}
+
+fn apply_project_action(
+    state: &ControllerState,
+    host: &McpHost,
+    action: &ProjectMcpAction,
+    success: &str,
+) {
+    match save_project_action(host, action) {
+        TrustSaved::Applied {
+            committed,
+            reducing,
+        } => {
             if reducing {
                 host.begin_authority_reduction(true);
             } else if committed {
@@ -364,23 +391,16 @@ fn apply_project_action(
             }
             state.notice(NoticeTone::Neutral, TOPIC, success);
         }
-        Err(WorkspaceSaveError::Settings(failure))
-            if reducing && failure.error == SettingsWriteError::CommitIndeterminate =>
-        {
+        TrustSaved::Uncertain => {
             host.begin_authority_reduction(false);
             state.notice(NoticeTone::Warning, TOPIC, CHOICES_UNCERTAIN);
         }
-        Err(error) => {
-            let name = match error {
-                WorkspaceSaveError::Edit(error) => error.to_string(),
-                WorkspaceSaveError::Settings(failure) => failure.error.to_string(),
-            };
-            state.notice(
-                NoticeTone::Warning,
-                TOPIC,
-                &format!("Project MCP choices were not applied: {name}."),
-            );
-        }
+        TrustSaved::Refused(name) => state.notice(
+            NoticeTone::Warning,
+            TOPIC,
+            &format!("Project MCP choices were not applied: {name}."),
+        ),
+        TrustSaved::HomeUnavailable => state.notice(NoticeTone::Neutral, TOPIC, HOME_UNAVAILABLE),
     }
 }
 

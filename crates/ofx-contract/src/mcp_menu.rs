@@ -80,13 +80,64 @@ pub struct McpMenuCounts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpMenuRequest {
     Refresh,
-    Reload { generation: u64 },
-    Authenticate { generation: u64, server: String },
+    Reload {
+        generation: u64,
+    },
+    Authenticate {
+        generation: u64,
+        server: String,
+    },
+    Logout {
+        generation: u64,
+        server: String,
+    },
+    Add {
+        generation: u64,
+        form: McpMenuAddForm,
+    },
+    Remove {
+        generation: u64,
+        server: String,
+    },
+    Trust {
+        generation: u64,
+        change: McpMenuTrust,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuAddForm {
+    pub transport: McpMenuAddTransport,
+    pub name: String,
+    pub target: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpMenuAddTransport {
+    Local,
+    Http,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpMenuTrust {
+    Approve(String),
+    Reject(String),
+    ApproveAll,
+    Reset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpMenuSettled {
     pub generation: u64,
-    pub succeeded: bool,
+    pub outcome: McpMenuOutcome,
     pub feedback: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpMenuOutcome {
+    Continuing,
+    Returned,
+    Succeeded,
+    Failed,
 }

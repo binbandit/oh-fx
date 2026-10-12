@@ -108,12 +108,18 @@ enum ReloadFailure {
 
 impl ReloadFailure {
     fn failed(error: ProfileStoreError) -> Self {
-        Self::Failed(match error {
-            ProfileStoreError::Io(error) => McpError::from(error).to_string(),
-            error => error.to_string(),
-        })
+        Self::Failed(profile_error_name(error))
     }
 }
+
+fn profile_error_name(error: ProfileStoreError) -> String {
+    match error {
+        ProfileStoreError::Io(error) => McpError::from(error).to_string(),
+        error => error.to_string(),
+    }
+}
+
+type Settle = Box<dyn FnOnce(Result<ReloadOutcome, ReloadFailure>) -> Option<UiEvent> + Send>;
 
 struct Pending {
     cancel: CancellationToken,
@@ -159,12 +165,16 @@ impl McpHost {
     }
 
     pub(crate) fn begin_reload(&self) {
+        self.reload_with(Box::new(reload_notice));
+    }
+
+    fn reload_with(&self, settle: Settle) {
         self.discard_authentication("reload");
         let runtime = Arc::clone(&self.runtime);
         let sources = self.sources.clone();
         self.replace_pending(
             |cancel| async move { reload(&runtime, &sources, &cancel).await },
-            reload_notice,
+            settle,
         );
     }
 
@@ -241,6 +251,10 @@ impl McpHost {
     }
 
     pub(crate) fn begin_authority_reduction(&self, rebuild: bool) {
+        self.reduce_with(rebuild, Box::new(reload_notice));
+    }
+
+    fn reduce_with(&self, rebuild: bool, settle: Settle) {
         self.discard_authentication("authority_reduction");
         self.cancel_pending();
         self.runtime.revoke_workspace_except(&[]);
@@ -248,15 +262,14 @@ impl McpHost {
         let sources = self.sources.clone();
         self.replace_pending(
             move |cancel| async move { reduce(&runtime, &sources, rebuild, &cancel).await },
-            reload_notice,
+            settle,
         );
     }
 
-    fn replace_pending<F, W, S>(&self, work: W, settle: S)
+    fn replace_pending<F, W>(&self, work: W, settle: Settle)
     where
         W: FnOnce(CancellationToken) -> F,
         F: Future<Output = Result<ReloadOutcome, ReloadFailure>> + Send + 'static,
-        S: FnOnce(Result<ReloadOutcome, ReloadFailure>) -> Option<UiEvent> + Send + 'static,
     {
         self.cancel_pending();
         let cancel = CancellationToken::new();
