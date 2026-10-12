@@ -492,25 +492,20 @@ impl SessionStore {
     }
 
     pub fn remember_session_id(&self, id: &str) -> Result<(), SessionError> {
-        if !self.writable {
-            return Err(SessionError::SessionStoreReadOnly);
-        }
-        if !is_valid_session_id(id) {
-            return Err(SessionError::InvalidSessionId);
-        }
-        let data = self
-            .data
-            .as_ref()
-            .ok_or(SessionError::SessionStoreUnavailable)?;
-        if !has_private_dir_mode(data)? {
-            return Err(SessionError::SessionPathUnsafe);
-        }
-        let directory = data.open_or_create_child(CONTINUE_DIR)?;
-        directory.replace(
+        remember_in(
+            self.data.as_ref(),
+            self.writable,
             &remembered_file_name(&self.workspace_root),
-            format!("{id}\n").as_bytes(),
-        )?;
-        Ok(())
+            id,
+        )
+    }
+
+    pub fn remember_on_first_write(&self, session: &mut WritableSession) {
+        session.remember_on_first_write(RememberedPointer {
+            data: self.data.as_ref().and_then(|data| data.try_clone().ok()),
+            writable: self.writable,
+            file_name: remembered_file_name(&self.workspace_root),
+        });
     }
 
     fn writable_sessions(&self) -> Result<&PrivateDir, SessionError> {
@@ -571,6 +566,39 @@ fn layout_error(error: ofx_config::DurableError) -> SessionError {
         }
         other => other,
     }
+}
+
+pub(crate) struct RememberedPointer {
+    data: Option<PrivateDir>,
+    writable: bool,
+    file_name: String,
+}
+
+impl RememberedPointer {
+    pub(crate) fn remember(&self, id: &str) -> Result<(), SessionError> {
+        remember_in(self.data.as_ref(), self.writable, &self.file_name, id)
+    }
+}
+
+fn remember_in(
+    data: Option<&PrivateDir>,
+    writable: bool,
+    file_name: &str,
+    id: &str,
+) -> Result<(), SessionError> {
+    if !writable {
+        return Err(SessionError::SessionStoreReadOnly);
+    }
+    if !is_valid_session_id(id) {
+        return Err(SessionError::InvalidSessionId);
+    }
+    let data = data.ok_or(SessionError::SessionStoreUnavailable)?;
+    if !has_private_dir_mode(data)? {
+        return Err(SessionError::SessionPathUnsafe);
+    }
+    let directory = data.open_or_create_child(CONTINUE_DIR)?;
+    directory.replace(file_name, format!("{id}\n").as_bytes())?;
+    Ok(())
 }
 
 pub(crate) fn remembered_file_name(workspace_root: &str) -> String {

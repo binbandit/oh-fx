@@ -28,7 +28,6 @@ pub(crate) struct Persistence {
     pub(super) live: Option<LiveSession>,
     pub(super) overrides: LaunchOverrides,
     resumption: Option<Resumption>,
-    remember_fresh: bool,
     degraded: bool,
     title_task: Option<JoinHandle<()>>,
     title_progress: Option<TitleProgress>,
@@ -50,7 +49,6 @@ impl Persistence {
             live: None,
             overrides,
             resumption,
-            remember_fresh: false,
             degraded: false,
             title_task: None,
             title_progress: None,
@@ -122,9 +120,9 @@ impl Persistence {
     fn start_fresh(&mut self, agent: &mut Agent) -> Result<(), SessionError> {
         self.close(agent);
         let live = LiveSession::start(&self.store, self.preferences.clone(), self.route.clone())?;
+        self.store.remember_on_first_write(&mut live.session());
         live.attach(agent);
         self.live = Some(live);
-        self.remember_fresh = true;
         self.degraded = false;
         Ok(())
     }
@@ -141,7 +139,7 @@ impl Persistence {
         Some(non_durable("session creation failed", error))
     }
 
-    pub(crate) fn finish_turn(&mut self, report: &TurnReport) -> Option<Notice> {
+    pub(crate) fn finish_turn(&self, report: &TurnReport) -> Option<Notice> {
         let live = self.live.as_ref()?;
         if let Some(TurnFailure::Persistence(failure)) = &report.failure
             && report.outcome != TurnOutcome::Failed
@@ -165,16 +163,13 @@ impl Persistence {
                 ),
             ));
         }
-        self.remember_durable_work()
+        None
     }
 
-    pub(crate) fn remember_durable_work(&mut self) -> Option<Notice> {
+    pub(crate) fn remember_failure(&self) -> Option<Notice> {
         let live = self.live.as_ref()?;
-        if !self.remember_fresh || !live.session().has_durable_work() {
-            return None;
-        }
-        self.remember_fresh = false;
-        self.remember(live.id())
+        let error = live.session().take_remember_failure()?;
+        Some(remember_notice(live.id(), error))
     }
 
     pub(crate) fn children(&self) -> Option<Arc<dyn ChildStore>> {
@@ -328,7 +323,6 @@ impl Persistence {
                 None => {}
             }
         }
-        self.remember_fresh = false;
     }
 
     pub(crate) fn abandon_profile_ledger(&self) {
@@ -343,14 +337,18 @@ impl Persistence {
             "session",
             "event=remember_session_failed id={id} err={error}"
         );
-        Some(Notice::new(
-            NoticeTone::Warning,
-            SESSION_TOPIC,
-            format!(
-                "Session saved, but could not remember it for -c ({error}). Resume with oh-fx --resume {id}."
-            ),
-        ))
+        Some(remember_notice(id, error))
     }
+}
+
+fn remember_notice(id: &str, error: SessionError) -> Notice {
+    Notice::new(
+        NoticeTone::Warning,
+        SESSION_TOPIC,
+        format!(
+            "Session saved, but could not remember it for -c ({error}). Resume with oh-fx --resume {id}."
+        ),
+    )
 }
 
 impl Persistence {
