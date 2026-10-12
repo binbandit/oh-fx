@@ -66,6 +66,17 @@ impl LegacySseClient {
         &self.shared.auth
     }
 
+    pub(crate) async fn closed(&self) {
+        let _ = self
+            .shared
+            .state
+            .subscribe()
+            .wait_for(|state| {
+                matches!(state, ConnectionState::Failed(_) | ConnectionState::Stopped)
+            })
+            .await;
+    }
+
     pub(crate) async fn connect(
         endpoint: HttpEndpoint,
         initial_max_event_bytes: usize,

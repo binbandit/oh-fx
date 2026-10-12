@@ -1,4 +1,5 @@
 use std::fmt::{self, Write as _};
+use std::future::Future;
 use std::sync::Arc;
 
 use ofx_contract::{QuestionAsker, QuestionBatchEntry, QuestionOption, QuestionSubmission};
@@ -9,14 +10,17 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::elicitation::{
-    Answer, ElicitationCapabilities, ElicitationError, Field, FieldKind, FormSchema, Request,
-    RequestKind, validate_answer, validate_field_json,
+    Answer, ElicitationCapabilities, ElicitationError, Field, FieldKind, FormSchema,
+    HostClassification, Request, RequestKind, UrlRequest, classify_host, validate_answer,
+    validate_field_json,
 };
 use crate::json_number::{Number, NumberError};
+use crate::legacy_url_completion::{Completion, Waiter};
 use crate::timing::timeout_at;
 
 const MAX_FORM_ATTEMPTS: usize = 8;
 const MAX_COMPACT_CHOICES: usize = 3;
+const BROWSER_RETRIES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InteractionError {
@@ -38,21 +42,28 @@ impl fmt::Display for InteractionError {
 
 type Outcome<T> = Result<T, InteractionError>;
 
+type UrlOpener = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 #[derive(Clone)]
 pub struct InputResponder {
     questioner: Arc<dyn QuestionAsker>,
+    browser: UrlOpener,
     capabilities: ElicitationCapabilities,
     compact_forms: bool,
     turn: Arc<Mutex<()>>,
 }
 
 impl InputResponder {
-    pub fn new(questioner: Arc<dyn QuestionAsker>) -> Self {
+    pub fn new(
+        questioner: Arc<dyn QuestionAsker>,
+        browser: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
             questioner,
+            browser: Arc::new(browser),
             capabilities: ElicitationCapabilities {
                 form: true,
-                url: false,
+                url: true,
             },
             compact_forms: false,
             turn: Arc::default(),
@@ -97,6 +108,13 @@ pub(crate) struct Interaction<'a> {
     pub(crate) server_name: &'a str,
     pub(crate) deadline: Instant,
     pub(crate) finished: &'a CancellationToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlConsent {
+    Accepted,
+    Declined,
+    Cancelled,
 }
 
 enum FieldAnswer {
@@ -150,9 +168,7 @@ impl Interaction<'_> {
     pub(crate) async fn respond(&self, request: &Request) -> Outcome<Answer> {
         match &request.kind {
             RequestKind::Form(form) => self.answer_form(request, form).await,
-            RequestKind::Url => Err(InteractionError::Elicitation(
-                ElicitationError::UnsupportedMode,
-            )),
+            RequestKind::Url(url) => self.answer_url(url).await,
         }
     }
 
@@ -375,6 +391,110 @@ impl Interaction<'_> {
         Ok(FieldAnswer::Value(json))
     }
 
+    pub(crate) async fn consent_to_urls(
+        &self,
+        requests: &[(String, UrlRequest)],
+    ) -> Outcome<UrlConsent> {
+        let mut consent = UrlConsent::Accepted;
+        for (_, url) in requests {
+            match self.answer_url(url).await? {
+                Answer::Cancel => return Ok(UrlConsent::Cancelled),
+                Answer::Decline => consent = UrlConsent::Declined,
+                Answer::AcceptForm(_) | Answer::AcceptUrl => {}
+            }
+        }
+        Ok(consent)
+    }
+
+    pub(crate) async fn await_completion(&self, waiter: &Waiter<'_>) -> Outcome<bool> {
+        match waiter.status() {
+            Completion::Completed => return Ok(true),
+            Completion::Cancelled => return Ok(false),
+            Completion::Pending => {}
+        }
+        let server = terminal_safe(self.server_name)?;
+        let question = format!(
+            "Complete the browser flow requested by MCP server {server}. oh-fx will continue automatically if the server confirms every URL request. Otherwise choose I completed it / Retry, or Cancel."
+        );
+        let answer = self
+            .ask_until(
+                question,
+                labels(&["I completed it / Retry", "Cancel"]),
+                QuestionSubmission::Label,
+                waiter.settled(),
+            )
+            .await?;
+        if waiter.status() == Completion::Completed {
+            return Ok(true);
+        }
+        match answer {
+            Single::Cancelled => Ok(false),
+            Single::Answer(answer) if answer == "I completed it / Retry" => Ok(true),
+            Single::Answer(answer) if answer == "Cancel" => Ok(false),
+            Single::Invalid | Single::Answer(_) => Err(InteractionError::InvalidAnswer),
+        }
+    }
+
+    async fn answer_url(&self, request: &UrlRequest) -> Outcome<Answer> {
+        let server = terminal_safe(self.server_name)?;
+        let host = terminal_safe_bytes(&request.host)?;
+        let url = terminal_safe(&request.url)?;
+        let warning = match classify_host(&request.host) {
+            HostClassification::Ordinary => "",
+            HostClassification::Punycode => {
+                "\nWarning: This host uses Punycode and may disguise its destination."
+            }
+            HostClassification::NonAscii => {
+                "\nWarning: This host contains non-ASCII characters and may be visually ambiguous."
+            }
+        };
+        let question = format!(
+            "MCP server {server} requests an external browser action. Target host: {host}\nComplete URL: {url}{warning}\nOpen it? oh-fx will not fetch this URL or see browser contents."
+        );
+        match self
+            .ask_one(question, labels(&["Open URL", "Decline"]))
+            .await?
+            .as_deref()
+        {
+            None => return Ok(Answer::Cancel),
+            Some("Decline") => return Ok(Answer::Decline),
+            Some("Open URL") => {}
+            Some(_) => return Err(InteractionError::InvalidAnswer),
+        }
+        if self.open(&request.url).await {
+            return Ok(Answer::AcceptUrl);
+        }
+        let failure = format!(
+            "oh-fx could not open the browser for {host}. The URL was not fetched. Continue manually, retry the browser, or cancel?"
+        );
+        for _ in 0..BROWSER_RETRIES {
+            let options = labels(&["Continue manually", "Retry browser", "Cancel"]);
+            let decision = match self
+                .ask_single(failure.clone(), options, QuestionSubmission::Label)
+                .await?
+            {
+                Single::Cancelled => return Ok(Answer::Cancel),
+                Single::Invalid => continue,
+                Single::Answer(decision) => decision,
+            };
+            match decision.as_str() {
+                "Continue manually" => return Ok(Answer::AcceptUrl),
+                "Cancel" => return Ok(Answer::Cancel),
+                "Retry browser" if self.open(&request.url).await => return Ok(Answer::AcceptUrl),
+                _ => {}
+            }
+        }
+        Ok(Answer::Cancel)
+    }
+
+    async fn open(&self, url: &str) -> bool {
+        let browser = Arc::clone(&self.responder.browser);
+        let url = url.to_owned();
+        tokio::task::spawn_blocking(move || browser(&url))
+            .await
+            .unwrap_or(false)
+    }
+
     async fn keep_current_value(
         &self,
         server: &str,
@@ -519,6 +639,17 @@ impl Interaction<'_> {
         options: Vec<QuestionOption>,
         submission: QuestionSubmission,
     ) -> Outcome<Single> {
+        self.ask_until(question, options, submission, std::future::pending())
+            .await
+    }
+
+    async fn ask_until(
+        &self,
+        question: String,
+        options: Vec<QuestionOption>,
+        submission: QuestionSubmission,
+        interrupted: impl Future<Output = ()>,
+    ) -> Outcome<Single> {
         let asked = self.responder.questioner.ask(vec![QuestionBatchEntry {
             question,
             options,
@@ -529,6 +660,7 @@ impl Interaction<'_> {
                 answers.map_err(|_| InteractionError::McpInputTimedOut)?
             }
             () = self.finished.cancelled() => None,
+            () = interrupted => None,
         };
         Ok(match answers {
             None => Single::Cancelled,
@@ -618,7 +750,11 @@ fn number_answer(answer: &str) -> Outcome<String> {
 }
 
 pub(crate) fn terminal_safe(raw: &str) -> Outcome<String> {
-    let encoded = encode_terminal_safe(raw.as_bytes(), raw.len().saturating_mul(12));
+    terminal_safe_bytes(raw.as_bytes())
+}
+
+fn terminal_safe_bytes(raw: &[u8]) -> Outcome<String> {
+    let encoded = encode_terminal_safe(raw, raw.len().saturating_mul(12));
     if encoded.truncated {
         return Err(InteractionError::PresentationLimitExceeded);
     }
