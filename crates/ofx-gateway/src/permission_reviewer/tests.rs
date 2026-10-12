@@ -75,6 +75,7 @@ fn decision() -> Completion {
             output_tokens: Some(4),
         },
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }
@@ -547,6 +548,7 @@ fn reviewed(decision: &str) -> Completion {
         finish_reason: FinishReason::ToolCalls,
         usage: Usage::default(),
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }

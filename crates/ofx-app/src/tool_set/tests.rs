@@ -90,6 +90,7 @@ impl ModelProvider for ScriptedProvider {
                 finish_reason,
                 usage: Usage::default(),
                 billing: None,
+                service_tier: None,
                 provider_replay: None,
             })
         })

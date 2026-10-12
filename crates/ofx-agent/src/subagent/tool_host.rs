@@ -18,6 +18,7 @@ pub struct ChildSettings {
     pub model: String,
     pub effort: ReasoningEffort,
     pub fast_mode: bool,
+    pub ultrafast_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,7 @@ pub(crate) fn effective_settings(
             .cloned()
             .unwrap_or_else(|| defaults.effort.clone()),
         fast_mode: defaults.fast_mode,
+        ultrafast_mode: defaults.ultrafast_mode,
     }
 }
 

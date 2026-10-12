@@ -1121,6 +1121,7 @@ impl Reducer {
                 output_tokens: self.usage.output,
             },
             billing: None,
+            service_tier: None,
             provider_replay: None,
         })
     }
