@@ -213,6 +213,19 @@ impl ControllerState {
     }
 
     pub(crate) fn save_model_preference(&self, topic: &str, effort: Option<&ReasoningEffort>) {
+        self.save_preference(topic, effort, Some(self.ultrafast_requested()));
+    }
+
+    fn save_effort_preference(&self, effort: &ReasoningEffort) {
+        self.save_preference(EFFORT_TOPIC, Some(effort), None);
+    }
+
+    fn save_preference(
+        &self,
+        topic: &str,
+        effort: Option<&ReasoningEffort>,
+        ultrafast_mode: Option<bool>,
+    ) {
         let provider = self.setup.provider();
         let saved = user_settings::save(self.setup.preferences(), |paths| {
             save_model_preference(
@@ -220,7 +233,7 @@ impl ControllerState {
                 &provider,
                 &self.model,
                 effort.map(ReasoningEffort::label),
-                (self.fast_mode(), self.ultrafast_requested()),
+                (self.fast_mode(), ultrafast_mode),
             )
         });
         if let Err(unsaved) = saved {
@@ -3852,6 +3865,38 @@ mod tests {
         );
         assert!(!last_controls(harness.until(controls_changed).await).ultrafast);
         assert_eq!(saved_settings(&harness)["ultrafast_mode"], false);
+    }
+
+    async fn step_effort(harness: &mut Harness) -> Value {
+        harness.command("/settings");
+        harness.until(settings_opened).await;
+        let shown = step_setting(harness, SettingId::Effort, 1).await;
+        assert_eq!(last_settings(&shown).effort, "low");
+        saved_settings(harness)
+    }
+
+    #[tokio::test]
+    async fn an_effort_change_leaves_the_saved_ultra_choice_alone() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 8);
+        let home = codex_home();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let mut launched = Harness::requesting_ultrafast(home, setup);
+        let saved = step_effort(&mut launched).await;
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved.get("ultrafast_mode"), None);
+
+        let catalog = codex_catalog(false, 8);
+        let settings = json!({
+            "provider": "codex",
+            "models": {"codex": CODEX_MODEL},
+            "ultrafast_mode": true
+        });
+        let mut opted_out = Harness::codex_saved(&codex, &catalog, &settings).await;
+        let saved = step_effort(&mut opted_out).await;
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved["ultrafast_mode"], true);
     }
 
     #[tokio::test]

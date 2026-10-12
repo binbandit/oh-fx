@@ -250,7 +250,7 @@ enum Patch<'a> {
         model: &'a str,
         effort: Option<&'a str>,
         fast_mode: bool,
-        ultrafast_mode: bool,
+        ultrafast_mode: Option<bool>,
     },
     PermissionMode(PermissionMode),
     YoloAcknowledged,
@@ -370,7 +370,7 @@ pub fn save_model_preference(
     provider: &ProviderId,
     model: &str,
     effort: Option<&str>,
-    (fast_mode, ultrafast_mode): (bool, bool),
+    (fast_mode, ultrafast_mode): (bool, Option<bool>),
 ) -> Result<(), SettingsWriteFailure> {
     commit(
         paths,
@@ -967,14 +967,16 @@ fn apply_provider_model(
 
 fn put_speed(
     root: &mut Map<String, Value>,
-    (fast_mode, ultrafast_mode): (bool, bool),
+    (fast_mode, ultrafast_mode): (bool, Option<bool>),
     application: &mut Application,
 ) {
     application.changed |= put_bool(root, FAST_MODE, fast_mode);
     application.changed |= put_bool(root, FAST_MODE_MODEL_BOUND, true);
     migrate_workspace_preference(root, &FAST_MODE_MIGRATION, application);
-    application.changed |= put_bool(root, ULTRAFAST_MODE, ultrafast_mode);
-    migrate_workspace_preference(root, &ULTRAFAST_MODE_MIGRATION, application);
+    if let Some(ultrafast_mode) = ultrafast_mode {
+        application.changed |= put_bool(root, ULTRAFAST_MODE, ultrafast_mode);
+        migrate_workspace_preference(root, &ULTRAFAST_MODE_MIGRATION, application);
+    }
 }
 
 fn migrate_workspace_preference(

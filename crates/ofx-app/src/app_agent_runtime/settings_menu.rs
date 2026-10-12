@@ -154,7 +154,7 @@ impl ControllerState {
             return Outcome::Unchanged;
         }
         effort.clone_into(&mut self.effort);
-        self.save_model_preference(EFFORT_TOPIC, Some(&effort));
+        self.save_effort_preference(&effort);
         Outcome::Changed {
             effort: Some(effort),
         }
