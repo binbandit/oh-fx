@@ -227,12 +227,16 @@ impl Session {
     fn write_all(&self, master: &OwnedFd, mut bytes: &[u8]) -> Result<(), StructuredErrorCode> {
         let wait = Timespec::try_from(WRITE_POLL).unwrap_or_default();
         while !bytes.is_empty() {
-            match rustix::io::write(master, bytes) {
+            let written = {
+                let state = self.lock();
+                input_open(&state)?;
+                rustix::io::write(master, bytes)
+            };
+            match written {
                 Ok(0) => return Err(StructuredErrorCode::InvalidRequest),
                 Ok(count) => bytes = &bytes[count..],
                 Err(Errno::INTR) => {}
                 Err(Errno::AGAIN) => {
-                    self.input_open()?;
                     let mut fds = [PollFd::new(master, PollFlags::OUT)];
                     match poll(&mut fds, Some(&wait)) {
                         Ok(_) | Err(Errno::INTR) => {}
@@ -240,23 +244,12 @@ impl Session {
                     }
                 }
                 Err(_) => {
-                    self.input_open()?;
+                    input_open(&self.lock())?;
                     return Err(StructuredErrorCode::InvalidRequest);
                 }
             }
         }
         Ok(())
-    }
-
-    fn input_open(&self) -> Result<(), StructuredErrorCode> {
-        let state = self.lock();
-        if state.close_committed {
-            Err(StructuredErrorCode::AuthorityDenied)
-        } else if state.lifecycle != Lifecycle::Running {
-            Err(StructuredErrorCode::InvalidLifecycle)
-        } else {
-            Ok(())
-        }
     }
 
     pub(super) async fn wait_for(
@@ -684,6 +677,16 @@ async fn sleep_until_or_never(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => sleep_until(deadline).await,
         None => future::pending().await,
+    }
+}
+
+fn input_open(state: &State) -> Result<(), StructuredErrorCode> {
+    if state.close_committed {
+        Err(StructuredErrorCode::AuthorityDenied)
+    } else if state.lifecycle != Lifecycle::Running {
+        Err(StructuredErrorCode::InvalidLifecycle)
+    } else {
+        Ok(())
     }
 }
 

@@ -69,6 +69,10 @@ const TESTS: &[(&str, fn())] = &[
         a_forced_close_ends_a_terminal_whose_input_is_full,
     ),
     (
+        "no_input_reaches_a_terminal_once_its_close_begins",
+        no_input_reaches_a_terminal_once_its_close_begins,
+    ),
+    (
         "the_screen_is_unavailable_after_output_it_cannot_parse",
         the_screen_is_unavailable_after_output_it_cannot_parse,
     ),
@@ -755,6 +759,43 @@ fn a_forced_close_ends_a_terminal_whose_input_is_full() {
         StructuredErrorCode::AuthorityDenied
     );
     assert_eq!(fixture.lifecycle(&started.id), Lifecycle::Closed);
+}
+
+fn no_input_reaches_a_terminal_once_its_close_begins() {
+    let fixture = Fixture::new();
+    let started = fixture.start(
+        "set +m; stty raw -echo; trap 'cat > drained' TERM; : > ready; while :; do sleep 1; done",
+        ReturnCondition::Started,
+    );
+    fixture.file_until("ready", |_| true);
+    let writer = {
+        let terminals = fixture.terminals.clone();
+        let id = started.id.clone();
+        thread::spawn(move || {
+            let mut accepted = None;
+            loop {
+                match terminals.write(OWNER, &id, "x") {
+                    Ok(_) => accepted = Some(Instant::now()),
+                    Err(failure) => return (accepted, failure.code),
+                }
+            }
+        })
+    };
+    let filled = Instant::now() + Duration::from_millis(300);
+    while !writer.is_finished() && Instant::now() < filled {
+        thread::sleep(POLL);
+    }
+    let closing = Instant::now();
+    let closed = fixture
+        .close(&started.id, ClosePolicy::Graceful)
+        .expect("close the terminal");
+    assert_eq!(closed.lifecycle, Lifecycle::Closed);
+    let (accepted, code) = writer.join().expect("the writer ends");
+    assert_eq!(code, StructuredErrorCode::AuthorityDenied);
+    assert!(
+        accepted.is_some_and(|accepted| accepted < closing),
+        "input was accepted after the close began"
+    );
 }
 
 fn saved_terminals_answer_after_their_process_ended() {
