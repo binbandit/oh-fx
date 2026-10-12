@@ -4,7 +4,7 @@ use ofx_contract::{
 };
 
 use super::*;
-use crate::shell::mcp_menu::{Event, McpMenuState};
+use crate::shell::mcp_menu::{Action, Event, McpMenuState};
 
 fn theme() -> Theme {
     Theme::builtin(false, true, true)
@@ -41,7 +41,21 @@ fn snapshot(servers: Vec<McpMenuServer>) -> McpMenuSnapshot {
 }
 
 fn frame(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize, budget: usize) -> String {
-    let view = McpMenuView { state, snapshot };
+    frame_with(state, snapshot, None, width, budget)
+}
+
+fn frame_with(
+    state: &McpMenuState,
+    snapshot: &McpMenuSnapshot,
+    feedback: Option<&str>,
+    width: usize,
+    budget: usize,
+) -> String {
+    let view = McpMenuView {
+        state,
+        snapshot,
+        feedback,
+    };
     let rows = mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget));
     rows.iter()
         .map(|row| {
@@ -57,7 +71,11 @@ fn frame(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize, budget:
 }
 
 fn hint(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize) -> String {
-    let view = McpMenuView { state, snapshot };
+    let view = McpMenuView {
+        state,
+        snapshot,
+        feedback: None,
+    };
     mcp_menu_hint_row(&theme(), view, width, false).text()
 }
 
@@ -68,6 +86,7 @@ fn the_empty_server_state_is_compact_and_actionable() {
     let view = McpMenuView {
         state: &state,
         snapshot: &empty,
+        feedback: None,
     };
     assert_eq!(menu_row_count(view, 20), 3);
     let rows = frame(&state, &empty, 100, 20);
@@ -126,6 +145,7 @@ fn the_selection_stays_visible_with_one_body_row() {
     let view = McpMenuView {
         state: &state,
         snapshot: &servers,
+        feedback: None,
     };
     assert_eq!(menu_row_count(view, 3), 3);
     let rows = frame(&state, &servers, 40, 3);
@@ -241,14 +261,42 @@ fn the_details_and_help_screens_render_their_upstream_facts() {
     for line in [
         "  Profile config      ~/.config/oh-fx/mcp.json",
         "  Project config      <workspace>/.mcp.json",
-        "  servers: enter inspect",
+        "  servers: r reload · enter inspect",
+        "  details: enter sign in",
     ] {
         assert!(info.contains(line), "{line:?} in {info}");
     }
 }
 
 #[test]
-fn hints_fit_the_width_of_each_screen() {
+fn feedback_takes_the_second_header_row_and_warns_after_a_failure() {
+    let mut state = McpMenuState::open(1);
+    let servers = snapshot(vec![ready("fixture")]);
+    let shown = frame_with(
+        &state,
+        &servers,
+        Some("MCP configuration reloaded."),
+        80,
+        12,
+    );
+    assert_eq!(shown.lines().nth(1), Some("  MCP configuration reloaded."));
+    let failure = Some("MCP reload failed: LockBusy");
+    let feedback_paint = |state: &McpMenuState| {
+        let view = McpMenuView {
+            state,
+            snapshot: &servers,
+            feedback: failure,
+        };
+        mcp_menu_rows(&theme(), view, 80, 3)[1].segments()[1].paint
+    };
+    assert_eq!(feedback_paint(&state), theme().dim);
+    state.apply(Event::RequestAction(Action::Refresh));
+    state.apply(Event::EffectFailed(1));
+    assert_eq!(feedback_paint(&state), theme().warning);
+}
+
+#[test]
+fn hints_fit_the_width_and_name_only_available_actions() {
     let mut state = McpMenuState::open(1);
     let remote = McpMenuServer {
         transport: McpMenuTransport::Http,
@@ -260,18 +308,28 @@ fn hints_fit_the_width_of_each_screen() {
     let servers = snapshot(vec![remote]);
     assert_eq!(
         hint(&state, &servers, 100),
-        "↑↓ move  enter inspect  c help  esc close"
+        "↑↓ move  enter inspect  r reload  c help  esc close"
     );
-    assert_eq!(hint(&state, &servers, 30), "↑↓ move  enter  c help  esc");
-    assert_eq!(hint(&state, &servers, 20), "enter c esc");
+    assert_eq!(
+        hint(&state, &servers, 40),
+        "↑↓ move  enter  r reload  c help  esc"
+    );
+    assert_eq!(hint(&state, &servers, 20), "enter r c esc");
     state.apply(Event::ShowDetails);
-    assert_eq!(hint(&state, &servers, 100), "c help  esc back");
+    assert_eq!(
+        hint(&state, &servers, 100),
+        "enter sign in  c help  esc back"
+    );
+    let signed_in = snapshot(vec![ready("local")]);
+    assert_eq!(hint(&state, &signed_in, 100), "c help  esc back");
+    assert_eq!(hint(&state, &servers, 20), "c help  esc back");
     assert_eq!(hint(&state, &servers, 10), "c esc");
     state.apply(Event::ShowInfo);
     assert_eq!(hint(&state, &servers, 100), "esc back");
     let view = McpMenuView {
         state: &state,
         snapshot: &servers,
+        feedback: None,
     };
     assert_eq!(
         mcp_menu_hint_row(&theme(), view, 100, true).text(),
