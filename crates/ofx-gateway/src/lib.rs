@@ -15,6 +15,7 @@ mod stall_watch;
 #[cfg(test)]
 mod test_sources;
 mod tool_call_ids;
+mod vercel_credits;
 mod vercel_model_policy;
 mod vercel_models;
 mod vercel_protocol;
@@ -37,6 +38,9 @@ pub use permission_reviewer::{
     ChatCompletionsReviewTransport, CodexReviewTransport, GatewayReviewTransport,
 };
 pub use provider_failure::{HttpFailure, http_failure};
+pub use vercel_credits::{
+    CreditsSnapshot, GATEWAY_CREDITS_PATH, GatewayCreditsEndpoints, fetch_credits,
+};
 pub use vercel_models::{
     CatalogView, GATEWAY_MODELS_PATH, GatewayModel, GatewayModelCatalog, GatewayModelsEndpoints,
 };

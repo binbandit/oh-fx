@@ -453,7 +453,7 @@ async fn ask(
         modifiers,
         executions: &executions,
     };
-    let answered = answer(&request, endpoints, echo, &cancel, &received).await;
+    let answered = Box::pin(answer(&request, endpoints, echo, &cancel, &received)).await;
     executions.shutdown().await;
     if args.output.layout == AskLayout::Captured {
         received.restore_default_action();

@@ -1,7 +1,8 @@
 [[file]]
 upstream = "src/core/gateway/gateway_provider.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/oh-fx/src/credits_command.rs"]
+note = "The credits lookup input and the unavailable credits provider's message for a provider without credits exist; the provider bundle's chat URL, OAuth transport and CLI catalog seams are plain functions in oh-fx."
 
 [[file]]
 upstream = "src/core/gateway/model_catalog.zig"
