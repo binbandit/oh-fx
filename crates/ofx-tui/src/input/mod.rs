@@ -10,6 +10,8 @@ mod text_scalar;
 
 use std::collections::VecDeque;
 
+use ofx_trace::trace_log;
+
 use crate::terminal::{
     ProbeFeed, ProbePoll, TaggedCursorProbe, ThemeMonitor, ThemeMonitorFeed, ThemeQuery,
     ThemeUpdate,
@@ -32,6 +34,7 @@ use terminal_action_decoder::Decoder;
 
 pub(crate) const INPUT_ESCAPE_TIMEOUT_MS: i64 = 30;
 
+const NATIVE_CLEAR: &str = "native_clear";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InputContext {
     pub(crate) now_ms: i64,
@@ -163,6 +166,10 @@ impl TerminalInput {
         self.native_clear.busy()
     }
 
+    pub(crate) fn native_clear_expected_row(&self) -> u16 {
+        self.native_clear.expected_row().unwrap_or(0)
+    }
+
     pub(crate) fn native_clear_deadline_ms(&self) -> Option<i64> {
         self.cursor_probe.deadline_ms()
     }
@@ -172,11 +179,13 @@ impl TerminalInput {
             ProbePoll::Quiet => {}
             ProbePoll::TimedOut(unmatched) => {
                 self.native_clear.disable(true);
+                trace_log!(NATIVE_CLEAR, "native_clear_probe_timeout");
                 self.native_clear.settle();
                 self.released.push(unmatched.as_slice());
             }
             ProbePoll::LateWindowExpired(unmatched) => {
                 self.native_clear.finish_late_response();
+                trace_log!(NATIVE_CLEAR, "native_clear_probe_late_window_expired");
                 self.released.push(unmatched.as_slice());
             }
             ProbePoll::CandidateExpired(unmatched) => {
@@ -335,6 +344,7 @@ impl TerminalInput {
             ProbeFeed::Pending => {}
             ProbeFeed::Position(_) | ProbeFeed::LateResponse => {
                 self.native_clear.finish_late_response();
+                trace_log!(NATIVE_CLEAR, "native_clear_probe_late_response_discarded");
             }
             ProbeFeed::Forward(forwarded) => {
                 for byte in forwarded.as_slice() {
@@ -349,11 +359,23 @@ impl TerminalInput {
         match self.cursor_probe.feed(byte) {
             ProbeFeed::Pending => {}
             ProbeFeed::Position(position) => {
-                if self.native_clear.settle() != Some(position.row) {
+                let expected = self.native_clear.settle();
+                let matched = expected == Some(position.row);
+                trace_log!(
+                    NATIVE_CLEAR,
+                    "native_clear_probe {} expected_row={} observed_row={}",
+                    if matched { "match" } else { "mismatch" },
+                    expected.unwrap_or(0),
+                    position.row
+                );
+                if !matched {
                     self.events.push_back(InputEvent::NativeClearDetected);
                 }
             }
-            ProbeFeed::LateResponse => self.native_clear.finish_late_response(),
+            ProbeFeed::LateResponse => {
+                self.native_clear.finish_late_response();
+                trace_log!(NATIVE_CLEAR, "native_clear_probe_late_response_discarded");
+            }
             ProbeFeed::Forward(forwarded) => self.release_forwarded(forwarded.as_slice(), now_ms),
         }
     }
@@ -367,6 +389,7 @@ impl TerminalInput {
         if self.native_clear.active() {
             let unmatched = self.cursor_probe.expire(now_ms);
             self.native_clear.disable(true);
+            trace_log!(NATIVE_CLEAR, "native_clear_probe_overflow");
             self.native_clear.settle();
             self.released.push(forwarded);
             self.released.push(unmatched.as_slice());
@@ -610,6 +633,44 @@ mod tests {
         assert!(!input.native_clear_active() && input.native_clear_busy());
         input.push_bytes(b"A");
         assert_eq!(drain_probing(&mut input, 2), [action(Action::CursorUp)]);
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_NATIVE_CLEAR_TRACE_CHILD";
+    const TRACE_TEST: &str = "input::tests::native_clear_probes_write_their_lines";
+
+    #[test]
+    fn native_clear_probes_write_their_lines() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+            a_printable_key_holds_input_until_the_cursor_reply_pair_arrives();
+            a_reply_on_another_row_reports_the_clear_before_the_held_keys();
+            a_timeout_releases_the_keys_turns_the_probe_off_and_discards_a_late_pair();
+            the_late_window_hands_on_a_partial_reply_when_it_closes();
+            held_input_past_its_bound_is_released_in_arrival_order_and_ends_the_probe();
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [native_clear] native_clear_probe match expected_row=",
+            " [native_clear] native_clear_probe mismatch expected_row=",
+            " [native_clear] native_clear_probe_timeout\n",
+            " [native_clear] native_clear_probe_late_response_discarded\n",
+            " [native_clear] native_clear_probe_late_window_expired\n",
+            " [native_clear] native_clear_probe_overflow\n",
+        ] {
+            assert!(written.contains(line), "{line}\n{written}");
+        }
     }
 
     #[test]

@@ -21,6 +21,10 @@ impl NativeClearProbe {
         self.expected_row.is_some()
     }
 
+    pub(super) fn expected_row(&self) -> Option<u16> {
+        self.expected_row
+    }
+
     pub(super) fn busy(&self) -> bool {
         self.active() || self.late_response_pending
     }
