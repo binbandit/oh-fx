@@ -14,7 +14,7 @@ note = "Clean/User environment profiles and shell paths exist; requiresShellRout
 upstream = "src/core/execution/command_runner.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/command_runner.rs"]
-note = "Foreground supervisor and process completion exist, with upstream's `core` lines for the shell environment, termination requests, forced kills, leader completion, settlement expiry, indeterminate exits and a lost exit watch; direct-argv route execution and Darwin lineage tracking are absent."
+note = "Foreground supervisor and process completion exist, with upstream's `core` lines for the shell environment, termination requests, forced kills, leader completion, settlement expiry, indeterminate exits, a lost exit watch, failed cleanups, incomplete output drains and suppressed output echo; direct-argv route execution and Darwin lineage tracking are absent."
 
 [[file]]
 upstream = "src/core/execution/local_executor.zig"
