@@ -864,3 +864,19 @@ async fn a_cancelled_turn_waits_for_a_refresh_that_is_saving_and_then_sends_noth
     assert!(refresh.saved.load(std::sync::atomic::Ordering::SeqCst));
     assert!(server.requests().is_empty());
 }
+
+#[tokio::test]
+async fn a_key_echoed_across_the_error_limit_is_never_shown_in_a_turn_error() {
+    for padding in [970, 985, 995, 1_000] {
+        let server = FakeServer::start([Reply::status(
+            401,
+            format!(
+                r#"{{"error":{{"message":"{} {KEY} tail"}}}}"#,
+                "w".repeat(padding)
+            ),
+        )]);
+        let error = run(&keyed(&server), None).await.0.unwrap_err();
+        let shown = format!("{error:?}");
+        assert!(!shown.contains(&KEY[..8]), "{padding}: {shown}");
+    }
+}

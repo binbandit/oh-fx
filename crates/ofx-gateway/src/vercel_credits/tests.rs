@@ -108,3 +108,18 @@ async fn failures_carry_upstream_messages_without_the_key() {
         CreditsSnapshot::failed("failed to fetch credits from gateway")
     );
 }
+
+#[tokio::test]
+async fn a_key_echoed_across_the_message_limit_is_never_shown() {
+    for padding in [970, 985, 995, 1_000] {
+        let server = FakeServer::start([Reply::status(
+            401,
+            format!(
+                r#"{{"error":{{"message":"{} {KEY} tail"}}}}"#,
+                "w".repeat(padding)
+            ),
+        )]);
+        let error = fetched(&server, None).await.error.unwrap();
+        assert!(!error.contains(&KEY[..8]), "{padding}: {error}");
+    }
+}

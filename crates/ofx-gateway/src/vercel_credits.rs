@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{BoundedFailure, bounded_get};
 use crate::gateway_error_format::format_http_error_message;
-use crate::secret_mask::mask_configured_secrets;
 
 pub const GATEWAY_CREDITS_PATH: &str = "/coding-agent/v1/credits";
 const CREDITS_URL: &str = "https://ai-gateway.vercel.sh/coding-agent/v1/credits";
@@ -93,10 +92,12 @@ pub async fn fetch_credits(
     match bounded_get(request, MAX_CREDITS_BYTES, deadline, cancel).await {
         Ok((StatusCode::OK, body)) => snapshot(&body),
         Ok((status, body)) => {
-            let message =
-                format_http_error_message(status.as_u16(), &String::from_utf8_lossy(&body));
             let secrets: Vec<String> = credential.map(str::to_owned).into_iter().collect();
-            CreditsSnapshot::failed(&mask_configured_secrets(message, &secrets))
+            CreditsSnapshot::failed(&format_http_error_message(
+                status.as_u16(),
+                &String::from_utf8_lossy(&body),
+                &secrets,
+            ))
         }
         Err(BoundedFailure::Cancelled | BoundedFailure::Failed(_)) => {
             CreditsSnapshot::failed(FETCH_FAILED)

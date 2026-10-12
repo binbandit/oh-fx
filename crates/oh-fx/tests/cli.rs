@@ -1013,3 +1013,31 @@ fn credits_and_balance_read_the_gateway_credits_from_the_loopback_override() {
         Some(format!("Bearer {key}").as_str())
     );
 }
+
+#[test]
+fn credits_never_show_a_key_echoed_across_the_error_limit() {
+    let key = "vck_live_0123456789abcdef";
+    let rejection = || {
+        Reply::status(
+            401,
+            format!(
+                r#"{{"error":{{"message":"{} {key} tail"}}}}"#,
+                "w".repeat(990)
+            ),
+        )
+    };
+    let server = FakeServer::start([rejection(), rejection()]);
+    let url = format!("http://{}/coding-agent/v1/credits", server.address());
+    let environment = [
+        ("OH_FX_E2E_GATEWAY_CREDITS_URL", url.as_str()),
+        ("AI_GATEWAY_API_KEY", key),
+    ];
+    let text = oh_fx(&["credits"], &environment);
+    assert_eq!(text.status.code(), Some(1));
+    assert!(stderr(&text).starts_with("[credits] error: API access denied"));
+    let json = oh_fx(&["credits", "--json"], &environment);
+    assert_eq!(json.status.code(), Some(1));
+    for shown in [stderr(&text), stdout(&json)] {
+        assert!(!shown.contains(&key[..8]), "{shown}");
+    }
+}
