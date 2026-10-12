@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use ofx_contract::{QuestionAsker, QuestionBatchEntry, QuestionOption};
 use ofx_text::encode_terminal_safe;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -39,6 +40,7 @@ type Outcome<T> = Result<T, InteractionError>;
 pub struct InputResponder {
     questioner: Arc<dyn QuestionAsker>,
     capabilities: ElicitationCapabilities,
+    turn: Arc<Mutex<()>>,
 }
 
 impl InputResponder {
@@ -49,11 +51,25 @@ impl InputResponder {
                 form: true,
                 url: false,
             },
+            turn: Arc::default(),
         }
     }
 
     pub(crate) fn capabilities(&self) -> ElicitationCapabilities {
         self.capabilities
+    }
+
+    pub(crate) async fn take_turn(
+        &self,
+        deadline: Instant,
+        finished: &CancellationToken,
+    ) -> Outcome<Option<MutexGuard<'_, ()>>> {
+        tokio::select! {
+            turn = timeout_at(deadline, self.turn.lock()) => {
+                turn.map(Some).map_err(|_| InteractionError::McpInputTimedOut)
+            }
+            () = finished.cancelled() => Ok(None),
+        }
     }
 }
 

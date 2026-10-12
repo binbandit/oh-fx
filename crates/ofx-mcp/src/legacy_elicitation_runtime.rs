@@ -8,10 +8,12 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::elicitation::{ElicitationCapabilities, Request, parse_request, validate_answer};
+use crate::elicitation::{
+    Answer, ElicitationCapabilities, Request, parse_request, validate_answer,
+};
 use crate::elicitation_interaction::{InputResponder, Interaction};
 use crate::error::McpError;
-use crate::operation_control::DeadlineGate;
+use crate::operation_control::{DeadlineGate, InputPause};
 use crate::protocol_messages::parse_json;
 use crate::protocol_negotiation::ElicitationWire;
 
@@ -148,20 +150,29 @@ impl ElicitationContext {
                 "Unsupported elicitation mode",
             ));
         }
-        let deadline = self.gate.pause_for_input();
-        let response = self.answer(id, &request, deadline).await;
-        self.gate.resume(self.operation_timeout);
-        Ok(response)
+        let pause = self.gate.pause_for_input(self.operation_timeout);
+        Ok(self.answer(id, &request, &pause).await)
     }
 
-    async fn answer(&self, id: &Value, request: &Request, deadline: Instant) -> String {
+    async fn answer(&self, id: &Value, request: &Request, pause: &InputPause<'_>) -> String {
+        let _turn = match self
+            .responder
+            .take_turn(pause.deadline(), &self.finished)
+            .await
+        {
+            Ok(Some(turn)) => turn,
+            Ok(None) => return result_response(id, &Answer::Cancel),
+            Err(error) => {
+                return error_response(id, ErrorCode::INTERNAL_ERROR, &error.to_string());
+            }
+        };
         if !self.owner.current() {
             return owner_changed(id);
         }
         let interaction = Interaction {
             responder: &self.responder,
             server_name: &self.server_name,
-            deadline,
+            deadline: pause.extend(),
             finished: &self.finished,
         };
         let response = match interaction.respond(request).await {
@@ -180,11 +191,15 @@ impl ElicitationContext {
                 "Invalid elicitation response",
             );
         }
-        format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{}}}",
-            response.to_json()
-        )
+        result_response(id, &response)
     }
+}
+
+fn result_response(id: &Value, answer: &Answer) -> String {
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{}}}",
+        answer.to_json()
+    )
 }
 
 fn owner_changed(id: &Value) -> String {

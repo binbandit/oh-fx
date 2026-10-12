@@ -221,3 +221,130 @@ async fn futures_poll<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
     })
     .await
 }
+
+#[derive(Default)]
+struct Desk {
+    questions: Mutex<Vec<String>>,
+    waiting: Mutex<Vec<tokio::sync::oneshot::Sender<Option<Vec<String>>>>>,
+}
+
+impl QuestionAsker for Desk {
+    fn ask(&self, entries: Vec<QuestionBatchEntry>) -> BoxFuture<'static, Option<Vec<String>>> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        self.questions
+            .lock()
+            .unwrap()
+            .extend(entries.into_iter().map(|entry| entry.question));
+        self.waiting.lock().unwrap().push(answer);
+        Box::pin(async move { answered.await.ok().flatten() })
+    }
+}
+
+impl Desk {
+    fn questions(&self) -> Vec<String> {
+        self.questions.lock().unwrap().clone()
+    }
+
+    fn answer(&self, answer: &str) {
+        let mut waiting = self.waiting.lock().unwrap();
+        assert_eq!(waiting.len(), 1, "one question is shown at a time");
+        let _ = waiting.remove(0).send(Some(vec![answer.to_owned()]));
+    }
+}
+
+async fn settle() {
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+}
+
+fn desk_context(desk: &Arc<Desk>) -> Arc<ElicitationContext> {
+    Arc::new(
+        ElicitationContext::new(
+            ElicitationWire::LegacyMcp2025_11,
+            OperationElicitation {
+                responder: InputResponder::new(Arc::clone(desk) as Arc<dyn QuestionAsker>),
+                server_name: "fixture".to_owned(),
+                owner: Box::new(Owner(Arc::new(AtomicBool::new(true)))),
+            },
+            Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .unwrap(),
+    )
+}
+
+fn responding(
+    context: &Arc<ElicitationContext>,
+    frame: &'static str,
+) -> tokio::task::JoinHandle<String> {
+    let context = Arc::clone(context);
+    tokio::spawn(async move { context.respond(frame.as_bytes()).await.unwrap() })
+}
+
+const CITY_FORM: &str = r#"{"jsonrpc":"2.0","id":8,"method":"elicitation/create","params":{"message":"Where?","requestedSchema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}"#;
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_requests_are_asked_in_turn_and_keep_the_deadline_paused() {
+    let name = (
+        NAME_FORM,
+        "Reason: Who?",
+        "Ada",
+        r#"{"jsonrpc":"2.0","id":7,"result":{"action":"accept","content":{"name":"Ada"}}}"#,
+    );
+    let city = (
+        CITY_FORM,
+        "Reason: Where?",
+        "Paris",
+        r#"{"jsonrpc":"2.0","id":8,"result":{"action":"accept","content":{"city":"Paris"}}}"#,
+    );
+    for (first, second) in [(name, city), (city, name)] {
+        let desk = Arc::new(Desk::default());
+        let context = desk_context(&desk);
+        let first_task = responding(&context, first.0);
+        settle().await;
+        let second_task = responding(&context, second.0);
+        settle().await;
+        assert_eq!(desk.questions().len(), 1);
+        assert!(desk.questions()[0].contains(first.1));
+        desk.answer(first.2);
+        settle().await;
+        desk.answer("Submit");
+        settle().await;
+        assert_eq!(first_task.await.unwrap(), first.3);
+        assert_eq!(desk.questions().len(), 3);
+        assert!(desk.questions()[2].contains(second.1));
+        tokio::time::advance(Duration::from_mins(1)).await;
+        let expired = context.gate().expired();
+        tokio::pin!(expired);
+        assert!(futures_poll(&mut expired).await.is_none());
+        desk.answer(second.2);
+        settle().await;
+        desk.answer("Submit");
+        settle().await;
+        assert_eq!(second_task.await.unwrap(), second.3);
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert!(futures_poll(&mut expired).await.is_some());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_finished_operation_cancels_its_waiting_requests_too() {
+    let desk = Arc::new(Desk::default());
+    let context = desk_context(&desk);
+    let asked = responding(&context, NAME_FORM);
+    settle().await;
+    let waiting = responding(&context, CITY_FORM);
+    settle().await;
+    context.finish();
+    settle().await;
+    assert_eq!(
+        asked.await.unwrap(),
+        r#"{"jsonrpc":"2.0","id":7,"result":{"action":"cancel"}}"#
+    );
+    assert_eq!(
+        waiting.await.unwrap(),
+        r#"{"jsonrpc":"2.0","id":8,"result":{"action":"cancel"}}"#
+    );
+    assert_eq!(desk.questions().len(), 1);
+}

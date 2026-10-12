@@ -23,8 +23,15 @@ while IFS= read -r line; do
       reply "$id" '{"tools":[{"name":"profile","description":"Ask for a profile.","inputSchema":{"type":"object"}}]}' ;;
     *'"method":"tools/call"'*)
       printf '{"jsonrpc":"2.0","id":"ask-1","method":"elicitation/create","params":{"message":"Who are you?","requestedSchema":{"type":"object","properties":{"name":{"type":"string","title":"Name"}},"required":["name"]}}}\n'
-      IFS= read -r answer
-      printf '%s\n' "$answer" > "$MCP_STATE/answer"
+      if [ -f "$MCP_STATE/twice" ]; then
+        printf '{"jsonrpc":"2.0","id":"ask-2","method":"elicitation/create","params":{"message":"Where are you?","requestedSchema":{"type":"object","properties":{"city":{"type":"string","title":"City"}},"required":["city"]}}}\n'
+        IFS= read -r first
+        IFS= read -r second
+        printf '%s\n%s\n' "$first" "$second" > "$MCP_STATE/answer"
+      else
+        IFS= read -r answer
+        printf '%s\n' "$answer" > "$MCP_STATE/answer"
+      fi
       reply "$id" '{"content":[{"type":"text","text":"answered"}]}' ;;
   esac
 done
@@ -171,6 +178,30 @@ fn a_terminal_ask_answers_an_mcp_form_on_stderr() {
     assert_eq!(
         last_tool_result(&requests[2]),
         r#"{"server":"fixture","tool":"profile","result":{"content":[{"type":"text","text":"answered"}]}}"#
+    );
+}
+
+#[test]
+fn a_terminal_ask_asks_overlapping_forms_one_at_a_time() {
+    let server = provider();
+    let home = Home::new(&server);
+    fs::write(home.state.join("twice"), "").expect("ask for two forms");
+    let mut session = PtySession::spawn(home.command(), 40, 200).expect("spawn oh-fx in a pty");
+    let screen = wait(&session, "Reason: Who are you?\nEnter a value:");
+    assert!(!screen.contains("Where are you?"), "{screen}");
+    session.send(b"Ada\r");
+    let screen = wait(&session, "- Name: \"Ada\"");
+    assert!(!screen.contains("Where are you?"), "{screen}");
+    session.send(b"1\r");
+    wait(&session, "Reason: Where are you?\nEnter a value:");
+    session.send(b"Paris\r");
+    wait(&session, "- City: \"Paris\"");
+    session.send(b"1\r");
+    let status = session.wait_exit(WAIT).and_then(|status| status.code());
+    assert_eq!(status, Some(0), "{}", session.screen());
+    assert_eq!(
+        home.state("answer"),
+        "{\"jsonrpc\":\"2.0\",\"id\":\"ask-1\",\"result\":{\"action\":\"accept\",\"content\":{\"name\":\"Ada\"}}}\n{\"jsonrpc\":\"2.0\",\"id\":\"ask-2\",\"result\":{\"action\":\"accept\",\"content\":{\"city\":\"Paris\"}}}\n"
     );
 }
 

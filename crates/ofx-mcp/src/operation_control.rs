@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -15,23 +15,39 @@ pub(crate) fn monotonic_millis() -> u64 {
 #[derive(Debug)]
 pub(crate) struct DeadlineGate {
     deadline: watch::Sender<Instant>,
+    open_inputs: Mutex<usize>,
+}
+
+pub(crate) struct InputPause<'a> {
+    gate: &'a DeadlineGate,
+    deadline: Instant,
+    operation_timeout: Duration,
 }
 
 impl DeadlineGate {
     pub(crate) fn new(deadline: Instant) -> Self {
         Self {
             deadline: watch::Sender::new(deadline),
+            open_inputs: Mutex::new(0),
         }
     }
 
-    pub(crate) fn pause_for_input(&self) -> Instant {
+    pub(crate) fn pause_for_input(&self, operation_timeout: Duration) -> InputPause<'_> {
+        let mut open_inputs = self.open_inputs();
+        *open_inputs += 1;
         let deadline = Instant::now() + ELICITATION_TIMEOUT;
         self.deadline.send_replace(deadline);
-        deadline
+        InputPause {
+            gate: self,
+            deadline,
+            operation_timeout,
+        }
     }
 
-    pub(crate) fn resume(&self, timeout: Duration) {
-        self.deadline.send_replace(Instant::now() + timeout);
+    fn open_inputs(&self) -> MutexGuard<'_, usize> {
+        self.open_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) async fn expired(&self) {
@@ -46,6 +62,30 @@ impl DeadlineGate {
                     }
                 }
             }
+        }
+    }
+}
+
+impl InputPause<'_> {
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub(crate) fn extend(&self) -> Instant {
+        let deadline = Instant::now() + ELICITATION_TIMEOUT;
+        self.gate.deadline.send_replace(deadline);
+        deadline
+    }
+}
+
+impl Drop for InputPause<'_> {
+    fn drop(&mut self) {
+        let mut open_inputs = self.gate.open_inputs();
+        *open_inputs -= 1;
+        if *open_inputs == 0 {
+            self.gate
+                .deadline
+                .send_replace(Instant::now() + self.operation_timeout);
         }
     }
 }
@@ -65,8 +105,8 @@ mod tests {
     async fn the_deadline_gate_pauses_input_and_resumes_with_one_fresh_operation_budget() {
         let start = Instant::now();
         let gate = DeadlineGate::new(start + Duration::from_secs(1));
-        let paused = gate.pause_for_input();
-        assert_eq!(paused, start + ELICITATION_TIMEOUT);
+        let paused = gate.pause_for_input(Duration::from_millis(1500));
+        assert_eq!(paused.deadline(), start + ELICITATION_TIMEOUT);
         let expired = gate.expired();
         tokio::pin!(expired);
         assert!(
@@ -74,11 +114,50 @@ mod tests {
                 .await
                 .is_err()
         );
-        gate.resume(Duration::from_millis(1500));
+        drop(paused);
         expired.await;
         assert_eq!(
             Instant::now(),
             start + Duration::from_mins(20) + Duration::from_millis(1500)
         );
+    }
+
+    async fn stays_paused(gate: &DeadlineGate) -> bool {
+        tokio::time::timeout(Duration::from_mins(10), gate.expired())
+            .await
+            .is_err()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_stays_paused_until_the_last_overlapping_input_ends() {
+        let timeout = Duration::from_secs(5);
+        for first_ends_first in [true, false] {
+            let gate = DeadlineGate::new(Instant::now() + timeout);
+            let first = gate.pause_for_input(timeout);
+            let second = gate.pause_for_input(timeout);
+            if first_ends_first {
+                drop(first);
+                assert!(stays_paused(&gate).await);
+                drop(second);
+            } else {
+                drop(second);
+                assert!(stays_paused(&gate).await);
+                drop(first);
+            }
+            let resumed = Instant::now();
+            gate.expired().await;
+            assert_eq!(Instant::now(), resumed + timeout);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_input_asked_later_extends_the_paused_deadline() {
+        let gate = DeadlineGate::new(Instant::now() + Duration::from_secs(5));
+        let paused = gate.pause_for_input(Duration::from_secs(5));
+        tokio::time::advance(Duration::from_mins(20)).await;
+        let extended = paused.extend();
+        assert_eq!(extended, Instant::now() + ELICITATION_TIMEOUT);
+        assert!(stays_paused(&gate).await);
+        assert!(stays_paused(&gate).await);
     }
 }
