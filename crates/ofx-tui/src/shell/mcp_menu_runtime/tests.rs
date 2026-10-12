@@ -5,7 +5,7 @@ use ofx_contract::{
     UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
 };
 
-use super::super::mcp_menu::{LoadState, Screen};
+use super::super::mcp_menu::{Action, Event, LoadState, Screen};
 use crate::shell::test_shell::TestShell;
 
 const ROOT_HINT: &str = "↑↓ move  enter inspect  a add  r reload  c help  esc close";
@@ -460,7 +460,7 @@ fn state(test: &TestShell) -> &super::super::mcp_menu::McpMenuState {
 }
 
 #[test]
-fn the_add_form_takes_each_field_from_the_composer_and_saves_on_the_last() {
+fn the_add_form_takes_each_field_from_the_composer_and_saves_once_on_the_last() {
     let mut test = opened(&["docs"]);
     let screen = press(&mut test, b"a");
     assert!(screen.contains("> Name"), "{screen}");
@@ -472,6 +472,8 @@ fn the_add_form_takes_each_field_from_the_composer_and_saves_on_the_last() {
     press(&mut test, b"/usr/bin/env\r");
     press(&mut test, b"\x03");
     press(&mut test, b"node  fixture.mjs\r");
+    press(&mut test, b"\t\r");
+    assert_eq!(state(&test).add_transport, McpMenuAddTransport::Local);
     assert_eq!(
         test.sent(),
         [menu(McpMenuRequest::Add {
@@ -558,7 +560,7 @@ fn remove_and_logout_ask_for_confirmation_where_upstream_offers_them() {
     assert!(requests(&test).is_empty());
     press(&mut test, b"\r");
     press(&mut test, b"d");
-    press(&mut test, b"\r");
+    press(&mut test, b"\r\r");
     assert_eq!(
         requests(&test),
         [menu(McpMenuRequest::Remove {
@@ -573,7 +575,9 @@ fn remove_and_logout_ask_for_confirmation_where_upstream_offers_them() {
     }]);
     press(&mut signed_in, b"\r");
     press(&mut signed_in, b"l");
+    signed_in.shell.mcp_menu.as_mut().unwrap().feedback = Some("earlier".to_owned());
     press(&mut signed_in, b"\r");
+    assert_eq!(signed_in.shell.mcp_menu.as_ref().unwrap().feedback, None);
     assert_eq!(
         signed_in.sent(),
         [menu(McpMenuRequest::Logout {
@@ -687,4 +691,23 @@ fn a_refresh_that_drops_the_selected_server_keeps_the_add_form() {
     assert_eq!(state(&test).add_field_index, 1);
     assert_eq!(test.shell.mcp_menu.as_ref().unwrap().add.name, "napz");
     assert!(requests(&test).is_empty(), "{:?}", requests(&test));
+}
+
+#[test]
+fn a_change_for_a_server_the_menu_no_longer_lists_fails_in_its_feedback_row() {
+    let mut test = opened(&[]);
+    test.shell
+        .mcp_menu
+        .as_mut()
+        .unwrap()
+        .state
+        .apply(Event::ShowConfirmation(Action::Remove));
+    let screen = press(&mut test, b"\r");
+    assert!(requests(&test).is_empty(), "{:?}", requests(&test));
+    assert_eq!(state(&test).load_state, LoadState::Failed);
+    assert_eq!(state(&test).pending_generation, None);
+    assert!(
+        screen.contains("MCP operation failed: McpServerNotFound"),
+        "{screen}"
+    );
 }

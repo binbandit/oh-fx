@@ -275,12 +275,12 @@ impl Shell<'_> {
                     self.request_mcp_menu_action(Action::Authenticate);
                 }
             }
-            Screen::Confirm => {
+            Screen::Confirm if menu.state.pending_generation.is_none() => {
                 if let Some(action) = menu.state.confirmation_action {
                     self.request_mcp_menu_action(action);
                 }
             }
-            Screen::Browse | Screen::Add | Screen::Info => {}
+            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm => {}
         }
     }
 
@@ -303,6 +303,11 @@ impl Shell<'_> {
         else {
             return;
         };
+        if action == Action::Logout
+            && let Some(menu) = &mut self.mcp_menu
+        {
+            menu.feedback = None;
+        }
         match self.mcp_menu_request(generation, action, server) {
             Some(request) => self.send(UiCommand::McpMenu { request }),
             None => self.fail_mcp_menu_request(generation),

@@ -100,8 +100,13 @@ impl Shell<'_> {
     }
 
     pub(super) fn route_mcp_add_key(&mut self, event: &InputEvent) -> bool {
+        let pending = self
+            .mcp_menu
+            .as_ref()
+            .is_some_and(|menu| menu.state.pending_generation.is_some());
         match event {
             InputEvent::Raw(raw) => match raw.byte {
+                b'\t' | b'\r' if pending => {}
                 b'\t' => {
                     self.commit_mcp_add_draft();
                     self.apply_mcp_menu_event(Event::CycleAddTransport);
