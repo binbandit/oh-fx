@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 use crate::app_bootstrap_runtime::{AgentSetup, CredentialSource, Login};
 use crate::app_commands::{
     CommandEffect, FAST_TOPIC, ModelChange, ModelPick, Outcome, ULTRAFAST_TOPIC, Work,
-    capabilities_of, change_model, handle_command, listed, refuse_resume_during_turn,
-    rename_session,
+    capabilities_of, change_model, credits_notice, handle_command, listed,
+    refuse_resume_during_turn, rename_session,
 };
 use crate::app_mcp_runtime::McpHost;
 use crate::app_permission_runtime::PermissionRuntime;
@@ -490,6 +490,10 @@ enum Wake {
     SignIn(Result<(), ChatGptError>),
 }
 
+fn credits_errand(source: ModelSource) -> BoxFuture<'static, Vec<Notice>> {
+    Box::pin(async move { vec![credits_notice(&source.credits().await)] })
+}
+
 struct CatalogFetch {
     source: ModelSource,
     provider: String,
@@ -917,6 +921,10 @@ impl Controller {
                 rename_session(&self.state, self.persistence.as_mut(), &title);
             }
             CommandEffect::Logout(target) => self.sign_out(&target).await,
+            CommandEffect::ShowCredits => {
+                self.catalog
+                    .run(credits_errand(self.state.setup.models_source()));
+            }
         }
         true
     }
@@ -1521,6 +1529,9 @@ fn run_deferred(
                 return rename_session(state, persistence.as_mut(), &title);
             }
             CommandEffect::Logout(target) => return state.sign_out_during_work(catalog, &target),
+            CommandEffect::ShowCredits => {
+                return catalog.run(credits_errand(catalog.source.clone()));
+            }
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
                 state.worker.request_cancel();
@@ -3493,6 +3504,31 @@ mod tests {
         gate.open();
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(saved_sessions(&harness.home)[0]["title"], "Busy work");
+    }
+
+    fn credits_notice_shown(event: &UiEvent) -> bool {
+        matches!(event, UiEvent::Notice { notice } if notice.topic == "credits")
+    }
+
+    #[tokio::test]
+    async fn credits_are_unavailable_for_a_connection_idle_and_during_a_turn() {
+        let gate = Gate::default();
+        let server = FakeServer::start([Reply::sse(&chat_text_events(&["done"])).after(&gate)]);
+        let mut harness = Harness::start(&server).await;
+        let unavailable = ["credits|Credits are unavailable for the selected provider."];
+        harness.command("/credits");
+        let idle = harness.until(credits_notice_shown).await;
+        assert_eq!(notice_body(idle), unavailable);
+        harness.submit("work");
+        harness
+            .until(|event| matches!(event, UiEvent::TurnStarted { .. }))
+            .await;
+        harness.command("/balance");
+        let busy = within(harness.until(credits_notice_shown)).await;
+        assert_eq!(notice_body(busy), unavailable);
+        gate.open();
+        harness.until(finished(TurnOutcome::Completed)).await;
+        assert_eq!(server.requests().len(), 1);
     }
 
     #[tokio::test]

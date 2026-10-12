@@ -7,6 +7,7 @@ use ofx_contract::{
     CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, ModelOption, Notice,
     NoticeTone, ReasoningEffort, UiEvent,
 };
+use ofx_gateway::CreditsSnapshot;
 use ofx_session::resolve_model_query_from_ids;
 use ofx_text::encode_terminal_safe;
 use ofx_tui::SlashCommandSpec;
@@ -34,6 +35,8 @@ const NO_FAST_MODE: &str = "This model does not come with a fast mode.";
 const UNDO_TOPIC: &str = "undo";
 const ALIASES_TOPIC: &str = "aliases";
 const ALIASES_UNAVAILABLE: &str = "Aliases are not yet configurable.";
+const CREDITS_TOPIC: &str = "credits";
+const CREDITS_NO_DATA: &str = "no data returned by gateway";
 const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
 const SESSION_TOPIC: &str = "session";
@@ -53,6 +56,7 @@ pub(crate) enum CommandEffect {
     OpenSettings,
     Rename(String),
     Logout(String),
+    ShowCredits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +155,7 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
         SlashKind::Login => provider_effect(state, work, "/login "),
         SlashKind::Provider => provider_effect(state, work, "/provider "),
         SlashKind::Fast => CommandEffect::ToggleFast,
+        SlashKind::Credits => CommandEffect::ShowCredits,
         SlashKind::Ultrafast
             if command
                 .payload
@@ -258,6 +263,7 @@ fn report(state: &mut ControllerState, kind: SlashKind, payload: &str) {
         | SlashKind::Logout
         | SlashKind::Provider
         | SlashKind::Fast
+        | SlashKind::Credits
         | SlashKind::Workspace
         | SlashKind::Trace
         | SlashKind::Compact => {}
@@ -460,6 +466,26 @@ fn resolve_model_query(ids: &[String], query: &str) -> String {
         .to_owned()
 }
 
+pub(crate) fn credits_notice(snapshot: &CreditsSnapshot) -> Notice {
+    if let Some(error) = &snapshot.error {
+        return Notice::new(NoticeTone::Error, CREDITS_TOPIC, error);
+    }
+    let lines: Vec<String> = [
+        ("balance", &snapshot.balance),
+        ("used", &snapshot.used),
+        ("plan", &snapshot.plan),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name}={value}")))
+    .collect();
+    let body = if lines.is_empty() {
+        CREDITS_NO_DATA.to_owned()
+    } else {
+        lines.join("\n")
+    };
+    Notice::new(NoticeTone::Neutral, CREDITS_TOPIC, &body)
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
@@ -582,5 +608,62 @@ mod tests {
         assert_eq!(resolve_model_query(&models, "gpt-5"), "openai/gpt-5");
         assert_eq!(resolve_model_query(&models, "zzz"), "zzz");
         assert_eq!(resolve_model_query(&[], "anything"), "anything");
+    }
+
+    fn snapshot(balance: Option<&str>, used: Option<&str>, plan: Option<&str>) -> CreditsSnapshot {
+        CreditsSnapshot {
+            balance: balance.map(str::to_owned),
+            used: used.map(str::to_owned),
+            plan: plan.map(str::to_owned),
+            error: None,
+        }
+    }
+
+    fn shown(notice: &Notice) -> (&str, NoticeTone, &str) {
+        (notice.topic.as_str(), notice.tone, notice.body.as_str())
+    }
+
+    #[test]
+    fn credits_show_each_returned_field_on_its_own_line() {
+        let all = credits_notice(&snapshot(Some("12.50"), Some("7.50"), Some("pro")));
+        assert_eq!(
+            shown(&all),
+            (
+                "credits",
+                NoticeTone::Neutral,
+                "balance=12.50\nused=7.50\nplan=pro"
+            )
+        );
+        let some = credits_notice(&snapshot(None, Some("7.50"), Some("pro")));
+        assert_eq!(some.body, "used=7.50\nplan=pro");
+        let balance = credits_notice(&snapshot(Some("10"), None, None));
+        assert_eq!(
+            shown(&balance),
+            ("credits", NoticeTone::Neutral, "balance=10")
+        );
+    }
+
+    #[test]
+    fn credits_without_data_or_with_an_error_say_so() {
+        let empty = credits_notice(&snapshot(None, None, None));
+        assert_eq!(
+            shown(&empty),
+            (
+                "credits",
+                NoticeTone::Neutral,
+                "no data returned by gateway"
+            )
+        );
+        let failed = credits_notice(&CreditsSnapshot::failed(
+            "failed to fetch credits from gateway",
+        ));
+        assert_eq!(
+            shown(&failed),
+            (
+                "credits",
+                NoticeTone::Error,
+                "failed to fetch credits from gateway"
+            )
+        );
     }
 }
