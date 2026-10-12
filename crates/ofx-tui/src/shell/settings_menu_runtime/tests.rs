@@ -18,6 +18,7 @@ fn snapshot() -> SettingsSnapshot {
         effort: "default".to_owned(),
         reasoning_efforts: Vec::new(),
         fast_mode: FastModeSetting::Off,
+        ultrafast_mode: FastModeSetting::Unavailable,
         permission_mode: PermissionMode::Auto,
         statusline: StatuslineToggles::default(),
         session_titles: true,
@@ -74,7 +75,7 @@ fn the_menu_lists_every_setting_under_the_composer_in_place_of_the_status_line()
     let screen = test.screen();
     let composer = screen.find("┃ ").unwrap();
     let header = screen
-        .find("Settings 10  [All]  Interface  Agent  Notifications  Advanced")
+        .find("Settings 11  [All]  Interface  Agent  Notifications  Advanced")
         .unwrap();
     let first = screen.find("  Status line context      off  on").unwrap();
     let model = screen.find("  Model                    model-a").unwrap();
@@ -96,7 +97,10 @@ fn left_and_right_send_a_step_and_the_row_follows_the_controller_s_snapshot() {
         test.sent().last(),
         Some(&step(SettingId::StatuslineContext, 1))
     );
-    press(&mut test, b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[D");
+    press(
+        &mut test,
+        b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[D",
+    );
     assert_eq!(
         test.sent().last(),
         Some(&step(SettingId::PermissionMode, -1))
@@ -239,7 +243,7 @@ fn tab_and_shift_tab_cycle_the_categories_and_reset_the_selection() {
     press(&mut test, b"\x1b[B");
     let screen = press(&mut test, b"\t\t");
     assert!(
-        screen.contains("Settings 5  All  Interface  [Agent]"),
+        screen.contains("Settings 6  All  Interface  [Agent]"),
         "{screen}"
     );
     press(&mut test, b"\x1b[B\x1b[C");

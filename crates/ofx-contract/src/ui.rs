@@ -52,6 +52,7 @@ pub struct ModelControls {
     pub effort: ReasoningEffort,
     pub effort_supported: bool,
     pub fast: bool,
+    pub ultrafast: bool,
 }
 
 impl Default for ModelControls {
@@ -60,6 +61,7 @@ impl Default for ModelControls {
             effort: ReasoningEffort::Auto,
             effort_supported: false,
             fast: false,
+            ultrafast: false,
         }
     }
 }

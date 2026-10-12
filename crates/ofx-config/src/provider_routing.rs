@@ -61,7 +61,7 @@ pub(crate) fn resolve(
     }
     if let Some(raw) = lookup(STRICT_VARIABLE) {
         let trimmed = raw.trim_matches(TRIMMED);
-        match parse_switch(trimmed) {
+        match parse_env_switch(trimmed) {
             Some(value) => strict = Some(value),
             None if !trimmed.is_empty() => {
                 trace_log!(CONFIG, "ignoring invalid {STRICT_VARIABLE} value");
@@ -99,7 +99,7 @@ pub fn provider_order_list(raw: &str) -> Option<Vec<String>> {
     parse_provider_order_list(raw).ok().flatten()
 }
 
-fn parse_switch(value: &str) -> Option<bool> {
+pub(crate) fn parse_env_switch(value: &str) -> Option<bool> {
     const ON: [&str; 4] = ["1", "true", "on", "yes"];
     const OFF: [&str; 4] = ["0", "false", "off", "no"];
     if ON.iter().any(|word| value.eq_ignore_ascii_case(word)) {

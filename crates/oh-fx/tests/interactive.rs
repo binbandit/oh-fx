@@ -555,6 +555,20 @@ fn ultra_mode_on_a_verified_gateway_model_sends_the_ultrafast_tier() {
     wait(&session, "Run /help for commands");
     session.send(b"/ultrafast on\r");
     wait(&session, "ultrafast: requested on");
+    wait_saved(&home, "ultrafast_mode", &json!(true));
+    let hint = "↑↓ navigate     tab category     ←→ change     esc close";
+    session.send(b"/settings\r");
+    wait(&session, hint);
+    session.send(b"ultra");
+    wait(&session, "  Ultra mode    off  on");
+    session.send(b"\x1b[D");
+    wait_saved(&home, "ultrafast_mode", &json!(false));
+    session.send(b"\x1b[C");
+    wait_saved(&home, "ultrafast_mode", &json!(true));
+    session.send(b"\x1b");
+    session
+        .wait_for(WAIT, |screen| !screen.contains(hint))
+        .unwrap_or_else(|screen| panic!("expected the settings menu to close:\n{screen}"));
     session.send(b"hello\r");
     wait(&session, "Ultra reply.");
     wait(
@@ -651,7 +665,7 @@ fn an_explicit_ultra_request_outlasts_a_resumed_session_saved_without_it() {
     quit(session);
     let ultra = saved_session_ids(&home).pop().expect("the Ultra session");
 
-    let session = gateway(&[], "Run /help for commands");
+    let session = gateway(&["--no-ultrafast"], "Run /help for commands");
     session.send(b"second\r");
     wait(&session, "Second done.");
     quit(session);
@@ -907,7 +921,7 @@ fn the_settings_menu_searches_and_changes_settings_and_saves_startup_scrollback(
         "↑↓ navigate     tab category     ←→ change     esc close",
     );
     for row in [
-        "Settings 10  [All]  Interface  Agent  Notifications  Advanced",
+        "Settings 11  [All]  Interface  Agent  Notifications  Advanced",
         "  Status line context      off  on",
         "  Model                    model-a",
         "  Permission mode          ask  auto  full access",

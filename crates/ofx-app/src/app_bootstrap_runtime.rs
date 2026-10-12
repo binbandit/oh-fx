@@ -93,6 +93,8 @@ pub enum ProfileError {
     Settings(#[from] SettingsError),
     #[error("InvalidProfileConfiguration")]
     Unusable(Vec<ConfigDiagnostic>),
+    #[error("InvalidUltrafastOverride")]
+    UltrafastOverride(Vec<ConfigDiagnostic>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -272,11 +274,17 @@ impl Profile {
             &workspace_root,
             paths.as_ref().map(|paths| paths.state.as_path()),
         );
-        let settings = match &paths {
+        let mut settings = match &paths {
             Some(paths) => Settings::load(paths, &workspace_root)?,
             None => Settings::default(),
         };
         let lookup = |name: &str| env::var(name).ok();
+        settings.observe_ultrafast_override(&lookup);
+        if settings.ultrafast_override_invalid() {
+            return Err(ProfileError::UltrafastOverride(
+                settings.diagnostics().to_vec(),
+            ));
+        }
         let stored_key = StoredKeyStore::from_environment(
             paths.as_ref().map(|paths| paths.data.as_path()),
             &lookup,

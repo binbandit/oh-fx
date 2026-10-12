@@ -73,6 +73,7 @@ pub(crate) enum ModelChange {
     ToggleFast,
     RequestUltrafast,
     WithdrawUltrafast,
+    ToggleUltrafast,
     StepEffort(isize),
     FromSettings(String),
 }
@@ -87,6 +88,7 @@ impl ModelChange {
         match self {
             Self::ToggleFast => !state.fast_mode(),
             Self::WithdrawUltrafast => false,
+            Self::ToggleUltrafast => !state.ultrafast_requested(),
             Self::RequestUltrafast
             | Self::Query(_)
             | Self::Pick(_)
@@ -304,18 +306,26 @@ pub(crate) fn change_model(
         }
         ModelChange::Pick(pick) => pick_model(state, pick, models, work),
         ModelChange::ToggleFast if toggle_fast(state, models) => Outcome::Changed { effort: None },
-        ModelChange::RequestUltrafast if request_ultrafast(state, models) => {
+        ModelChange::ToggleUltrafast if state.ultrafast_requested() => withdraw_ultrafast(state),
+        ModelChange::RequestUltrafast | ModelChange::ToggleUltrafast
+            if request_ultrafast(state, models) =>
+        {
             Outcome::Changed { effort: None }
         }
-        ModelChange::ToggleFast | ModelChange::RequestUltrafast => Outcome::Unchanged,
-        ModelChange::WithdrawUltrafast => {
-            state.withdraw_ultrafast_request();
-            state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested off");
-            Outcome::Changed { effort: None }
+        ModelChange::ToggleFast | ModelChange::RequestUltrafast | ModelChange::ToggleUltrafast => {
+            Outcome::Unchanged
         }
+        ModelChange::WithdrawUltrafast => withdraw_ultrafast(state),
         ModelChange::StepEffort(delta) => state.step_effort(delta, models),
         ModelChange::FromSettings(model) => select_model_from_settings(state, model, models, work),
     }
+}
+
+fn withdraw_ultrafast(state: &mut ControllerState) -> Outcome {
+    state.withdraw_ultrafast_request();
+    state.save_model_preference(ULTRAFAST_TOPIC, None);
+    state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested off");
+    Outcome::Changed { effort: None }
 }
 
 fn select_model_from_settings(
@@ -391,6 +401,7 @@ fn request_ultrafast(state: &mut ControllerState, models: &[ModelOption]) -> boo
         return false;
     }
     state.request_ultrafast();
+    state.save_model_preference(ULTRAFAST_TOPIC, None);
     state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested on");
     true
 }

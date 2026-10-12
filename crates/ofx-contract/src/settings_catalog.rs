@@ -49,6 +49,7 @@ pub enum SettingId {
     Model,
     Effort,
     FastMode,
+    UltrafastMode,
     PermissionMode,
     SessionTitles,
     StartupScrollback,
@@ -64,6 +65,7 @@ impl SettingId {
             Self::Model => "model",
             Self::Effort => "effort",
             Self::FastMode => "fast_mode",
+            Self::UltrafastMode => "ultrafast_mode",
             Self::PermissionMode => "permission_mode",
             Self::SessionTitles => "session_titles",
             Self::StartupScrollback => "startup_scrollback",
@@ -104,6 +106,7 @@ pub struct SettingsSnapshot {
     pub effort: String,
     pub reasoning_efforts: Vec<String>,
     pub fast_mode: FastModeSetting,
+    pub ultrafast_mode: FastModeSetting,
     pub permission_mode: PermissionMode,
     pub statusline: StatuslineToggles,
     pub session_titles: bool,
@@ -120,6 +123,7 @@ impl SettingsSnapshot {
             SettingId::Model => &self.model,
             SettingId::Effort => &self.effort,
             SettingId::FastMode => on_off(self.fast_mode == FastModeSetting::On),
+            SettingId::UltrafastMode => on_off(self.ultrafast_mode == FastModeSetting::On),
             SettingId::PermissionMode => self.permission_mode.display_label(),
             SettingId::SessionTitles => on_off(self.session_titles),
             SettingId::StartupScrollback => on_off(self.startup_scrollback),
@@ -138,6 +142,7 @@ impl SettingsSnapshot {
             }
             SettingId::Effort => self.reasoning_efforts.len() + 1,
             SettingId::FastMode if self.fast_mode == FastModeSetting::Unavailable => 0,
+            SettingId::UltrafastMode if self.ultrafast_mode == FastModeSetting::Unavailable => 0,
             SettingId::PermissionMode => PERMISSION_OPTIONS.len(),
             _ => ON_OFF_OPTIONS.len(),
         }
@@ -259,7 +264,7 @@ struct Spec {
     description: &'static str,
 }
 
-const SPECS: [Spec; 10] = [
+const SPECS: [Spec; 11] = [
     Spec {
         id: SettingId::StatuslineContext,
         category: SettingCategory::Interface,
@@ -295,6 +300,12 @@ const SPECS: [Spec; 10] = [
         category: SettingCategory::Agent,
         label: "Fast mode",
         description: "Use faster inference when the model supports it",
+    },
+    Spec {
+        id: SettingId::UltrafastMode,
+        category: SettingCategory::Agent,
+        label: "Ultra mode",
+        description: "Request the highest-speed mode when the model supports it",
     },
     Spec {
         id: SettingId::PermissionMode,

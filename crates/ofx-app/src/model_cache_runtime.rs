@@ -138,6 +138,7 @@ pub(crate) fn model_controls(
             effort: effort.clone(),
             effort_supported: *effort != ReasoningEffort::Auto,
             fast: fast || intrinsically_fast(model),
+            ultrafast: false,
         };
     };
     let efforts = match catalog {
@@ -159,6 +160,7 @@ pub(crate) fn model_controls(
         },
         effort_supported: !efforts.is_empty(),
         fast: fast || intrinsically_fast(model),
+        ultrafast: false,
     }
 }
 
@@ -219,6 +221,7 @@ mod tests {
                 effort: named("xhigh"),
                 effort_supported: true,
                 fast: true,
+                ultrafast: false,
             }
         );
         assert_eq!(
@@ -236,6 +239,7 @@ mod tests {
                 effort: named("low"),
                 effort_supported: true,
                 fast: true,
+                ultrafast: false,
             }
         );
         assert_eq!(
@@ -244,6 +248,7 @@ mod tests {
                 effort: ReasoningEffort::Auto,
                 effort_supported: true,
                 fast: false,
+                ultrafast: false,
             }
         );
         let plain = catalog_with(&[], false);
@@ -253,6 +258,7 @@ mod tests {
                 effort: ReasoningEffort::Auto,
                 effort_supported: false,
                 fast: true,
+                ultrafast: false,
             }
         );
     }
