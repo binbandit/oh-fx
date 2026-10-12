@@ -1,4 +1,5 @@
 use ofx_contract::{Notice, NoticeTone, UiCommand};
+use ofx_trace::trace_log;
 
 use super::upgrade_shortcut::requests_upgrade;
 use super::{FreshScreen, Shell};
@@ -63,9 +64,20 @@ impl Shell<'_> {
                     .terminal
                     .write_all_unless_full(TAGGED_CURSOR_QUERY.as_bytes())
                 {
-                    Ok(true) => {}
+                    Ok(true) => trace_log!(
+                        "native_clear",
+                        "native_clear_probe requested expected_row={}",
+                        self.input.native_clear_expected_row()
+                    ),
                     Ok(false) => self.input.cancel_native_clear_probe(false),
-                    Err(_) => self.input.cancel_native_clear_probe(true),
+                    Err(error) => {
+                        trace_log!(
+                            "native_clear",
+                            "native_clear_probe_write_failed err={}",
+                            error.name()
+                        );
+                        self.input.cancel_native_clear_probe(true);
+                    }
                 }
                 return Ok(());
             }

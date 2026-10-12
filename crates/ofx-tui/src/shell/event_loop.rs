@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
 
@@ -101,15 +102,32 @@ impl Shell<'_> {
         self.expire_compaction_feedback(now_ms);
         self.refresh_recovery_status(now_ms);
         if let Some(query) = self.input.take_theme_query(now_ms) {
+            trace_log!("theme", "theme_query_requested kind={}", query.kind());
             let written = match query {
                 ThemeQuery::ResponseFence => self.terminal.request_theme_response_fence(),
                 ThemeQuery::Background => self.terminal.request_theme_background(),
             };
-            if written.is_err() {
+            if let Err(error) = written {
                 self.input.fail_theme_query();
+                trace_log!(
+                    "theme",
+                    "theme_query_failed kind={} err={}",
+                    query.kind(),
+                    error.name()
+                );
             }
         }
         if let Some(update) = self.input.take_theme_update() {
+            trace_log!(
+                "theme",
+                "theme_update_settled light={} rgb={}",
+                update.light,
+                if update.rgb.is_some() {
+                    "terminal"
+                } else {
+                    "fallback"
+                }
+            );
             self.apply_theme(update.light);
         }
         Ok(None)

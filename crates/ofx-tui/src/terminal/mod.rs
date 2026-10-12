@@ -49,6 +49,27 @@ pub enum TerminalError {
     Io(#[from] std::io::Error),
 }
 
+impl TerminalError {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::NotATerminal => "NotATerminal",
+            Self::UnableToReadTerminalSize => "UnableToReadTerminalSize",
+            Self::TerminalTooSmall => "TerminalTooSmall",
+            Self::CursorPositionUnavailable => "CursorPositionUnavailable",
+            Self::RecordingStartFailed => "RecordingStartFailed",
+            Self::Io(error) => match error.kind() {
+                std::io::ErrorKind::BrokenPipe => "BrokenPipe",
+                std::io::ErrorKind::WouldBlock => "WouldBlock",
+                std::io::ErrorKind::PermissionDenied => "AccessDenied",
+                _ if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => {
+                    "InputOutput"
+                }
+                _ => "Unexpected",
+            },
+        }
+    }
+}
+
 impl From<rustix::io::Errno> for TerminalError {
     fn from(errno: rustix::io::Errno) -> Self {
         Self::Io(errno.into())
