@@ -586,9 +586,6 @@ fn commands_that_keep_no_sessions_accept_and_ignore_sessions_v2() {
     let output = oh_fx(&["--sessions-v2", "upgrade", "--channel", "dev"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stderr(&output), "usage: oh-fx upgrade [--json]\n");
-    let output = oh_fx(&["--sessions-v2", "sessions"], &[]);
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(stderr(&output), "oh-fx: sessions is not available yet\n");
 }
 
 #[test]
