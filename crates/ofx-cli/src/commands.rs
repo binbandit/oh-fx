@@ -670,6 +670,14 @@ pub(crate) const SLASH_SPECS: &[SlashSpec] = &[
     .with_payload()
     .with_help("/alias [name] [command]"),
     SlashSpec::new(
+        SlashKind::Credits,
+        "/credits",
+        "show gateway credits balance",
+        SlashPresentationCategory::Account,
+    )
+    .with_aliases(&["/balance"])
+    .with_help("/credits (/balance)"),
+    SlashSpec::new(
         SlashKind::Fast,
         "/fast",
         "toggle Fast mode when supported",
