@@ -5,8 +5,14 @@ use ofx_contract::{
 use ofx_text::{encode_terminal_safe_inline, visible_width};
 
 use crate::row_text::{Paint, Row, single_line_ellipsized};
-use crate::shell::mcp_menu::{Action, LoadState, McpMenuState, Screen, server_action_available};
+use crate::shell::mcp_menu::{
+    Action, LoadState, McpMenuState, Screen, Section, server_action_available,
+};
 use crate::theme::Theme;
+
+mod catalogs;
+
+pub(crate) use catalogs::McpMenuCatalogs;
 
 const HEADER_ROWS: usize = 2;
 const TEXT_INDENT: usize = 2;
@@ -24,9 +30,20 @@ const INFO_HINTS: [&str; 4] = [
     "project details: a approve · x reject",
 ];
 const ROOT_HINTS: [&str; 3] = [
-    "↑↓ move  enter inspect  a add  r reload  c help  esc close",
-    "↑↓ move  enter  a add  r reload  c help  esc",
-    "enter a r c esc",
+    "↑↓ move  tab section  enter inspect  a add  r reload  c help  esc close",
+    "↑↓ move  tab section  enter  a add  r reload  c help  esc",
+    "tab enter a r c esc",
+];
+const CATALOG_HINTS: [&str; 3] = [
+    "↑↓ navigate     tab section     / filter     esc back",
+    "↑↓ move  tab section  / filter  esc",
+    "tab / esc",
+];
+const SECTIONS: [(Section, &str); 4] = [
+    (Section::Servers, "Servers"),
+    (Section::Tools, "Tools"),
+    (Section::Resources, "Resources"),
+    (Section::Prompts, "Prompts"),
 ];
 const ADD_HINTS: [&str; 3] = [
     "type field     enter next/save     tab transport     esc cancel",
@@ -54,6 +71,8 @@ pub(crate) struct McpMenuView<'a> {
     pub(crate) snapshot: &'a McpMenuSnapshot,
     pub(crate) feedback: Option<&'a str>,
     pub(crate) add: AddFields<'a>,
+    pub(crate) catalogs: &'a McpMenuCatalogs,
+    pub(crate) loading_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -66,7 +85,10 @@ pub(crate) struct AddFields<'a> {
 
 impl<'a> McpMenuView<'a> {
     pub(crate) fn item_count(self) -> usize {
-        self.snapshot.servers.len()
+        match self.state.section {
+            Section::Servers => self.snapshot.servers.len(),
+            section => self.catalogs.count(section, &self.state.query),
+        }
     }
 
     pub(crate) fn selected_server(self) -> Option<&'a McpMenuServer> {
@@ -123,7 +145,8 @@ pub(crate) fn mcp_menu_hint_row(
     }
     let details = details_hint(view);
     let variants: [&str; 3] = match view.state.screen {
-        Screen::Browse => ROOT_HINTS,
+        Screen::Browse if view.state.section == Section::Servers => ROOT_HINTS,
+        Screen::Browse => CATALOG_HINTS,
         Screen::Details => [&details, "c help  esc back", "c esc"],
         Screen::Add => ADD_HINTS,
         Screen::Info => [INFO_ESCAPES[0], INFO_ESCAPES[1], INFO_ESCAPES[1]],
@@ -173,8 +196,30 @@ fn compose_row(
             };
             return text_row(feedback, width, paint, TEXT_INDENT);
         }
-        if view.state.screen == Screen::Browse && !view.snapshot.configuration_issues.is_empty() {
-            return configuration_issue_row(theme, &view.snapshot.configuration_issues, width);
+        if !view.state.query.is_empty() {
+            return text_row(
+                &format!("Filter: {}", view.state.query),
+                width,
+                theme.dim,
+                TEXT_INDENT,
+            );
+        }
+        match view.state.section {
+            Section::Servers
+                if view.state.screen == Screen::Browse
+                    && !view.snapshot.configuration_issues.is_empty() =>
+            {
+                return configuration_issue_row(theme, &view.snapshot.configuration_issues, width);
+            }
+            Section::Resources | Section::Prompts => {
+                if let Some(server) = view.selected_server() {
+                    return fact_row(theme, "Server", &server.name, width);
+                }
+            }
+            Section::Tools => {
+                return text_row("All available servers", width, theme.dim, TEXT_INDENT);
+            }
+            Section::Servers => {}
         }
     }
     if row_index < body_start {
@@ -182,6 +227,14 @@ fn compose_row(
     }
     let body_index = row_index - body_start;
     match view.state.screen {
+        Screen::Browse if view.state.section != Section::Servers => catalogs::catalog_row(
+            theme,
+            view,
+            body_index,
+            width,
+            row_count - body_start,
+            show_header && view.feedback.is_some(),
+        ),
         Screen::Browse => browse_row(theme, view, body_index, width, row_count - body_start),
         Screen::Details => details_row(theme, view, body_index, width),
         Screen::Add => add_row(theme, view, body_index, width),
@@ -233,12 +286,25 @@ fn add_row(theme: &Theme, view: McpMenuView<'_>, row_index: usize, width: usize)
 fn header_row(theme: &Theme, view: McpMenuView<'_>, width: usize) -> Row {
     let mut row = Row::new();
     row.push_fmt(
-        format_args!("MCP {}", view.item_count()),
+        format_args!("MCP {}", view.snapshot.servers.len()),
         theme.selected_completion,
     );
-    row.push_spaces(2);
-    row.push("[Servers]", theme.selected_completion);
-    row.clipped(width)
+    let mut compact = row.clone();
+    for (section, label) in SECTIONS {
+        row.push_spaces(2);
+        if section == view.state.section {
+            row.push_fmt(format_args!("[{label}]"), theme.selected_completion);
+            compact.push_spaces(2);
+            compact.push_fmt(format_args!("[{label}]"), theme.selected_completion);
+        } else {
+            row.push(label, theme.dim);
+        }
+    }
+    if row.width() <= width {
+        row
+    } else {
+        compact.clipped(width)
+    }
 }
 
 fn browse_row(

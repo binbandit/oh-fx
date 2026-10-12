@@ -1088,7 +1088,7 @@ fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
     let screen = menu_shows(&session, b"/mcp\r", std::slice::from_ref(&fixture_row));
     assert!(screen.contains("MCP 1  [Servers]"), "{screen}");
     assert!(
-        screen.contains("↑↓ move  enter inspect  a add  r reload  c help  esc close"),
+        screen.contains("↑↓ move  tab section  enter inspect  a add  r reload  c help  esc close"),
         "{screen}"
     );
     let profile = home.root.join("config/oh-fx/mcp.json");
@@ -1485,5 +1485,40 @@ fn the_mcp_menu_adds_removes_and_trusts_servers() {
         settings["workspaces"][workspace.to_string_lossy().as_ref()]["disabledMcpjsonServers"],
         json!(["docs"])
     );
+    exit(session);
+}
+
+#[test]
+fn the_mcp_menu_browses_and_filters_the_tool_resource_and_prompt_tabs() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let features = home.script("features.sh", FEATURE_SERVER);
+    home.profile_servers(&json!({"features": {"command": "/bin/sh", "args": [features]}}));
+    let session = home.shell();
+    menu_shows(
+        &session,
+        b"/mcp\r",
+        &[server_row("features", "Ready", "stdio · Profile")],
+    );
+    session.send(b"\t");
+    shown(&session, "MCP 1  Servers  [Tools]  Resources  Prompts");
+    shown(&session, "  No MCP tools available.");
+    session.send(b"\x1b[C");
+    shown(&session, "  Server              features");
+    shown(&session, &format!("  {:<36}{}", "custom://alpha", "alpha"));
+    shown(
+        &session,
+        &format!("  {:<36}{}", "custom://project/{path}", "Template"),
+    );
+    session.send(b"/proj");
+    let screen = shown(&session, "  Filter: proj");
+    assert!(!screen.contains("custom://alpha"), "{screen}");
+    session.send(b"\x1b");
+    shown(&session, "custom://alpha");
+    session.send(b"\t");
+    shown(&session, &format!("  {:<36}{}", "review", "Prompt"));
+    session.send(b"\x1b[D\x1b[D\x1b[D");
+    shown(&session, "tab section  enter inspect");
+    close_menu(&session);
     exit(session);
 }

@@ -1,10 +1,16 @@
 use ofx_contract::{
-    McpMenuAuthentication, McpMenuConnection, McpMenuCounts, McpMenuServer, McpMenuSnapshot,
-    McpMenuSource, McpMenuStatus, McpMenuTransport,
+    McpMenuAuthentication, McpMenuConnection, McpMenuCounts, McpMenuPrompt, McpMenuResource,
+    McpMenuServer, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
 };
 
 use super::*;
-use crate::shell::mcp_menu::{Action, Event, McpMenuState};
+use crate::shell::mcp_menu::{Action, Effect, Event, McpMenuState};
+
+static NO_CATALOGS: McpMenuCatalogs = McpMenuCatalogs {
+    tools: Vec::new(),
+    resources: Vec::new(),
+    prompts: Vec::new(),
+};
 
 fn theme() -> Theme {
     Theme::builtin(false, true, true)
@@ -57,6 +63,8 @@ fn frame_with(
         snapshot,
         feedback,
         add,
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
     };
     let rows = mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget));
     rows.iter()
@@ -78,6 +86,8 @@ fn hint(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize) -> Strin
         snapshot,
         feedback: None,
         add: AddFields::default(),
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
     };
     mcp_menu_hint_row(&theme(), view, width, false).text()
 }
@@ -91,11 +101,13 @@ fn the_empty_server_state_is_compact_and_actionable() {
         snapshot: &empty,
         feedback: None,
         add: AddFields::default(),
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
     };
     assert_eq!(menu_row_count(view, 20), 3);
     let rows = frame(&state, &empty, 100, 20);
     let lines: Vec<&str> = rows.lines().collect();
-    assert_eq!(lines[0], "MCP 0  [Servers]");
+    assert_eq!(lines[0], "MCP 0  [Servers]  Tools  Resources  Prompts");
     assert_eq!(lines[2], "  No MCP servers configured.");
     let issues = McpMenuSnapshot {
         configuration_issues: vec![".mcp.json server 'broken' is invalid".to_owned()],
@@ -151,6 +163,8 @@ fn the_selection_stays_visible_with_one_body_row() {
         snapshot: &servers,
         feedback: None,
         add: AddFields::default(),
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
     };
     assert_eq!(menu_row_count(view, 3), 3);
     let rows = frame(&state, &servers, 40, 3);
@@ -295,6 +309,8 @@ fn feedback_takes_the_second_header_row_and_warns_after_a_failure() {
             snapshot: &servers,
             feedback: failure,
             add: AddFields::default(),
+            catalogs: &NO_CATALOGS,
+            loading_visible: true,
         };
         mcp_menu_rows(&theme(), view, 80, 3)[1].segments()[1].paint
     };
@@ -317,13 +333,13 @@ fn hints_fit_the_width_and_name_only_available_actions() {
     let servers = snapshot(vec![remote]);
     assert_eq!(
         hint(&state, &servers, 100),
-        "↑↓ move  enter inspect  a add  r reload  c help  esc close"
+        "↑↓ move  tab section  enter inspect  a add  r reload  c help  esc close"
     );
     assert_eq!(
-        hint(&state, &servers, 48),
-        "↑↓ move  enter  a add  r reload  c help  esc"
+        hint(&state, &servers, 60),
+        "↑↓ move  tab section  enter  a add  r reload  c help  esc"
     );
-    assert_eq!(hint(&state, &servers, 20), "enter a r c esc");
+    assert_eq!(hint(&state, &servers, 20), "tab enter a r c esc");
     state.apply(Event::ShowDetails);
     assert_eq!(
         hint(&state, &servers, 100),
@@ -355,6 +371,8 @@ fn hints_fit_the_width_and_name_only_available_actions() {
         snapshot: &servers,
         feedback: None,
         add: AddFields::default(),
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
     };
     assert_eq!(
         mcp_menu_hint_row(&theme(), view, 100, true).text(),
@@ -450,4 +468,246 @@ fn a_confirmation_names_the_destructive_action() {
         assert_eq!(hint(&state, &servers, 100), "enter confirm     esc cancel");
         assert_eq!(hint(&state, &servers, 20), "enter confirm  esc");
     }
+}
+
+fn catalog_frame(
+    state: &McpMenuState,
+    catalogs: &McpMenuCatalogs,
+    feedback: Option<&str>,
+    width: usize,
+    budget: usize,
+) -> Vec<String> {
+    let servers = snapshot(vec![ready("docs")]);
+    let view = McpMenuView {
+        state,
+        snapshot: &servers,
+        feedback,
+        add: AddFields::default(),
+        catalogs,
+        loading_visible: true,
+    };
+    mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget))
+        .iter()
+        .map(|row| {
+            assert!(
+                row.width() <= width,
+                "{:?} is wider than {width}",
+                row.text()
+            );
+            row.text()
+        })
+        .collect()
+}
+
+fn resource(
+    uri: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+    template: bool,
+) -> McpMenuResource {
+    McpMenuResource {
+        uri: uri.to_owned(),
+        name: uri.rsplit('/').next().unwrap_or_default().to_owned(),
+        title: title.map(str::to_owned),
+        description: description.map(str::to_owned),
+        template,
+    }
+}
+
+fn catalogs() -> McpMenuCatalogs {
+    McpMenuCatalogs {
+        tools: vec!["mcp_docs_echo".to_owned()],
+        resources: vec![
+            resource("custom://alpha", Some("Alpha"), Some("unused"), false),
+            resource("custom://beta", None, Some("Beta file"), false),
+            resource("custom://gamma", None, None, false),
+            resource("custom://project/{path}", None, None, true),
+        ],
+        prompts: vec![
+            McpMenuPrompt {
+                name: "review".to_owned(),
+                title: Some("Review".to_owned()),
+                description: Some("Review code".to_owned()),
+            },
+            McpMenuPrompt {
+                name: "plain".to_owned(),
+                title: None,
+                description: None,
+            },
+        ],
+    }
+}
+
+fn loaded(state: &mut McpMenuState, delta: isize, item_count: usize) {
+    let Some(Effect::LoadCatalog { generation, .. }) = state.apply(Event::CycleSection(delta))
+    else {
+        panic!("expected a catalog load");
+    };
+    state.apply(Event::CatalogLoaded {
+        generation,
+        item_count,
+    });
+}
+
+fn row(identity: &str, description: &str) -> String {
+    format!("  {identity:<36}{description}")
+}
+
+#[test]
+fn catalog_tabs_show_each_sections_identity_and_description() {
+    let catalogs = catalogs();
+    let mut state = McpMenuState::open(1);
+    loaded(&mut state, 1, 1);
+    assert_eq!(
+        catalog_frame(&state, &catalogs, None, 80, 12),
+        [
+            "MCP 1  Servers  [Tools]  Resources  Prompts".to_owned(),
+            "  All available servers".to_owned(),
+            row("mcp_docs_echo", "Tool"),
+        ]
+    );
+    assert_eq!(
+        catalog_frame(&state, &catalogs, None, 40, 12)[2],
+        "  mcp_docs_echo"
+    );
+    loaded(&mut state, 1, 4);
+    assert_eq!(
+        catalog_frame(&state, &catalogs, None, 80, 12),
+        [
+            "MCP 1  Servers  Tools  [Resources]  Prompts".to_owned(),
+            "  Server              docs".to_owned(),
+            row("custom://alpha", "Alpha"),
+            row("custom://beta", "Beta file"),
+            row("custom://gamma", "gamma"),
+            row("custom://project/{path}", "Template"),
+        ]
+    );
+    loaded(&mut state, 1, 2);
+    let prompts = catalog_frame(&state, &catalogs, None, 80, 12);
+    assert_eq!(
+        prompts[2..],
+        [row("Review", "Review code"), row("plain", "Prompt")]
+    );
+    assert_eq!(
+        catalog_frame(&state, &catalogs, None, 30, 12)[0],
+        "MCP 1  [Prompts]"
+    );
+}
+
+#[test]
+fn a_filter_narrows_the_catalog_and_names_an_empty_match() {
+    let catalogs = catalogs();
+    let mut state = McpMenuState::open(1);
+    state.apply(Event::CycleSection(1));
+    loaded(&mut state, 1, 4);
+    state.apply(Event::BeginFilter);
+    for byte in b"PROJ" {
+        state.apply(Event::AppendFilterByte(*byte));
+    }
+    assert_eq!(
+        catalog_frame(&state, &catalogs, None, 80, 12)[1..],
+        [
+            "  Filter: PROJ".to_owned(),
+            row("custom://project/{path}", "Template"),
+        ]
+    );
+    state.apply(Event::AppendFilterByte(b'x'));
+    assert_eq!(
+        catalog_frame(&state, &catalogs, None, 80, 12)[2],
+        "  No matching MCP items."
+    );
+    let servers = snapshot(vec![ready("docs")]);
+    let view = McpMenuView {
+        state: &state,
+        snapshot: &servers,
+        feedback: None,
+        add: AddFields::default(),
+        catalogs: &catalogs,
+        loading_visible: true,
+    };
+    assert_eq!(view.item_count(), 0);
+    assert_eq!(
+        mcp_menu_hint_row(&theme(), view, 80, false).text(),
+        "↑↓ navigate     tab section     / filter     esc back"
+    );
+    assert_eq!(
+        mcp_menu_hint_row(&theme(), view, 40, false).text(),
+        "↑↓ move  tab section  / filter  esc"
+    );
+}
+
+#[test]
+fn empty_loading_and_failed_catalogs_say_so() {
+    let empty = McpMenuCatalogs::default();
+    let mut state = McpMenuState::open(1);
+    for text in [
+        "No MCP tools available.",
+        "No MCP resources available.",
+        "No MCP prompts available.",
+    ] {
+        loaded(&mut state, 1, 0);
+        assert_eq!(
+            catalog_frame(&state, &empty, None, 80, 12)[2],
+            format!("  {text}")
+        );
+    }
+    let Some(Effect::LoadCatalog { generation, .. }) = state.apply(Event::CycleSection(-1)) else {
+        panic!("expected a catalog load");
+    };
+    assert_eq!(
+        catalog_frame(&state, &empty, None, 80, 12)[2],
+        "  Loading MCP catalog…"
+    );
+    let servers = snapshot(vec![ready("docs")]);
+    let hidden = McpMenuView {
+        state: &state,
+        snapshot: &servers,
+        feedback: None,
+        add: AddFields::default(),
+        catalogs: &empty,
+        loading_visible: false,
+    };
+    let rows = mcp_menu_rows(&theme(), hidden, 80, 3);
+    assert_eq!(rows[2].text(), "");
+    state.apply(Event::EffectFailed(generation));
+    let failure = "MCP catalog failed: McpRequestTimedOut";
+    assert_eq!(
+        catalog_frame(&state, &empty, Some(failure), 80, 12)[1..],
+        [format!("  {failure}"), String::new()]
+    );
+    assert_eq!(
+        catalog_frame(&state, &empty, Some(failure), 80, 2),
+        [format!("  {failure}")]
+    );
+}
+
+#[test]
+fn catalog_text_cannot_inject_terminal_control_sequences_or_break_rows() {
+    let hostile = McpMenuCatalogs {
+        tools: vec![
+            "mcp_bad\u{1b}]0;owned\u{7}".to_owned(),
+            "mcp_multi\nline\tname".to_owned(),
+        ],
+        ..McpMenuCatalogs::default()
+    };
+    let mut state = McpMenuState::open(1);
+    loaded(&mut state, 1, 2);
+    let rows = catalog_frame(&state, &hostile, None, 100, 12).join("\n");
+    assert!(!rows.contains("\u{1b}]0;owned"), "{rows}");
+    assert!(rows.contains("mcp_bad\\x1b]0;owned\\x07"), "{rows}");
+    assert!(rows.contains("mcp_multi line name"), "{rows}");
+}
+
+#[test]
+fn the_catalog_selection_stays_visible_with_one_body_row() {
+    let tools = McpMenuCatalogs {
+        tools: (0..6).map(|index| format!("tool-{index}")).collect(),
+        ..McpMenuCatalogs::default()
+    };
+    let mut state = McpMenuState::open(1);
+    loaded(&mut state, 1, 6);
+    state.selected_index = 5;
+    let rows = catalog_frame(&state, &tools, None, 40, 3);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2], "  tool-5");
 }

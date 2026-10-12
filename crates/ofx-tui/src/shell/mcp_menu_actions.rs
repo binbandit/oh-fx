@@ -1,7 +1,7 @@
 use ofx_contract::{McpMenuAddForm, McpMenuAddTransport, McpMenuRequest, McpMenuTrust};
 
 use super::Shell;
-use super::mcp_menu::{Action, Event, Screen, server_action_available};
+use super::mcp_menu::{Action, Event, Screen, Section, server_action_available};
 use crate::input::{Action as InputAction, InputEvent, ShortcutAction};
 
 const CTRL_Z: u8 = 26;
@@ -72,10 +72,10 @@ impl Shell<'_> {
                     self.request_mcp_menu_action(Action::TrustApprove);
                 }
             }
-            Screen::Browse => {
+            Screen::Browse if menu.state.section == Section::Servers => {
                 self.apply_mcp_menu_event(Event::ShowAdd);
             }
-            Screen::Add | Screen::Info | Screen::Confirm => {}
+            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm => {}
         }
     }
 
@@ -85,7 +85,8 @@ impl Shell<'_> {
         };
         let screen = menu.state.screen;
         let anywhere = matches!(action, Action::TrustApproveAll | Action::TrustReset);
-        if screen != Screen::Details && !(screen == Screen::Browse && anywhere) {
+        let on_servers = screen == Screen::Browse && menu.state.section == Section::Servers;
+        if screen != Screen::Details && !(on_servers && anywhere) {
             return;
         }
         if screen == Screen::Details
@@ -132,7 +133,12 @@ impl Shell<'_> {
                 }
                 InputAction::CursorUp => self.move_mcp_menu(-1),
                 InputAction::CursorDown => self.move_mcp_menu(1),
-                InputAction::CursorLeft | InputAction::CursorRight => {}
+                InputAction::CursorLeft => {
+                    self.apply_mcp_menu_event(Event::CycleSection(-1));
+                }
+                InputAction::CursorRight => {
+                    self.apply_mcp_menu_event(Event::CycleSection(1));
+                }
                 _ => return false,
             },
             InputEvent::Text(_)
