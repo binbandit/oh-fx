@@ -13,7 +13,7 @@ note = "Argument parsing, ask runtime, --continue-recovery, MCP startup that con
 upstream = "src/core/cli/cli_replay.zig"
 status = "ported"
 modules = ["crates/ofx-cli/src/cli_replay.rs", "crates/oh-fx/src/cli_replay.rs", "crates/oh-fx/src/cli_replay/frames_dir.rs"]
-note = "Its message prefix, missing debug_trace lines and corrected character widths differ as docs/differences/cli.md records."
+note = "It writes upstream's render and frame_diff trace lines; its message prefix and corrected character widths differ as docs/differences/cli.md records."
 
 [[file]]
 upstream = "src/core/cli/cli_surface.zig"
