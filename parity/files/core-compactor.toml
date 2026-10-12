@@ -26,7 +26,7 @@ note = "Citation existence, exact-value grounding, replacement IDs, verbatim use
 upstream = "src/core/compactor/model.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/compactor/model.rs"]
-note = "Summary model requests exist; Vercel cross-family fallback and upstream credential/provider availability checks are absent as documented."
+note = "Summary model requests exist; upstream credential/provider availability checks are absent as documented. The Vercel AI Gateway summary fallback is not ported: upstream chooses one of two fixed fallback models by the primary model's vendor prefix, and one of them belongs to a vendor whose models oh-fx leaves out of its catalog ranking and picker rules, so the fallback waits for an owner decision."
 
 [[file]]
 upstream = "src/core/compactor/records.zig"
