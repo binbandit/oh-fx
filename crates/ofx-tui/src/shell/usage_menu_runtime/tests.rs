@@ -263,3 +263,33 @@ fn a_late_answer_to_an_earlier_scope_leaves_the_newer_request_in_place() {
         );
     }
 }
+
+#[test]
+fn a_12_row_terminal_keeps_the_full_layout_with_no_row_for_the_expanded_detail_as_upstream_does() {
+    let mut test = opened();
+    test.resize(12, 80);
+    let screen = press(&mut test, b"\r");
+    in_order(
+        &screen,
+        &[
+            "2K tokens · $0.25 spent · 1 request",
+            "Models 2",
+            "❯ portkey/@openai/gpt-4o",
+            HINT,
+        ],
+    );
+    assert!(!screen.contains("Input 1.5K"), "{screen}");
+    assert!(!screen.contains("codex/gpt-5-codex"), "{screen}");
+    test.resize(11, 80);
+    let screen = test.screen();
+    in_order(
+        &screen,
+        &[
+            "Models 2",
+            "❯ portkey/@openai/gpt-4o",
+            "Input 1.5K · Output 0 · Cache 0/0 · Reasoning n/a · Requests 1 · $0.25",
+            "codex/gpt-5-codex",
+        ],
+    );
+    assert!(!screen.contains("$0.25 spent"), "{screen}");
+}
