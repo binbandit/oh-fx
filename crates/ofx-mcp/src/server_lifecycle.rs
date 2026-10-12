@@ -408,7 +408,7 @@ impl Server {
             return Err(McpError::McpAuthenticationRequired.into());
         }
         let refreshed = client.settled_tools(deadline).await?;
-        self.trace_refresh(&client, &refreshed);
+        self.trace_refresh(client, &refreshed);
         if let Some(error) = refreshed.lost_authentication {
             self.authentication_failed(client);
             return Err(error.into());
