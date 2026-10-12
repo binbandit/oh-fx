@@ -92,6 +92,7 @@ fn error_name(error: &io::Error) -> &'static str {
     match error.kind() {
         ErrorKind::NotFound => "FileNotFound",
         ErrorKind::PermissionDenied => "AccessDenied",
+        ErrorKind::NotADirectory => "NotDir",
         ErrorKind::BrokenPipe => "BrokenPipe",
         ErrorKind::TimedOut | ErrorKind::WouldBlock => "Timeout",
         _ => "Unexpected",
@@ -101,6 +102,7 @@ fn error_name(error: &io::Error) -> &'static str {
 fn spawn(program: &str, arguments: &[&str]) -> io::Result<Child> {
     let search = std::env::var_os("PATH").unwrap_or_else(|| DEFAULT_SEARCH_PATH.into());
     let mut missing = io::Error::from(ErrorKind::NotFound);
+    let mut denied = None;
     for directory in std::env::split_paths(&search) {
         if directory.as_os_str().is_empty() {
             continue;
@@ -113,18 +115,16 @@ fn spawn(program: &str, arguments: &[&str]) -> io::Result<Child> {
             .spawn()
         {
             Ok(child) => return Ok(child),
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => denied = Some(error),
             Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::NotFound | ErrorKind::PermissionDenied | ErrorKind::NotADirectory
-                ) =>
+                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
             {
                 missing = error;
             }
             Err(error) => return Err(error),
         }
     }
-    Err(missing)
+    Err(denied.unwrap_or(missing))
 }
 
 fn write_before(
@@ -290,6 +290,11 @@ mod tests {
                 COPY_LIMIT
             ));
             assert!(!copy_through(
+                &["oh-fx-clipboard-denied"],
+                b"text",
+                COPY_LIMIT
+            ));
+            assert!(!copy_through(
                 &["sh", "-c", "cat >/dev/null; exit 3"],
                 b"text",
                 COPY_LIMIT
@@ -313,11 +318,20 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
+        let denied = tempfile::tempdir().unwrap();
+        let unrunnable = denied.path().join("oh-fx-clipboard-denied");
+        fs::write(&unrunnable, "#!/bin/sh\ncat >/dev/null\n").unwrap();
+        fs::set_permissions(&unrunnable, fs::Permissions::from_mode(0o644)).unwrap();
         let log = root.path().join("trace.log");
+        let search = format!(
+            "{}:{}:/usr/bin:/bin",
+            denied.path().display(),
+            empty.path().display()
+        );
         let status = Command::new(std::env::current_exe().unwrap())
             .args([TRACE_TEST, "--exact", "--test-threads=1"])
             .env_clear()
-            .env("PATH", format!("{}:/usr/bin:/bin", empty.path().display()))
+            .env("PATH", search)
             .env(TRACE_CHILD, root.path())
             .env("OH_FX_TRACE_LOG", &log)
             .stdout(Stdio::null())
@@ -327,6 +341,7 @@ mod tests {
         let written = fs::read_to_string(&log).unwrap_or_default();
         for line in [
             " [host] clipboard copy spawn failed err=FileNotFound\n",
+            " [host] clipboard copy spawn failed err=AccessDenied\n",
             " [host] clipboard copy failed exit_code=3\n",
             " [host] clipboard copy failed term=signal signal=15\n",
             " [host] clipboard copy write failed err=BrokenPipe\n",
