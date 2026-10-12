@@ -29,6 +29,7 @@ const POLL: Duration = Duration::from_millis(10);
 const STALLED: Duration = Duration::from_millis(500);
 const WAIT_FOR_GO: &str = "while [ ! -e go ]; do sleep 0.05; done; exit 4";
 const GRACEFUL_CLOSE: Duration = Duration::from_millis(800);
+const PROMPT_CLOSE: Duration = Duration::from_secs(5);
 const SCENARIO_VARIABLE: &str = "OH_FX_TEST_TERMINAL_SCENARIO";
 const STORE_VARIABLE: &str = "OH_FX_TEST_TERMINAL_STORE";
 const SOCKET_MODE_VARIABLE: &str = "OH_FX_TEST_TERMINAL_SOCKET_MODES";
@@ -142,6 +143,14 @@ const TESTS: &[(&str, fn())] = &[
     (
         "closes_reach_processes_that_left_the_process_group",
         closes_reach_processes_that_left_the_process_group,
+    ),
+    (
+        "a_forced_close_ends_the_group_holding_a_terminal_whose_shell_exited",
+        a_forced_close_ends_the_group_holding_a_terminal_whose_shell_exited,
+    ),
+    (
+        "a_close_ends_promptly_while_another_group_holds_the_terminal",
+        a_close_ends_promptly_while_another_group_holds_the_terminal,
     ),
 ];
 
@@ -402,13 +411,17 @@ fn alive(pid: Pid) -> bool {
 }
 
 fn child_pid(fixture: &Fixture) -> Pid {
+    pid_in(fixture, "child")
+}
+
+fn pid_in(fixture: &Fixture, name: &str) -> Pid {
     fixture
-        .file_until("child", |text| text.ends_with('\n'))
+        .file_until(name, |text| text.ends_with('\n'))
         .trim()
         .parse()
         .ok()
         .and_then(Pid::from_raw)
-        .expect("the background child's pid")
+        .expect("a process id")
 }
 
 fn gone_in_time(pid: Pid) -> bool {
@@ -1332,6 +1345,76 @@ fn closes_reach_processes_that_left_the_process_group() {
         let _ = kill_process(child, Signal::KILL);
     }
     assert!(killed, "the detached child outlived its owner");
+}
+
+const HELD_AFTER_EXIT: &str = "trap '' HUP; sleep 30 & echo $! > child.tmp && mv child.tmp child; \
+     echo $$ > shell.tmp && mv shell.tmp shell; exit 0";
+
+fn held_after_its_shell_exits(fixture: &Fixture, job_control: &str) -> (String, Pid) {
+    let started = fixture.start(
+        &format!("{job_control}; {HELD_AFTER_EXIT}"),
+        ReturnCondition::Started,
+    );
+    let child = child_pid(fixture);
+    assert!(
+        gone_in_time(pid_in(fixture, "shell")),
+        "the shell did not exit"
+    );
+    assert_eq!(fixture.lifecycle(&started.id), Lifecycle::Running);
+    (started.id, child)
+}
+
+fn close_in_time(
+    fixture: &Fixture,
+    id: &str,
+    policy: ClosePolicy,
+) -> (Option<Result<Lifecycle, StructuredErrorCode>>, Duration) {
+    let begun = Instant::now();
+    let closed = fixture.runtime.block_on(async {
+        tokio::time::timeout(LONG, fixture.terminals.close(OWNER, id, policy)).await
+    });
+    let answer = closed.ok().map(|closed| {
+        closed
+            .map(|closed| closed.session.lifecycle)
+            .map_err(|failure| failure.code)
+    });
+    (answer, begun.elapsed())
+}
+
+fn a_forced_close_ends_the_group_holding_a_terminal_whose_shell_exited() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let fixture = Fixture::new();
+    let (id, child) = held_after_its_shell_exits(&fixture, "set +m");
+    let (closed, took) = close_in_time(&fixture, &id, ClosePolicy::Force);
+    let gone = gone_in_time(child);
+    if !gone {
+        let _ = kill_process(child, Signal::KILL);
+    }
+    assert_eq!(closed, Some(Ok(Lifecycle::Closed)));
+    assert!(took < PROMPT_CLOSE, "the close took {took:?}");
+    assert!(gone, "the process holding the terminal outlived the close");
+}
+
+fn a_close_ends_promptly_while_another_group_holds_the_terminal() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    for (policy, answer) in [
+        (ClosePolicy::Force, Err(StructuredErrorCode::SessionLost)),
+        (ClosePolicy::Graceful, Ok(Lifecycle::Closed)),
+    ] {
+        let directory = tempfile::tempdir().expect("create a directory");
+        let cwd = fs::canonicalize(directory.path()).expect("canonicalize the directory");
+        let fixture = Fixture::at(Some(directory), cwd.join("store"), cwd);
+        let (id, child) = held_after_its_shell_exits(&fixture, "set -m");
+        let (closed, took) = close_in_time(&fixture, &id, policy);
+        let _ = kill_process(child, Signal::KILL);
+        assert_eq!(closed, Some(answer), "{policy:?}");
+        assert_eq!(fixture.record(&id).0, Lifecycle::Closed, "{policy:?}");
+        assert!(took < PROMPT_CLOSE, "the {policy:?} close took {took:?}");
+    }
 }
 
 fn canonical_temp_dir() -> (tempfile::TempDir, PathBuf) {

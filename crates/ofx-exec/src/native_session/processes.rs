@@ -1,5 +1,7 @@
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::process::{
+    Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
+};
 
 #[cfg(target_os = "linux")]
 use crate::process_tree::{Tracker, instance_token, proc_shows_own_pid_namespace};
@@ -7,11 +9,28 @@ use crate::process_tree::{Tracker, instance_token, proc_shows_own_pid_namespace}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ShellIdentity(Option<String>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShellCheck {
+    Same,
+    Gone,
+    Replaced,
+}
+
 impl ShellIdentity {
-    pub(super) fn matches(&self, shell: Pid) -> bool {
-        self.0
-            .as_ref()
-            .is_none_or(|expected| Kernel::current(shell).as_ref() == Some(expected))
+    pub(super) fn check(&self, shell: Pid) -> ShellCheck {
+        let Some(expected) = &self.0 else {
+            return ShellCheck::Same;
+        };
+        match Kernel::current(shell) {
+            Some(current) if &current == expected => ShellCheck::Same,
+            None if process_missing(shell) => ShellCheck::Gone,
+            _ => ShellCheck::Replaced,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn recorded(token: &str) -> Self {
+        Self(Some(token.to_owned()))
     }
 }
 
@@ -141,6 +160,16 @@ pub(super) fn group_missing(shell: Pid) -> bool {
     }
 }
 
+fn process_missing(shell: Pid) -> bool {
+    loop {
+        match test_kill_process(shell) {
+            Err(Errno::INTR) => {}
+            Err(Errno::SRCH) => return true,
+            _ => return false,
+        }
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::process::Command;
@@ -159,20 +188,25 @@ mod tests {
             assert_eq!(fields[1].len(), 32);
             assert!(fields[2].parse::<u64>().is_ok(), "{token}");
         }
-        assert!(own.matches(getpid()));
+        assert_eq!(own.check(getpid()), ShellCheck::Same);
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = Pid::from_child(&child);
         let identity = Kernel::identify(pid).unwrap();
-        assert!(identity.matches(pid));
+        assert_eq!(identity.check(pid), ShellCheck::Same);
         if identity.0.is_some() {
-            assert!(!identity.matches(getpid()));
-            assert!(
-                !ShellIdentity(Some("linux:00000000000000000000000000000000:1".into()))
-                    .matches(pid)
+            assert_eq!(identity.check(getpid()), ShellCheck::Replaced);
+            assert_eq!(
+                ShellIdentity::recorded("linux:00000000000000000000000000000000:1").check(pid),
+                ShellCheck::Replaced
             );
         }
         kill_process(pid, Signal::KILL).unwrap();
         child.wait().unwrap();
-        assert_eq!(identity.matches(pid), identity.0.is_none());
+        let gone = if identity.0.is_some() {
+            ShellCheck::Gone
+        } else {
+            ShellCheck::Same
+        };
+        assert_eq!(identity.check(pid), gone);
     }
 }
