@@ -25,6 +25,7 @@ const STRANGER: &str = "another-session";
 const LONG: Duration = Duration::from_secs(20);
 const SHORT: Duration = Duration::from_millis(50);
 const POLL: Duration = Duration::from_millis(10);
+const STALLED: Duration = Duration::from_millis(500);
 const WAIT_FOR_GO: &str = "while [ ! -e go ]; do sleep 0.05; done; exit 4";
 const GRACEFUL_CLOSE: Duration = Duration::from_millis(800);
 const SAVED_SCENARIO_VARIABLE: &str = "OH_FX_TEST_TERMINAL_SAVED_STORE";
@@ -768,33 +769,50 @@ fn no_input_reaches_a_terminal_once_its_close_begins() {
         ReturnCondition::Started,
     );
     fixture.file_until("ready", |_| true);
+    let (sender, results) = mpsc::channel();
     let writer = {
         let terminals = fixture.terminals.clone();
         let id = started.id.clone();
         thread::spawn(move || {
-            let mut accepted = None;
             loop {
-                match terminals.write(OWNER, &id, "x") {
-                    Ok(_) => accepted = Some(Instant::now()),
-                    Err(failure) => return (accepted, failure.code),
+                let result = terminals.write(OWNER, &id, "x").map(|_| ());
+                let ended = result.is_err();
+                if sender.send(result).is_err() || ended {
+                    return;
                 }
             }
         })
     };
-    let filled = Instant::now() + Duration::from_millis(300);
-    while !writer.is_finished() && Instant::now() < filled {
-        thread::sleep(POLL);
+    let deadline = Instant::now() + LONG;
+    let mut accepted = 0;
+    loop {
+        match results.recv_timeout(STALLED) {
+            Ok(Ok(())) => {
+                accepted += 1;
+                assert!(Instant::now() < deadline, "the input never filled up");
+            }
+            Ok(Err(failure)) => panic!("a write failed before the close: {failure:?}"),
+            Err(_) => break,
+        }
     }
-    let closing = Instant::now();
     let closed = fixture
         .close(&started.id, ClosePolicy::Graceful)
         .expect("close the terminal");
     assert_eq!(closed.lifecycle, Lifecycle::Closed);
-    let (accepted, code) = writer.join().expect("the writer ends");
-    assert_eq!(code, StructuredErrorCode::AuthorityDenied);
+    assert_eq!(
+        results
+            .recv_timeout(LONG)
+            .expect("the waiting write ends")
+            .map_err(|failure| failure.code),
+        Err(StructuredErrorCode::AuthorityDenied),
+        "the write that waited for room was accepted after the close began"
+    );
+    let _ = writer.join();
+    let drained = fs::read(fixture.cwd.join("drained")).unwrap_or_default();
     assert!(
-        accepted.is_some_and(|accepted| accepted < closing),
-        "input was accepted after the close began"
+        drained.len() <= accepted,
+        "the terminal read {} bytes after its close began, of {accepted} accepted before it",
+        drained.len()
     );
 }
 
