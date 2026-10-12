@@ -1,4 +1,5 @@
 use ofx_markdown::Event;
+use ofx_trace::trace_log;
 
 use super::Shell;
 use crate::input::{Action, InputEvent, MouseWheel, ShortcutAction};
@@ -195,6 +196,10 @@ impl Shell<'_> {
         if entering {
             screen.layout = self.layout;
             screen.entered = true;
+            trace_log!(
+                "full_transcript",
+                "depth_transition from=inline to=full route=root trigger=ctrl_o"
+            );
         }
         if let Some(primary) = &screen.primary_live {
             screen.primary_changed |= !appended.is_empty() || *primary != live.rows;

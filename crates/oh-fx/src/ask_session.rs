@@ -25,7 +25,7 @@ impl SavedAsk {
             let _ = live.rebind_provider(setup.configured_model());
             crate::cli_ask::warn(&live.rebind_notice(&saved));
         }
-        setup.bind_children(live.children(&store));
+        setup.bind_children(live.ask_children(&store));
         Ok(Self {
             store,
             live,
@@ -43,7 +43,7 @@ impl SavedAsk {
         let preferences = configured_preferences(profile, setup, route.provider().clone());
         let live = LiveSession::start(&store, preferences, route)?;
         live.attach(agent);
-        setup.bind_children(live.children(&store));
+        setup.bind_children(live.ask_children(&store));
         Ok(Self {
             store,
             live,

@@ -187,6 +187,12 @@ pub struct LiveSession {
     id: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChildSurface {
+    Interactive,
+    Ask,
+}
+
 impl LiveSession {
     pub fn start(
         store: &SessionStore,
@@ -236,10 +242,28 @@ impl LiveSession {
     }
 
     pub fn children(&self, store: &SessionStore) -> Option<Arc<dyn ChildStore>> {
+        self.children_for(store, ChildSurface::Interactive)
+    }
+
+    pub fn ask_children(&self, store: &SessionStore) -> Option<Arc<dyn ChildStore>> {
+        self.children_for(store, ChildSurface::Ask)
+    }
+
+    fn children_for(
+        &self,
+        store: &SessionStore,
+        surface: ChildSurface,
+    ) -> Option<Arc<dyn ChildStore>> {
         let sessions = store
             .children(&self.id)
             .inspect_err(|error| {
-                if *error == SessionError::InvalidSessionId {
+                if surface == ChildSurface::Ask {
+                    trace_log!(
+                        "subagent",
+                        "ask subagent host unavailable root_id={} err={error}",
+                        self.id
+                    );
+                } else if *error == SessionError::InvalidSessionId {
                     trace_log!(
                         "session",
                         "interactive subagent host unavailable session={} err={error}",

@@ -25,6 +25,15 @@ pub(crate) enum ThemeQuery {
     Background,
 }
 
+impl ThemeQuery {
+    pub(crate) fn kind(self) -> &'static str {
+        match self {
+            Self::ResponseFence => "response_fence",
+            Self::Background => "background",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FeedResult {
     Pending,
