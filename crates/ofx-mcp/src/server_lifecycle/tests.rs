@@ -196,6 +196,10 @@ while IFS= read -r line; do
           printf '{"jsonrpc":"2.0","method":"notifications/elicitation/complete","params":{"elicitationId":"e1"}}\n'
         fi
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32042,"message":"URL required","data":{"elicitations":[{"mode":"url","message":"Connect","url":"https://example.test/connect","elicitationId":"e1"}]}}}\n' "$id"
+        if [ -n "$EXIT_AFTER" ]; then
+          IFS= read -r _ < "$EXIT_AFTER"
+          exit 0
+        fi
       else
         reply "$id" '{"content":[{"type":"text","text":"connected"}]}'
       fi ;;
@@ -214,9 +218,19 @@ async fn connect_with(
     environment: &[(&str, &str)],
     answers: Option<&Arc<crate::test_support::ScriptedAnswers>>,
 ) -> crate::features::tools::ToolCallOutcome {
+    connect_responding(
+        environment,
+        answers.map(|answers| crate::test_support::operation_elicitation(answers).responder),
+    )
+    .await
+}
+
+async fn connect_responding(
+    environment: &[(&str, &str)],
+    responder: Option<crate::elicitation_interaction::InputResponder>,
+) -> crate::features::tools::ToolCallOutcome {
     let options = ConnectOptions {
-        elicitation: answers
-            .map(|answers| crate::test_support::operation_elicitation(answers).responder),
+        elicitation: responder,
         ..ConnectOptions::default()
     };
     let mut config = McpServerConfig::stdio(
@@ -325,4 +339,75 @@ async fn a_tool_list_change_during_the_url_flow_cancels_the_retry() {
         )
     ));
     assert_eq!(answers.questions().len(), 1);
+}
+
+#[derive(Default)]
+struct ConsentThenWait {
+    questions: std::sync::Mutex<Vec<String>>,
+    waiting: tokio::sync::Notify,
+}
+
+impl ofx_contract::QuestionAsker for ConsentThenWait {
+    fn ask(
+        &self,
+        entries: Vec<ofx_contract::QuestionBatchEntry>,
+    ) -> ofx_contract::BoxFuture<'static, Option<Vec<String>>> {
+        let question = entries[0].question.clone();
+        let consent = question.contains("requests an external browser action");
+        self.questions.lock().unwrap().push(question);
+        if consent {
+            return Box::pin(async { Some(vec!["Open URL".to_owned()]) });
+        }
+        self.waiting.notify_one();
+        Box::pin(std::future::pending())
+    }
+}
+
+#[tokio::test]
+async fn a_server_that_exits_during_the_browser_wait_ends_the_flow_and_frees_the_turn() {
+    let state = tempfile::tempdir().unwrap();
+    let release = state.path().join("release");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&release)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let asker = Arc::new(ConsentThenWait::default());
+    let responder = crate::test_support::asking_elicitation(
+        Arc::clone(&asker) as Arc<dyn ofx_contract::QuestionAsker>
+    )
+    .responder;
+    let path = release.to_str().unwrap().to_owned();
+    let environment = [("EXIT_AFTER", path.as_str())];
+    let call = connect_responding(&environment, Some(responder.clone()));
+    tokio::pin!(call);
+    tokio::select! {
+        _ = &mut call => panic!("the flow waits for its browser"),
+        () = asker.waiting.notified() => {}
+    }
+    tokio::task::spawn_blocking(move || std::fs::write(release, "exit\n"))
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(10), call)
+        .await
+        .expect("the flow ends when its server exits");
+    assert!(matches!(
+        outcome,
+        crate::features::tools::ToolCallOutcome::UrlElicitationEnded(
+            "MCP URL elicitation was cancelled"
+        )
+    ));
+    let questions = asker.questions.lock().unwrap().clone();
+    assert_eq!(questions.len(), 2);
+    assert!(questions[1].starts_with("Complete the browser flow requested by MCP server fixture."));
+    let next = tokio::time::timeout(
+        Duration::from_secs(1),
+        responder.take_turn(&tokio_util::sync::CancellationToken::new()),
+    )
+    .await
+    .expect("the next question can be asked");
+    assert!(next.is_some());
 }

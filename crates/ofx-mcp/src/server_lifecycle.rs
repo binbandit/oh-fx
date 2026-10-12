@@ -632,7 +632,10 @@ impl Server {
 }
 
 async fn watch(server: Weak<Server>, connection: Connection) {
-    follow_notifications(&server, &connection).await;
+    tokio::select! {
+        () = follow_notifications(&server, &connection) => {}
+        () = connection.client.closed() => {}
+    }
     connection.client.url_completions.close();
 }
 

@@ -121,6 +121,14 @@ impl McpClient {
         self.transport.is_running()
     }
 
+    pub(crate) async fn closed(&self) {
+        match &self.transport {
+            Transport::Stdio(dispatcher) => dispatcher.closed().await,
+            Transport::Sse(client) => client.closed().await,
+            Transport::Http(_) => std::future::pending().await,
+        }
+    }
+
     pub(crate) fn tool_catalog(&self) -> Arc<ToolCatalog> {
         Arc::clone(&lock(&self.tools).catalog)
     }
