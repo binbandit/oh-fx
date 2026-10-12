@@ -10,8 +10,10 @@ use std::process::Stdio;
 use memchr::memmem::Finder;
 use memchr::{memchr, memchr_iter, memrchr};
 use ofx_text::is_model_safe_text;
+use ofx_trace::trace_log;
 
 use crate::bounded_process::run_bounded;
+use crate::file_index::CORE;
 use crate::fs_path::basename;
 use crate::glob_pattern::Pattern;
 use crate::path_error::PathError;
@@ -160,6 +162,8 @@ enum GitGrepError {
 }
 
 trait GrepSink {
+    const GIT_GREP_FALLBACK: &'static str;
+
     fn git_grep(
         &mut self,
         query: &GrepQuery<'_>,
@@ -183,23 +187,37 @@ enum RootStatus {
     OutsideRepository,
 }
 
-fn search_directory(
+fn search_directory<S: GrepSink>(
     query: &GrepQuery<'_>,
     absolute_root: &Path,
     options: &DiscoveryOptions<'_>,
-    sink: &mut impl GrepSink,
+    sink: &mut S,
 ) -> CandidateStats {
     let in_work_tree = !options.force_fallback && git_work_tree_contains(absolute_root);
-    let tracked_matches = if in_work_tree {
-        sink.git_grep(query, absolute_root).ok()
+    let tracked = if in_work_tree {
+        sink.git_grep(query, absolute_root)
+    } else if query.pattern.is_empty() {
+        Err(GitGrepError::Unsupported)
     } else {
-        None
+        Err(GitGrepError::Failed)
     };
+    let tracked_matches = tracked.as_ref().ok().copied();
     let root_status = match (in_work_tree, tracked_matches) {
         (false, _) => RootStatus::OutsideRepository,
         (true, Some(true)) => RootStatus::InRepository,
         (true, _) => probe_ignored_root(absolute_root),
     };
+    if let Err(error) = tracked
+        && !options.force_fallback
+        && root_status != RootStatus::Ignored
+    {
+        trace_log!(
+            CORE,
+            "{} root={} err={error}",
+            S::GIT_GREP_FALLBACK,
+            absolute_root.display()
+        );
+    }
     let mut stats = CandidateStats::default();
     if root_status == RootStatus::InRepository && tracked_matches.is_some() {
         if !sink.is_full() {
@@ -281,8 +299,18 @@ fn scan_candidates(
         let Some((file, _)) = locate_file(query.workspace_root, provider_root, display_path) else {
             continue;
         };
-        let _ = sink.scan(&mut scanner, &file.display_path, &file.read_path);
+        if let Err(error) = sink.scan(&mut scanner, &file.display_path, &file.read_path) {
+            trace_scan_skipped(&file.display_path, error);
+        }
     }
+}
+
+fn trace_scan_skipped(path: &Path, error: PathError) {
+    trace_log!(
+        CORE,
+        "grep_files scan skipped path={} err={error}",
+        path.display()
+    );
 }
 
 #[derive(Clone)]
@@ -297,16 +325,35 @@ fn locate_file(
     display_path: PathBuf,
 ) -> Option<(CandidateFile, Metadata)> {
     if display_path.as_os_str().len() > MAX_PATH_BYTES {
+        trace_log!(
+            CORE,
+            "grep_files scan skipped root={} path={} err=NameTooLong",
+            search_root.display(),
+            display_path
+                .strip_prefix(search_root)
+                .unwrap_or(&display_path)
+                .display()
+        );
         return None;
     }
-    let metadata = fs::symlink_metadata(&display_path).ok()?;
+    let metadata = fs::symlink_metadata(&display_path)
+        .inspect_err(|error| trace_scan_skipped(&display_path, PathError::from(error)))
+        .ok()?;
     let is_symlink = metadata.file_type().is_symlink();
     if !metadata.is_file() && !is_symlink {
         return None;
     }
-    let read_path = fs::canonicalize(&display_path).ok()?;
+    let read_path = fs::canonicalize(&display_path)
+        .inspect_err(|error| trace_scan_skipped(&display_path, PathError::from(error)))
+        .ok()?;
     if !path_inside(workspace_root, &read_path) {
         if is_symlink {
+            trace_log!(
+                CORE,
+                "grep_files skipped external symlink target path={} target={}",
+                display_path.display(),
+                read_path.display()
+            );
             return None;
         }
         if !path_inside(search_root, &read_path) {
@@ -347,8 +394,10 @@ impl FileScanner {
         }
     }
 
-    fn load(&mut self, read_path: &Path) -> Result<bool, PathError> {
-        if read_text(read_path, &mut self.content)? != TextRead::Text {
+    fn load(&mut self, display_path: &Path, read_path: &Path) -> Result<bool, PathError> {
+        let read = read_text(read_path, &mut self.content)?;
+        trace_unread(display_path, read, &self.content);
+        if read != TextRead::Text {
             return Ok(false);
         }
         if self.case_insensitive {
@@ -444,6 +493,12 @@ impl MatchCollector {
             };
             let line = &raw[content_start..content_end];
             if !is_model_safe_text(line) {
+                trace_log!(
+                    CORE,
+                    "grep_files skipped non-text git grep line root={} path={}",
+                    absolute_root.display(),
+                    String::from_utf8_lossy(path)
+                );
                 skipped_paths.insert(path);
                 continue;
             }
@@ -473,6 +528,8 @@ impl MatchCollector {
 }
 
 impl GrepSink for MatchCollector {
+    const GIT_GREP_FALLBACK: &'static str = "grep_files git grep fallback";
+
     fn git_grep(
         &mut self,
         query: &GrepQuery<'_>,
@@ -489,7 +546,7 @@ impl GrepSink for MatchCollector {
         display_path: &Path,
         read_path: &Path,
     ) -> Result<(), PathError> {
-        if self.is_full() || !scanner.load(read_path)? {
+        if self.is_full() || !scanner.load(display_path, read_path)? {
             return Ok(());
         }
         let content = &scanner.content;
@@ -574,6 +631,8 @@ impl LineCounter {
 }
 
 impl GrepSink for LineCounter {
+    const GIT_GREP_FALLBACK: &'static str = "grep_files git grep count fallback";
+
     fn git_grep(
         &mut self,
         query: &GrepQuery<'_>,
@@ -587,10 +646,10 @@ impl GrepSink for LineCounter {
     fn scan(
         &mut self,
         scanner: &mut FileScanner,
-        _display_path: &Path,
+        display_path: &Path,
         read_path: &Path,
     ) -> Result<(), PathError> {
-        if scanner.load(read_path)? {
+        if scanner.load(display_path, read_path)? {
             self.add_file(scanner.matching_lines().count());
         }
         Ok(())
@@ -668,9 +727,43 @@ fn validate_matched_git_file(
     let display_path = absolute_root.join(OsStr::from_bytes(path));
     let (file, metadata) = locate_file(workspace_root, absolute_root, display_path)?;
     if metadata.len() > FILE_BYTE_CAP as u64 {
+        trace_oversized(&file.display_path);
         return None;
     }
-    (read_text(&file.read_path, scratch).ok()? == TextRead::Text).then_some(file)
+    let read = read_text(&file.read_path, scratch).ok()?;
+    trace_unread(&file.display_path, read, scratch);
+    (read == TextRead::Text).then_some(file)
+}
+
+fn trace_unread(display_path: &Path, read: TextRead, content: &[u8]) {
+    match read {
+        TextRead::Oversized => trace_oversized(display_path),
+        TextRead::NotText => trace_log!(
+            CORE,
+            "grep_files skipped non-text file path={} reason={}",
+            display_path.display(),
+            unsafe_text_reason(content)
+        ),
+        TextRead::Text | TextRead::NotRegular => {}
+    }
+}
+
+fn trace_oversized(display_path: &Path) {
+    trace_log!(
+        CORE,
+        "grep_files skipped oversized file path={}",
+        display_path.display()
+    );
+}
+
+fn unsafe_text_reason(content: &[u8]) -> &'static str {
+    if memchr(0, content).is_some() {
+        "contains_nul"
+    } else if std::str::from_utf8(content).is_err() {
+        "invalid_utf8"
+    } else {
+        "not_model_safe"
+    }
 }
 
 fn safe_git_include_pathspec(include: Option<&Pattern>) -> Option<&[u8]> {
@@ -1268,6 +1361,68 @@ mod tests {
 
         assert_eq!(read_model_safe(&file.read_path, &mut content), Ok(false));
         assert!(content.is_empty());
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_GREP_TRACE_CHILD";
+    const TRACE_TEST: &str = "grep_search::tests::skipped_grep_candidates_write_their_core_lines";
+
+    fn search_traced_workspace(root: &Path, outside: &Path) {
+        fs::write(root.join("text.txt"), "needle\n").unwrap();
+        fs::write(root.join("binary.bin"), "needle\0").unwrap();
+        fs::write(
+            root.join("large.txt"),
+            content_with_prefix(FILE_BYTE_CAP + 1, "needle\n"),
+        )
+        .unwrap();
+        fs::write(outside.join("outside.txt"), "needle\n").unwrap();
+        symlink(outside.join("outside.txt"), root.join("link.txt")).unwrap();
+        let query = query(root, None);
+        assert_eq!(lines(&collect_directory_matches(&query, root)), ["needle"]);
+        assert_eq!(count_directory_matches(&query, root).matching_lines, 1);
+    }
+
+    #[test]
+    fn skipped_grep_candidates_write_their_core_lines() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            let root = Path::new(&root);
+            ofx_trace::configure_from_env(root, None);
+            search_traced_workspace(&root.join("workspace"), &root.join("outside"));
+            return;
+        }
+        let temp = Workspace::new();
+        let workspace = temp.root.join("workspace");
+        let outside = temp.root.join("outside");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let log = temp.root.join("trace.log");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env(TRACE_CHILD, &temp.root)
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = fs::read_to_string(&log).unwrap_or_default();
+        let root = workspace.display();
+        for fallback in ["git grep", "git grep count"] {
+            let line =
+                format!(" [core] grep_files {fallback} fallback root={root} err=GitGrepFailed\n");
+            assert_eq!(written.matches(&line).count(), 1, "{line}\n{written}");
+        }
+        for skipped in [
+            format!("non-text file path={root}/binary.bin reason=contains_nul"),
+            format!("oversized file path={root}/large.txt"),
+            format!(
+                "external symlink target path={root}/link.txt target={}/outside.txt",
+                outside.display()
+            ),
+        ] {
+            let line = format!(" [core] grep_files skipped {skipped}\n");
+            assert_eq!(written.matches(&line).count(), 2, "{line}\n{written}");
+        }
+        assert!(!written.contains("needle"), "{written}");
     }
 
     #[test]
