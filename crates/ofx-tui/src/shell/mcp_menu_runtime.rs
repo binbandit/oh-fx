@@ -1,7 +1,9 @@
-use ofx_contract::{McpMenuRequest, McpMenuServer, McpMenuSnapshot, UiCommand};
+use ofx_contract::{McpMenuRequest, McpMenuServer, McpMenuSettled, McpMenuSnapshot, UiCommand};
 
 use super::Shell;
-use super::mcp_menu::{Effect, Event, McpMenuState, Move, Screen};
+use super::mcp_menu::{
+    Action, Effect, Event, LoadState, McpMenuState, Move, Screen, server_action_available,
+};
 use crate::footer::mcp_menu_presentation::{
     MAX_INLINE_ROWS, McpMenuView, mcp_menu_hint_row, mcp_menu_rows, menu_row_count,
     visible_items_for_budget,
@@ -16,6 +18,7 @@ const CTRL_Z: u8 = 26;
 pub(super) struct McpMenu {
     state: McpMenuState,
     snapshot: McpMenuSnapshot,
+    feedback: Option<String>,
     refresh_due_ms: Option<i64>,
 }
 
@@ -24,6 +27,7 @@ impl McpMenu {
         McpMenuView {
             state: &self.state,
             snapshot: &self.snapshot,
+            feedback: self.feedback.as_deref(),
         }
     }
 
@@ -39,7 +43,9 @@ impl McpMenu {
             self.state.selected_server_index = kept.unwrap_or(0);
             self.state.selected_index = self.state.selected_server_index;
             if kept.is_none() {
+                self.state.pending_generation = None;
                 self.state.screen = Screen::Browse;
+                self.state.load_state = LoadState::Ready;
             }
         }
         self.snapshot = next;
@@ -64,6 +70,7 @@ impl Shell<'_> {
         self.mcp_menu = Some(McpMenu {
             state: McpMenuState::open(snapshot.servers.len()),
             snapshot,
+            feedback: None,
             refresh_due_ms: Some(self.now_ms() + REFRESH_INTERVAL_MS),
         });
         self.invalidate();
@@ -78,6 +85,23 @@ impl Shell<'_> {
         if menu.replace_snapshot(snapshot) {
             self.invalidate();
         }
+    }
+
+    pub(super) fn mcp_menu_settled(&mut self, settled: McpMenuSettled, snapshot: McpMenuSnapshot) {
+        let Some(menu) = &mut self.mcp_menu else {
+            return;
+        };
+        if menu.state.pending_generation != Some(settled.generation) {
+            return;
+        }
+        menu.feedback = Some(settled.feedback);
+        menu.state.apply(if settled.succeeded {
+            Event::ActionSucceeded(settled.generation)
+        } else {
+            Event::EffectFailed(settled.generation)
+        });
+        menu.replace_snapshot(snapshot);
+        self.invalidate();
     }
 
     pub(super) fn mcp_menu_refresh_due_ms(&self) -> Option<i64> {
@@ -135,7 +159,10 @@ impl Shell<'_> {
             InputEvent::Raw(raw) => match raw.byte {
                 CTRL_Z => return false,
                 b'\r' => self.submit_mcp_menu_selection(),
-                b'c' | b'C' => self.apply_mcp_menu_event(Event::ShowInfo),
+                b'c' | b'C' => {
+                    self.apply_mcp_menu_event(Event::ShowInfo);
+                }
+                b'r' | b'R' => self.reload_from_mcp_menu(),
                 10 => self.move_mcp_menu(1),
                 11 => self.move_mcp_menu(-1),
                 _ => {}
@@ -160,14 +187,13 @@ impl Shell<'_> {
         true
     }
 
-    fn apply_mcp_menu_event(&mut self, event: Event) {
-        let Some(menu) = &mut self.mcp_menu else {
-            return;
-        };
-        if menu.state.apply(event) == Some(Effect::Close) {
+    fn apply_mcp_menu_event(&mut self, event: Event) -> Option<Effect> {
+        let effect = self.mcp_menu.as_mut()?.state.apply(event);
+        if effect == Some(Effect::Close) {
             self.mcp_menu = None;
             self.composer.clear();
         }
+        effect
     }
 
     fn move_mcp_menu(&mut self, delta: isize) {
@@ -186,8 +212,49 @@ impl Shell<'_> {
         let Some(menu) = &self.mcp_menu else {
             return;
         };
-        if menu.state.screen == Screen::Browse && menu.view().item_count() > 0 {
-            self.apply_mcp_menu_event(Event::ShowDetails);
+        let view = menu.view();
+        match menu.state.screen {
+            Screen::Browse if view.item_count() > 0 => {
+                self.apply_mcp_menu_event(Event::ShowDetails);
+            }
+            Screen::Details => {
+                let Some(server) = view
+                    .selected_server()
+                    .filter(|server| server_action_available(Action::Authenticate, server))
+                    .map(|server| server.name.clone())
+                else {
+                    return;
+                };
+                if let Some(Effect::Action {
+                    generation,
+                    action: Action::Authenticate,
+                }) = self.apply_mcp_menu_event(Event::RequestAction(Action::Authenticate))
+                {
+                    self.send(UiCommand::McpMenu {
+                        request: McpMenuRequest::Authenticate { generation, server },
+                    });
+                }
+            }
+            Screen::Browse | Screen::Info => {}
+        }
+    }
+
+    fn reload_from_mcp_menu(&mut self) {
+        if self
+            .mcp_menu
+            .as_ref()
+            .is_none_or(|menu| menu.state.screen != Screen::Browse)
+        {
+            return;
+        }
+        if let Some(Effect::Action {
+            generation,
+            action: Action::Refresh,
+        }) = self.apply_mcp_menu_event(Event::RequestAction(Action::Refresh))
+        {
+            self.send(UiCommand::McpMenu {
+                request: McpMenuRequest::Reload { generation },
+            });
         }
     }
 }
