@@ -18,7 +18,7 @@ use crate::context_limits::{
 };
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
-use crate::provider_routing::{RoutingLayer, parse_provider_order_list, resolve};
+use crate::provider_routing::{RoutingLayer, resolve};
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 const PROJECT_FILE: &str = ".oh-fx.json";
@@ -1031,10 +1031,6 @@ impl Settings {
     }
 }
 
-pub fn is_valid_provider_order_list(raw: &str) -> bool {
-    matches!(parse_provider_order_list(raw), Ok(Some(_)))
-}
-
 fn environment_provider(lookup: EnvironmentLookup<'_>) -> Option<String> {
     lookup(PROVIDER_VARIABLE).filter(|value| !value.trim().is_empty())
 }
@@ -1396,6 +1392,11 @@ mod tests {
 
     use super::*;
     use crate::context_limits::{ContextLimitName, EMERGENCY_CEILING_BYTES};
+    use crate::provider_routing::provider_order_list;
+
+    fn is_valid_provider_order_list(raw: &str) -> bool {
+        provider_order_list(raw).is_some()
+    }
 
     const PORTKEY_SETTINGS: &str = r#"{"provider":"portkey","model":"@openai/gpt-4o","providers":{"portkey":{"protocol":"openai-chat-completions","base_url":"https://portkey.internal.example.com/v1","auth":{"type":"none"},"headers":{"x-portkey-api-key":"${PORTKEY_API_KEY}"},"models":["@openai/gpt-4o"]}}}"#;
 

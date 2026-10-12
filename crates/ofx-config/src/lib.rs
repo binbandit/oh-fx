@@ -13,7 +13,7 @@ mod settings_store;
 
 pub use config_runtime::{
     ConfigDiagnostic, ConfigSource, DEFAULT_GATEWAY_MODEL, LayerError, PermissionSources,
-    SelectionError, Settings, SettingsError, is_valid_provider_order_list,
+    SelectionError, Settings, SettingsError,
 };
 pub use configured_provider::{
     ConfiguredProviderError, MAX_MODEL_BYTES, MaxTokensParameter, ProviderDefinition,
@@ -29,6 +29,7 @@ pub use io::{AdvisoryLock, DurableError, PrivateDir, RemoveOutcome};
 pub use model_capabilities::{Capabilities, request_output_tokens};
 pub use model_provider::{ProviderId, is_valid_provider_id};
 pub use paths::ProfilePaths;
+pub use provider_routing::provider_order_list;
 pub use settings_store::{
     AllowlistResetScope, CommitOutcome, LegacyCleanup, PermissionPatch, SettingsWriteError,
     SettingsWriteFailure, WorkspaceEntryKind, WorkspaceSaveError, clear_credential_source,

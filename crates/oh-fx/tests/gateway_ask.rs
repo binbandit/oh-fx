@@ -111,6 +111,10 @@ fn ask_streams_a_gateway_reply_with_the_environment_key() {
 }
 
 fn routed_ask(home: &Home, environment: &[(&str, &str)]) -> Value {
+    routed_ask_with(home, &[], environment)
+}
+
+fn routed_ask_with(home: &Home, flags: &[&str], environment: &[(&str, &str)]) -> Value {
     let server = FakeServer::start([reply("routed")]);
     let url = chat_url(&server);
     let mut variables = vec![
@@ -118,7 +122,10 @@ fn routed_ask(home: &Home, environment: &[(&str, &str)]) -> Value {
         ("OH_FX_E2E_GATEWAY_CHAT_URL", url.as_str()),
     ];
     variables.extend_from_slice(environment);
-    let output = home.run(&["ask", "--no-save", "hello"], &variables);
+    let mut args = vec!["ask", "--no-save"];
+    args.extend_from_slice(flags);
+    args.push("hello");
+    let output = home.run(&args, &variables);
     assert!(output.status.success(), "{}", stderr(&output));
     only_request(&server).json()["providerOptions"]["gateway"].clone()
 }
@@ -175,6 +182,27 @@ fn provider_routing_from_settings_the_project_and_the_environment_reaches_the_ga
     );
     assert_eq!(
         routed_ask(&project, &[("OH_FX_PROVIDER_STRICT", "1")]),
+        json!({"caching": "auto", "only": ["azure"]})
+    );
+}
+
+#[test]
+fn ask_routing_flags_outrank_the_environment_and_settings() {
+    let home = Home::with_settings(&json!({
+        "provider_order": ["bedrock"],
+        "provider_strict": true,
+    }));
+    let environment = [("OH_FX_PROVIDER_ORDER", "azure")];
+    assert_eq!(
+        routed_ask_with(
+            &home,
+            &["--provider-order", "vertex,openai", "--no-provider-strict"],
+            &environment,
+        ),
+        json!({"caching": "auto", "order": ["vertex", "openai"]})
+    );
+    assert_eq!(
+        routed_ask_with(&home, &["--provider-strict"], &environment),
         json!({"caching": "auto", "only": ["azure"]})
     );
 }

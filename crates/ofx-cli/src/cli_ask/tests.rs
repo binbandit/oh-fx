@@ -188,6 +188,25 @@ fn parse_options_keep_non_utf8_models_and_reject_non_utf8_system_prompts() {
 }
 
 #[test]
+fn ask_keeps_the_last_provider_order_and_the_strict_switch() {
+    let routed = parsed(&[
+        "--provider-order",
+        "azure",
+        "--provider-order=vertex,bedrock",
+        "--provider-strict",
+        "hello",
+    ]);
+    assert_eq!(
+        routed.provider_order,
+        Some(vec!["vertex".to_owned(), "bedrock".to_owned()])
+    );
+    assert_eq!(routed.provider_strict, Some(true));
+    let plain = parsed(&["hello"]);
+    assert_eq!(plain.provider_order, None);
+    assert_eq!(plain.provider_strict, None);
+}
+
+#[test]
 fn parse_options_accepts_provider_routing_flags_and_rejects_malformed_values() {
     for args in [
         &[

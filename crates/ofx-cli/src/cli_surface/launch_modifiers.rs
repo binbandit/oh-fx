@@ -26,7 +26,8 @@ struct ModelModifiers {
     effort: Option<ReasoningEffort>,
     fast: Option<bool>,
     ultrafast: Option<bool>,
-    routes: bool,
+    provider_order: Option<Vec<String>>,
+    provider_strict: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -76,6 +77,14 @@ impl LaunchModifiers {
         self.model.ultrafast
     }
 
+    pub fn provider_order(&self) -> Option<&[String]> {
+        self.model.provider_order.as_deref()
+    }
+
+    pub fn provider_strict(&self) -> Option<bool> {
+        self.model.provider_strict
+    }
+
     pub(crate) fn has_workspace_modifiers(&self) -> bool {
         !self.workspace.additional_directories.is_empty()
             || self.workspace.saved_directories_suppressed
@@ -92,7 +101,8 @@ impl LaunchModifiers {
             && model.model.is_none()
             && model.effort.is_none()
             && model.fast != Some(true)
-            && !model.routes
+            && model.provider_order.is_none()
+            && model.provider_strict.is_none()
     }
 }
 
@@ -137,7 +147,8 @@ pub(crate) fn parse_launch_modifiers(
     modifiers.model.effort = model_overrides.effort;
     modifiers.model.fast = model_overrides.fast;
     modifiers.model.ultrafast = model_overrides.ultrafast;
-    modifiers.model.routes = model_overrides.routes;
+    modifiers.model.provider_order = model_overrides.provider_order;
+    modifiers.model.provider_strict = model_overrides.provider_strict;
     Ok(modifiers)
 }
 
@@ -350,6 +361,28 @@ mod tests {
         let (untouched, remaining) = parse(&["ask", "--fast"]).unwrap();
         assert!(!untouched.has_model_overrides());
         assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn global_launch_modifiers_keep_the_last_provider_order_and_the_strict_switch() {
+        let (modifiers, _) = parse(&[
+            "--provider-order",
+            "azure",
+            "--provider-order= vertex, bedrock ",
+            "--no-provider-strict",
+        ])
+        .unwrap();
+        assert_eq!(
+            modifiers.provider_order(),
+            Some(&["vertex".to_owned(), "bedrock".to_owned()][..])
+        );
+        assert_eq!(modifiers.provider_strict(), Some(false));
+        let (strict, _) = parse(&["--provider-strict"]).unwrap();
+        assert_eq!(strict.provider_order(), None);
+        assert_eq!(strict.provider_strict(), Some(true));
+        let (neither, _) = parse(&["--fast"]).unwrap();
+        assert_eq!(neither.provider_order(), None);
+        assert_eq!(neither.provider_strict(), None);
     }
 
     #[test]

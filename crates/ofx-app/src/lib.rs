@@ -41,7 +41,8 @@ mod user_settings;
 mod workspace_commands;
 
 pub use app_bootstrap_runtime::{
-    AgentSetup, ConnectError, CredentialSource, Launch, Profile, ProfileError, user_agent,
+    AgentSetup, ConnectError, CredentialSource, Launch, Profile, ProfileError, RoutingFlags,
+    user_agent,
 };
 pub use app_lifecycle::{StartupStatus, StartupStatusError, run_interactive};
 pub use app_session_runtime::{
