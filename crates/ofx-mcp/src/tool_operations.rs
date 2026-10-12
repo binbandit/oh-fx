@@ -1,19 +1,22 @@
 use ofx_images::MAX_RESULT_FRAME_BYTES;
+use std::sync::Arc;
+
 use tokio::time::Instant;
 
 use crate::error::McpError;
 use crate::features::tools::{Limits, ToolCallOutcome, parse_call_outcome, validate_arguments};
+use crate::legacy_elicitation_runtime::{ElicitationContext, OperationElicitation};
 use crate::protocol_messages::build_tool_call_request;
 use crate::server_connection::McpClient;
-use crate::transport::{McpTransport, ProgressSink, ServerRequestPolicy, TransportRequest};
+use crate::transport::{McpTransport, ProgressSink, TransportRequest};
 
 pub(crate) const DEFAULT_MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const RESPONSE_FRAME_OVERHEAD_BYTES: usize = 16 * 1024;
 
-#[derive(Clone)]
 pub(crate) struct CallOptions {
     pub max_tool_result_bytes: usize,
     pub progress: Option<ProgressSink>,
+    pub elicitation: Option<OperationElicitation>,
 }
 
 impl Default for CallOptions {
@@ -21,6 +24,7 @@ impl Default for CallOptions {
         Self {
             max_tool_result_bytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
             progress: None,
+            elicitation: None,
         }
     }
 }
@@ -43,13 +47,16 @@ impl McpClient {
         let progress_token = options.progress.is_some().then_some(id);
         let body = build_tool_call_request(id, name, arguments_json, progress_token);
         let frame_cap = response_frame_cap(options.max_tool_result_bytes);
+        let elicitation = self
+            .wire
+            .zip(options.elicitation)
+            .and_then(|(wire, operation)| {
+                ElicitationContext::new(wire, operation, deadline, self.operation_timeout)
+            });
         let request = TransportRequest {
             send_cancellation: true,
             progress: options.progress,
-            server_requests: self.wire.map_or(
-                ServerRequestPolicy::Reject,
-                ServerRequestPolicy::RefuseElicitation,
-            ),
+            elicitation: elicitation.map(Arc::new),
             ..TransportRequest::new(id, body, frame_cap, deadline)
         };
         let response = self.transport.request(request).await?;

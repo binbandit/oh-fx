@@ -1,10 +1,19 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use ofx_jsonrpc::{ErrorCode, Frame, RequestId, RpcError};
 use serde_json::Value;
+use tokio::sync::watch;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
-use crate::elicitation::parse_request;
+use crate::elicitation::{
+    Answer, ElicitationCapabilities, Request, parse_request, validate_answer,
+};
+use crate::elicitation_interaction::{InputResponder, Interaction};
 use crate::error::McpError;
+use crate::operation_control::{DeadlineGate, ELICITATION_TIMEOUT};
 use crate::protocol_messages::parse_json;
 use crate::protocol_negotiation::ElicitationWire;
 
@@ -12,21 +21,91 @@ const MAX_SERVER_REQUESTS: usize = 32;
 const MAX_SERVER_REQUEST_FRAME_BYTES: usize = 128 * 1024;
 const MAX_STRING_ID_BYTES: usize = 256;
 
-#[derive(Debug)]
+pub(crate) trait ElicitationOwner: Send + Sync {
+    fn current(&self) -> bool;
+}
+
 pub(crate) struct ElicitationContext {
     wire: ElicitationWire,
+    capabilities: ElicitationCapabilities,
+    responder: InputResponder,
+    server_name: String,
+    owner: Box<dyn ElicitationOwner>,
+    gate: DeadlineGate,
+    operation_timeout: Duration,
+    finished: CancellationToken,
     requests_seen: AtomicUsize,
+    active: watch::Sender<usize>,
+}
+
+pub(crate) struct Answering(Arc<ElicitationContext>);
+
+impl Answering {
+    pub(crate) fn context(&self) -> &ElicitationContext {
+        &self.0
+    }
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        self.0.active.send_modify(|active| *active -= 1);
+    }
+}
+
+pub(crate) struct OperationElicitation {
+    pub(crate) responder: InputResponder,
+    pub(crate) server_name: String,
+    pub(crate) owner: Box<dyn ElicitationOwner>,
 }
 
 impl ElicitationContext {
-    pub(crate) fn new(wire: ElicitationWire) -> Self {
-        Self {
+    pub(crate) fn new(
+        wire: ElicitationWire,
+        operation: OperationElicitation,
+        deadline: Instant,
+        operation_timeout: Duration,
+    ) -> Option<Self> {
+        let capabilities = operation.responder.capabilities();
+        capabilities.any().then(|| Self {
             wire,
+            capabilities,
+            responder: operation.responder,
+            server_name: operation.server_name,
+            owner: operation.owner,
+            gate: DeadlineGate::new(deadline),
+            operation_timeout,
+            finished: CancellationToken::new(),
             requests_seen: AtomicUsize::new(0),
-        }
+            active: watch::Sender::new(0),
+        })
     }
 
-    pub(crate) fn respond(&self, frame: &[u8]) -> Result<String, McpError> {
+    pub(crate) fn begin_answer(self: &Arc<Self>) -> Answering {
+        self.active.send_modify(|active| *active += 1);
+        Answering(Arc::clone(self))
+    }
+
+    pub(crate) async fn answered(&self) {
+        let _ = self
+            .active
+            .subscribe()
+            .wait_for(|active| *active == 0)
+            .await;
+    }
+
+    pub(crate) fn operation_timeout(&self) -> Duration {
+        self.operation_timeout
+    }
+
+    pub(crate) fn gate(&self) -> &DeadlineGate {
+        &self.gate
+    }
+
+    pub(crate) fn finish(&self) {
+        self.finished.cancel();
+    }
+
+    pub(crate) async fn respond(&self, frame: &[u8]) -> Result<String, McpError> {
         if frame.len() > MAX_SERVER_REQUEST_FRAME_BYTES {
             return Err(McpError::McpResponseFrameTooLarge);
         }
@@ -54,22 +133,69 @@ impl ElicitationContext {
                 "Method not found",
             ));
         }
-        if object
+        let Some(request) = object
             .get("params")
-            .is_none_or(|params| parse_request(self.wire, params).is_err())
-        {
+            .and_then(|params| parse_request(self.wire, params).ok())
+        else {
             return Ok(error_response(
                 id,
                 ErrorCode::INVALID_PARAMS,
                 "Invalid params",
             ));
+        };
+        if !self.capabilities.supports(request.mode()) {
+            return Ok(error_response(
+                id,
+                ErrorCode::INVALID_PARAMS,
+                "Unsupported elicitation mode",
+            ));
         }
-        Ok(error_response(
-            id,
-            ErrorCode::INVALID_PARAMS,
-            "Unsupported elicitation mode",
-        ))
+        let _paused = self.gate.pause_for_input(self.operation_timeout);
+        Ok(self.answer(id, &request).await)
     }
+
+    async fn answer(&self, id: &Value, request: &Request) -> String {
+        let Some(_turn) = self.responder.take_turn(&self.finished).await else {
+            return result_response(id, &Answer::Cancel);
+        };
+        if !self.owner.current() {
+            return owner_changed(id);
+        }
+        let interaction = Interaction {
+            responder: &self.responder,
+            server_name: &self.server_name,
+            deadline: Instant::now() + ELICITATION_TIMEOUT,
+            finished: &self.finished,
+        };
+        let response = match interaction.respond(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                return error_response(id, ErrorCode::INTERNAL_ERROR, &error.to_string());
+            }
+        };
+        if !self.owner.current() {
+            return owner_changed(id);
+        }
+        if validate_answer(request, &response).is_err() {
+            return error_response(
+                id,
+                ErrorCode::INTERNAL_ERROR,
+                "Invalid elicitation response",
+            );
+        }
+        result_response(id, &response)
+    }
+}
+
+fn result_response(id: &Value, answer: &Answer) -> String {
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{}}}",
+        answer.to_json()
+    )
+}
+
+fn owner_changed(id: &Value) -> String {
+    error_response(id, ErrorCode::INTERNAL_ERROR, "Elicitation owner changed")
 }
 
 fn valid_server_request_id(value: &Value) -> bool {
@@ -104,94 +230,4 @@ fn error_response(id: &Value, code: i64, message: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn context() -> ElicitationContext {
-        ElicitationContext::new(ElicitationWire::LegacyMcp2025_11)
-    }
-
-    #[test]
-    fn unsupported_client_features_answer_method_not_found() {
-        let context = context();
-        for method in ["roots/list", "sampling/createMessage", "ping"] {
-            let frame =
-                format!("{{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"{method}\",\"params\":{{}}}}");
-            assert_eq!(
-                context.respond(frame.as_bytes()).unwrap(),
-                "{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
-            );
-            assert_eq!(
-                method_not_found_response(frame.as_bytes()),
-                "{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
-            );
-        }
-    }
-
-    #[test]
-    fn elicitation_without_an_interface_is_refused_with_bounded_requests() {
-        let context = context();
-        let elicit = br#"{"jsonrpc":"2.0","id":"e","method":"elicitation/create","params":{"message":"hi","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}}}}}"#;
-        assert_eq!(
-            context.respond(elicit).unwrap(),
-            "{\"jsonrpc\":\"2.0\",\"id\":\"e\",\"error\":{\"code\":-32602,\"message\":\"Unsupported elicitation mode\"}}"
-        );
-        let missing_params = br#"{"jsonrpc":"2.0","id":1,"method":"elicitation/create"}"#;
-        assert!(
-            context
-                .respond(missing_params)
-                .unwrap()
-                .contains("Invalid params")
-        );
-        let url = br#"{"jsonrpc":"2.0","id":2,"method":"elicitation/create","params":{"mode":"url","message":"Open","url":"https://example.test/","elicitationId":"e"}}"#;
-        assert!(
-            context
-                .respond(url)
-                .unwrap()
-                .contains("Unsupported elicitation mode")
-        );
-        let bad_id = br#"{"jsonrpc":"2.0","id":{},"method":"elicitation/create"}"#;
-        assert_eq!(
-            context.respond(bad_id).unwrap(),
-            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid request id\"}}"
-        );
-        for _ in 0..29 {
-            context.respond(elicit).unwrap();
-        }
-        assert!(
-            context
-                .respond(elicit)
-                .unwrap()
-                .contains("Elicitation request limit exceeded")
-        );
-        assert_eq!(
-            server_request_failed_response(b"not json"),
-            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Server request failed\"}}"
-        );
-    }
-
-    #[test]
-    fn malformed_elicitation_requests_are_refused_as_invalid_params() {
-        let context = context();
-        for params in [
-            r#"{"message":"hi"}"#,
-            r#"{"message":"hi","requestedSchema":{"type":"object","properties":{"api_key":{"type":"string"}}}}"#,
-            r#"{"message":"hi","requestedSchema":{"type":"object","properties":{"value":{"type":"string","pattern":"(?=x)"}}}}"#,
-            r#"{"mode":"url","message":"Open","url":"http://example.test/","elicitationId":"e"}"#,
-            r#"{"mode":"url","message":"Open","url":"https://example.test/"}"#,
-            "[]",
-        ] {
-            let frame = format!(
-                r#"{{"jsonrpc":"2.0","id":3,"method":"elicitation/create","params":{params}}}"#
-            );
-            assert_eq!(
-                context.respond(frame.as_bytes()).unwrap(),
-                "{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32602,\"message\":\"Invalid params\"}}",
-                "{params}"
-            );
-        }
-        let legacy = ElicitationContext::new(ElicitationWire::LegacyMcp2025_06);
-        let explicit = br#"{"jsonrpc":"2.0","id":4,"method":"elicitation/create","params":{"mode":"form","message":"hi","requestedSchema":{"type":"object","properties":{}}}}"#;
-        assert!(legacy.respond(explicit).unwrap().contains("Invalid params"));
-    }
-}
+mod tests;

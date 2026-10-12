@@ -270,6 +270,7 @@ fn run_a_codex_session(home: &Path) -> ! {
                 permission_prompts: false,
                 open_browser: false,
                 context_targets: &[],
+                mcp_questioner: None,
             },
             &CancellationToken::new(),
         ))
@@ -673,6 +674,7 @@ fn run_a_local_install_session(home: &Path) -> ! {
                 permission_prompts: false,
                 open_browser: false,
                 context_targets: &[],
+                mcp_questioner: None,
             },
             &CancellationToken::new(),
         ))
