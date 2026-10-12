@@ -1,6 +1,6 @@
 use ofx_contract::{
-    DeliveryOutcome, FileChangeStats, FileEvidence, HistoryCut, HistoryTurn, ProviderBilling,
-    RecoveryPoint, RecoveryProgress, RequestTicket, RestoredHistory, TurnEnd,
+    DeliveryOutcome, FileChangeStats, FileEvidence, HistoryCut, HistoryTurn, ObservedGeneration,
+    ProviderBilling, RecoveryPoint, RecoveryProgress, RequestTicket, RestoredHistory, TurnEnd,
 };
 
 use super::*;
@@ -39,6 +39,7 @@ pub(super) enum Accounted {
     Begun(u64),
     Finished(u64, DeliveryOutcome),
     Exact(u64, String),
+    Deferred(u64, String),
     Lines(u32, u32),
 }
 
@@ -62,7 +63,12 @@ impl MemoryLog {
         accounted.push(settled);
         let count = accounted
             .iter()
-            .filter(|entry| matches!(entry, Accounted::Finished(..) | Accounted::Exact(..)))
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    Accounted::Finished(..) | Accounted::Exact(..) | Accounted::Deferred(..)
+                )
+            })
             .count();
         match self.refused_settlement {
             Some(code) if count > self.settlements_kept => Err(LogFailure {
@@ -280,6 +286,14 @@ impl ConversationLog for MemoryLog {
             ticket.sequence,
             billing.generation_id.clone(),
         ))
+    }
+
+    fn finish_deferred_request(
+        &self,
+        ticket: RequestTicket,
+        generation: &ObservedGeneration,
+    ) -> Result<(), LogFailure> {
+        self.settle(Accounted::Deferred(ticket.sequence, generation.id.clone()))
     }
 
     fn record_committed_lines(&self, change: FileChangeStats) {

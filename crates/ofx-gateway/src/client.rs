@@ -13,7 +13,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chat_completions::{SendFailure, http_failure, send, status_failure, transport_failure};
 use sse_stream::Stream;
-pub(crate) use sse_stream::{FailureCause, Finish, GatewayCompletion, finish_label};
+pub(crate) use sse_stream::{
+    FailureCause, Finish, GatewayCompletion, SeenGeneration, finish_label,
+};
 
 const STREAM: &str = "stream";
 const TIMEOUT: &str = "Timeout";

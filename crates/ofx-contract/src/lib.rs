@@ -73,8 +73,9 @@ pub use skill_menu::{
     SkillBinding, SkillMenuFocus, SkillMenuGroup, SkillMenuItem, SkillMenuSource,
 };
 pub use stream_provider::{
-    BoxFuture, Completion, ModelProvider, ModelRequest, ProviderError, ProviderErrorKind,
-    ProviderOptions, ProviderRouting, ServiceTier, StreamEvent, StreamSink,
+    BoxFuture, Completion, GenerationIdentity, ModelProvider, ModelRequest, ObservedGeneration,
+    ProviderError, ProviderErrorKind, ProviderOptions, ProviderRouting, ServiceTier, StreamEvent,
+    StreamSink,
 };
 pub use strict_json::{
     DuplicateKeys, Json, Object, StrictJsonError, parse_strict_json, parse_strict_json_value,

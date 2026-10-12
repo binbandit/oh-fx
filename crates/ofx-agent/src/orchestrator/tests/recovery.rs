@@ -2,8 +2,8 @@ use std::sync::Mutex;
 
 use ofx_contract::{
     CommandProcessPresentation, DeliveryOutcome, FileChangeStats, HistoryCut, HistoryTurn,
-    ProviderBilling, RecordedOutput, RecoveredTurn, RecoveryPoint, RecoveryProgress,
-    RecoveryStrategy, RequestTicket,
+    ObservedGeneration, ProviderBilling, RecordedOutput, RecoveredTurn, RecoveryPoint,
+    RecoveryProgress, RecoveryStrategy, RequestTicket,
 };
 
 use super::compaction::{spoken_tool_reply, unmetered, windowed};
@@ -533,6 +533,14 @@ impl ConversationLog for SavedArguments {
         &self,
         _ticket: RequestTicket,
         _billing: &ProviderBilling,
+    ) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn finish_deferred_request(
+        &self,
+        _ticket: RequestTicket,
+        _generation: &ObservedGeneration,
     ) -> Result<(), LogFailure> {
         Ok(())
     }

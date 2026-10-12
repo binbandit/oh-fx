@@ -175,6 +175,8 @@ impl SubscriptionEndpoints {
             endpoints.gateway.chat = url;
         }
         if let Some(base) = loopback_override(GATEWAY_BASE_OVERRIDE) {
+            base.trim_end_matches('/')
+                .clone_into(&mut endpoints.gateway.generation_origin);
             endpoints.gateway_models.models = format!("{base}{GATEWAY_MODELS_PATH}");
             endpoints.gateway_credits.credits = format!("{base}{GATEWAY_CREDITS_PATH}");
         }

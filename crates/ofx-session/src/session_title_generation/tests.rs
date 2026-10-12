@@ -92,6 +92,7 @@ fn completion(content: Option<&str>) -> Completion {
         usage: Usage::default(),
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }

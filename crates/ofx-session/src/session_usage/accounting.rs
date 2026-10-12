@@ -1,11 +1,12 @@
 use ofx_contract::{
-    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, UsageCompleteness,
-    UsageIncident,
+    DeliveryOutcome, FileChangeStats, GenerationFact, ObservedGeneration, ProviderBilling,
+    UsageCompleteness, UsageIncident,
 };
 
 use super::exact::exact_fact;
-use super::{Availability, PublicationBatch, UsageSnapshot};
+use super::{Availability, DeferredRefusal, PublicationBatch, UsageSnapshot};
 use crate::session_codec::SavedProvider;
+use crate::session_codec::recovery_checkpoint::RouteCredential;
 
 const MAX_ACTIVE_INVOCATIONS: usize = 64;
 
@@ -85,7 +86,7 @@ impl Usage {
         provider: &SavedProvider,
         billing: &ProviderBilling,
         now_ms: i64,
-    ) {
+    ) -> bool {
         let Some(fact) = exact_fact(provider, billing) else {
             self.finish(
                 sequence,
@@ -93,10 +94,10 @@ impl Usage {
                 DeliveryOutcome::PossiblyBilledWithoutIdentity,
                 now_ms,
             );
-            return;
+            return false;
         };
         if !self.release(sequence, duration_ms) {
-            return;
+            return false;
         }
         let staged = self
             .state
@@ -105,6 +106,27 @@ impl Usage {
         if staged.is_err() {
             self.mark_billing_incomplete(now_ms);
         }
+        staged.is_ok()
+    }
+
+    pub(crate) fn finish_deferred(
+        &mut self,
+        (sequence, duration_ms): (u64, u64),
+        provider: &SavedProvider,
+        generation: &ObservedGeneration,
+        credential: RouteCredential,
+        now_ms: i64,
+    ) -> Result<bool, DeferredRefusal> {
+        if !self.release(sequence, duration_ms) {
+            return Ok(false);
+        }
+        let observed =
+            self.state
+                .observe_deferred(sequence, provider.id(), generation, credential, now_ms);
+        if observed.is_err() {
+            self.mark_billing_incomplete(now_ms);
+        }
+        observed.map(|()| true)
     }
 
     fn release(&mut self, sequence: u64, duration_ms: u64) -> bool {

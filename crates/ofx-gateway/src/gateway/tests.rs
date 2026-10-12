@@ -20,7 +20,10 @@ fn provider(chat: String, secret: Option<&str>, team: Option<&str>) -> GatewayPr
     GatewayProvider::new(
         GatewayCredential::new(secret.map(str::to_owned), team.map(str::to_owned)),
         USER_AGENT,
-        GatewayEndpoints { chat },
+        GatewayEndpoints {
+            chat,
+            ..GatewayEndpoints::default()
+        },
     )
     .unwrap()
 }
@@ -751,6 +754,7 @@ fn signed_in(
         USER_AGENT,
         GatewayEndpoints {
             chat: chat_url(server),
+            ..GatewayEndpoints::default()
         },
     )
     .unwrap()
@@ -1075,4 +1079,45 @@ async fn the_permission_review_is_not_refreshed_or_replayed_after_a_rejection() 
     assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
     assert_eq!(refresh.calls(), 0);
     assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn a_completion_names_the_generation_it_observed_with_its_origin_and_team() {
+    let observed = r#"{"type":"finish","finishReason":{"unified":"stop"},"usage":{"inputTokens":{"total":12},"outputTokens":{"total":3}},"providerMetadata":{"gateway":{"generationId":"gen_01ARZ3NDEKTSV4RRFFQ69G5FAV"}}}"#;
+    let conflicting = r#"{"type":"start-step","providerMetadata":{"gateway":{"generationId":"gen_01ARZ3NDEKTSV4RRFFQ69G5FAW"}}}"#;
+    let server = FakeServer::start([
+        Reply::sse(&[observed]),
+        Reply::sse(&[conflicting, observed]),
+        Reply::sse(&[STOP]),
+    ]);
+    let gateway = GatewayProvider::new(
+        GatewayCredential::new(Some(KEY.to_owned()), Some("team_1".to_owned())),
+        USER_AGENT,
+        GatewayEndpoints {
+            chat: chat_url(&server),
+            generation_origin: "http://127.0.0.1:9".to_owned(),
+        },
+    )
+    .unwrap();
+    let generations = [
+        run(&gateway, None).await.0.unwrap().generation,
+        run(&gateway, None).await.0.unwrap().generation,
+        run(&gateway, None).await.0.unwrap().generation,
+    ];
+    assert_eq!(
+        generations,
+        [
+            Some(GenerationIdentity::Observed(ObservedGeneration {
+                id: "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+                origin: "http://127.0.0.1:9".to_owned(),
+                team: Some("team_1".to_owned()),
+            })),
+            Some(GenerationIdentity::Invalid),
+            None,
+        ]
+    );
+    assert_eq!(
+        GatewayEndpoints::default().generation_origin,
+        "https://ai-gateway.vercel.sh"
+    );
 }

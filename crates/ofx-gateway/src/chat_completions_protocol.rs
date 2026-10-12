@@ -1122,6 +1122,7 @@ impl Reducer {
             },
             billing: None,
             service_tier: None,
+            generation: None,
             provider_replay: None,
         })
     }

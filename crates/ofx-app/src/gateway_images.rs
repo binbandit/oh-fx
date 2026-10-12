@@ -64,6 +64,7 @@ fn agent(server: &FakeServer, workspace: &std::path::Path) -> Agent {
         "oh-fx/test",
         GatewayEndpoints {
             chat: format!("http://{}/v4/ai/language-model", server.address()),
+            ..GatewayEndpoints::default()
         },
     )
     .expect("build the gateway provider");

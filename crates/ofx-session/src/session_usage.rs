@@ -7,11 +7,13 @@ use ofx_contract::{
 use ofx_text::lowercase_hex;
 
 mod accounting;
+mod deferred;
 mod exact;
 mod publication;
 mod report;
 
 pub(crate) use accounting::{ReserveFailure, Usage};
+pub(crate) use deferred::DeferredRefusal;
 pub(crate) use publication::PublicationBatch;
 pub use report::fresh_session_report;
 

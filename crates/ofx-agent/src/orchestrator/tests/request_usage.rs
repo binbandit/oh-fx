@@ -1,5 +1,6 @@
 use ofx_contract::{
-    DeliveryOutcome, INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT, ProviderBilling,
+    DeliveryOutcome, GenerationIdentity, INTERRUPTED_BEFORE_COMPLETION, INTERRUPTED_TURN_CONTEXT,
+    ObservedGeneration, ProviderBilling,
 };
 
 use super::turn_log::{Accounted, MemoryLog, logged, logged_turn};
@@ -70,6 +71,40 @@ async fn a_completion_with_exact_billing_settles_with_its_generation() {
             Accounted::Finished(1, DeliveryOutcome::PossiblyBilledWithoutIdentity),
             Accounted::Begun(2),
             Accounted::Exact(2, "resp_exact".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_observed_generation_without_billing_is_deferred_and_an_invalid_one_is_not() {
+    let generation = ObservedGeneration {
+        id: "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        origin: "https://ai-gateway.vercel.sh".to_owned(),
+        team: None,
+    };
+    let mut deferred = completion(Some("deferred"), Vec::new(), FinishReason::Stop);
+    deferred.generation = Some(GenerationIdentity::Observed(generation.clone()));
+    let mut invalid = completion(Some("invalid"), Vec::new(), FinishReason::Stop);
+    invalid.generation = Some(GenerationIdentity::Invalid);
+    let provider = FakeProvider::new(vec![
+        tool_reply(&[("call-1", r#"{"text":"a"}"#)]),
+        Script::Reply(Vec::new(), deferred),
+        Script::Reply(Vec::new(), invalid),
+    ]);
+    let (mut agent, accounted) = accounting_agent(provider, MemoryLog::default());
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let (report, _) = run(&mut agent, "again").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        *accounted.lock().unwrap(),
+        [
+            Accounted::Begun(1),
+            Accounted::Finished(1, DeliveryOutcome::PossiblyBilledWithoutIdentity),
+            Accounted::Begun(2),
+            Accounted::Deferred(2, generation.id),
+            Accounted::Begun(3),
+            Accounted::Finished(3, DeliveryOutcome::PossiblyBilledWithoutIdentity),
         ]
     );
 }

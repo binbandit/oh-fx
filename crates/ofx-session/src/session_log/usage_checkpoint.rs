@@ -3,12 +3,14 @@ use std::time::Instant;
 
 use ofx_config::{DurableError, PrivateDir};
 use ofx_contract::{
-    DeliveryOutcome, FileChangeStats, GenerationFact, ProviderBilling, RequestTicket,
-    UsageIncident, UsageReport, UsageReportError,
+    DeliveryOutcome, FileChangeStats, GenerationFact, ObservedGeneration, ProviderBilling,
+    RequestTicket, UsageIncident, UsageReport, UsageReportError,
 };
+use ofx_trace::trace_log;
 
 use super::{WritableSession, now_ms};
 use crate::session_codec::SavedProvider;
+use crate::session_codec::recovery_checkpoint::RouteCredential;
 use crate::session_error::SessionError;
 use crate::session_usage::{PublicationBatch, ReserveFailure, UsageSnapshot};
 use crate::session_usage_sidecar;
@@ -177,8 +179,44 @@ impl WritableSession {
         provider: &SavedProvider,
     ) -> Result<(), SessionError> {
         let now = now_ms();
-        self.usage
-            .finish_exact(ticket.sequence, elapsed_ms(ticket), provider, billing, now);
+        let settled =
+            self.usage
+                .finish_exact(ticket.sequence, elapsed_ms(ticket), provider, billing, now);
+        if settled {
+            trace_log!(
+                "session",
+                "usage exact generation settled sequence={} id={}",
+                ticket.sequence,
+                billing.generation_id
+            );
+        }
+        self.checkpoint_usage_for_continuation(now)
+    }
+
+    pub(crate) fn finish_deferred_request(
+        &mut self,
+        ticket: RequestTicket,
+        generation: &ObservedGeneration,
+        (provider, credential): (&SavedProvider, RouteCredential),
+    ) -> Result<(), SessionError> {
+        let now = now_ms();
+        let finished = (ticket.sequence, elapsed_ms(ticket));
+        match self
+            .usage
+            .finish_deferred(finished, provider, generation, credential, now)
+        {
+            Ok(true) => trace_log!(
+                "session",
+                "usage generation queued sequence={} id={}",
+                ticket.sequence,
+                generation.id
+            ),
+            Ok(false) => {}
+            Err(refusal) => trace_log!(
+                "session",
+                "usage generation checkpointed incomplete reason={refusal}"
+            ),
+        }
         self.checkpoint_usage_for_continuation(now)
     }
 

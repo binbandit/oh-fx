@@ -151,6 +151,7 @@ fn completion(content: Option<&str>, tool_calls: Vec<ToolCall>) -> Completion {
         },
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }

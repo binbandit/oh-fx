@@ -63,6 +63,7 @@ async fn run_turns() {
         "oh-fx/test",
         GatewayEndpoints {
             chat: format!("{}/v4/ai/language-model", server.base_url()),
+            ..GatewayEndpoints::default()
         },
     )
     .expect("the gateway client builds");

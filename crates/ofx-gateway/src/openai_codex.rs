@@ -605,6 +605,7 @@ fn into_completion(
         usage: completion.usage.usage(),
         billing,
         service_tier: None,
+        generation: None,
         provider_replay: completion.provider_state.map(|parts_json| ProviderReplay {
             source: replay_source(model),
             parts_json,

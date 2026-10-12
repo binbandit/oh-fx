@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::file_evidence::FileEvidence;
 use crate::ids::{ToolCallId, TurnId};
+use crate::stream_provider::ObservedGeneration;
 use crate::types::{
     ChatMessage, CommandProcessPresentation, FileChangeStats, ModelRecoveryAction,
     ModelRecoveryCause, ProviderBilling, ProviderReplay, ToolCall, ToolResultStatus,
@@ -206,6 +207,12 @@ pub trait ConversationLog: Send + Sync {
         &self,
         ticket: RequestTicket,
         billing: &ProviderBilling,
+    ) -> Result<(), LogFailure>;
+
+    fn finish_deferred_request(
+        &self,
+        ticket: RequestTicket,
+        generation: &ObservedGeneration,
     ) -> Result<(), LogFailure>;
 
     fn record_committed_lines(&self, change: FileChangeStats);

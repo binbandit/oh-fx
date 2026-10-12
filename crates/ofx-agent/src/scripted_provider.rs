@@ -46,6 +46,7 @@ pub(crate) fn text(content: &str) -> Completion {
         usage: Usage::default(),
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }
@@ -58,6 +59,7 @@ pub(crate) fn calling(call: ToolCall) -> Completion {
         usage: Usage::default(),
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }

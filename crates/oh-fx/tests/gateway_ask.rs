@@ -186,9 +186,15 @@ fn provider_routing_from_settings_the_project_and_the_environment_reaches_the_ga
     );
 }
 
+const GENERATION_ID: &str = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
 fn billed_reply(cost: Option<&str>) -> Reply {
+    billed_reply_as(cost, "zai/glm-5.2")
+}
+
+fn billed_reply_as(cost: Option<&str>, later_model: &str) -> Reply {
     let mut gateway = json!({
-        "generationId": "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "generationId": GENERATION_ID,
         "routing": {"canonicalSlug": "zai/glm-5.2"},
     });
     if let Some(cost) = cost {
@@ -196,6 +202,7 @@ fn billed_reply(cost: Option<&str>) -> Reply {
     }
     Reply::sse(&[
         json!({"type": "response-metadata", "timestamp": "2026-04-01T12:11:07Z", "modelId": "zai/glm-5.2"}).to_string(),
+        json!({"type": "response-metadata", "modelId": later_model}).to_string(),
         json!({"type": "text-delta", "id": "t", "delta": "billed"}).to_string(),
         json!({
             "type": "finish",
@@ -220,9 +227,20 @@ fn saved_usage(home: &Home, output: &Output) -> Value {
         .clone()
 }
 
+fn settled(log: &str, line: &str) -> bool {
+    log.lines()
+        .any(|logged| logged.contains("[session]") && logged.ends_with(line))
+}
+
 #[test]
-fn a_gateway_finish_with_its_generation_and_cost_settles_exact_usage() {
-    let server = FakeServer::start([billed_reply(Some("0.0125")), billed_reply(None)]);
+fn a_gateway_finish_settles_exact_deferred_or_unidentified_usage() {
+    let server = FakeServer::start([
+        billed_reply(Some("0.0125")),
+        billed_reply(None),
+        billed_reply_as(Some("0.0125"), "zai/glm-5.3"),
+        reply("plain"),
+        billed_reply(None),
+    ]);
     let url = chat_url(&server);
     let home = Home::with_settings(&json!({"session_titles": false}));
     let trace = home.root.join("trace.log");
@@ -241,16 +259,69 @@ fn a_gateway_finish_with_its_generation_and_cost_settles_exact_usage() {
     assert_eq!(snapshot["total_cost"], 0.0125, "{snapshot}");
     let log = fs::read_to_string(&trace).expect("read the trace log");
     assert!(!log.contains("stream billing ignored"), "{log}");
+    let exact_line = format!("usage exact generation settled sequence=1 id={GENERATION_ID}");
+    assert!(settled(&log, &exact_line), "{log}");
 
     let unpriced = home.run(&["ask", "--json", "second"], &environment);
     assert!(unpriced.status.success(), "{}", stderr(&unpriced));
     let snapshot = saved_usage(&home, &unpriced);
-    assert_ne!(snapshot["billing"], "complete", "{snapshot}");
+    assert_eq!(snapshot["billing"], "pending", "{snapshot}");
+    let pending = &snapshot["pending"][0];
+    assert_eq!(pending["id"], GENERATION_ID, "{snapshot}");
+    assert_eq!(pending["provider"], "gateway", "{snapshot}");
+    assert_eq!(
+        pending["origin"], "https://ai-gateway.vercel.sh",
+        "{snapshot}"
+    );
+    assert_eq!(pending["team"], Value::Null, "{snapshot}");
+    assert_eq!(
+        pending["credential_source"], "ai_gateway_api_key",
+        "{snapshot}"
+    );
+    assert_eq!(
+        pending["credential_identity"].as_str().map(str::len),
+        Some(64),
+        "{snapshot}"
+    );
     let log = fs::read_to_string(&trace).expect("read the trace log");
     assert!(
         log.lines().any(|line| line.contains("[sse]")
             && line.ends_with("stream billing ignored reason=invalid_terminal_metadata")),
         "{log}"
+    );
+    let queued_line = format!("usage generation queued sequence=1 id={GENERATION_ID}");
+    assert!(settled(&log, &queued_line), "{log}");
+
+    for (prompt, line) in [
+        (
+            "third",
+            "usage generation ignored sequence=1 metadata_invalid=true",
+        ),
+        (
+            "fourth",
+            "usage billing incomplete sequence=1 reason=generation_identity_missing",
+        ),
+    ] {
+        let unidentified = home.run(&["ask", "--json", prompt], &environment);
+        assert!(unidentified.status.success(), "{}", stderr(&unidentified));
+        let snapshot = saved_usage(&home, &unidentified);
+        assert_eq!(snapshot["billing"], "incomplete", "{snapshot}");
+        assert_eq!(snapshot["pending"], json!([]), "{snapshot}");
+        let log = fs::read_to_string(&trace).expect("read the trace log");
+        assert!(settled(&log, line), "{log}");
+    }
+
+    let based = [
+        environment[0],
+        environment[1],
+        ("OH_FX_GATEWAY_BASE_URL", "http://127.0.0.1:9/"),
+    ];
+    let loopback = home.run(&["ask", "--json", "fifth"], &based);
+    assert!(loopback.status.success(), "{}", stderr(&loopback));
+    let snapshot = saved_usage(&home, &loopback);
+    assert_eq!(
+        snapshot["pending"][0]["origin"], "http://127.0.0.1:9",
+        "{snapshot}"
     );
 }
 

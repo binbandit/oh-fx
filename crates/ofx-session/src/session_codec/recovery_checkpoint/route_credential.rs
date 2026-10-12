@@ -46,8 +46,12 @@ impl RouteCredential {
         Self { source, identity }
     }
 
-    pub(super) fn source(self) -> &'static str {
+    pub(crate) fn source(self) -> &'static str {
         self.source
+    }
+
+    pub(crate) fn identity(self) -> Option<[u8; CREDENTIAL_IDENTITY_BYTES]> {
+        self.identity
     }
 
     pub(super) fn identity_hex(self) -> Option<String> {

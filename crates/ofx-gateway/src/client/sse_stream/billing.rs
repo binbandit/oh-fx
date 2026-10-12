@@ -20,6 +20,12 @@ pub(super) struct Generation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InvalidBilling;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeenGeneration<'a> {
+    Valid(&'a str),
+    Invalid,
+}
+
 impl Generation {
     pub(super) fn observe(&mut self, fields: &Object<'_>) {
         let Some(metadata) = fields.get("providerMetadata") else {
@@ -50,6 +56,15 @@ impl Generation {
             (Some(id), Some(seen)) => self.invalid |= id != seen,
             (Some(id), None) => self.id = Some(id.to_owned()),
         }
+    }
+
+    pub(super) fn seen(&self) -> Option<SeenGeneration<'_>> {
+        let id = self.id.as_deref()?;
+        Some(if self.invalid {
+            SeenGeneration::Invalid
+        } else {
+            SeenGeneration::Valid(id)
+        })
     }
 
     pub(super) fn response_metadata(&mut self, fields: &Object<'_>) {

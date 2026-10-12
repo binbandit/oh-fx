@@ -100,6 +100,7 @@ impl ModelProvider for Provider {
                         usage: Usage::default(),
                         billing: None,
                         service_tier: None,
+                        generation: None,
                         provider_replay: None,
                     })
                 }
@@ -129,6 +130,7 @@ fn probe_completion(probes: usize, arguments: &str) -> Completion {
         usage: Usage::default(),
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }

@@ -86,7 +86,21 @@ pub struct Completion {
     pub usage: Usage,
     pub billing: Option<Box<ProviderBilling>>,
     pub service_tier: Option<ServiceTier>,
+    pub generation: Option<GenerationIdentity>,
     pub provider_replay: Option<ProviderReplay>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenerationIdentity {
+    Observed(ObservedGeneration),
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedGeneration {
+    pub id: String,
+    pub origin: String,
+    pub team: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
