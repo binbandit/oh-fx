@@ -5,11 +5,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ofx_app::{SessionListSnapshot, session_lookup_message};
-use ofx_cli::{
-    Command, LaunchModifiers, OutputFormat, SessionListArgs, TopLevelKind, command_failure_json,
-};
+use ofx_cli::{LaunchModifiers, OutputFormat, SessionListArgs, TopLevelKind, command_failure_json};
 use ofx_config::ProfilePaths;
-use ofx_session::{FxSessions, ListScope, SessionError, SessionStore};
+use ofx_session::{FxSessions, ListScope, SessionCatalog, SessionError, SessionStore, SessionsV2};
 
 pub(crate) enum Failure {
     Lookup(String),
@@ -29,11 +27,23 @@ pub(crate) struct SavedSessions {
 }
 
 pub(crate) fn run(args: &SessionListArgs, modifiers: &LaunchModifiers) -> ExitCode {
-    if modifiers.selects_sessions_v2() || crate::cli_ask::sessions_v2_variable().is_some() {
-        return crate::unavailable_command(&Command::Sessions(args.clone()));
-    }
     crate::auto_upgrade::announce_and_schedule();
-    answer(TopLevelKind::Sessions, args.format, list(args))
+    let listed = if selects_sessions_v2(modifiers) {
+        open_v2_catalog().map(|catalog| list(args, &catalog))
+    } else {
+        open_saved_sessions().and_then(|saved| {
+            let catalog = saved
+                .store
+                .catalog_with_fx(&saved.fx)
+                .map_err(|_| Failure::Fatal("SessionStoreUnavailable"))?;
+            Ok(list(args, &catalog))
+        })
+    };
+    answer(TopLevelKind::Sessions, args.format, listed)
+}
+
+pub(crate) fn selects_sessions_v2(modifiers: &LaunchModifiers) -> bool {
+    modifiers.selects_sessions_v2() || crate::cli_ask::sessions_v2_variable().is_some()
 }
 
 pub(crate) fn answer(
@@ -105,29 +115,32 @@ pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
     })
 }
 
+pub(crate) fn open_v2_catalog() -> Result<SessionCatalog, Failure> {
+    let profile = profile()?;
+    Ok(
+        SessionsV2::open_read_only(&profile.data, &profile.home, &profile.workspace_root)?
+            .catalog()?,
+    )
+}
+
 pub(crate) fn open_writable_sessions() -> Result<SessionStore, Failure> {
     let profile = profile()?;
     Ok(SessionStore::open(&profile.data, &profile.workspace_root)?.with_fx_home(profile.home))
 }
 
-fn list(args: &SessionListArgs) -> Result<String, Failure> {
-    let saved = open_saved_sessions()?;
-    let catalog = saved
-        .store
-        .catalog_with_fx(&saved.fx)
-        .map_err(|_| Failure::Fatal("SessionStoreUnavailable"))?;
+fn list(args: &SessionListArgs, catalog: &SessionCatalog) -> String {
     let page = catalog.listed_page(args.scope, args.cursor.as_ref(), args.limit);
     let next_cursor = page
         .summaries
         .last()
         .filter(|_| page.has_more)
         .map(|last| format!("v1:{}:{}", last.updated_at_ms, last.id));
-    Ok(SessionListSnapshot {
+    SessionListSnapshot {
         sessions: &page.summaries,
         has_more: page.has_more,
         next_cursor,
         skipped_invalid: catalog.skipped_invalid(),
         all_workspaces: args.scope == ListScope::AllWorkspaces,
     }
-    .render(args.format))
+    .render(args.format)
 }

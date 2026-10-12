@@ -66,6 +66,14 @@ pub struct SessionCatalog {
 }
 
 impl SessionCatalog {
+    pub(crate) fn listed(summaries: Vec<SessionSummary>, workspace_root: String) -> Self {
+        Self {
+            summaries,
+            skipped_invalid: 0,
+            workspace_root,
+        }
+    }
+
     pub fn summaries(&self) -> &[SessionSummary] {
         &self.summaries
     }
@@ -546,7 +554,7 @@ impl SessionStore {
     }
 }
 
-fn checked_workspace_root(workspace_root: &str) -> Result<String, SessionError> {
+pub(crate) fn checked_workspace_root(workspace_root: &str) -> Result<String, SessionError> {
     let normalized = normalize_workspace_root(workspace_root);
     if is_valid_workspace_root(normalized) {
         Ok(normalized.to_owned())

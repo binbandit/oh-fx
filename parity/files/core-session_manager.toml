@@ -1,12 +1,14 @@
 [[file]]
 upstream = "src/core/session_manager/api.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_manager.rs"]
+note = "Manager.list exists, reading the index of a root that exists without creating one, as readyToRead does; the workspace filter, which no fx host passes, is left out. The other operations, the input checks and verify come with the slices that use them, and rebuild and openImport stay out because fx never calls them."
 
 [[file]]
 upstream = "src/core/session_manager/catalog.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_manager/catalog.rs"]
+note = "Index records decode and fold as upstream: the newest put per id with merged open times, a final tombstone, damaged lines skipped and a torn last line ignored, and list sorts newest updated first with ties to the smaller id and pages with upstream's cursor. Listing is read-only for now: a folder that is gone is skipped without the tombstone upstream writes, and a damaged index is folded without the rewrite; the index lock, appends, compaction and heal come with the v2 writer, and rebuild stays out because fx never calls it."
 
 [[file]]
 upstream = "src/core/session_manager/diag.zig"
@@ -20,13 +22,15 @@ modules = []
 
 [[file]]
 upstream = "src/core/session_manager/log.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_manager/crc32c.rs", "crates/ofx-session/src/session_manager/frame.rs"]
+note = "CRC32C (slicing by 8, with upstream's check value) and the frame check of a line exist, used for index records; the scanner, readers and appends come with the log reader and writer."
 
 [[file]]
 upstream = "src/core/session_manager/schema.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_manager/fields.rs", "crates/ofx-session/src/session_manager/json.rs"]
+note = "The body field reader exists with upstream's fast path for objects as fx writes them and its std.json fallback: whitespace, first-wins duplicate names, numbers std.json turns into integers, enum values by name or index, and strings given as byte arrays. A number written as a JSON string in Zig's hexadecimal-float or digit-separated-float form is refused where upstream accepts it. The header parser, kinds, encoders and id rules come with the log reader and writer."
 
 [[file]]
 upstream = "src/core/session_manager/session.zig"
@@ -35,8 +39,9 @@ modules = []
 
 [[file]]
 upstream = "src/core/session_manager/storage.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-session/src/session_manager/storage.rs"]
+note = "Reading a file without following symlinks and checking whether an entry is a folder exist, with upstream's mapping of OS errors to its IoFault causes; writes, locks and fsyncs come with the v2 writer."
 
 [[file]]
 upstream = "src/core/session_manager/storage_fault.zig"
