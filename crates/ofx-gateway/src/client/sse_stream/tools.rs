@@ -120,6 +120,14 @@ impl ToolStream {
         self.calls.len()
     }
 
+    pub(crate) fn billable_searches(&self) -> u64 {
+        let searches = self.calls.iter().filter(|call| {
+            call.provenance == ToolExecutionProvenance::ProviderExecuted
+                && (call.name == "web_search" || call.name.ends_with("_search"))
+        });
+        u64::try_from(searches.count()).unwrap_or(u64::MAX)
+    }
+
     pub(crate) fn all_provider_executed(&self) -> bool {
         self.calls
             .iter()
