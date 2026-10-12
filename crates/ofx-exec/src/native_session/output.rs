@@ -1,6 +1,7 @@
 use std::io;
 use std::mem;
 use std::os::fd::OwnedFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -52,10 +53,11 @@ pub(super) fn read_available(
     fd: &OwnedFd,
     buffer: &mut [u8],
     timeout: Duration,
+    stopped: &AtomicBool,
 ) -> io::Result<usize> {
     let mut total = 0;
     let mut wait = Timespec::try_from(timeout).unwrap_or_default();
-    while total < buffer.len() {
+    while total < buffer.len() && !stopped.load(Ordering::Acquire) {
         let mut fds = [PollFd::new(fd, PollFlags::IN)];
         match poll(&mut fds, Some(&wait)) {
             Ok(_) => {}
@@ -94,8 +96,13 @@ pub(super) fn read_available(
 mod tests {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
+    use std::thread;
+    use std::time::Instant;
 
     use super::*;
+
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    const STOP_SEEN: Duration = Duration::from_millis(500);
 
     #[test]
     fn unread_output_keeps_its_head_counts_everything_and_drains_once() {
@@ -134,10 +141,11 @@ mod tests {
         drop(writer);
         let reader = OwnedFd::from(reader);
         let mut buffer = [0; 128];
-        let count = read_available(&reader, &mut buffer, Duration::from_secs(20)).unwrap();
+        let count =
+            read_available(&reader, &mut buffer, Duration::from_secs(20), &RUNNING).unwrap();
         assert_eq!(&buffer[..count], b"FINAL_OUTPUT_SENTINEL");
         assert_eq!(
-            read_available(&reader, &mut buffer, Duration::ZERO)
+            read_available(&reader, &mut buffer, Duration::ZERO, &RUNNING)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
@@ -150,7 +158,46 @@ mod tests {
         let reader = OwnedFd::from(reader);
         let mut buffer = [0; 16];
         assert_eq!(
-            read_available(&reader, &mut buffer, Duration::from_millis(1)).unwrap(),
+            read_available(&reader, &mut buffer, Duration::from_millis(1), &RUNNING).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_stopped_reader_returns_what_it_read_while_output_keeps_arriving() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let reader = OwnedFd::from(reader);
+        let stopped = AtomicBool::new(false);
+        let writing = AtomicBool::new(true);
+        let mut buffer = vec![0; 256 * 1024];
+        writer.write_all(b"before").unwrap();
+        thread::scope(|scope| {
+            let trickle = scope.spawn(|| {
+                while writing.load(Ordering::Acquire) {
+                    if writer.write_all(b"x").is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_micros(100));
+                }
+            });
+            let read = scope
+                .spawn(|| read_available(&reader, &mut buffer, Duration::from_secs(20), &stopped));
+            thread::sleep(Duration::from_millis(50));
+            stopped.store(true, Ordering::Release);
+            let stopped_at = Instant::now();
+            let count = read.join().unwrap().unwrap();
+            let took = stopped_at.elapsed();
+            writing.store(false, Ordering::Release);
+            trickle.join().unwrap();
+            assert!(count >= b"before".len());
+            assert!(
+                took < STOP_SEEN,
+                "the read went on for {took:?} after the stop"
+            );
+        });
+        assert!(buffer.starts_with(b"before"));
+        assert_eq!(
+            read_available(&reader, &mut buffer, Duration::from_secs(20), &stopped).unwrap(),
             0
         );
     }

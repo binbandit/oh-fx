@@ -518,7 +518,7 @@ impl Session {
     fn drain_output(&self, master: &OwnedFd) {
         let mut buffer = vec![0; READ_BUFFER_BYTES];
         while !self.reading_stopped.load(Ordering::Acquire) {
-            match read_available(master, &mut buffer, OUTPUT_POLL) {
+            match read_available(master, &mut buffer, OUTPUT_POLL, &self.reading_stopped) {
                 Ok(0) => {}
                 Ok(count) => self.append_output(&buffer[..count]),
                 Err(_) => break,
@@ -823,7 +823,7 @@ impl Drop for Launcher {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::{ErrorKind, Read};
+    use std::io::{ErrorKind, Read, Write};
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::CommandExt;
     use std::path::Path;
@@ -838,6 +838,7 @@ mod tests {
 
     const BLOCKED: Duration = Duration::from_millis(200);
     const DRAINED: Duration = Duration::from_secs(20);
+    const PROMPT: Duration = Duration::from_secs(5);
 
     fn running(directory: &Path) -> (Session, UnixStream) {
         let durable = TerminalStore::new(directory)
@@ -1040,6 +1041,57 @@ mod tests {
             closed.map(|closed| closed.map(|facts| facts.lifecycle)),
             Ok(Ok(Lifecycle::Closed))
         );
+    }
+
+    #[test]
+    fn a_close_stops_reading_a_terminal_whose_output_keeps_trickling() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, mut held) = running(directory.path());
+        let session = Arc::new(session);
+        let master = session.lock().master.clone().unwrap();
+        session.lock().backend = Backend::Reading;
+        let output = {
+            let session = Arc::clone(&session);
+            thread::spawn(move || session.drain_output(&master))
+        };
+        let control = {
+            let session = Arc::clone(&session);
+            thread::spawn(move || {
+                session.wait_output_done();
+                session.finish_backend();
+            })
+        };
+        let writing = Arc::new(AtomicBool::new(true));
+        let writer = {
+            let writing = Arc::clone(&writing);
+            thread::spawn(move || {
+                while writing.load(Ordering::Acquire) {
+                    let _ = held.write(b"x");
+                    thread::sleep(Duration::from_micros(200));
+                }
+            })
+        };
+        let begun = Instant::now();
+        let closed = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::time::timeout(DRAINED, session.close(ClosePolicy::Force)).await
+            });
+        let took = begun.elapsed();
+        if closed.is_err() {
+            session.reading_stopped.store(true, Ordering::Release);
+        }
+        writing.store(false, Ordering::Release);
+        writer.join().unwrap();
+        output.join().unwrap();
+        control.join().unwrap();
+        assert_eq!(
+            closed.map(|closed| closed.map(|facts| facts.lifecycle)),
+            Ok(Ok(Lifecycle::Closed))
+        );
+        assert!(took < PROMPT, "the close took {took:?}");
     }
 
     fn dead(pid: Pid) -> bool {

@@ -1347,12 +1347,16 @@ fn closes_reach_processes_that_left_the_process_group() {
     assert!(killed, "the detached child outlived its owner");
 }
 
-const HELD_AFTER_EXIT: &str = "trap '' HUP; sleep 30 & echo $! > child.tmp && mv child.tmp child; \
-     echo $$ > shell.tmp && mv shell.tmp shell; exit 0";
+const SLEEPER: &str = "sleep 30";
+const TRICKLER: &str =
+    "perl -e '$| = 1; while (1) { print q(x); select(undef, undef, undef, 0.0002) }'";
 
-fn held_after_its_shell_exits(fixture: &Fixture, job_control: &str) -> (String, Pid) {
+fn held_after_its_shell_exits(fixture: &Fixture, job_control: &str, holder: &str) -> (String, Pid) {
     let started = fixture.start(
-        &format!("{job_control}; {HELD_AFTER_EXIT}"),
+        &format!(
+            "{job_control}; trap '' HUP; {holder} & echo $! > child.tmp && mv child.tmp child; \
+             echo $$ > shell.tmp && mv shell.tmp shell; exit 0"
+        ),
         ReturnCondition::Started,
     );
     let child = child_pid(fixture);
@@ -1386,7 +1390,7 @@ fn a_forced_close_ends_the_group_holding_a_terminal_whose_shell_exited() {
         return;
     }
     let fixture = Fixture::new();
-    let (id, child) = held_after_its_shell_exits(&fixture, "set +m");
+    let (id, child) = held_after_its_shell_exits(&fixture, "set +m", SLEEPER);
     let (closed, took) = close_in_time(&fixture, &id, ClosePolicy::Force);
     let gone = gone_in_time(child);
     if !gone {
@@ -1401,19 +1405,28 @@ fn a_close_ends_promptly_while_another_group_holds_the_terminal() {
     if !cfg!(target_os = "linux") {
         return;
     }
-    for (policy, answer) in [
-        (ClosePolicy::Force, Err(StructuredErrorCode::SessionLost)),
-        (ClosePolicy::Graceful, Ok(Lifecycle::Closed)),
-    ] {
-        let directory = tempfile::tempdir().expect("create a directory");
-        let cwd = fs::canonicalize(directory.path()).expect("canonicalize the directory");
-        let fixture = Fixture::at(Some(directory), cwd.join("store"), cwd);
-        let (id, child) = held_after_its_shell_exits(&fixture, "set -m");
-        let (closed, took) = close_in_time(&fixture, &id, policy);
-        let _ = kill_process(child, Signal::KILL);
-        assert_eq!(closed, Some(answer), "{policy:?}");
-        assert_eq!(fixture.record(&id).0, Lifecycle::Closed, "{policy:?}");
-        assert!(took < PROMPT_CLOSE, "the {policy:?} close took {took:?}");
+    for holder in [SLEEPER, TRICKLER] {
+        for (policy, answer) in [
+            (ClosePolicy::Force, Err(StructuredErrorCode::SessionLost)),
+            (ClosePolicy::Graceful, Ok(Lifecycle::Closed)),
+        ] {
+            let directory = tempfile::tempdir().expect("create a directory");
+            let cwd = fs::canonicalize(directory.path()).expect("canonicalize the directory");
+            let fixture = Fixture::at(Some(directory), cwd.join("store"), cwd);
+            let (id, child) = held_after_its_shell_exits(&fixture, "set -m", holder);
+            let (closed, took) = close_in_time(&fixture, &id, policy);
+            let _ = kill_process(child, Signal::KILL);
+            assert_eq!(closed, Some(answer), "{holder} {policy:?}");
+            assert_eq!(
+                fixture.record(&id).0,
+                Lifecycle::Closed,
+                "{holder} {policy:?}"
+            );
+            assert!(
+                took < PROMPT_CLOSE,
+                "the {policy:?} close took {took:?} while {holder} held the terminal"
+            );
+        }
     }
 }
 
