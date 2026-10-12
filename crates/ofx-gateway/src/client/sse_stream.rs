@@ -16,6 +16,7 @@ use crate::chat_completions::ChunkSource;
 use crate::secret_mask::mask_configured_secrets;
 use crate::stall_watch::StallWatch;
 use billing::Generation;
+pub(crate) use billing::SeenGeneration;
 pub(crate) use tools::ToolStream;
 
 const MAX_SSE_EVENT_BYTES: usize = 32 * 1024 * 1024;
@@ -103,6 +104,12 @@ pub(crate) struct GatewayCompletion {
     pub(crate) billing: Option<ProviderBilling>,
     pub(crate) service_tier: Option<ServiceTier>,
     generation: Generation,
+}
+
+impl GatewayCompletion {
+    pub(crate) fn seen_generation(&self) -> Option<SeenGeneration<'_>> {
+        self.generation.seen()
+    }
 }
 
 pub(crate) struct Stream<'a> {

@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ofx_contract::{
-    BoxFuture, Completion, FinishReason, ModelProvider, ModelRequest, ProviderError,
-    ProviderErrorKind, ProviderReplay, StreamEvent, StreamSink, ToolCall,
+    BoxFuture, Completion, FinishReason, GenerationIdentity, ModelProvider, ModelRequest,
+    ObservedGeneration, ProviderError, ProviderErrorKind, ProviderReplay, StreamEvent, StreamSink,
+    ToolCall,
 };
 use ofx_http::{ClientError, ConnectionOptions, build_connection_client};
 use ofx_images::AttachmentDimensionCache;
@@ -12,13 +13,14 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::chat_completions::sanitized;
-use crate::client::{FailureCause, Finish, GatewayAttempt, GatewayCompletion};
+use crate::client::{FailureCause, Finish, GatewayAttempt, GatewayCompletion, SeenGeneration};
 use crate::vercel_protocol::{
     RequestError, build_request, build_review_request, replay_source, select_replay_parts,
 };
 
 pub const GATEWAY_TITLE_MODEL: &str = "openai/gpt-5.6-luna";
 const CHAT_URL: &str = "https://ai-gateway.vercel.sh/v4/ai/language-model";
+const GENERATION_ORIGIN: &str = "https://ai-gateway.vercel.sh";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
 const REFRESHED_SOURCE: &str = "fx_login";
 const AUTHORITY_CHANGED: &str = "CredentialAuthorityChanged";
@@ -26,12 +28,14 @@ const AUTHORITY_CHANGED: &str = "CredentialAuthorityChanged";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayEndpoints {
     pub chat: String,
+    pub generation_origin: String,
 }
 
 impl Default for GatewayEndpoints {
     fn default() -> Self {
         Self {
             chat: CHAT_URL.to_owned(),
+            generation_origin: GENERATION_ORIGIN.to_owned(),
         }
     }
 }
@@ -129,6 +133,7 @@ struct Current {
 pub struct GatewayProvider {
     client: reqwest::Client,
     chat_url: String,
+    generation_origin: String,
     current: Mutex<Current>,
     secrets: Mutex<Zeroizing<Vec<String>>>,
     refresh: Option<Arc<dyn GatewayRefresh>>,
@@ -170,6 +175,7 @@ impl GatewayProvider {
         Ok(Self {
             client,
             chat_url: endpoints.chat,
+            generation_origin: endpoints.generation_origin,
             current: Mutex::new(Current {
                 secret,
                 team,
@@ -291,7 +297,19 @@ impl GatewayProvider {
         cancel: &CancellationToken,
     ) -> Result<Completion, ProviderError> {
         let completion = self.attempt(request, body, sink, cancel, true).await?;
-        into_completion(completion, request.model, &self.masked())
+        let generation = self.generation(&completion);
+        into_completion(completion, request.model, &self.masked(), generation)
+    }
+
+    fn generation(&self, completion: &GatewayCompletion) -> Option<GenerationIdentity> {
+        Some(match completion.seen_generation()? {
+            SeenGeneration::Invalid => GenerationIdentity::Invalid,
+            SeenGeneration::Valid(id) => GenerationIdentity::Observed(ObservedGeneration {
+                id: id.to_owned(),
+                origin: self.generation_origin.clone(),
+                team: lock(&self.current).team.clone(),
+            }),
+        })
     }
 
     async fn attempt(
@@ -422,7 +440,7 @@ fn into_review_completion(
             Some(Finish::ProviderError | Finish::ContentFilter)
         )
     {
-        return into_completion(completion, model, secrets);
+        return into_completion(completion, model, secrets, None);
     }
     completion
         .tools
@@ -446,6 +464,7 @@ fn into_review_completion(
         usage,
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     })
 }
@@ -454,6 +473,7 @@ fn into_completion(
     completion: GatewayCompletion,
     model: &str,
     secrets: &[String],
+    generation: Option<GenerationIdentity>,
 ) -> Result<Completion, ProviderError> {
     let detail = completion.failure_detail.as_deref();
     let timed_out = completion.failure_cause == Some(FailureCause::GatewayStreamTimeout);
@@ -543,6 +563,7 @@ fn into_completion(
         }),
         billing: billing.map(Box::new),
         service_tier,
+        generation,
     })
 }
 

@@ -1,7 +1,8 @@
 use ofx_contract::{
-    Completion, ConversationLog, DeliveryOutcome, LogFailure, ProviderError, ProviderErrorKind,
-    RequestTicket,
+    Completion, ConversationLog, DeliveryOutcome, GenerationIdentity, LogFailure, ProviderError,
+    ProviderErrorKind, RequestTicket,
 };
+use ofx_trace::trace_log;
 
 pub(super) struct RequestUsage<'a> {
     log: Option<&'a dyn ConversationLog>,
@@ -30,29 +31,47 @@ impl<'a> RequestUsage<'a> {
         self,
         streamed: &Result<Completion, ProviderError>,
     ) -> Result<(), LogFailure> {
-        match (self.log, self.begun, streamed) {
-            (
-                Some(log),
-                Some(Ok(ticket)),
-                Ok(Completion {
-                    billing: Some(billing),
-                    ..
-                }),
-            ) => log.finish_exact_request(ticket, billing),
-            (Some(log), Some(Ok(ticket)), _) => {
-                log.finish_request(ticket, delivery_outcome(streamed))
+        let (Some(log), Some(begun)) = (self.log, self.begun) else {
+            return Ok(());
+        };
+        let ticket = begun?;
+        let completion = match streamed {
+            Ok(completion) => completion,
+            Err(error) => return log.finish_request(ticket, delivery_outcome(error)),
+        };
+        let unidentified = DeliveryOutcome::PossiblyBilledWithoutIdentity;
+        match (&completion.generation, &completion.billing) {
+            (Some(GenerationIdentity::Invalid), _) => {
+                log.finish_request(ticket, unidentified)?;
+                trace_log!(
+                    "session",
+                    "usage generation ignored sequence={} metadata_invalid=true",
+                    ticket.sequence
+                );
+                Ok(())
             }
-            (_, Some(Err(failure)), _) => Err(failure),
-            _ => Ok(()),
+            (_, Some(billing)) => log.finish_exact_request(ticket, billing),
+            (Some(GenerationIdentity::Observed(generation)), None) => {
+                log.finish_deferred_request(ticket, generation)
+            }
+            (None, None) => {
+                log.finish_request(ticket, unidentified)?;
+                trace_log!(
+                    "session",
+                    "usage billing incomplete sequence={} reason=generation_identity_missing",
+                    ticket.sequence
+                );
+                Ok(())
+            }
         }
     }
 }
 
-fn delivery_outcome(streamed: &Result<Completion, ProviderError>) -> DeliveryOutcome {
-    match streamed {
-        Ok(_) => DeliveryOutcome::PossiblyBilledWithoutIdentity,
-        Err(error) if error.status.is_some() || never_sent(error.kind) => DeliveryOutcome::Unbilled,
-        Err(_) => DeliveryOutcome::AmbiguousDelivery,
+fn delivery_outcome(error: &ProviderError) -> DeliveryOutcome {
+    if error.status.is_some() || never_sent(error.kind) {
+        DeliveryOutcome::Unbilled
+    } else {
+        DeliveryOutcome::AmbiguousDelivery
     }
 }
 

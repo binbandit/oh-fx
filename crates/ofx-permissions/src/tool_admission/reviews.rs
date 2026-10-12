@@ -54,6 +54,7 @@ impl ReviewTransport for Recording {
                 usage: Usage::default(),
                 billing: None,
                 service_tier: None,
+                generation: None,
                 provider_replay: None,
             }))
         })
@@ -281,6 +282,7 @@ impl ReviewTransport for SwitchingMidReview {
                 usage: Usage::default(),
                 billing: None,
                 service_tier: None,
+                generation: None,
                 provider_replay: None,
             }))
         })

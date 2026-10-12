@@ -65,6 +65,7 @@ async fn due_login(
         "oh-fx/test",
         GatewayEndpoints {
             chat: format!("http://{}/v4/ai/language-model", server.address()),
+            ..GatewayEndpoints::default()
         },
     )
     .unwrap()

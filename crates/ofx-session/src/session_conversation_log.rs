@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use ofx_contract::{
     ConversationLog, DeliveryOutcome, FileChangeStats, HistoryCut, HistoryTurn, LogFailure,
-    ProviderBilling, RecoveryPoint, RequestTicket,
+    ObservedGeneration, ProviderBilling, RecoveryPoint, RequestTicket,
 };
 
 use crate::session_codec::SavedProvider;
@@ -123,6 +123,16 @@ impl ConversationLog for SessionLog {
                 session.finish_exact_request(ticket, billing, &self.provider)
             }),
         )
+    }
+
+    fn finish_deferred_request(
+        &self,
+        ticket: RequestTicket,
+        generation: &ObservedGeneration,
+    ) -> Result<(), LogFailure> {
+        self.settled(self.with_usage(|session| {
+            session.finish_deferred_request(ticket, generation, (&self.provider, self.credential))
+        }))
     }
 
     fn record_committed_lines(&self, change: FileChangeStats) {

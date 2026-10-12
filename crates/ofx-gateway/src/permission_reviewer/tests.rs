@@ -76,6 +76,7 @@ fn decision() -> Completion {
         },
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }
@@ -380,6 +381,7 @@ fn gateway(server: &FakeServer, reviewer_model: Option<&str>) -> GatewayReviewTr
         "oh-fx/test",
         GatewayEndpoints {
             chat: format!("http://{}/v4/ai/language-model", server.address()),
+            ..GatewayEndpoints::default()
         },
     )
     .unwrap();
@@ -549,6 +551,7 @@ fn reviewed(decision: &str) -> Completion {
         usage: Usage::default(),
         billing: None,
         service_tier: None,
+        generation: None,
         provider_replay: None,
     }
 }

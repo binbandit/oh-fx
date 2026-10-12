@@ -2,8 +2,9 @@ use std::sync::Mutex;
 
 use ofx_contract::{
     ChatMessage, ConversationLog, DeliveryOutcome, FileChangeStats, HistoryCut, HistoryTurn,
-    LogFailure, ProviderBilling, RecoveryPoint, RequestTicket, RestoredHistory, SubagentRequest,
-    ToolCallId, ToolContext, ToolOutput, TurnEnd, format_tool_execution_error_json,
+    LogFailure, ObservedGeneration, ProviderBilling, RecoveryPoint, RequestTicket, RestoredHistory,
+    SubagentRequest, ToolCallId, ToolContext, ToolOutput, TurnEnd,
+    format_tool_execution_error_json,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -232,6 +233,14 @@ impl ConversationLog for Log {
         &self,
         _ticket: RequestTicket,
         _billing: &ProviderBilling,
+    ) -> Result<(), LogFailure> {
+        Ok(())
+    }
+
+    fn finish_deferred_request(
+        &self,
+        _ticket: RequestTicket,
+        _generation: &ObservedGeneration,
     ) -> Result<(), LogFailure> {
         Ok(())
     }
