@@ -277,10 +277,15 @@ pub(crate) async fn http_failure(
     let kind = failure_kind(status);
     let displayed = detail.trim_matches([' ', '\t', '\r', '\n']);
     let displayed = &displayed[..displayed.floor_char_boundary(MAX_DISPLAYED_BODY_BYTES)];
-    let mut error = ProviderError::new(kind, failure_code(kind))
-        .with_detail(format_http_error_message(status.as_u16(), displayed));
+    let mut error = ProviderError::new(kind, failure_code(kind)).with_detail(
+        format_http_error_message(status.as_u16(), displayed, secrets),
+    );
     error.status = Some(status.as_u16());
-    error.diagnostic = Some(format_http_recovery_diagnostic(status.as_u16(), &detail));
+    error.diagnostic = Some(format_http_recovery_diagnostic(
+        status.as_u16(),
+        &detail,
+        secrets,
+    ));
     error.retry_after = retry_after;
     error
 }
