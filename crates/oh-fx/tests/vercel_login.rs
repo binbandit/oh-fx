@@ -322,6 +322,52 @@ fn ask_refreshes_an_expired_login_before_the_request() {
 }
 
 #[test]
+fn ask_refreshes_a_rejected_login_once_and_replays_the_request() {
+    let server = FakeServer::start_at_origin(|origin| {
+        [
+            Reply::status(
+                401,
+                format!(r#"{{"error":{{"message":"token {ACCESS} expired"}}}}"#),
+            ),
+            metadata(origin),
+            token(ROTATED_ACCESS, ROTATED_REFRESH),
+            chat("replayed"),
+        ]
+    });
+    let home = Home::new();
+    let issuer = origin(&server);
+    home.write_session(&issuer, i64::MAX);
+    let url = format!("{issuer}{CHAT_PATH}");
+    let output = home.run(
+        &["ask", "--no-save", "hi"],
+        &[("OH_FX_E2E_GATEWAY_CHAT_URL", &url), ("OH_FX_TRACE", "1")],
+        b"",
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "replayed");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {ACCESS}").as_str())
+    );
+    assert_eq!(
+        requests[2].body_text(),
+        format!("client_id=cl_test&grant_type=refresh_token&refresh_token={REFRESH}")
+    );
+    assert_eq!(
+        requests[3].header("authorization"),
+        Some(format!("Bearer {ROTATED_ACCESS}").as_str())
+    );
+    assert_eq!(requests[0].body_text(), requests[3].body_text());
+    let session = fs::read_to_string(home.session_file()).unwrap();
+    assert!(session.contains(&format!("\"refresh_token\":\"{ROTATED_REFRESH}\"")));
+    let trace = fs::read_to_string(home.trace_log()).unwrap_or_default();
+    assert!(trace.contains("authenticated_request_replayed"), "{trace}");
+    home.assert_no_secrets(&output);
+}
+
+#[test]
 fn a_rejected_refresh_retires_the_login_and_asks_for_a_new_sign_in() {
     let server = FakeServer::start_at_origin(|origin| {
         [

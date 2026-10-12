@@ -247,7 +247,7 @@ Signed in to Vercel.
 AI Gateway access may still require billing or API setup for the selected account.
 ```
 
-The sign-in lives in `$XDG_DATA_HOME/oh-fx/auth.json` (default `~/.local/share/oh-fx/auth.json`) in upstream fx's format, next to an `auth.lock` file, with mode `0600` in a `0700` folder. oh-fx refreshes its access token a minute before it expires, and sends the selected team in the `x-vercel-ai-gateway-team` header. If Vercel rejects the refresh, oh-fx removes the saved sign-in and asks you to sign in again. A sign-in without a team, which happens when the team list cannot be loaded, is saved, but `oh-fx login` then stops with `oh-fx login: configure a Gateway credential first` and selects nothing.
+The sign-in lives in `$XDG_DATA_HOME/oh-fx/auth.json` (default `~/.local/share/oh-fx/auth.json`) in upstream fx's format, next to an `auth.lock` file, with mode `0600` in a `0700` folder. oh-fx refreshes its access token a minute before it expires, and sends the selected team in the `x-vercel-ai-gateway-team` header. When the gateway answers 401, oh-fx refreshes the sign-in once and resends the request. If Vercel rejects the refresh, oh-fx removes the saved sign-in and asks you to sign in again. A sign-in without a team, which happens when the team list cannot be loaded, is saved, but `oh-fx login` then stops with `oh-fx login: configure a Gateway credential first` and selects nothing.
 
 `oh-fx login` reports `authorization denied` when the sign-in is denied, `authorization expired; run oh-fx login again` when the code expires first, and `failed to sign in` when Vercel cannot be reached.
 

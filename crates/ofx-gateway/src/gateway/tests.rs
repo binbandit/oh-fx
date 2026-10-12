@@ -656,30 +656,44 @@ async fn tool_images_reach_the_gateway_in_a_follow_up_user_message_unless_denied
 }
 
 struct ScriptedRefresh {
-    answer: Mutex<Option<Result<Option<GatewayAccess>, String>>>,
-    calls: std::sync::atomic::AtomicUsize,
+    answers: Mutex<Vec<Result<Option<GatewayAccess>, String>>>,
+    forced: Mutex<Vec<bool>>,
 }
 
 impl ScriptedRefresh {
     fn new(answer: Result<Option<GatewayAccess>, String>) -> Arc<Self> {
+        Self::answering(vec![answer])
+    }
+
+    fn answering(answers: Vec<Result<Option<GatewayAccess>, String>>) -> Arc<Self> {
         Arc::new(Self {
-            answer: Mutex::new(Some(answer)),
-            calls: std::sync::atomic::AtomicUsize::new(0),
+            answers: Mutex::new(answers),
+            forced: Mutex::new(Vec::new()),
         })
     }
 
     fn calls(&self) -> usize {
-        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        lock(&self.forced).len()
+    }
+
+    fn forced(&self) -> Vec<bool> {
+        lock(&self.forced).clone()
     }
 }
 
 impl GatewayRefresh for ScriptedRefresh {
     fn refresh<'a>(
         &'a self,
+        forced: bool,
         _: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let answer = lock(&self.answer).take().unwrap_or(Ok(None));
+        lock(&self.forced).push(forced);
+        let mut answers = lock(&self.answers);
+        let answer = if answers.is_empty() {
+            Ok(None)
+        } else {
+            answers.remove(0)
+        };
         Box::pin(async move { answer })
     }
 }
@@ -689,6 +703,7 @@ struct StalledRefresh;
 impl GatewayRefresh for StalledRefresh {
     fn refresh<'a>(
         &'a self,
+        _: bool,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
         Box::pin(async move {
@@ -706,6 +721,7 @@ struct SavingRefresh {
 impl GatewayRefresh for SavingRefresh {
     fn refresh<'a>(
         &'a self,
+        _: bool,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
         Box::pin(async move {
@@ -879,4 +895,184 @@ async fn a_key_echoed_across_the_error_limit_is_never_shown_in_a_turn_error() {
         let shown = format!("{error:?}");
         assert!(!shown.contains(&KEY[..8]), "{padding}: {shown}");
     }
+}
+
+fn fresh_login(token: &str) -> GatewayAccess {
+    GatewayAccess::new(token.to_owned(), Some("team_1".to_owned()), i64::MAX)
+}
+
+#[tokio::test]
+async fn a_rejected_login_token_is_refreshed_once_and_the_request_replayed() {
+    let server = FakeServer::start([
+        Reply::status(401, "login-old-token rejected"),
+        Reply::sse(&[STOP]),
+    ]);
+    let refresh = ScriptedRefresh::new(Ok(Some(fresh_login("login-new-token"))));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    let (result, events) = run(&gateway, None).await;
+    result.unwrap();
+    assert_eq!(refresh.forced(), [true]);
+    let refreshed = events
+        .iter()
+        .position(|event| {
+            *event
+                == StreamEvent::CredentialRefreshed {
+                    source: "fx_login",
+                    forced: true,
+                }
+        })
+        .expect("a forced refresh");
+    let replayed = events
+        .iter()
+        .position(|event| *event == StreamEvent::RequestReplayed)
+        .expect("a replayed request");
+    assert!(refreshed < replayed);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| **event == StreamEvent::Admitted)
+            .count(),
+        1
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some("Bearer login-old-token")
+    );
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer login-new-token")
+    );
+    assert_eq!(requests[0].body_text(), requests[1].body_text());
+}
+
+#[tokio::test]
+async fn a_rejection_whose_body_is_cut_off_still_refreshes_and_replays() {
+    let server = FakeServer::start([Reply::cut_off(401, &[], "rejected"), Reply::sse(&[STOP])]);
+    let refresh = ScriptedRefresh::new(Ok(Some(fresh_login("login-new-token"))));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    let (result, events) = run(&gateway, None).await;
+    result.unwrap();
+    assert_eq!(refresh.forced(), [true]);
+    assert!(events.contains(&StreamEvent::RequestReplayed), "{events:?}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer login-new-token")
+    );
+    let keyed_server = FakeServer::start([Reply::cut_off(401, &[], "rejected")]);
+    let (rejected, _) = run(&keyed(&keyed_server), None).await;
+    let error = rejected.unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
+    assert_eq!(error.status, Some(401));
+}
+
+#[tokio::test]
+async fn a_second_rejection_or_a_failed_refresh_ends_the_turn_with_the_rejection() {
+    for (answers, requests, events) in [
+        (
+            vec![Ok(Some(fresh_login("login-new-token")))],
+            2,
+            vec![StreamEvent::RequestReplayed],
+        ),
+        (
+            vec![Err("InvalidGrant".to_owned())],
+            1,
+            vec![StreamEvent::CredentialRefreshFailed {
+                source: "fx_login",
+                forced: true,
+                error: "InvalidGrant".to_owned(),
+            }],
+        ),
+        (vec![Ok(None)], 1, Vec::new()),
+    ] {
+        let server = FakeServer::start([
+            Reply::status(401, "login-old-token rejected"),
+            Reply::status(401, "login-new-token rejected"),
+        ]);
+        let refresh = ScriptedRefresh::answering(answers);
+        let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+        let (result, seen) = run(&gateway, None).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
+        let shown = format!("{error:?}");
+        assert!(!shown.contains("login-old-token"), "{shown}");
+        assert!(!shown.contains("login-new-token"), "{shown}");
+        assert_eq!(refresh.forced(), [true]);
+        assert_eq!(server.requests().len(), requests);
+        for event in events {
+            assert!(seen.contains(&event), "{seen:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn other_failures_and_keys_without_a_login_are_not_replayed() {
+    let server = FakeServer::start([Reply::status(403, "{}")]);
+    let refresh = ScriptedRefresh::new(Ok(Some(fresh_login("login-new-token"))));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    let (forbidden, _) = run(&gateway, None).await;
+    assert_eq!(forbidden.unwrap_err().kind, ProviderErrorKind::Forbidden);
+    assert_eq!(refresh.calls(), 0);
+    let keyed_server = FakeServer::start([Reply::status(401, "{}")]);
+    let (rejected, events) = run(&keyed(&keyed_server), None).await;
+    assert_eq!(rejected.unwrap_err().kind, ProviderErrorKind::Unauthorized);
+    assert!(!events.contains(&StreamEvent::RequestReplayed));
+    assert_eq!(keyed_server.requests().len(), 1);
+}
+
+struct CancellingRefresh {
+    cancel: CancellationToken,
+}
+
+impl GatewayRefresh for CancellingRefresh {
+    fn refresh<'a>(
+        &'a self,
+        _: bool,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<GatewayAccess>, String>> {
+        self.cancel.cancel();
+        Box::pin(async { Ok(Some(fresh_login("login-new-token"))) })
+    }
+}
+
+#[tokio::test]
+async fn a_turn_cancelled_during_the_forced_refresh_ends_cancelled_without_a_replay() {
+    let server = FakeServer::start([Reply::status(401, "{}"), Reply::sse(&[STOP])]);
+    let cancel = CancellationToken::new();
+    let gateway = signed_in(
+        &server,
+        i64::MAX,
+        Arc::new(CancellingRefresh {
+            cancel: cancel.clone(),
+        }),
+    );
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let mut sink = |_: StreamEvent| {};
+    let error = gateway
+        .stream(&request, &mut sink, &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Cancelled);
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn the_permission_review_is_not_refreshed_or_replayed_after_a_rejection() {
+    let server = FakeServer::start([Reply::status(401, "{}"), Reply::sse(&[STOP])]);
+    let refresh = ScriptedRefresh::new(Ok(Some(fresh_login("login-new-token"))));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    let messages = [ChatMessage::user("question")];
+    let request = request(&messages, None);
+    let body = gateway.review_body(&request).unwrap();
+    let error = gateway
+        .review(&request, body, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
+    assert_eq!(refresh.calls(), 0);
+    assert_eq!(server.requests().len(), 1);
 }

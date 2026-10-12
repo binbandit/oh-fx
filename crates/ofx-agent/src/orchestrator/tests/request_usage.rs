@@ -271,3 +271,21 @@ async fn a_retry_whose_settlement_fails_keeps_the_text_an_earlier_attempt_stream
         Some(&logged_turn("hi", &[], r#"Failed "Already shown""#))
     );
 }
+
+#[tokio::test]
+async fn a_provider_that_admits_its_request_twice_still_begins_and_settles_one_ticket() {
+    let provider = FakeProvider::new(vec![Script::Reply(
+        vec![StreamEvent::Admitted, StreamEvent::RequestReplayed],
+        completion(Some("done"), Vec::new(), FinishReason::Stop),
+    )]);
+    let (mut agent, accounted) = accounting_agent(provider, MemoryLog::default());
+    let (report, _) = run(&mut agent, "hello").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    assert_eq!(
+        *accounted.lock().unwrap(),
+        [
+            Accounted::Begun(1),
+            Accounted::Finished(1, DeliveryOutcome::PossiblyBilledWithoutIdentity),
+        ]
+    );
+}
