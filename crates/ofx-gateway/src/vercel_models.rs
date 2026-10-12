@@ -48,6 +48,7 @@ pub struct GatewayModel {
     tool_use: bool,
     reasoning_efforts: Vec<String>,
     fast: bool,
+    ultrafast: bool,
     image_input: ImageInputSupport,
     context_window: Option<u32>,
     max_tokens: Option<u32>,
@@ -58,6 +59,7 @@ impl GatewayModel {
         ModelCapabilities {
             reasoning_efforts: self.reasoning_efforts.clone(),
             supports_fast_mode: self.fast,
+            supports_ultrafast_mode: self.ultrafast,
             context_window: self.context_window,
             image_input_support: self.image_input,
         }
@@ -199,6 +201,7 @@ fn catalog_entry(entry: &Value) -> Option<GatewayModel> {
         tool_use: tagged(tags, "tool-use"),
         reasoning_efforts: reasoning_efforts(entry.get("reasoning_options")),
         fast: supports_fast_mode(entry),
+        ultrafast: supports_ultrafast_mode(entry),
         image_input: if tagged(tags, "vision") && tagged(tags, "file-input") {
             ImageInputSupport::Native
         } else {
@@ -267,6 +270,32 @@ fn supports_fast_mode(entry: &Map<String, Value>) -> bool {
         || (openai
             && object_field(object_field(pricing, "service_tiers"), "priority")
                 .is_some_and(Value::is_object))
+}
+
+fn supports_ultrafast_mode(entry: &Map<String, Value>) -> bool {
+    let openai = entry
+        .get("owned_by")
+        .and_then(Value::as_str)
+        .is_some_and(|owner| owner.eq_ignore_ascii_case("openai"));
+    let pricing = entry.get("pricing");
+    let Some(tier) = object_field(object_field(pricing, "service_tiers"), "ultrafast") else {
+        return false;
+    };
+    let tier = Some(tier);
+    openai
+        && positive_price(object_field(tier, "input"))
+        && positive_price(object_field(tier, "output"))
+        && (object_field(pricing, "input_cache_read").is_none()
+            || positive_price(object_field(tier, "input_cache_read")))
+}
+
+fn positive_price(value: Option<&Value>) -> bool {
+    let price = match value {
+        Some(Value::String(text)) => text.parse::<f64>().ok(),
+        Some(Value::Number(number)) => number.as_f64(),
+        _ => None,
+    };
+    price.is_some_and(|price| price.is_finite() && price > 0.0)
 }
 
 fn object_field<'a>(value: Option<&'a Value>, key: &str) -> Option<&'a Value> {

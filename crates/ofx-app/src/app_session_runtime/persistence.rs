@@ -222,8 +222,8 @@ impl Persistence {
         Some(non_durable("session persistence degraded", error))
     }
 
-    pub(crate) fn withdraw_launch_ultrafast(&mut self) {
-        self.overrides.ultrafast_mode = Some(false);
+    pub(crate) fn override_launch_ultrafast(&mut self, requested: bool) {
+        self.overrides.ultrafast_mode = Some(requested);
     }
 
     pub(super) fn adopt_preferences(&mut self, saved: &SessionPreferences) {

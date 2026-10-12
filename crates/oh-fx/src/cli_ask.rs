@@ -1652,9 +1652,8 @@ impl Presenter {
             | TurnFailure::Compaction(_)
             | TurnFailure::Persistence(_)
             | TurnFailure::RecoveryPaused
-            | TurnFailure::SubscriptionNativeImageUnavailable => {
-                self.describe_error(failure.code(), None)
-            }
+            | TurnFailure::SubscriptionNativeImageUnavailable
+            | TurnFailure::UltrafastUnavailable => self.describe_error(failure.code(), None),
             TurnFailure::ModelImageCapabilityUnavailable => {
                 self.describe_notice(failure.code(), MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE)
             }

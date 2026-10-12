@@ -404,6 +404,62 @@ fn fast_mode_comes_from_a_toggle_a_fast_price_or_an_openai_priority_tier() {
 }
 
 #[test]
+fn ultra_mode_needs_openai_priced_tier_metadata_rather_than_names_or_tags() {
+    let listing = r#"{"data":[
+        {"id":"openai/gpt-6-astra","type":"language","owned_by":"openai","pricing":{"input_cache_read":"0.000001","service_tiers":{"ultrafast":{"input":"0.00006","output":"0.0003","input_cache_read":"0.000006"}}}},
+        {"id":"openai/gpt-5.6-sol","type":"language","owned_by":"openai","tags":["ultrafast"],"pricing":{"service_tiers":{"priority":{"input":"0.1","output":"0.2"}}}},
+        {"id":"openai/incomplete","type":"language","owned_by":"openai","pricing":{"service_tiers":{"ultrafast":{"input":"0.1"}}}},
+        {"id":"provider/model","type":"language","owned_by":"provider","pricing":{"service_tiers":{"ultrafast":{"input":"0.1","output":"0.2"}}}}
+    ]}"#;
+    let models = parsed(listing);
+    assert_eq!(models.len(), 4);
+    for model in models {
+        assert_eq!(
+            model.capabilities().supports_ultrafast_mode,
+            model.id == "openai/gpt-6-astra",
+            "{}",
+            model.id
+        );
+    }
+    for (pricing, ultra) in [
+        (
+            r#"{"service_tiers":{"ultrafast":{"input":1,"output":2.5}}}"#,
+            true,
+        ),
+        (
+            r#"{"service_tiers":{"ultrafast":{"input":"0","output":"1"}}}"#,
+            false,
+        ),
+        (
+            r#"{"service_tiers":{"ultrafast":{"input":"-1","output":"1"}}}"#,
+            false,
+        ),
+        (
+            r#"{"service_tiers":{"ultrafast":{"input":"inf","output":"1"}}}"#,
+            false,
+        ),
+        (
+            r#"{"service_tiers":{"ultrafast":{"input":true,"output":"1"}}}"#,
+            false,
+        ),
+        (
+            r#"{"input_cache_read":"1","service_tiers":{"ultrafast":{"input":"1","output":"1"}}}"#,
+            false,
+        ),
+        (r#"{"service_tiers":{"ultrafast":"1"}}"#, false),
+    ] {
+        let model = only(&format!(
+            r#"{{"id":"openai/model","owned_by":"OpenAI","pricing":{pricing}}}"#
+        ));
+        assert_eq!(
+            model.capabilities().supports_ultrafast_mode,
+            ultra,
+            "{pricing}"
+        );
+    }
+}
+
+#[test]
 fn the_picker_view_reorders_the_parsed_catalog() {
     let body = r#"{"data":[
         {"id":"vendor/b-1","released":1,"tags":["tool-use"]},

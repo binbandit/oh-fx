@@ -113,6 +113,23 @@ async fn a_paused_turn_keeps_its_checkpoint_and_leaves_the_log_and_the_history()
     );
 }
 
+struct UltraCapable;
+
+impl CapabilityResolver for UltraCapable {
+    fn resolve<'a>(
+        &'a self,
+        _model: &'a str,
+        _cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, CapabilityLookup> {
+        Box::pin(async {
+            CapabilityLookup::Resolved(ModelCapabilities {
+                supports_ultrafast_mode: true,
+                ..ModelCapabilities::default()
+            })
+        })
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_checkpoint_saves_the_ultra_request_of_its_turn() {
     let provider = FakeProvider::new(vec![lost()]);
@@ -123,10 +140,12 @@ async fn a_checkpoint_saves_the_ultra_request_of_its_turn() {
         Arc::new(FixedContext),
         Arc::new(ArgumentGate),
         AgentConfig {
+            model: "openai/gpt-6-astra".to_owned(),
             ultrafast_mode: true,
             ..config()
         },
-    );
+    )
+    .with_capability_resolver(Arc::new(UltraCapable));
     let mut agent = logged(agent, log);
     pause_on(&mut agent, "go", waiting).await;
     let ultra = |progress| Logged::Recovery {

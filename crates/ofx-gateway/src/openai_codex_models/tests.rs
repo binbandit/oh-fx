@@ -43,6 +43,7 @@ fn windowed_model(id: &str, efforts: &[&str], fast: bool, window: Option<u32>) -
         capabilities: ModelCapabilities {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
+            supports_ultrafast_mode: false,
             context_window: window,
             image_input_support: ImageInputSupport::Native,
         },

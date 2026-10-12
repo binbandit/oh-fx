@@ -183,6 +183,16 @@ impl ControllerState {
         self.speed == Speed::UltraRequested
     }
 
+    pub(crate) fn request_ultrafast(&mut self) {
+        self.speed = Speed::UltraRequested;
+    }
+
+    fn supports_ultrafast_mode(&self) -> bool {
+        self.setup.models_source().cached().is_some_and(|catalog| {
+            capabilities_of(listed(&catalog), &self.model).supports_ultrafast_mode
+        })
+    }
+
     pub(crate) fn withdraw_ultrafast_request(&mut self) {
         if self.speed == Speed::UltraRequested {
             self.speed = Speed::Normal;
@@ -908,6 +918,9 @@ impl Controller {
             }
             CommandEffect::Clear => self.clear(self.state.received_prompts),
             CommandEffect::ToggleFast => self.change_model(ModelChange::ToggleFast).await,
+            CommandEffect::RequestUltrafast => {
+                self.change_model(ModelChange::RequestUltrafast).await;
+            }
             CommandEffect::WithdrawUltrafast => {
                 self.change_model(ModelChange::WithdrawUltrafast).await;
             }
@@ -1523,6 +1536,7 @@ fn run_deferred(
             }
             CommandEffect::SwitchModel(query) => ModelChange::Query(query),
             CommandEffect::ToggleFast => ModelChange::ToggleFast,
+            CommandEffect::RequestUltrafast => ModelChange::RequestUltrafast,
             CommandEffect::WithdrawUltrafast => ModelChange::WithdrawUltrafast,
             CommandEffect::OpenSettings => return catalog.open_settings_menu(state),
             CommandEffect::Rename(title) => {
@@ -1607,12 +1621,15 @@ fn apply_change(
     speed_line.trace(state, fast_before, ultrafast_before);
     state.config_pending = true;
     let ultrafast = state.ultrafast_requested();
-    if let Some(persistence) = persistence.as_mut()
-        && (turns_ultrafast_off
+    if let Some(persistence) = persistence.as_mut() {
+        if ultrafast && !ultrafast_before {
+            persistence.override_launch_ultrafast(true);
+        } else if turns_ultrafast_off
             || (state.fast_mode() && !fast_before)
-            || (ultrafast_before && !ultrafast))
-    {
-        persistence.withdraw_launch_ultrafast();
+            || (ultrafast_before && !ultrafast)
+        {
+            persistence.override_launch_ultrafast(false);
+        }
     }
     let ultrafast = saves_ultrafast.then_some(ultrafast);
     if let Some(notice) =
@@ -1627,7 +1644,7 @@ fn change_topic(change: &ModelChange) -> &'static str {
         ModelChange::Query(_) => MODEL_TOPIC,
         ModelChange::Pick(_) | ModelChange::FromSettings(_) => MODEL_PICKER_TOPIC,
         ModelChange::ToggleFast => FAST_TOPIC,
-        ModelChange::WithdrawUltrafast => ULTRAFAST_TOPIC,
+        ModelChange::RequestUltrafast | ModelChange::WithdrawUltrafast => ULTRAFAST_TOPIC,
         ModelChange::StepEffort(_) => EFFORT_TOPIC,
     }
 }
@@ -1643,7 +1660,7 @@ impl SpeedLine {
     fn of(change: &ModelChange) -> Self {
         match change {
             ModelChange::ToggleFast => Self::Fast,
-            ModelChange::WithdrawUltrafast => Self::Ultrafast,
+            ModelChange::RequestUltrafast | ModelChange::WithdrawUltrafast => Self::Ultrafast,
             ModelChange::Query(_)
             | ModelChange::Pick(_)
             | ModelChange::StepEffort(_)
@@ -1664,8 +1681,9 @@ impl SpeedLine {
         } else if self == Self::Ultrafast || (follows && ultrafast != ultrafast_before) {
             trace_log!(
                 "session",
-                "ultrafast mode changed old={ultrafast_before} new={ultrafast} fast_old={fast_before} fast_new={fast} model={} supports_ultrafast=false",
-                state.model
+                "ultrafast mode changed old={ultrafast_before} new={ultrafast} fast_old={fast_before} fast_new={fast} model={} supports_ultrafast={}",
+                state.model,
+                state.supports_ultrafast_mode()
             );
         }
     }

@@ -166,6 +166,7 @@ fn fast_mode_caching_and_xai_parallel_calls_share_one_provider_options_object() 
     let fast = ProviderOptions {
         reasoning_effort: Some("future-tier"),
         fast: true,
+        ultrafast: false,
         prompt_caching: false,
         routing: None,
     };
@@ -253,6 +254,58 @@ fn provider_routing_follows_speed_and_caching_as_an_order_or_a_strict_only_list(
     );
 }
 
+fn ultra(model: &str, routing: Option<&ProviderRouting>) -> Result<String> {
+    let messages = [ChatMessage::user("question")];
+    let options = ProviderOptions {
+        fast: true,
+        ultrafast: true,
+        prompt_caching: true,
+        routing,
+        ..ProviderOptions::default()
+    };
+    build_request(&request(model, &[], &messages, &[], options), USER_AGENT)
+}
+
+#[test]
+fn ultra_mode_sends_only_the_openai_ultrafast_tier_without_fast_speed() {
+    let body = ultra(MODEL, None).unwrap();
+    assert!(body.contains(
+        r#","providerOptions":{"gateway":{"caching":"auto","only":["openai"]},"openai":{"serviceTier":"ultrafast"}}"#
+    ));
+    assert!(!body.contains("speed"));
+    let preferred = ProviderRouting {
+        order: vec!["azure".to_owned(), "bedrock".to_owned()],
+        strict: false,
+    };
+    assert!(
+        ultra(MODEL, Some(&preferred))
+            .unwrap()
+            .contains(r#""gateway":{"caching":"auto","only":["openai"]}"#)
+    );
+    let allowed = ProviderRouting {
+        order: vec!["azure".to_owned(), "openai".to_owned()],
+        strict: true,
+    };
+    assert!(
+        ultra(MODEL, Some(&allowed))
+            .unwrap()
+            .contains(r#""gateway":{"caching":"auto","only":["openai"]}"#)
+    );
+    let restricted = ProviderRouting {
+        order: vec!["azure".to_owned()],
+        strict: true,
+    };
+    assert_eq!(
+        ultra(MODEL, Some(&restricted)),
+        Err(RequestError::UltrafastProviderRestricted)
+    );
+    assert!(
+        ultra("xai/grok-4", None)
+            .unwrap()
+            .contains(r#""openai":{"serviceTier":"ultrafast"},"xai":{"parallelToolCalls":true}}"#)
+    );
+}
+
 #[test]
 fn provider_routing_joins_the_xai_options() {
     let messages = [ChatMessage::user("question")];
@@ -290,6 +343,7 @@ fn automatic_caching_keeps_transient_context_and_grouped_tool_results() {
     ];
     let cached = ProviderOptions {
         fast: true,
+        ultrafast: false,
         prompt_caching: true,
         ..ProviderOptions::default()
     };

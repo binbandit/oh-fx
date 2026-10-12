@@ -36,6 +36,7 @@ struct SeenRequest {
     max_output_tokens: Option<u32>,
     reasoning_effort: Option<String>,
     fast: bool,
+    ultrafast: bool,
     routing: Option<ProviderRouting>,
 }
 
@@ -97,6 +98,7 @@ impl ModelProvider for FakeProvider {
             max_output_tokens: request.max_output_tokens,
             reasoning_effort: request.provider_options.reasoning_effort.map(str::to_owned),
             fast: request.provider_options.fast,
+            ultrafast: request.provider_options.ultrafast,
             routing: request.provider_options.routing.cloned(),
         });
         self.sessions
@@ -734,6 +736,7 @@ async fn final_answers_stream_raw_text_and_complete_the_turn() {
             max_output_tokens: Some(64),
             reasoning_effort: None,
             fast: false,
+            ultrafast: false,
             routing: Some(ProviderRouting::default()),
         }]
     );
