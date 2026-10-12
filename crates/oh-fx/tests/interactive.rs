@@ -484,6 +484,41 @@ fn quitting_during_a_held_credits_request_still_shuts_down_in_order() {
 }
 
 #[test]
+fn launch_routing_flags_route_the_shell_s_gateway_requests() {
+    let server = FakeServer::start([Reply::sse(&[
+        json!({"type": "text-delta", "id": "t", "delta": "Routed reply."}).to_string(),
+        r#"{"type":"finish","finishReason":{"unified":"stop"},"usage":{"inputTokens":{"total":12},"outputTokens":{"total":3}}}"#.to_owned(),
+    ])]);
+    let refused = RefusedPort::reserve();
+    let home = Home::with_settings(&json!({
+        "provider": "gateway",
+        "models": {"gateway": "zai/glm-5.2"},
+        "provider_order": ["bedrock"],
+        "session_titles": false,
+    }));
+    let chat = format!("http://{}/v4/ai/language-model", server.address());
+    let mut command = home.command();
+    command
+        .args(["--provider-order", "azure,vertex", "--provider-strict"])
+        .env("AI_GATEWAY_API_KEY", "vck_live_0123456789abcdef")
+        .env("OH_FX_E2E_GATEWAY_CHAT_URL", &chat)
+        .env("OH_FX_E2E_GATEWAY_MODELS_URL", refused.base_url())
+        .env("OH_FX_GATEWAY_BASE_URL", refused.base_url());
+    let mut session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "Run /help for commands");
+    session.send(b"hello\r");
+    wait(&session, "Routed reply.");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].json()["providerOptions"]["gateway"]["only"],
+        json!(["azure", "vertex"])
+    );
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn logout_in_a_host_managed_shell_leaves_authentication_to_the_host() {
     let home = Home::with_settings(&settings("http://127.0.0.1:9"));
     let mut command = home.command();

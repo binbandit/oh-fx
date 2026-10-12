@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_agent_runtime::Controller;
 use crate::app_bootstrap_runtime::{
-    AgentSetup, Launch, Login, Profile, ProfileError, provider_names,
+    AgentSetup, Launch, Login, Profile, ProfileError, RoutingFlags, provider_names,
 };
 use crate::app_commands::{slash_command_categories, slash_command_specs};
 use crate::app_mcp_runtime;
@@ -114,6 +114,13 @@ pub fn run_interactive(modifiers: &LaunchModifiers, resume: Option<&RequestedRes
     }
 }
 
+fn routing_flags(modifiers: &LaunchModifiers) -> RoutingFlags {
+    RoutingFlags {
+        order: modifiers.provider_order().map(<[String]>::to_vec),
+        strict: modifiers.provider_strict(),
+    }
+}
+
 async fn bootstrap(
     modifiers: &LaunchModifiers,
     resume: Option<&RequestedResume>,
@@ -169,6 +176,7 @@ async fn bootstrap(
                 open_browser: ofx_auth::browser_allowed(),
                 context_targets: &[],
                 mcp_questioner: None,
+                routing_flags: routing_flags(modifiers),
             },
             &CancellationToken::new(),
         )

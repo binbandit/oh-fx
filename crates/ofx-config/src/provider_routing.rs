@@ -95,6 +95,10 @@ pub(crate) fn parse_provider_order_list(raw: &str) -> Result<Option<Vec<String>>
     Ok(Some(order).filter(|order| !order.is_empty()))
 }
 
+pub fn provider_order_list(raw: &str) -> Option<Vec<String>> {
+    parse_provider_order_list(raw).ok().flatten()
+}
+
 fn parse_switch(value: &str) -> Option<bool> {
     const ON: [&str; 4] = ["1", "true", "on", "yes"];
     const OFF: [&str; 4] = ["0", "false", "off", "no"];

@@ -23,9 +23,9 @@ use ofx_config::{
 use ofx_contract::{
     ActiveMode, ApplicableTarget, ApprovalAnswer, ApprovalDecision, CallDescription,
     CapabilityResolver, HookView, LiveAdditionalRoots, LivePermissionMode, McpServersCatalog,
-    ModelControls, ModelProvider, PermissionMode, QuestionAsker, ReasoningEffort, RequestId,
-    ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias, parse_tool_args_object,
-    provider_search_description,
+    ModelControls, ModelProvider, PermissionMode, ProviderRouting, QuestionAsker, ReasoningEffort,
+    RequestId, ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias,
+    parse_tool_args_object, provider_search_description,
 };
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
@@ -171,6 +171,25 @@ pub struct Launch<'a> {
     pub open_browser: bool,
     pub context_targets: &'a [ApplicableTarget],
     pub mcp_questioner: Option<Arc<dyn QuestionAsker>>,
+    pub routing_flags: RoutingFlags,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutingFlags {
+    pub order: Option<Vec<String>>,
+    pub strict: Option<bool>,
+}
+
+impl RoutingFlags {
+    fn applied_to(self, mut routing: ProviderRouting) -> ProviderRouting {
+        if let Some(order) = self.order {
+            routing.order = order;
+        }
+        if let Some(strict) = self.strict {
+            routing.strict = strict;
+        }
+        routing
+    }
 }
 
 pub struct AgentSetup {
@@ -567,7 +586,8 @@ impl Profile {
                 .unwrap_or_else(|| self.settings.fast_mode_for(&route.selection, &route.model)),
             ultrafast_mode: false,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
-            provider_routing: self.settings.provider_routing(&lookup),
+            provider_routing: mem::take(&mut launch.routing_flags)
+                .applied_to(self.settings.provider_routing(&lookup)),
         }
     }
 
@@ -1325,6 +1345,7 @@ mod tests {
                     open_browser: false,
                     context_targets: &[],
                     mcp_questioner: None,
+                    routing_flags: RoutingFlags::default(),
                     endpoints: SubscriptionEndpoints {
                         chatgpt: ChatGptEndpoints {
                             issuer: base_url.clone(),
@@ -1382,6 +1403,7 @@ mod tests {
                     open_browser: false,
                     context_targets: &[],
                     mcp_questioner: None,
+                    routing_flags: RoutingFlags::default(),
                 };
                 let cancel = CancellationToken::new();
                 let setup = if interactive {
@@ -1480,6 +1502,7 @@ mod tests {
                     open_browser: false,
                     context_targets: &[],
                     mcp_questioner: None,
+                    routing_flags: RoutingFlags::default(),
                     mode: Some(ActiveMode {
                         registry: &INSPECTION,
                         id: "inspect",
@@ -1665,6 +1688,7 @@ mod tests {
                     open_browser: false,
                     context_targets: &[],
                     mcp_questioner: None,
+                    routing_flags: RoutingFlags::default(),
                 },
                 &CancellationToken::new(),
             )

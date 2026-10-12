@@ -1,6 +1,6 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
-use ofx_config::is_valid_provider_order_list;
+use ofx_config::provider_order_list;
 use ofx_contract::ReasoningEffort;
 
 use super::arg_stream::{ArgStream, MissingValue, ValueForm, merge_toggle, non_blank};
@@ -19,8 +19,8 @@ pub(crate) struct ModelOverrides {
     pub(crate) effort: Option<ReasoningEffort>,
     pub(crate) fast: Option<bool>,
     pub(crate) ultrafast: Option<bool>,
-    pub(crate) routes: bool,
-    provider_strict: Option<bool>,
+    pub(crate) provider_order: Option<Vec<String>>,
+    pub(crate) provider_strict: Option<bool>,
 }
 
 impl ModelOverrides {
@@ -58,10 +58,8 @@ impl ModelOverrides {
         {
             let value =
                 value.map_err(|MissingValue| GlobalLaunchError::MissingProviderOrderValue)?;
-            if !is_text(&value, is_valid_provider_order_list) {
-                return Err(GlobalLaunchError::InvalidProviderOrderValue);
-            }
-            self.routes = true;
+            let order = value.to_str().and_then(provider_order_list);
+            self.provider_order = Some(order.ok_or(GlobalLaunchError::InvalidProviderOrderValue)?);
         } else if let Some(strict) = args.take_toggle("--provider-strict", "--no-provider-strict") {
             let strict = merge_toggle(
                 self.provider_strict,
@@ -69,14 +67,9 @@ impl ModelOverrides {
                 GlobalLaunchError::ConflictingProviderStrictFlags,
             )?;
             self.provider_strict = Some(strict);
-            self.routes = true;
         } else {
             return Ok(None);
         }
         Ok(Some(ModelOverride::Setting))
     }
-}
-
-fn is_text(value: &OsStr, valid: impl FnOnce(&str) -> bool) -> bool {
-    value.to_str().is_some_and(valid)
 }
