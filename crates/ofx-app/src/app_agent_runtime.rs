@@ -1612,6 +1612,7 @@ fn apply_change(
 ) {
     let saves_ultrafast = change.saves_ultrafast();
     let topic = change_topic(&change);
+    let turns_ultrafast_on = matches!(change, ModelChange::RequestUltrafast);
     let turns_ultrafast_off = matches!(change, ModelChange::WithdrawUltrafast);
     let speed_line = SpeedLine::of(&change);
     let (fast_before, ultrafast_before) = (state.fast_mode(), state.ultrafast_requested());
@@ -1622,7 +1623,7 @@ fn apply_change(
     state.config_pending = true;
     let ultrafast = state.ultrafast_requested();
     if let Some(persistence) = persistence.as_mut() {
-        if ultrafast && !ultrafast_before {
+        if turns_ultrafast_on {
             persistence.override_launch_ultrafast(true);
         } else if turns_ultrafast_off
             || (state.fast_mode() && !fast_before)

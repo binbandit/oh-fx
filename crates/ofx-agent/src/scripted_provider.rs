@@ -17,6 +17,7 @@ pub(crate) struct SeenRequest {
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) fast: bool,
+    pub(crate) ultrafast: bool,
 }
 
 pub(crate) struct ScriptedProvider {
@@ -83,6 +84,7 @@ impl ModelProvider for ScriptedProvider {
             max_output_tokens: request.max_output_tokens,
             reasoning_effort: request.provider_options.reasoning_effort.map(str::to_owned),
             fast: request.provider_options.fast,
+            ultrafast: request.provider_options.ultrafast,
         });
         let reply = self
             .replies

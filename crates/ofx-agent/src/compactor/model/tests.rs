@@ -164,6 +164,46 @@ async fn a_request_after_the_conversation_sends_it_unchanged_then_the_request() 
 }
 
 #[tokio::test]
+async fn summary_requests_never_ask_for_the_ultra_tier() {
+    let provider = ScriptedProvider::new(vec![Ok(text("after")), Ok(text("alone"))]);
+    let levels = efforts(&[]);
+    let cancel = CancellationToken::new();
+    let ultra = ProviderOptions {
+        ultrafast: true,
+        prompt_caching: true,
+        ..ProviderOptions::default()
+    };
+    let history = [ChatMessage::user("fix the build")];
+    let conversation = ModelRequest {
+        model: "openai/gpt-6-astra",
+        instructions: &["the agent's instructions"],
+        messages: &history,
+        tools: &[],
+        tool_choice: ToolChoice::Auto,
+        max_output_tokens: None,
+        provider_options: ultra,
+        session_id: None,
+    };
+    let mut model = Summarizer {
+        options: ultra,
+        ..summarizer(&provider, &levels, Some(conversation), &cancel)
+    };
+    for after_conversation in [true, false] {
+        let reply = model
+            .summarize(Prompt {
+                system: "s",
+                user: "write the notes",
+                after_conversation,
+            })
+            .await;
+        assert!(reply.is_ok(), "{after_conversation}");
+    }
+    let seen = provider.seen();
+    assert_eq!(seen.len(), 2);
+    assert!(seen.iter().all(|request| !request.ultrafast));
+}
+
+#[tokio::test]
 async fn failures_name_why_the_summary_is_missing() {
     let provider = ScriptedProvider::new(vec![
         Err(failure(ProviderErrorKind::InvalidRequest, "BadRequest")),
