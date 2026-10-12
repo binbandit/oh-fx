@@ -425,6 +425,17 @@ impl PtySession {
         Ok(())
     }
 
+    pub fn exited_within(&mut self, timeout: Duration) -> ExitStatus {
+        if let Some(status) = self.wait_exit(timeout) {
+            return status;
+        }
+        let stacks = self.unreaped_pid().map(stacks).unwrap_or_default();
+        panic!(
+            "the process did not exit within {timeout:?}\n{stacks}\nscreen:\n{}",
+            self.screen()
+        );
+    }
+
     pub fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -441,6 +452,43 @@ impl PtySession {
             thread::sleep(POLL_INTERVAL);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn stacks(pid: Pid) -> String {
+    let Ok(directory) = tempfile::tempdir() else {
+        return String::new();
+    };
+    let report = directory.path().join("sample.txt");
+    let _ = Command::new("sample")
+        .arg(pid.as_raw_nonzero().to_string())
+        .args(["2", "-mayDie", "-file"])
+        .arg(&report)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    std::fs::read_to_string(report).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn stacks(pid: Pid) -> String {
+    let tasks = format!("/proc/{}/task", pid.as_raw_nonzero());
+    let Ok(entries) = std::fs::read_dir(tasks) else {
+        return String::new();
+    };
+    let mut report = String::new();
+    for entry in entries.flatten() {
+        let task = entry.path();
+        let read = |name: &str| std::fs::read_to_string(task.join(name)).unwrap_or_default();
+        report.push_str(&format!(
+            "{} {} wchan={}\n{}",
+            task.display(),
+            read("comm").trim_end(),
+            read("wchan"),
+            read("stack")
+        ));
+    }
+    report
 }
 
 impl Drop for PtySession {
