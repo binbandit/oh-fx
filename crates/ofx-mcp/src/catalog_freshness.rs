@@ -16,6 +16,17 @@ pub(crate) enum Freshness {
     FailedRefresh,
 }
 
+impl Freshness {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+            Self::Refreshing => "refreshing",
+            Self::FailedRefresh => "failed_refresh",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SnapshotMetadata {
     pub(crate) expires_at_ms: u64,
@@ -41,6 +52,17 @@ pub(crate) enum RefreshAction {
     Refresh,
     RetryLater,
     AlreadyRefreshing,
+}
+
+impl RefreshAction {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Refresh => "refresh",
+            Self::RetryLater => "retry_later",
+            Self::AlreadyRefreshing => "already_refreshing",
+        }
+    }
 }
 
 pub(crate) fn page_expiry(received_at_ms: u64, ttl_ms: Option<u64>) -> u64 {

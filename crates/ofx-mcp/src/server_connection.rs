@@ -41,6 +41,7 @@ pub(crate) enum ServerNotification {
 pub(crate) struct ToolSnapshot {
     pub(crate) catalog: Arc<ToolCatalog>,
     pub(crate) metadata: SnapshotMetadata,
+    pub(crate) generation: u64,
 }
 
 pub(crate) struct McpClient {
@@ -104,6 +105,7 @@ impl McpClient {
             tools: Mutex::new(ToolSnapshot {
                 catalog: Arc::new(connected.listing.catalog),
                 metadata: SnapshotMetadata::fresh(connected.listing.expires_at_ms),
+                generation: 1,
             }),
             tools_invalidation: Invalidation::default(),
             tools_settled: Notify::new(),

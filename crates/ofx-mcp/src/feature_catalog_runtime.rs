@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ofx_trace::trace_log;
 use tokio::time::Instant;
 
 use crate::catalog_freshness::{RefreshAction, SnapshotMetadata, decide_refresh};
@@ -7,6 +8,7 @@ use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, Snapshot};
 use crate::features::common::{Catalog, CatalogBuilder, parse_page};
 use crate::mcp_contract::TransportType;
+use crate::mcp_trace::MCP;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::build_list_request;
 use crate::server_connection::McpClient;
@@ -53,12 +55,22 @@ impl Server {
             return match fetch::<T>(&client, deadline).await {
                 Ok(catalog) => {
                     let items: Arc<[T]> = catalog.items.into();
+                    let catalog_generation = current.as_ref().map_or(1, |current| {
+                        current.generation + u64::from(*current.items != *items)
+                    });
                     let snapshot = Snapshot {
                         items: Arc::clone(&items),
                         metadata: SnapshotMetadata::fresh(catalog.expires_at_ms),
+                        generation: catalog_generation,
                     };
                     if self.publish_catalog(&client, snapshot) {
                         invalidation.clear_through(generation);
+                        trace_log!(
+                            MCP,
+                            "feature cache snapshot replaced server={} feature={} generation={catalog_generation}",
+                            self.config.name,
+                            T::KIND
+                        );
                         return Ok(items);
                     }
                     self.features
@@ -76,9 +88,17 @@ impl Server {
         current: Option<Snapshot<T>>,
         error: McpError,
     ) -> Result<Arc<[T]>, McpError> {
-        let current = current.ok_or(error)?;
+        let Some(current) = current else {
+            return Err(error);
+        };
         self.features
             .record_failed_refresh(&current.items, monotonic_millis());
+        trace_log!(
+            MCP,
+            "feature cache refresh failed server={} feature={} preserved_snapshot=true err={error}",
+            self.config.name,
+            T::KIND
+        );
         Ok(current.items)
     }
 }
