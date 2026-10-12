@@ -348,3 +348,44 @@ async fn a_finished_operation_cancels_its_waiting_requests_too() {
     );
     assert_eq!(desk.questions().len(), 1);
 }
+
+const DAY_FORM: &str = r#"{"jsonrpc":"2.0","id":9,"method":"elicitation/create","params":{"message":"When?","requestedSchema":{"type":"object","properties":{"day":{"type":"string"}},"required":["day"]}}}"#;
+
+#[tokio::test(start_paused = true)]
+async fn a_queued_form_gets_its_whole_window_once_it_is_asked() {
+    let desk = Arc::new(Desk::default());
+    let context = desk_context(&desk);
+    let mut tasks = Vec::new();
+    for form in [NAME_FORM, CITY_FORM, DAY_FORM] {
+        tasks.push(responding(&context, form));
+        settle().await;
+    }
+    for answer in ["Ada", "Paris"] {
+        tokio::time::advance(Duration::from_mins(20)).await;
+        desk.answer(answer);
+        settle().await;
+        desk.answer("Submit");
+        settle().await;
+    }
+    assert!(desk.questions().last().unwrap().contains("Reason: When?"));
+    tokio::time::advance(Duration::from_mins(20)).await;
+    let expired = context.gate().expired();
+    tokio::pin!(expired);
+    assert!(futures_poll(&mut expired).await.is_none());
+    desk.answer("Monday");
+    settle().await;
+    desk.answer("Submit");
+    settle().await;
+    let mut answers = Vec::new();
+    for task in tasks {
+        answers.push(task.await.unwrap());
+    }
+    assert_eq!(
+        answers,
+        [
+            r#"{"jsonrpc":"2.0","id":7,"result":{"action":"accept","content":{"name":"Ada"}}}"#,
+            r#"{"jsonrpc":"2.0","id":8,"result":{"action":"accept","content":{"city":"Paris"}}}"#,
+            r#"{"jsonrpc":"2.0","id":9,"result":{"action":"accept","content":{"day":"Monday"}}}"#,
+        ]
+    );
+}

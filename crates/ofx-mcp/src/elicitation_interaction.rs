@@ -61,15 +61,14 @@ impl InputResponder {
 
     pub(crate) async fn take_turn(
         &self,
-        deadline: Instant,
         finished: &CancellationToken,
-    ) -> Outcome<Option<MutexGuard<'_, ()>>> {
-        tokio::select! {
-            turn = timeout_at(deadline, self.turn.lock()) => {
-                turn.map(Some).map_err(|_| InteractionError::McpInputTimedOut)
-            }
-            () = finished.cancelled() => Ok(None),
-        }
+    ) -> Option<MutexGuard<'_, ()>> {
+        let turn = tokio::select! {
+            biased;
+            () = finished.cancelled() => return None,
+            turn = self.turn.lock() => turn,
+        };
+        (!finished.is_cancelled()).then_some(turn)
     }
 }
 

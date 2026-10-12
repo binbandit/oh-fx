@@ -13,7 +13,7 @@ use crate::elicitation::{
 };
 use crate::elicitation_interaction::{InputResponder, Interaction};
 use crate::error::McpError;
-use crate::operation_control::{DeadlineGate, InputPause};
+use crate::operation_control::{DeadlineGate, ELICITATION_TIMEOUT};
 use crate::protocol_messages::parse_json;
 use crate::protocol_negotiation::ElicitationWire;
 
@@ -150,21 +150,13 @@ impl ElicitationContext {
                 "Unsupported elicitation mode",
             ));
         }
-        let pause = self.gate.pause_for_input(self.operation_timeout);
-        Ok(self.answer(id, &request, &pause).await)
+        let _paused = self.gate.pause_for_input(self.operation_timeout);
+        Ok(self.answer(id, &request).await)
     }
 
-    async fn answer(&self, id: &Value, request: &Request, pause: &InputPause<'_>) -> String {
-        let _turn = match self
-            .responder
-            .take_turn(pause.deadline(), &self.finished)
-            .await
-        {
-            Ok(Some(turn)) => turn,
-            Ok(None) => return result_response(id, &Answer::Cancel),
-            Err(error) => {
-                return error_response(id, ErrorCode::INTERNAL_ERROR, &error.to_string());
-            }
+    async fn answer(&self, id: &Value, request: &Request) -> String {
+        let Some(_turn) = self.responder.take_turn(&self.finished).await else {
+            return result_response(id, &Answer::Cancel);
         };
         if !self.owner.current() {
             return owner_changed(id);
@@ -172,7 +164,7 @@ impl ElicitationContext {
         let interaction = Interaction {
             responder: &self.responder,
             server_name: &self.server_name,
-            deadline: pause.extend(),
+            deadline: Instant::now() + ELICITATION_TIMEOUT,
             finished: &self.finished,
         };
         let response = match interaction.respond(request).await {
