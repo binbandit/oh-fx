@@ -195,6 +195,7 @@ pub fn sign_in_failure(error: ChatGptError) -> SignInFailure {
 }
 
 pub fn login_failure_detail(error: ChatGptError) -> String {
+    trace_log!(AUTH, "provider sign-in failed provider=codex err={error}");
     match sign_in_failure(error) {
         SignInFailure::Storage(text) => text,
         SignInFailure::Denied => "authorization denied".to_owned(),
@@ -268,6 +269,7 @@ async fn load_chatgpt_credential(
 
 pub fn grok_login_failure_detail(error: crate::grok_oauth::GrokError) -> String {
     use crate::grok_oauth::GrokError;
+    trace_log!(AUTH, "provider sign-in failed provider=grok err={error}");
     let reason = classify_grok_credential_failure(error);
     match reason {
         CredentialFailureReason::InvalidStorage | CredentialFailureReason::PersistenceUncertain => {
@@ -457,5 +459,36 @@ mod tests {
             preparation_failure_text(ChatGptError::CredentialRefreshRejected),
             "Codex subscription requires a new sign-in."
         );
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_SIGN_IN_TRACE_CHILD";
+    const TRACE_TEST: &str = "auth_runtime::tests::sign_in_failures_write_their_auth_lines";
+
+    #[test]
+    fn sign_in_failures_write_their_auth_lines() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+            login_failure_detail(ChatGptError::LoginTimedOut);
+            grok_login_failure_detail(crate::grok_oauth::GrokError::LockBusy);
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [auth] provider sign-in failed provider=codex err=LoginTimedOut\n",
+            " [auth] provider sign-in failed provider=grok err=LockBusy\n",
+        ] {
+            assert!(written.contains(line), "{line}{written}");
+        }
     }
 }

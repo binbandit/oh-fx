@@ -367,6 +367,10 @@ impl WorkerRuntime {
         !self.lock().queue.is_empty()
     }
 
+    pub fn waiting_count(&self) -> usize {
+        self.lock().queue.len()
+    }
+
     pub fn waiting_texts(&self) -> Vec<String> {
         self.lock()
             .queue

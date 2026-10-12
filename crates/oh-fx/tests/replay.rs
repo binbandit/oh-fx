@@ -57,13 +57,22 @@ impl Workspace {
     }
 
     fn replay(&self, args: &[&Path], stdout: Stdio) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_oh-fx"))
+        self.replay_traced(args, stdout, None)
+    }
+
+    fn replay_traced(&self, args: &[&Path], stdout: Stdio, log: Option<&Path>) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
+        command
+            .env_clear()
+            .env("HOME", &self.root)
+            .env("OH_FX_AUTO_UPGRADE", "0");
+        if let Some(log) = log {
+            command.env("OH_FX_TRACE_LOG", log);
+        }
+        command
             .arg("replay")
             .args(args)
             .current_dir(&self.root)
-            .env_clear()
-            .env("HOME", &self.root)
-            .env("OH_FX_AUTO_UPGRADE", "0")
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(Stdio::piped())
@@ -145,4 +154,22 @@ fn replay_discards_output_to_a_read_only_stdout_and_names_a_full_one() {
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(text(&output.stderr), "oh-fx: NoSpaceLeft\n");
     }
+}
+
+#[test]
+fn replay_writes_its_render_lines_without_the_tape_paths() {
+    let workspace = Workspace::new();
+    let tape = workspace.tape(5, 2, b"hi\r\nthere");
+    let log = workspace.root.join("trace.log");
+    let output = workspace.replay_traced(&[&tape], Stdio::piped(), Some(&log));
+    assert_eq!(output.status.code(), Some(0));
+    let written = fs::read_to_string(&log).expect("read the trace log");
+    for line in [
+        " [render] replay_start json=false frames=false golden=false frames_dir=false\n",
+        " [render] replay_header cols=5 rows=2 version_bytes=1\n",
+        " [frame_diff] replay_complete frames=1 resizes=0 stdout_bytes=9\n",
+    ] {
+        assert!(written.contains(line), "{line}{written}");
+    }
+    assert!(!written.contains("session.fxtape"), "{written}");
 }
