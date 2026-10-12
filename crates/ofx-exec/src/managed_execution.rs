@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use tokio::sync::watch;
 use tokio::time::{Instant, timeout, timeout_at};
 use tokio_util::sync::CancellationToken;
@@ -10,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::command_contract::CommandStatus;
 use crate::command_environment::Environment;
 use crate::command_runner::{
-    CapturedCommand, CapturedOutcome, OutputStream, RunError, SessionSupervisor, StopIntent,
+    CORE, CapturedCommand, CapturedOutcome, OutputStream, RunError, SessionSupervisor, StopIntent,
     TERMINATION_SETTLE_TIMEOUT, run_captured,
 };
 use crate::held_directory::HeldDirectory;
@@ -178,6 +179,13 @@ impl Entry {
         let mut state = self.state();
         match result {
             Ok(outcome) => {
+                if outcome.status == CommandStatus::Indeterminate {
+                    trace_log!(
+                        CORE,
+                        "managed execution termination indeterminate boundary=command_result execution_id={}",
+                        self.id
+                    );
+                }
                 state.phase = match state.phase {
                     Phase::Stopping => Phase::Stopped(Some(outcome.status)),
                     _ => Phase::Completed(outcome.status),
@@ -186,12 +194,18 @@ impl Entry {
                 state.duration_ms =
                     Some(u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX));
             }
-            Err(RunError::TimeoutExpired) => {
-                state.phase = Phase::Stopped(None);
-                state.error_name = Some(RunError::TimeoutExpired.name());
-            }
             Err(error) => {
-                state.phase = Phase::Lost;
+                trace_log!(
+                    CORE,
+                    "managed execution became lost boundary=worker_route execution_id={} err={}",
+                    self.id,
+                    error.name()
+                );
+                state.phase = if error == RunError::TimeoutExpired {
+                    Phase::Stopped(None)
+                } else {
+                    Phase::Lost
+                };
                 state.error_name = Some(error.name());
             }
         }
@@ -282,6 +296,12 @@ impl ManagedExecutions {
     ) -> Result<Snapshot, ExecutionError> {
         let entry = self.admit(&input)?;
         let invocation = captured_invocation(&input.environment, &input.command);
+        trace_log!(
+            CORE,
+            "command runner explicit environment={} shell={}",
+            input.environment.label(),
+            input.environment.shell_path().display()
+        );
         if input.yield_time.is_zero() {
             let snapshot = self.deliver(&entry, true);
             self.spawn_driver(&entry, invocation, input.cwd_directory, input.timeout);
@@ -331,6 +351,10 @@ impl ManagedExecutions {
         if timeout(STOP_SETTLE_TIMEOUT, entry.finished()).await.is_ok() {
             return Ok(self.deliver(&entry, false));
         }
+        trace_log!(
+            CORE,
+            "managed execution stop became lost boundary=settle_deadline execution_id={execution_id} force={force}"
+        );
         let mut snapshot = self.deliver(&entry, false);
         if snapshot.state == SnapshotState::Running {
             snapshot.state = SnapshotState::Lost;
