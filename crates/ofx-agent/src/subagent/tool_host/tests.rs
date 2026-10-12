@@ -235,6 +235,7 @@ impl ChildAgents for Agents {
                 model: "parent-model".to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             },
             permission_mode: PermissionMode::Auto,
         }
@@ -529,11 +530,13 @@ async fn creation_overrides_route_new_children_and_are_rejected_for_existing_one
                 model: "other-model".to_owned(),
                 effort: ReasoningEffort::parse("high").unwrap(),
                 fast_mode: false,
+                ultrafast_mode: false,
             },
             &ChildSettings {
                 model: "parent-model".to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             },
         ]
     );
@@ -947,6 +950,7 @@ fn creation_defaults_keep_parent_values_unless_the_request_overrides_them() {
         model: "parent-model".to_owned(),
         effort: ReasoningEffort::Auto,
         fast_mode: true,
+        ultrafast_mode: false,
     };
     let medium = ReasoningEffort::parse("medium").unwrap();
     for (overrides, model, effort) in [
@@ -1184,6 +1188,7 @@ impl ChildAgents for IntentChildren {
                 model: "parent-model".to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
+                ultrafast_mode: false,
             },
             permission_mode: PermissionMode::Auto,
         }

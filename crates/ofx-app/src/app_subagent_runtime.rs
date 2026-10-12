@@ -110,6 +110,7 @@ impl ChildAgents for ChildFactory {
                     .and_then(ReasoningEffort::parse)
                     .unwrap_or(ReasoningEffort::Auto),
                 fast_mode: config.fast_mode,
+                ultrafast_mode: config.ultrafast_mode,
             },
             permission_mode: self.permission_mode.get(),
         }
@@ -117,13 +118,14 @@ impl ChildAgents for ChildFactory {
 
     fn agent(&self, settings: &ChildSettings, permission_mode: LivePermissionMode) -> Agent {
         let route = self.route();
+        let parent = self.parent_config().clone();
         let config = AgentConfig {
             model: settings.model.clone(),
             max_output_tokens: output_tokens(route.connection.as_ref(), &settings.model),
             reasoning_effort: settings.effort.clone().into_named(),
             fast_mode: settings.fast_mode,
-            ultrafast_mode: false,
-            ..self.parent_config().clone()
+            ultrafast_mode: parent.ultrafast_mode && settings.ultrafast_mode,
+            ..parent
         };
         let permissions =
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())
