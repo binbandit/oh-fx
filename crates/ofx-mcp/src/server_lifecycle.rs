@@ -489,8 +489,8 @@ impl Server {
 
     fn trace_refresh(&self, client: &McpClient, refreshed: &Refreshed) {
         let name = &self.config.name;
-        let seen = client.tools_invalidation.seen();
-        let coalesced = client.tools_invalidation.coalesced();
+        let seen = client.notification_stats.seen();
+        let coalesced = client.notification_stats.coalesced();
         match &refreshed.outcome {
             ToolRefresh::Skipped {
                 action,

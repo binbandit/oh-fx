@@ -134,25 +134,13 @@ fn expire<T>(slot: &Mutex<Option<Snapshot<T>>>) {
 pub(crate) struct Invalidation {
     generation: AtomicU64,
     handled: AtomicU64,
-    seen: AtomicU64,
-    coalesced: AtomicU64,
 }
 
 impl Invalidation {
-    pub(crate) fn invalidate(&self) {
-        if self.pending() {
-            self.coalesced.fetch_add(1, Ordering::AcqRel);
-        }
-        self.seen.fetch_add(1, Ordering::AcqRel);
+    pub(crate) fn invalidate(&self) -> bool {
+        let already_pending = self.pending();
         self.generation.fetch_add(1, Ordering::AcqRel);
-    }
-
-    pub(crate) fn seen(&self) -> u64 {
-        self.seen.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn coalesced(&self) -> u64 {
-        self.coalesced.load(Ordering::Acquire)
+        already_pending
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -167,6 +155,29 @@ impl Invalidation {
         if self.generation() == generation {
             self.handled.store(generation, Ordering::Release);
         }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct NotificationStats {
+    seen: AtomicU64,
+    coalesced: AtomicU64,
+}
+
+impl NotificationStats {
+    pub(crate) fn note(&self, already_pending: bool) {
+        self.seen.fetch_add(1, Ordering::AcqRel);
+        if already_pending {
+            self.coalesced.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(crate) fn seen(&self) -> u64 {
+        self.seen.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn coalesced(&self) -> u64 {
+        self.coalesced.load(Ordering::Acquire)
     }
 }
 
@@ -239,9 +250,9 @@ mod tests {
     fn resource_invalidations_clear_only_through_the_generation_a_refresh_saw() {
         let invalidation = Invalidation::default();
         assert!(!invalidation.pending());
-        invalidation.invalidate();
+        assert!(!invalidation.invalidate());
         let seen = invalidation.generation();
-        invalidation.invalidate();
+        assert!(invalidation.invalidate());
         invalidation.clear_through(seen);
         assert!(invalidation.pending());
         invalidation.clear_through(invalidation.generation());

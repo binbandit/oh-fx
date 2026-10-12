@@ -891,6 +891,7 @@ mod tests {
     use ofx_config::ContextLimitName;
     use ofx_config::ContextLimits;
     use ofx_contract::{PathAccess, PreparedCall, ToolContext, ToolResultStatus};
+    use serde_json::json;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -901,6 +902,7 @@ mod tests {
     use crate::features::resources::{Details, Resource};
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
     use crate::project_config::WorkspaceDiagnosticCause;
+    use crate::server_connection::ServerNotification;
 
     const SERVER: &str = r#"
 echo $$ >> "$STATE/pids"
@@ -1406,6 +1408,7 @@ done
             ofx_trace::configure_from_env(Path::new(&root), None);
             a_tool_list_change_republishes_the_server_tools();
             resource_catalogs_page_cache_and_refresh_after_list_changes();
+            resource_notifications_count_toward_the_tool_cache_lines();
             return;
         }
         let root = tempfile::tempdir().unwrap();
@@ -1428,6 +1431,12 @@ done
         ] {
             assert!(written.contains(line), "{line}\n{written}");
         }
+        assert!(
+            written.lines().any(|line| line.contains(
+                " [mcp] tool cache refreshed without schema change server=fixture catalog_generation=1 "
+            ) && line.ends_with(" notifications_seen=2 notifications_coalesced=1")),
+            "{written}"
+        );
     }
 
     #[tokio::test]
@@ -1873,6 +1882,38 @@ done
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the resource list change never arrived");
+    }
+
+    #[tokio::test]
+    async fn resource_notifications_count_toward_the_tool_cache_lines() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", RESOURCE_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let server = Arc::clone(&runtime.current()[0]);
+        let Lifecycle::Ready(client) = server.lifecycle() else {
+            panic!("the fixture never started");
+        };
+        let changed = json!({"jsonrpc":"2.0","method":"notifications/resources/list_changed"});
+        for _ in 0..2 {
+            assert_eq!(
+                client.classify_notification(&changed),
+                Some(ServerNotification::ResourcesListChanged)
+            );
+        }
+        assert_eq!(
+            (
+                client.notification_stats.seen(),
+                client.notification_stats.coalesced()
+            ),
+            (2, 1)
+        );
+        client.request_tool_refresh();
+        assert_eq!(
+            server
+                .refresh_tools(&client, Instant::now() + Duration::from_secs(10))
+                .await,
+            None
+        );
     }
 
     #[tokio::test]
