@@ -1,10 +1,10 @@
 use ofx_contract::{
     Completion, ModelFailureDiagnostic, ModelRecoveryAction, ModelRecoveryCause,
     ModelRecoveryRequiredAction, ProviderErrorKind, RecoveryProgress, RecoveryStrategy,
-    RouteRecoveryKind, RouteRecoveryStatus, UiEvent,
+    RouteRecoveryKind, RouteRecoveryStatus, ServiceTier, UiEvent,
 };
 
-use super::gateway_trace::Recovering;
+use super::gateway_trace::{self, Recovering};
 use super::recovery::{Failed, Restart};
 use super::turn_trace;
 use super::{Agent, EventSink, Stop, Turn, TurnFailure, failure_diagnostic, recovered_status};
@@ -13,6 +13,7 @@ use crate::model_response_recovery::{
 };
 
 const UNEXPECTED_TOOL_CALL: &str = "UnexpectedToolCallDuringReconciliation";
+const ULTRAFAST_UNCONFIRMED: &str = "Ultrafast was requested, but Gateway did not confirm it was served; this response may have used a standard or lower tier.\n";
 
 pub(super) struct Pause {
     pub(super) cause: ModelRecoveryCause,
@@ -79,6 +80,16 @@ impl Agent {
         restart: &Restart<'_>,
         events: EventSink<'_>,
     ) -> Result<Completion, Stop> {
+        if self.config.ultrafast_mode {
+            gateway_trace::ultrafast_served_tier(turn.trace, completion.service_tier);
+            if completion.service_tier != Some(ServiceTier::Ultrafast) && !turn.notices.ultrafast {
+                turn.notices.ultrafast = true;
+                events(UiEvent::Operational {
+                    turn_id: turn.id,
+                    text: ULTRAFAST_UNCONFIRMED.to_owned(),
+                });
+            }
+        }
         let called = observed != ToolEvidence::None || !completion.tool_calls.is_empty();
         if called && turn.recovery == Some(RecoveryStrategy::ReconcileTool) {
             turn_trace::uncertain_provider_tool_rejected(turn.trace, completion.tool_calls.len());

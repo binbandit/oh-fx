@@ -53,6 +53,7 @@ impl ReviewTransport for Recording {
                 finish_reason: FinishReason::ToolCalls,
                 usage: Usage::default(),
                 billing: None,
+                service_tier: None,
                 provider_replay: None,
             }))
         })
@@ -279,6 +280,7 @@ impl ReviewTransport for SwitchingMidReview {
                 finish_reason: FinishReason::ToolCalls,
                 usage: Usage::default(),
                 billing: None,
+                service_tier: None,
                 provider_replay: None,
             }))
         })

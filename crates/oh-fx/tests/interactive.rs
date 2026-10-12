@@ -557,6 +557,10 @@ fn ultra_mode_on_a_verified_gateway_model_sends_the_ultrafast_tier() {
     wait(&session, "ultrafast: requested on");
     session.send(b"hello\r");
     wait(&session, "Ultra reply.");
+    wait(
+        &session,
+        "Ultrafast was requested, but Gateway did not confirm it was served",
+    );
     let requests = chat.requests();
     assert_eq!(requests.len(), 1);
     let body = requests[0].json();

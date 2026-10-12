@@ -85,7 +85,37 @@ pub struct Completion {
     pub finish_reason: FinishReason,
     pub usage: Usage,
     pub billing: Option<Box<ProviderBilling>>,
+    pub service_tier: Option<ServiceTier>,
     pub provider_replay: Option<ProviderReplay>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceTier {
+    Standard,
+    Flex,
+    Priority,
+    Ultrafast,
+}
+
+impl ServiceTier {
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "default" | "standard" => Self::Standard,
+            "priority" | "fast" => Self::Priority,
+            "flex" => Self::Flex,
+            "ultrafast" => Self::Ultrafast,
+            _ => return None,
+        })
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Flex => "flex",
+            Self::Priority => "priority",
+            Self::Ultrafast => "ultrafast",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

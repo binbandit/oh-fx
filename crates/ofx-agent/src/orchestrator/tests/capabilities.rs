@@ -1,3 +1,5 @@
+use ofx_contract::ServiceTier;
+
 use super::*;
 
 struct FakeResolver {
@@ -414,4 +416,49 @@ async fn an_ultra_request_the_model_cannot_take_fails_before_anything_is_sent() 
     let (report, _) = run(&mut agent, "go").await;
     assert_eq!(report.failure, Some(TurnFailure::UltrafastUnavailable));
     assert!(provider.requests().is_empty());
+}
+
+fn served(script: Script, tier: Option<ServiceTier>) -> Script {
+    match script {
+        Script::Reply(stream, completion) => Script::Reply(
+            stream,
+            Completion {
+                service_tier: tier,
+                ..completion
+            },
+        ),
+        other => other,
+    }
+}
+
+const UNCONFIRMED: &str = "Ultrafast was requested, but Gateway did not confirm it was served; this response may have used a standard or lower tier.\n";
+
+#[tokio::test]
+async fn an_unconfirmed_ultra_tier_is_noted_once_per_turn() {
+    let provider = FakeProvider::new(vec![
+        served(tool_reply(&[("call-1", "{}")]), Some(ServiceTier::Priority)),
+        served(text_reply("done"), None),
+        served(text_reply("again"), Some(ServiceTier::Ultrafast)),
+        served(text_reply("third"), Some(ServiceTier::Standard)),
+    ]);
+    let resolver = FakeResolver::new(vec![ultra_capable()]);
+    let mut agent = agent_with(
+        &provider,
+        Some(&resolver),
+        requesting_ultra("openai/gpt-6-astra"),
+    );
+    let (_, first) = run(&mut agent, "go").await;
+    assert_eq!(operational(&first), [UNCONFIRMED]);
+    let (_, confirmed) = run(&mut agent, "more").await;
+    assert!(operational(&confirmed).is_empty());
+    let (_, third) = run(&mut agent, "again").await;
+    assert_eq!(operational(&third), [UNCONFIRMED]);
+}
+
+#[tokio::test]
+async fn a_turn_without_ultra_never_checks_the_served_tier() {
+    let provider = FakeProvider::new(vec![served(text_reply("done"), None)]);
+    let mut agent = agent_with(&provider, None, config());
+    let (_, events) = run(&mut agent, "go").await;
+    assert!(operational(&events).is_empty());
 }

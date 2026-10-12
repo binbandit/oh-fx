@@ -45,6 +45,7 @@ pub(crate) fn text(content: &str) -> Completion {
         finish_reason: FinishReason::Stop,
         usage: Usage::default(),
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }
@@ -56,6 +57,7 @@ pub(crate) fn calling(call: ToolCall) -> Completion {
         finish_reason: FinishReason::ToolCalls,
         usage: Usage::default(),
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }
