@@ -404,7 +404,7 @@ fn a_server_leaving_during_a_catalog_returns_to_the_servers() {
     state.apply(Event::BeginFilter);
     state.apply(Event::AppendFilterByte(b'q'));
     state.selected_server_index = 0;
-    state.selected_server_removed();
+    assert_eq!(state.selected_server_removed(), Some(1));
     assert_eq!(state.section, Section::Servers);
     assert_eq!(state.screen, Screen::Browse);
     assert_eq!(state.pending_generation, None);

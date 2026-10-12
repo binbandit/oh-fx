@@ -189,9 +189,10 @@ impl McpMenuState {
         self
     }
 
-    pub(crate) fn selected_server_removed(&mut self) {
+    pub(crate) fn selected_server_removed(&mut self) -> Option<u64> {
+        let mut dropped = None;
         if self.pending_server || self.pending_generation.is_none() {
-            self.pending_generation = None;
+            dropped = self.pending_generation.take();
             self.load_state = LoadState::Ready;
         }
         if self.screen != Screen::Add {
@@ -200,6 +201,7 @@ impl McpMenuState {
             self.clear_filter();
             self.selected_index = self.selected_server_index;
         }
+        dropped
     }
 
     pub(crate) fn apply(&mut self, event: Event) -> Option<Effect> {

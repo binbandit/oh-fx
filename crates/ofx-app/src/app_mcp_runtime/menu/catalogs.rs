@@ -41,6 +41,7 @@ impl McpHost {
             self.discard_menu_operation(match reason {
                 McpMenuCancel::Back => "menu_back",
                 McpMenuCancel::Closed => "menu_closed",
+                McpMenuCancel::ServerRemoved => "selected_server_removed",
             });
         }
     }

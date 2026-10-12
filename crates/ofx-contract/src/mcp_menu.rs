@@ -124,6 +124,7 @@ pub enum McpMenuCatalogRequest {
 pub enum McpMenuCancel {
     Back,
     Closed,
+    ServerRemoved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

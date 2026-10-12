@@ -941,3 +941,76 @@ fn a_failed_catalog_reports_in_the_feedback_row() {
     assert_eq!(state(&test).load_state, LoadState::Failed);
     assert_eq!(state(&test).section, Section::Resources);
 }
+
+fn cancel(generation: u64, reason: McpMenuCancel) -> UiCommand {
+    menu(McpMenuRequest::Cancel { generation, reason })
+}
+
+#[test]
+fn a_catalog_load_is_cancelled_when_it_can_no_longer_settle() {
+    let mut test = opened(&["docs", "remote"]);
+    press(&mut test, b"\t");
+    press(&mut test, b"\x1b[D");
+    press(&mut test, b"\t\t");
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["remote"]),
+    });
+    assert_eq!(state(&test).section, Section::Servers);
+    press(&mut test, b"\t");
+    escape(&mut test);
+    assert!(test.shell.mcp_menu.is_none());
+    assert_eq!(
+        requests(&test),
+        [
+            load(1, McpMenuCatalogRequest::Tools),
+            cancel(1, McpMenuCancel::Back),
+            load(2, McpMenuCatalogRequest::Tools),
+            load(3, McpMenuCatalogRequest::Resources("docs".to_owned())),
+            cancel(3, McpMenuCancel::ServerRemoved),
+            load(4, McpMenuCatalogRequest::Tools),
+            cancel(4, McpMenuCancel::Closed),
+        ]
+    );
+}
+
+#[test]
+fn decoded_deletions_edit_the_filter_and_raw_control_bytes_do_not() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: McpMenuCatalog::Tools(vec!["mcp_docs_echo".to_owned()]),
+    });
+    press(&mut test, b"/echo\x17\x15");
+    assert_eq!(state(&test).query, "echo");
+    press(&mut test, b"\x1b[127;3u");
+    assert_eq!(state(&test).query, "");
+    press(&mut test, b"ec");
+    press(&mut test, b"\x1b[127;9u");
+    assert_eq!(state(&test).query, "");
+    assert!(state(&test).filter_active);
+}
+
+#[test]
+fn the_arrows_change_tabs_from_the_details_and_the_add_form() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\r");
+    assert_eq!(state(&test).screen, Screen::Details);
+    press(&mut test, b"\x1b[C");
+    assert_eq!(state(&test).section, Section::Tools);
+    assert_eq!(state(&test).screen, Screen::Browse);
+    press(&mut test, b"\x1b[D");
+    press(&mut test, b"a");
+    assert_eq!(state(&test).screen, Screen::Add);
+    press(&mut test, b"\x1b[D");
+    assert_eq!(state(&test).section, Section::Prompts);
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert_eq!(
+        requests(&test),
+        [
+            load(1, McpMenuCatalogRequest::Tools),
+            cancel(1, McpMenuCancel::Back),
+            load(2, McpMenuCatalogRequest::Prompts("docs".to_owned())),
+        ]
+    );
+}

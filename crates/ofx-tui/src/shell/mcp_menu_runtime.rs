@@ -67,10 +67,11 @@ impl McpMenu {
             .map(|server| server.name.clone())
     }
 
-    fn replace_snapshot(&mut self, next: McpMenuSnapshot) -> bool {
+    fn replace_snapshot(&mut self, next: McpMenuSnapshot) -> (bool, Option<u64>) {
         if self.snapshot == next {
-            return false;
+            return (false, None);
         }
+        let mut dropped = None;
         if let Some(previous) = self.snapshot.servers.get(self.state.selected_server_index) {
             let kept = next
                 .servers
@@ -81,11 +82,11 @@ impl McpMenu {
                 self.state.selected_index = self.state.selected_server_index;
             }
             if kept.is_none() {
-                self.state.selected_server_removed();
+                dropped = self.state.selected_server_removed();
             }
         }
         self.snapshot = next;
-        true
+        (true, dropped)
     }
 }
 
@@ -138,9 +139,20 @@ impl Shell<'_> {
             return;
         };
         menu.refresh_due_ms = Some(due);
-        if menu.replace_snapshot(snapshot) {
+        if self.replace_mcp_menu_snapshot(snapshot) {
             self.invalidate();
         }
+    }
+
+    fn replace_mcp_menu_snapshot(&mut self, snapshot: McpMenuSnapshot) -> bool {
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+        let (changed, dropped) = menu.replace_snapshot(snapshot);
+        if let Some(generation) = dropped {
+            self.cancel_mcp_menu_operation(generation, McpMenuCancel::ServerRemoved);
+        }
+        changed
     }
 
     fn mcp_menu_settled(&mut self, settled: McpMenuSettled, snapshot: McpMenuSnapshot) {
@@ -167,7 +179,7 @@ impl Shell<'_> {
                 menu.state.apply(Event::EffectFailed(settled.generation));
             }
         }
-        menu.replace_snapshot(snapshot);
+        self.replace_mcp_menu_snapshot(snapshot);
         self.invalidate();
     }
 
