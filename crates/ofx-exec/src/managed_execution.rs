@@ -18,6 +18,10 @@ use crate::held_directory::HeldDirectory;
 use crate::output_echo::{LineEcho, OutputEcho};
 use crate::shell_resolver::captured_invocation;
 
+mod tty;
+
+pub use tty::{TtyCapacity, TtyCommand, TtyUpdate};
+
 pub(crate) const MAX_LIVE_ENTRIES: usize = 64;
 const MAX_TOMBSTONES: usize = 32;
 const STOP_SETTLE_TIMEOUT: Duration =
@@ -34,6 +38,44 @@ pub enum ExecutionError {
     RuntimeStopping,
     #[error("Cancelled")]
     Cancelled,
+    #[error("ExecutionBusy")]
+    ExecutionBusy,
+    #[error("InvalidBackend")]
+    InvalidBackend,
+    #[error("TtyEffectRequired")]
+    TtyEffectRequired,
+    #[error("InvalidCapacityReservation")]
+    InvalidCapacityReservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Captured,
+    Tty,
+}
+
+impl Backend {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Captured => "captured",
+            Self::Tty => "tty",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Persistence {
+    Process,
+    Session,
+}
+
+impl Persistence {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Session => "session",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -73,6 +115,8 @@ pub struct Snapshot {
     pub cwd: PathBuf,
     pub retained: bool,
     pub state: SnapshotState,
+    pub backend: Backend,
+    pub persistence: Persistence,
     pub output_delta: Vec<u8>,
     pub output_truncated: bool,
     pub output_incomplete: bool,
@@ -104,6 +148,15 @@ impl Phase {
             Self::Lost => SnapshotState::Lost,
         }
     }
+
+    fn from_snapshot_state(state: SnapshotState) -> Self {
+        match state {
+            SnapshotState::Running => Self::Running,
+            SnapshotState::Completed(status) => Self::Completed(status),
+            SnapshotState::Stopped(status) => Self::Stopped(status),
+            SnapshotState::Lost => Self::Lost,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,12 +178,44 @@ struct EntryState {
     error_name: Option<&'static str>,
     claim: Claim,
     tombstone: Option<u64>,
+    active_waiter: Option<u64>,
+    preempted_waiter: Option<u64>,
+}
+
+impl EntryState {
+    fn new(phase: Phase, max_output_bytes: usize) -> Self {
+        Self {
+            phase,
+            output: Vec::new(),
+            max_output_bytes,
+            output_truncated: false,
+            output_incomplete: false,
+            duration_ms: None,
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+            error_name: None,
+            claim: Claim::Starting,
+            tombstone: None,
+            active_waiter: None,
+            preempted_waiter: None,
+        }
+    }
+
+    fn append_bounded(&mut self, bytes: &[u8]) {
+        let available = self.max_output_bytes.saturating_sub(self.output.len());
+        let retained = available.min(bytes.len());
+        self.output.extend_from_slice(&bytes[..retained]);
+        if retained != bytes.len() {
+            self.output_truncated = true;
+        }
+    }
 }
 
 struct Entry {
     id: String,
     command: String,
     cwd: PathBuf,
+    backend: Backend,
     state: Mutex<EntryState>,
     stop: watch::Sender<Option<StopIntent>>,
     finished: watch::Sender<bool>,
@@ -151,12 +236,7 @@ impl Entry {
                 state.stderr_bytes = state.stderr_bytes.saturating_add(bytes.len());
             }
         }
-        let available = state.max_output_bytes.saturating_sub(state.output.len());
-        let retained = available.min(bytes.len());
-        state.output.extend_from_slice(&bytes[..retained]);
-        if retained != bytes.len() {
-            state.output_truncated = true;
-        }
+        state.append_bounded(bytes);
     }
 
     fn request_stop(&self, intent: StopIntent) {
@@ -227,7 +307,19 @@ struct Registry {
     entries: Vec<Arc<Entry>>,
     next_id: u64,
     next_tombstone: u64,
+    next_waiter: u64,
+    pending_admissions: usize,
     stopping: bool,
+}
+
+impl Registry {
+    fn live_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.state().tombstone.is_none())
+            .count()
+            + self.pending_admissions
+    }
 }
 
 struct Shared {
@@ -253,7 +345,9 @@ impl Shared {
 impl Drop for Shared {
     fn drop(&mut self) {
         for entry in &self.registry().entries {
-            entry.request_stop(StopIntent::Force);
+            if entry.backend == Backend::Captured {
+                entry.request_stop(StopIntent::Force);
+            }
         }
     }
 }
@@ -332,7 +426,7 @@ impl ManagedExecutions {
         ceiling: Duration,
         cancel: &CancellationToken,
     ) -> Result<Snapshot, ExecutionError> {
-        let entry = self.find(execution_id)?;
+        let entry = self.find_captured(execution_id)?;
         tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(ExecutionError::Cancelled),
@@ -342,7 +436,7 @@ impl ManagedExecutions {
     }
 
     pub async fn stop(&self, execution_id: &str, force: bool) -> Result<Snapshot, ExecutionError> {
-        let entry = self.find(execution_id)?;
+        let entry = self.find_captured(execution_id)?;
         entry.request_stop(if force {
             StopIntent::Force
         } else {
@@ -383,7 +477,7 @@ impl ManagedExecutions {
             registry
                 .entries
                 .iter()
-                .filter(|entry| !entry.is_terminal())
+                .filter(|entry| entry.backend == Backend::Captured && !entry.is_terminal())
                 .cloned()
                 .collect()
         };
@@ -401,12 +495,7 @@ impl ManagedExecutions {
         if registry.stopping {
             return Err(ExecutionError::RuntimeStopping);
         }
-        let live = registry
-            .entries
-            .iter()
-            .filter(|entry| entry.state().tombstone.is_none())
-            .count();
-        if live >= MAX_LIVE_ENTRIES {
+        if registry.live_count() >= MAX_LIVE_ENTRIES {
             return Err(ExecutionError::ExecutionCapacityExceeded);
         }
         evict_oldest_tombstone(&mut registry);
@@ -416,19 +505,8 @@ impl ManagedExecutions {
             id,
             command: input.command.clone(),
             cwd: input.cwd.clone(),
-            state: Mutex::new(EntryState {
-                phase: Phase::Running,
-                output: Vec::new(),
-                max_output_bytes: input.max_output_bytes,
-                output_truncated: false,
-                output_incomplete: false,
-                duration_ms: None,
-                stdout_bytes: 0,
-                stderr_bytes: 0,
-                error_name: None,
-                claim: Claim::Starting,
-                tombstone: None,
-            }),
+            backend: Backend::Captured,
+            state: Mutex::new(EntryState::new(Phase::Running, input.max_output_bytes)),
             stop: watch::Sender::new(None),
             finished: watch::Sender::new(false),
         });
@@ -471,6 +549,14 @@ impl ManagedExecutions {
         });
     }
 
+    fn find_captured(&self, execution_id: &str) -> Result<Arc<Entry>, ExecutionError> {
+        let entry = self.find(execution_id)?;
+        if entry.backend != Backend::Captured {
+            return Err(ExecutionError::TtyEffectRequired);
+        }
+        Ok(entry)
+    }
+
     fn find(&self, execution_id: &str) -> Result<Arc<Entry>, ExecutionError> {
         self.shared
             .registry()
@@ -491,6 +577,11 @@ impl ManagedExecutions {
             cwd: entry.cwd.clone(),
             retained: state.claim == Claim::Published || !terminal,
             state: state.phase.snapshot_state(),
+            backend: entry.backend,
+            persistence: match entry.backend {
+                Backend::Captured => Persistence::Process,
+                Backend::Tty => Persistence::Session,
+            },
             output_delta: std::mem::take(&mut state.output),
             output_truncated: std::mem::replace(&mut state.output_truncated, false),
             output_incomplete: state.output_incomplete,

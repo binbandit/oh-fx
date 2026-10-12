@@ -10,6 +10,7 @@ mod process_tree;
 mod self_exe;
 mod shell_resolver;
 mod terminal_contracts;
+mod terminal_observer;
 mod terminal_recovery;
 mod terminal_store;
 
@@ -20,7 +21,8 @@ pub use command_runner::{
 };
 pub use held_directory::HeldDirectory;
 pub use managed_execution::{
-    ExecutionError, ManagedExecutions, Snapshot, SnapshotState, StartCaptured,
+    Backend, ExecutionError, ManagedExecutions, Persistence, Snapshot, SnapshotState,
+    StartCaptured, TtyCapacity, TtyCommand, TtyUpdate,
 };
 pub use native_session::{
     CloseResult, InspectResult, Outcome, ReadResult, ScreenResult, SignalResult, StartRequest,
@@ -32,5 +34,8 @@ pub use shell_resolver::{ResolveError, configured_login_shell, environment};
 pub use terminal_contracts::{
     Action, ClosePolicy, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec,
     StructuredErrorCode, TerminalFailure, TerminalSignal,
+};
+pub use terminal_observer::{
+    Observation, ObserveError, SyncOutcome, TerminalObserver, snapshot_state,
 };
 pub use terminal_store::{StoreError, TerminalStore};

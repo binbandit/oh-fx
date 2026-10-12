@@ -1,4 +1,4 @@
-use ofx_exec::{CommandStatus, Snapshot, SnapshotState};
+use ofx_exec::{Backend, CommandStatus, Persistence, Snapshot, SnapshotState};
 use serde_json::Value;
 
 use super::*;
@@ -16,6 +16,8 @@ fn snapshot(state: SnapshotState, output: &[u8]) -> Snapshot {
         cwd: "/tmp".into(),
         retained: false,
         state,
+        backend: Backend::Captured,
+        persistence: Persistence::Process,
         output_delta: output.to_vec(),
         output_truncated: false,
         output_incomplete: false,
@@ -318,6 +320,21 @@ fn result_keys_keep_the_upstream_order() {
 }
 
 #[test]
+fn a_terminal_snapshot_names_its_backend_and_session_persistence() {
+    let terminal = Snapshot {
+        execution_id: "shell-AAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        retained: true,
+        backend: Backend::Tty,
+        persistence: Persistence::Session,
+        ..snapshot(SnapshotState::Completed(CommandStatus::Finished), b"done\n")
+    };
+    assert_eq!(
+        format_snapshot(&terminal, 64 * 1024),
+        r#"{"session_id":"shell-AAAAAAAAAAAAAAAAAAAAAA","state":"completed","backend":"tty","persistence":"session","output_truncated":false,"output_incomplete":false,"output_terminal_safe":true,"full_output_handle":null,"exit_code":null,"signal":null,"termination_indeterminate":false,"duration_ms":null,"accepted_bytes":null,"error":null,"retry_guidance":null,"output_delta":"done\n"}"#
+    );
+}
+
+#[test]
 fn shell_stop_fails_closed_only_for_lost_or_indeterminate_outcomes() {
     assert!(stop_result_failed(SnapshotState::Lost));
     assert!(stop_result_failed(SnapshotState::Stopped(Some(
@@ -327,6 +344,9 @@ fn shell_stop_fails_closed_only_for_lost_or_indeterminate_outcomes() {
         CommandStatus::Signal(9)
     ))));
     assert!(!stop_result_failed(SnapshotState::Stopped(None)));
+    assert!(!stop_result_failed(SnapshotState::Stopped(Some(
+        CommandStatus::Finished
+    ))));
     assert!(!stop_result_failed(completed(0)));
 }
 
@@ -344,6 +364,10 @@ fn command_failures_follow_the_upstream_status_rules() {
         b""
     )));
     assert!(snapshot_failed(&snapshot(SnapshotState::Lost, b"")));
+    assert!(!snapshot_failed(&snapshot(
+        SnapshotState::Completed(CommandStatus::Finished),
+        b""
+    )));
     assert!(snapshot_failed(&Snapshot {
         output_incomplete: true,
         ..snapshot(completed(0), b"")

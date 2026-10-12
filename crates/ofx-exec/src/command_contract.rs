@@ -2,6 +2,7 @@
 pub enum CommandStatus {
     ExitCode(i64),
     Signal(u32),
+    Finished,
     Indeterminate,
 }
 
@@ -23,6 +24,7 @@ impl CommandStatus {
                 signal: Some(signal),
                 ..StatusProjection::default()
             },
+            Self::Finished => StatusProjection::default(),
             Self::Indeterminate => StatusProjection {
                 termination_indeterminate: true,
                 ..StatusProjection::default()
@@ -51,6 +53,10 @@ mod tests {
             CommandStatus::Indeterminate
                 .project()
                 .termination_indeterminate
+        );
+        assert_eq!(
+            CommandStatus::Finished.project(),
+            StatusProjection::default()
         );
     }
 }

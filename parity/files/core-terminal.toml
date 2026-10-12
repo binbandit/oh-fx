@@ -1,12 +1,14 @@
 [[file]]
 upstream = "src/core/terminal/action_executor.zig"
-status = "todo"
+status = "not-applicable"
 modules = []
+note = "The executor validates a request, queues it on the terminal client and polls for its completion. oh-fx's terminal actions are async calls on Terminals with no queue or worker, so a request is checked by the registry as upstream's validation does, an owner that is exiting refuses a start with cancelled as mapAdmissionError does, and the queue-full and disconnect failures cannot occur, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/terminal/client.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-exec/src/native_session/registry.rs", "crates/ofx-exec/src/native_session/descriptor_budget.rs"]
+note = "Terminals is the terminal client: it opens nothing until a terminal starts, the first start raises the soft descriptor limit to 1024 within the hard limit with upstream's terminal_client lines, and close_owned_terminals ends every terminal of the process and refuses later starts. The request queue, worker thread, correlation ids, completion polling and the terminal UI projection are not ported, because oh-fx's terminal actions are async calls that nothing queues, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/terminal/contracts.zig"
@@ -29,8 +31,8 @@ note = "profileUser names the local profile only inside terminal authority princ
 [[file]]
 upstream = "src/core/terminal/managed_observer.zig"
 status = "partial"
-modules = ["crates/ofx-vt/src/engine.rs"]
-note = "renderScreenText is ported as ofx-vt's Grid::screen_text with upstream's test. The observer that refreshes managed terminal executions arrives with the shell tool's terminals (OH-19)."
+modules = ["crates/ofx-vt/src/engine.rs", "crates/ofx-exec/src/terminal_observer.rs"]
+note = "renderScreenText is ported as ofx-vt's Grid::screen_text with upstream's test. observe, refresh, syncOwned, snapshotState, resolveCompletedStatus, reconcileObservedState, mapTerminalFailure and isDefinitiveLoss are ported with upstream's test. An observation drains the terminal's unread output instead of reading the journal from the execution's cursor, so it has no cursor and the output and its byte count come from that drain, as docs/differences/tool-shell.md records, and a caller that fails after observing keeps the drained output with its execution (TerminalObserver::keep) for the next result, where upstream leaves the execution's cursor where it was; output containing an escape is returned as the rendered screen, as upstream's is. inspectInput, which only the auto-mode review of shell input uses, arrives with it (OH-19)."
 
 [[file]]
 upstream = "src/core/terminal/native_session.zig"
@@ -40,8 +42,9 @@ note = "The launcher and control-marker process modes (--oh-fx-internal-terminal
 
 [[file]]
 upstream = "src/core/terminal/operation.zig"
-status = "todo"
-modules = []
+status = "partial"
+modules = ["crates/ofx-exec/src/native_session/registry.rs"]
+note = "validate is ported as the registry's request checks. The authority claims that every terminal action carries, and the process owner attached to them, are not: since #1137 only the agent in the owning process acts on its terminals, so oh-fx checks a terminal's owner session instead, as docs/differences/tool-shell.md records. The ordered mutations that share a terminal's write ownership become one session's write lock, which serializes its writes."
 
 [[file]]
 upstream = "src/core/terminal/recovery.zig"
