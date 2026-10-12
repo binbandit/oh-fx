@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use memchr::memchr2;
-use ofx_config::PrivateDir;
+use ofx_config::{DurableError, PrivateDir};
 use ofx_text::{is_terminal_safe, lowercase_hex};
 use sha2::{Digest, Sha256};
 
@@ -13,12 +13,42 @@ const DIRECTORY: &str = "file-index";
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const DIGEST_BYTES: usize = 32;
 
-pub(crate) fn load(cache_dir: &Path, roots: &[&Path]) -> Option<Vec<Candidate>> {
-    let roots = utf8_roots(roots)?;
-    let directory = PrivateDir::open_existing(&cache_dir.join(DIRECTORY)).ok()??;
-    let bytes = directory
-        .read_private(&file_name(&roots), MAX_BYTES)
-        .ok()??;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CacheError {
+    #[error("InvalidIndexCache")]
+    Invalid,
+    #[error("IndexCacheTooLarge")]
+    TooLarge,
+    #[error(transparent)]
+    Storage(DurableError),
+}
+
+impl From<DurableError> for CacheError {
+    fn from(error: DurableError) -> Self {
+        match error {
+            DurableError::InsecureFile | DurableError::TooLarge => Self::Invalid,
+            error => Self::Storage(error),
+        }
+    }
+}
+
+pub(crate) fn load(
+    cache_dir: &Path,
+    roots: &[&Path],
+) -> Result<Option<Vec<Candidate>>, CacheError> {
+    let Some(roots) = utf8_roots(roots) else {
+        return Ok(None);
+    };
+    let Some(directory) = PrivateDir::open_existing(&cache_dir.join(DIRECTORY))? else {
+        return Ok(None);
+    };
+    let Some(bytes) = directory.read_private(&file_name(&roots), MAX_BYTES)? else {
+        return Ok(None);
+    };
+    decode(&bytes, &roots).map(Some).ok_or(CacheError::Invalid)
+}
+
+fn decode(bytes: &[u8], roots: &[&str]) -> Option<Vec<Candidate>> {
     let payload = bytes.strip_prefix(MAGIC)?;
     let (digest, payload) = payload.split_at_checked(DIGEST_BYTES)?;
     if Sha256::digest(payload).as_slice() != digest {
@@ -34,26 +64,30 @@ pub(crate) fn load(cache_dir: &Path, roots: &[&Path]) -> Option<Vec<Candidate>> 
     (!cached_roots.is_empty() && cached_roots == roots).then_some(candidates)
 }
 
-pub(crate) fn save(cache_dir: &Path, roots: &[&Path], candidates: &[Candidate]) -> Option<()> {
-    let roots = utf8_roots(roots)?;
-    if roots.is_empty() {
-        return None;
-    }
+pub(crate) fn save(
+    cache_dir: &Path,
+    roots: &[&Path],
+    candidates: &[Candidate],
+) -> Result<(), CacheError> {
+    let Some(roots) = utf8_roots(roots).filter(|roots| !roots.is_empty()) else {
+        return Ok(());
+    };
     let name = file_name(&roots);
     if candidates.is_empty() {
-        let directory = PrivateDir::open_existing(&cache_dir.join(DIRECTORY)).ok()??;
-        directory.remove(&name).ok()?;
-        return Some(());
+        if let Some(directory) = PrivateDir::open_existing(&cache_dir.join(DIRECTORY))? {
+            directory.remove(&name)?;
+        }
+        return Ok(());
     }
-    let payload = encode_payload(now_ms(), &roots, candidates)?;
+    let payload = encode_payload(now_ms(), &roots, candidates).ok_or(CacheError::TooLarge)?;
     let mut bytes = Vec::with_capacity(MAGIC.len() + DIGEST_BYTES + payload.len());
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&Sha256::digest(&payload));
     bytes.extend_from_slice(&payload);
     let directory = PrivateDir::open_or_create(cache_dir)
-        .and_then(|cache| cache.open_or_create_child(DIRECTORY))
-        .ok()?;
-    directory.replace(&name, &bytes).ok()
+        .and_then(|cache| cache.open_or_create_child(DIRECTORY))?;
+    directory.replace(&name, &bytes)?;
+    Ok(())
 }
 
 fn encode_payload(written_at_ms: i64, roots: &[&str], candidates: &[Candidate]) -> Option<Vec<u8>> {
@@ -290,10 +324,10 @@ mod tests {
     fn the_cache_round_trips_its_scope_and_rejects_tampering() {
         let cache = tempfile::tempdir().unwrap();
         let roots = [Path::new("/workspace")];
-        assert!(load(cache.path(), &roots).is_none());
+        assert_eq!(load(cache.path(), &roots), Ok(None));
         save(cache.path(), &roots, &candidates()).unwrap();
-        assert_eq!(load(cache.path(), &roots), Some(candidates()));
-        assert!(load(cache.path(), &[Path::new("/elsewhere")]).is_none());
+        assert_eq!(load(cache.path(), &roots), Ok(Some(candidates())));
+        assert_eq!(load(cache.path(), &[Path::new("/elsewhere")]), Ok(None));
 
         let path = cache
             .path()
@@ -310,7 +344,7 @@ mod tests {
         let last = flipped.len() - 4;
         flipped[last] ^= 1;
         fs::write(&path, &flipped).unwrap();
-        assert!(load(cache.path(), &roots).is_none());
+        assert_eq!(load(cache.path(), &roots), Err(CacheError::Invalid));
     }
 
     #[test]
@@ -322,9 +356,9 @@ mod tests {
             kind: CandidateKind::File,
         }];
         save(cache.path(), &roots, &unsafe_only).unwrap();
-        assert_eq!(load(cache.path(), &roots), Some(Vec::new()));
+        assert_eq!(load(cache.path(), &roots), Ok(Some(Vec::new())));
         save(cache.path(), &roots, &[]).unwrap();
-        assert!(load(cache.path(), &roots).is_none());
+        assert_eq!(load(cache.path(), &roots), Ok(None));
         let names: Vec<_> = fs::read_dir(cache.path().join(DIRECTORY))
             .unwrap()
             .collect();
@@ -347,7 +381,7 @@ mod tests {
             0o600
         );
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(load(cache.path(), &roots).is_none());
+        assert_eq!(load(cache.path(), &roots), Err(CacheError::Invalid));
     }
 
     fn write_payload(cache: &Path, root: &str, payload: &[u8]) {
@@ -376,7 +410,7 @@ mod tests {
             },
         ];
         save(cache.path(), &roots, &saved).unwrap();
-        assert_eq!(load(cache.path(), &roots), Some(saved));
+        assert_eq!(load(cache.path(), &roots), Ok(Some(saved)));
     }
 
     #[test]
@@ -393,13 +427,13 @@ mod tests {
         );
         assert_eq!(
             load(cache.path(), &roots),
-            Some(vec![Candidate {
+            Ok(Some(vec![Candidate {
                 path: "café😀\"".to_owned(),
                 kind: CandidateKind::File,
-            }])
+            }]))
         );
         write_payload(cache.path(), "/w", entries("").as_bytes());
-        assert_eq!(load(cache.path(), &roots), Some(Vec::new()));
+        assert_eq!(load(cache.path(), &roots), Ok(Some(Vec::new())));
         for payload in [
             entries("{\"path\":\"a\",\"kind\":2}"),
             entries("{\"path\":\"a\",\"kind\":0},"),
@@ -415,7 +449,11 @@ mod tests {
             "{\"written_at_ms\":1,\"roots\":[\"/w\",\"/x\"],\"entries\":[]}".to_owned(),
         ] {
             write_payload(cache.path(), "/w", payload.as_bytes());
-            assert_eq!(load(cache.path(), &roots), None, "{payload}");
+            assert_eq!(
+                load(cache.path(), &roots),
+                Err(CacheError::Invalid),
+                "{payload}"
+            );
         }
     }
 
