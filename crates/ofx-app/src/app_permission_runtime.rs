@@ -132,7 +132,7 @@ impl PermissionRuntime {
                 trace_log!(
                     PERMISSION,
                     "interactive_yolo_acknowledgment_persist_failed err={}",
-                    unsaved_name(&failure)
+                    failure.code()
                 );
                 self.report_unsaved(ACKNOWLEDGMENT_TOPIC, &failure);
             }
@@ -171,7 +171,7 @@ impl PermissionRuntime {
                 trace_log!(
                     PERMISSION,
                     "interactive_permission_mode_persist_failed mode={label} err={}",
-                    unsaved_name(&failure)
+                    failure.code()
                 );
                 self.report_unsaved(MODE_PREFERENCE_TOPIC, &failure);
             }
@@ -214,13 +214,6 @@ const fn outcome_name(outcome: &CommitOutcome) -> &'static str {
     match outcome {
         CommitOutcome::Unchanged => "unchanged",
         CommitOutcome::Committed { .. } => "committed",
-    }
-}
-
-fn unsaved_name(unsaved: &Unsaved) -> String {
-    match unsaved {
-        Unsaved::HomeNotSet => "HomeNotSet".to_owned(),
-        Unsaved::Failed(failure) => failure.error.to_string(),
     }
 }
 

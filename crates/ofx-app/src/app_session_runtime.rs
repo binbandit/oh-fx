@@ -18,6 +18,7 @@ use ofx_session::{
     SessionDisposal, SessionError, SessionLog, SessionPreferences, SessionStore, TitleGate,
     UsagePublisher, WritableSession, prompt_excerpt,
 };
+use ofx_trace::trace_log;
 
 use crate::app_bootstrap_runtime::{AgentSetup, Profile};
 
@@ -235,7 +236,24 @@ impl LiveSession {
     }
 
     pub fn children(&self, store: &SessionStore) -> Option<Arc<dyn ChildStore>> {
-        let sessions = store.children(&self.id).ok()?;
+        let sessions = store
+            .children(&self.id)
+            .inspect_err(|error| {
+                if *error == SessionError::InvalidSessionId {
+                    trace_log!(
+                        "session",
+                        "interactive subagent host unavailable session={} err={error}",
+                        self.id
+                    );
+                } else {
+                    trace_log!(
+                        "session",
+                        "interactive child capability unavailable session={} err={error}",
+                        self.id
+                    );
+                }
+            })
+            .ok()?;
         let language = self.session().metadata().conversation_language.clone();
         Some(Arc::new(SessionChildren::new(
             sessions,

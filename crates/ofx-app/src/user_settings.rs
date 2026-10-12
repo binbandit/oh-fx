@@ -11,6 +11,15 @@ pub(crate) enum Unsaved {
     Failed(SettingsWriteFailure),
 }
 
+impl Unsaved {
+    pub(crate) fn code(&self) -> String {
+        match self {
+            Self::HomeNotSet => HOME_NOT_SET.to_owned(),
+            Self::Failed(failure) => failure.error.to_string(),
+        }
+    }
+}
+
 pub(crate) fn save<T>(
     preferences: Option<&ProfilePaths>,
     commit: impl FnOnce(&ProfilePaths) -> Result<T, SettingsWriteFailure>,
@@ -36,9 +45,10 @@ pub(crate) fn not_saved_notice(topic: &str, unsaved: &Unsaved) -> Notice {
 }
 
 fn unsaved_settings_body(unsaved: &Unsaved, runtime_changed: bool) -> String {
-    let (error, cleanup) = match unsaved {
-        Unsaved::HomeNotSet => (HOME_NOT_SET.to_owned(), None),
-        Unsaved::Failed(failure) => (failure.error.to_string(), Some(&failure.cleanup)),
+    let error = unsaved.code();
+    let cleanup = match unsaved {
+        Unsaved::HomeNotSet => None,
+        Unsaved::Failed(failure) => Some(&failure.cleanup),
     };
     let mut body = if matches!(
         unsaved,

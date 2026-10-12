@@ -1561,3 +1561,35 @@ fn the_recovery_ask_marker_lasts_until_the_checkpoint_changes() {
     resumed.discard_recovery();
     assert!(!resumed.recovery_was_asked());
 }
+
+const TRACE_CHILD: &str = "OFX_TURN_RECOVERY_TRACE_CHILD";
+const TRACE_TEST: &str = "session_log::turn_recovery::tests::opening_a_compaction_prepared_checkpoint_skips_the_auto_continue_in_the_trace";
+
+#[test]
+fn opening_a_compaction_prepared_checkpoint_skips_the_auto_continue_in_the_trace() {
+    if let Some(root) = std::env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        a_compaction_prepared_checkpoint_is_committed_when_the_session_opens();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    let restored = written.find(" [session] event=compaction_source_restored session=");
+    let skipped =
+        written.find(" [session] event=auto_continue_skipped cause=compaction_prepared\n");
+    assert!(
+        restored.is_some_and(|restored| skipped > Some(restored)),
+        "{written}"
+    );
+    assert!(!written.contains("fix the build"), "{written}");
+}

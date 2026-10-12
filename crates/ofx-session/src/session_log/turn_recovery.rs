@@ -80,6 +80,10 @@ pub(crate) fn open_unfinished_turn(
                 "event=compaction_source_restored session={id} through_seq={}",
                 writer.last_seq()
             );
+            trace_log!(
+                SESSION,
+                "event=auto_continue_skipped cause=compaction_prepared"
+            );
             return Ok(Recovery::Absent);
         }
         return Ok(Recovery::Pending(Box::new(checkpoint)));
