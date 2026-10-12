@@ -403,7 +403,11 @@ fn the_ultra_setting_and_its_variable_choose_the_tier_for_ask() {
     let (off, tiers) = run(&[("OH_FX_ULTRAFAST", " off ")]);
     assert!(off.status.success(), "{}", stderr(&off));
     assert_eq!(tiers, [Value::Null]);
-    let (invalid, tiers) = run(&[("OH_FX_ULTRAFAST", "sometimes")]);
+    let trace = home.root.join("trace.log");
+    let (invalid, tiers) = run(&[
+        ("OH_FX_ULTRAFAST", "sometimes"),
+        ("OH_FX_TRACE_LOG", trace.to_str().expect("a text path")),
+    ]);
     assert_eq!(invalid.status.code(), Some(1));
     assert!(
         stderr(&invalid).contains("oh-fx: InvalidUltrafastOverride"),
@@ -411,6 +415,12 @@ fn the_ultra_setting_and_its_variable_choose_the_tier_for_ask() {
         stderr(&invalid)
     );
     assert!(tiers.is_empty());
+    let log = fs::read_to_string(&trace).expect("read the trace log");
+    assert!(
+        log.lines().any(|line| line.contains("[config]")
+            && line.ends_with("invalid OH_FX_ULTRAFAST value err=InvalidUltrafastMode")),
+        "{log}"
+    );
 }
 
 #[test]
