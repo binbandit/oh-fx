@@ -47,7 +47,7 @@ modules = []
 upstream = "src/core/mcp/docker_run.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/docker_run.rs"]
-note = "Launch preparation, the private cidfile, and cleanup match upstream, including its no-follow, single-link regular-file read of the cidfile; skipped and failed cleanups write no trace line, since oh-fx has no trace log yet."
+note = "Launch preparation, the private cidfile, and cleanup match upstream, including its no-follow, single-link regular-file read of the cidfile; skipped, failed and completed cleanups write upstream's `mcp` trace lines."
 
 [[file]]
 upstream = "src/core/mcp/elicitation.zig"
@@ -160,7 +160,7 @@ note = "A tool call's elicitation requests are checked, answered through the res
 upstream = "src/core/mcp/legacy_http_sse.zig"
 status = "ported"
 modules = ["crates/ofx-mcp/src/legacy_http_sse.rs"]
-note = "The discovery stream and the message posts remember the joined WWW-Authenticate header of a 401, or a 403 with a challenge, as rememberAuthChallenge does."
+note = "The discovery stream and the message posts remember the joined WWW-Authenticate header of a 401, or a 403 with a challenge, as rememberAuthChallenge does. A failed cancellation and a late response write upstream's trace lines."
 
 [[file]]
 upstream = "src/core/mcp/legacy_sse.zig"
@@ -171,7 +171,7 @@ modules = ["crates/ofx-mcp/src/legacy_sse.rs"]
 upstream = "src/core/mcp/legacy_streamable_http.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/legacy_streamable_http.rs"]
-note = "Sessions, JSON and SSE responses, Last-Event-ID resumption, the notification stream and teardown exist, and a 401, or a 403 with a challenge, remembers the joined WWW-Authenticate header as rememberAuthChallenge does; a 401 on the notification stream ends it and marks the server at its next call or tool listing."
+note = "Sessions, JSON and SSE responses, Last-Event-ID resumption, the notification stream and teardown exist, and a 401, or a 403 with a challenge, remembers the joined WWW-Authenticate header as rememberAuthChallenge does; a 401 on the notification stream ends it and marks the server at its next call or tool listing. A failed session cleanup writes upstream's trace line."
 
 [[file]]
 upstream = "src/core/mcp/legacy_url_completion.zig"
@@ -206,7 +206,7 @@ note = "tools/call sends the arguments as the model wrote them, without insignif
 upstream = "src/core/mcp/mcp_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/mcp_runtime.rs", "crates/ofx-mcp/src/mcp_runtime/authentication.rs", "crates/ofx-mcp/src/mcp_runtime/menu.rs", "crates/ofx-mcp/src/server_menu.rs", "crates/ofx-mcp/src/tool_mcp_registry.rs"]
-note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests and the reload_pending marks it sets on the servers it replaces and, while their catalogs refresh, on the ready servers it keeps, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section with its authentication input, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), validateAuthenticationServer, authenticateServer with authenticationServer's checks and reconnectAuthenticatedServer, loadStoredCredentialsForHealthSnapshot and logoutServer, which holds reconcile's reload lock until the connection is retired, so a reload in progress publishes its servers before the logout and one started during it connects after, where upstream's logout does not wait for reconcile (in mcp_runtime/authentication.rs), the feature tool name among the reserved names, the health snapshot the MCP menu draws (in mcp_runtime/menu.rs and server_menu.rs), and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; the deferred ask connections (required profile servers and approved project servers at ask startup outside a terminal, and the optional profile servers when a search, a selection or a feature call needs them, with the start's error reported to the selection and the feature call as McpConnectionTimedOut for a missed startup timeout, as connectServerCancellable names it, and a start dropped by cancellation recorded as failed with Cancelled, with the available_on_demand input of the model catalog) exist; ACP host channels, permission-filtered tool counts, the deferred connection that has_tool makes for a call and URL completion, with the replay of logout-fenced URL completions, are missing."
+note = "Server startup under the admission table, discovery, tool publication, list_changed refresh, restarts, reconcile with feature catalog refresh requests and the reload_pending marks it sets on the servers it replaces and, while their catalogs refresh, on the ready servers it keeps, workspace authority revocation, the tool argument check before approval with its Invalid arguments for MCP tool result, resource, template and prompt listing, resource reads, prompt gets, prompt and resource template completions, the model catalog snapshot for the <mcp_servers> section with its authentication input, MCP tool search with the discovering state during startup discovery and the tool list refresh before it, as refreshAllToolCatalogs does, the tool schema lookup behind mcp_select_tool with the tool list refresh before it, as refreshToolCatalogForName does, callFeatureForModel (in tool_mcp_feature_dispatch.rs), validateAuthenticationServer, authenticateServer with authenticationServer's checks and reconnectAuthenticatedServer, loadStoredCredentialsForHealthSnapshot and logoutServer, which holds reconcile's reload lock until the connection is retired, so a reload in progress publishes its servers before the logout and one started during it connects after, where upstream's logout does not wait for reconcile (in mcp_runtime/authentication.rs), the feature tool name among the reserved names, the health snapshot the MCP menu draws (in mcp_runtime/menu.rs and server_menu.rs), and shutdown exist; feature calls wait for a starting server but not for one whose discovery has not begun; the deferred ask connections (required profile servers and approved project servers at ask startup outside a terminal, and the optional profile servers when a search, a selection or a feature call needs them, with the start's error reported to the selection and the feature call as McpConnectionTimedOut for a missed startup timeout, as connectServerCancellable names it, and a start dropped by cancellation recorded as failed with Cancelled, with the available_on_demand input of the model catalog) exist; ACP host channels, permission-filtered tool counts, the deferred connection that has_tool makes for a call and URL completion, with the replay of logout-fenced URL completions, are missing. It writes upstream's disabled-server and connection-failure trace lines; the catalog reload and refresh-check lines come with the catalog refresh lines."
 
 [[file]]
 upstream = "src/core/mcp/menu_state.zig"
@@ -297,7 +297,7 @@ modules = []
 upstream = "src/core/mcp/server_transport.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/server_transport.rs", "crates/ofx-mcp/src/transport.rs"]
-note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder, server instructions and the authentication messages of a startup that meets a 401 or a dead grant exist; upstream's startup failure messages with the child's exit and stderr and the 2026-07-28 discovery path are missing."
+note = "stdio, Streamable HTTP and legacy SSE connections, the version ladder, server instructions and the authentication messages of a startup that meets a 401 or a dead grant exist; upstream's startup failure messages with the child's exit and stderr and the 2026-07-28 discovery path are missing. Startup restarts write upstream's restart and skipped-restart trace lines."
 
 [[file]]
 upstream = "src/core/mcp/server_views.zig"
@@ -320,7 +320,7 @@ modules = ["crates/ofx-mcp/src/startup_admission.rs"]
 upstream = "src/core/mcp/stdio_dispatcher.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/stdio_dispatcher.rs"]
-note = "NDJSON framing, stderr capture, request correlation, server requests answered by the one pending request that owns elicitation, the deadline that elicitation pauses, and graceful, immediate and drop-time shutdown exist; the lifecycle-controlled notification variants are missing."
+note = "NDJSON framing, stderr capture, request correlation, server requests answered by the one pending request that owns elicitation, the deadline that elicitation pauses, and graceful, immediate and drop-time shutdown exist; the lifecycle-controlled notification variants are missing. Failed child termination writes upstream's trace lines; the generation-stamped lifecycle lines come with the connection identity."
 
 [[file]]
 upstream = "src/core/mcp/streamable_http.zig"
@@ -343,7 +343,7 @@ modules = ["crates/ofx-mcp/src/tool_names.rs"]
 upstream = "src/core/mcp/tool_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/tool_operations.rs"]
-note = "Tool calls from the published snapshot with the response frame cap and progress notifications exist, and a call that meets a 401 or a dead grant marks the server as captureLegacyStreamableAuth does; input-required results are missing."
+note = "Tool calls from the published snapshot with the response frame cap and progress notifications exist, and a call that meets a 401 or a dead grant marks the server as captureLegacyStreamableAuth does; input-required results are missing. A response over the frame cap writes upstream's cap trace line; the legacy HTTP cancellation line needs the server name at the transport."
 
 [[file]]
 upstream = "src/core/mcp/tool_result.zig"
