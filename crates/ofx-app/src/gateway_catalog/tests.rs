@@ -92,9 +92,13 @@ const LISTING: &str = r#"{"data":[
 ]}"#;
 
 fn catalog_at(url: String, credential: CatalogCredential) -> GatewayCatalog {
+    let credits = url.replace("/models", "/credits");
     GatewayCatalog::new(
         "oh-fx/test",
-        GatewayModelsEndpoints { models: url },
+        (
+            GatewayModelsEndpoints { models: url },
+            GatewayCreditsEndpoints { credits },
+        ),
         credential,
     )
     .unwrap()
@@ -366,4 +370,75 @@ async fn a_lookup_cancelled_behind_the_menu_load_returns_at_once_and_the_menu_st
     assert_eq!(outcome, CapabilityLookup::Cancelled);
     assert!(matches!(listed, ModelCatalog::Listed { .. }), "{listed:?}");
     assert_eq!(server.requests().len(), 1);
+}
+
+const CREDITS: &str = r#"{"balance":"12.50","used":"7.50","plan":"pro"}"#;
+
+#[tokio::test]
+async fn credits_use_the_refreshed_login_and_its_team() {
+    let server = FakeServer::start([Reply::status(200, CREDITS)]);
+    let login = GatewayCredential::new(Some("stale-token".to_owned()), Some("team_1".to_owned()))
+        .refreshed_by(0, Arc::new(Renewed));
+    let catalog = served(&server, route(login, GatewaySource::FxLogin, false));
+    let snapshot = catalog.credits(&CancellationToken::new()).await;
+    assert_eq!(snapshot.balance.as_deref(), Some("12.50"));
+    assert_eq!(snapshot.used.as_deref(), Some("7.50"));
+    assert_eq!(snapshot.plan.as_deref(), Some("pro"));
+    assert_eq!(snapshot.error, None);
+    let request = &server.requests()[0];
+    assert_eq!(request.path, "/coding-agent/v1/credits?teamId=team_1");
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer renewed-token")
+    );
+}
+
+#[tokio::test]
+async fn credits_send_a_key_without_its_team() {
+    let server = FakeServer::start([Reply::status(200, CREDITS)]);
+    let keyed = route(
+        GatewayCredential::new(Some("secret-token".to_owned()), Some("team_1".to_owned())),
+        GatewaySource::AiGatewayApiKey,
+        false,
+    );
+    let catalog = served(&server, keyed);
+    assert_eq!(catalog.credits(&CancellationToken::new()).await.error, None);
+    let request = &server.requests()[0];
+    assert_eq!(request.path, "/coding-agent/v1/credits");
+    assert_eq!(request.header("authorization"), Some("Bearer secret-token"));
+}
+
+#[tokio::test]
+async fn host_managed_and_missing_credits_send_no_authorization() {
+    let server = FakeServer::start([Reply::status(200, CREDITS), Reply::status(200, CREDITS)]);
+    let missing = route(
+        GatewayCredential::new(None, None),
+        GatewaySource::AiGatewayApiKey,
+        false,
+    );
+    for credential in [CatalogCredential::HostManaged, missing] {
+        let catalog = served(&server, credential);
+        assert_eq!(catalog.credits(&CancellationToken::new()).await.error, None);
+    }
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        assert_eq!(request.path, "/coding-agent/v1/credits");
+        assert_eq!(request.header("authorization"), None);
+    }
+}
+
+#[tokio::test]
+async fn rejected_credits_report_the_gateway_error_with_the_key_masked() {
+    let server = FakeServer::start([Reply::status(
+        401,
+        r#"{"error":{"message":"bad key secret-token"}}"#,
+    )]);
+    let catalog = served(&server, api_key());
+    let error = catalog
+        .credits(&CancellationToken::new())
+        .await
+        .error
+        .unwrap();
+    assert!(!error.contains("secret-token"), "{error}");
 }

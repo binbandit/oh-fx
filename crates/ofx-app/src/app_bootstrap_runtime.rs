@@ -30,8 +30,8 @@ use ofx_contract::{
 use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
     CODEX_TITLE_MODEL, ChatCompletionsProvider, ChatCompletionsReviewTransport,
-    CodexReviewTransport, GATEWAY_TITLE_MODEL, GatewayCredential, GatewayEndpoints,
-    GatewayModelsEndpoints, GatewayProvider, GatewayReviewTransport,
+    CodexReviewTransport, GATEWAY_TITLE_MODEL, GatewayCredential, GatewayCreditsEndpoints,
+    GatewayEndpoints, GatewayModelsEndpoints, GatewayProvider, GatewayReviewTransport,
 };
 use ofx_http::ClientError;
 use ofx_mcp::{ConnectOptions, InputResponder, McpRuntime, ProfileStoreError};
@@ -654,7 +654,11 @@ impl Profile {
             return gateway_route(
                 model,
                 configured_model,
-                (endpoints.gateway, endpoints.gateway_models),
+                (
+                    endpoints.gateway,
+                    endpoints.gateway_models,
+                    endpoints.gateway_credits,
+                ),
                 (credential, source, team),
                 explicit,
             );
@@ -870,7 +874,11 @@ fn connection_route(
 fn gateway_route(
     model: String,
     configured_model: String,
-    (endpoints, catalog_endpoints): (GatewayEndpoints, GatewayModelsEndpoints),
+    (endpoints, catalog_endpoints, credits_endpoints): (
+        GatewayEndpoints,
+        GatewayModelsEndpoints,
+        GatewayCreditsEndpoints,
+    ),
     (credential, source, team): (GatewayCredential, CredentialSource, Option<String>),
     explicit: bool,
 ) -> Result<Route, ConnectError> {
@@ -888,8 +896,12 @@ fn gateway_route(
         _ => CatalogCredential::HostManaged,
     };
     let models = ModelSource::Gateway(Arc::new(
-        GatewayCatalog::new(&user_agent(), catalog_endpoints, catalog_credential)
-            .map_err(ConnectError::InvalidConnection)?,
+        GatewayCatalog::new(
+            &user_agent(),
+            (catalog_endpoints, credits_endpoints),
+            catalog_credential,
+        )
+        .map_err(ConnectError::InvalidConnection)?,
     ));
     let reviewer = GatewayReviewTransport::new(Arc::clone(&gateway), None);
     Ok(Route {

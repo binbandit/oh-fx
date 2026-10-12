@@ -5,7 +5,8 @@ use ofx_auth::{GatewayKey, GatewaySource, valid_gateway_team};
 use ofx_contract::{CapabilityLookup, CatalogRetry, ModelCatalog, ModelCatalogSource, ModelOption};
 use ofx_gateway::{
     AccessMetadata, CatalogAccess, CatalogFailed, CatalogFailure, CatalogFetch, CatalogView,
-    GatewayModel, GatewayModelCatalog, GatewayModelsEndpoints, GatewayProvider, PublicOnlyReason,
+    CreditsSnapshot, GatewayCreditsEndpoints, GatewayModel, GatewayModelCatalog,
+    GatewayModelsEndpoints, GatewayProvider, PublicOnlyReason, fetch_credits,
 };
 use ofx_http::ClientError;
 use ofx_trace::trace_log;
@@ -98,6 +99,8 @@ pub(crate) fn now_ms() -> i64 {
 
 pub(crate) struct GatewayCatalog {
     catalog: GatewayModelCatalog,
+    credits: GatewayCreditsEndpoints,
+    user_agent: String,
     credential: CatalogCredential,
     listed: OnceCell<Listed>,
     ready: Notify,
@@ -111,15 +114,42 @@ pub(crate) struct Listed {
 impl GatewayCatalog {
     pub(crate) fn new(
         user_agent: &str,
-        endpoints: GatewayModelsEndpoints,
+        (endpoints, credits): (GatewayModelsEndpoints, GatewayCreditsEndpoints),
         credential: CatalogCredential,
     ) -> Result<Self, ClientError> {
         Ok(Self {
             catalog: GatewayModelCatalog::new(user_agent, endpoints)?,
+            credits,
+            user_agent: user_agent.to_owned(),
             credential,
             listed: OnceCell::new(),
             ready: Notify::new(),
         })
+    }
+
+    pub(crate) async fn credits(&self, cancel: &CancellationToken) -> CreditsSnapshot {
+        let (credential, team) = match &self.credential {
+            CatalogCredential::HostManaged => (None, None),
+            CatalogCredential::Route {
+                provider, source, ..
+            } => match provider.current_access(cancel).await {
+                Some(access) => {
+                    let team = (*source == GatewaySource::FxLogin && !access.due_at(now_ms()))
+                        .then(|| access.team().map(str::to_owned))
+                        .flatten();
+                    (Some(access.token().clone()), team)
+                }
+                None => (None, None),
+            },
+        };
+        fetch_credits(
+            &self.user_agent,
+            &self.credits,
+            credential.as_deref().map(String::as_str),
+            team.as_deref(),
+            cancel,
+        )
+        .await
     }
 
     pub(crate) fn cached(&self) -> Option<ModelCatalog> {

@@ -26,6 +26,7 @@ pub enum SlashKind {
     Compact,
     Settings,
     Alias,
+    Credits,
     Fast,
     Ultrafast,
     Statusline,
@@ -252,6 +253,7 @@ mod tests {
         "/compact · Session · summarize context into a fresh window",
         "/settings · Appearance · browse and update settings",
         "/alias · Extensions · show alias availability",
+        "/credits (/balance) · Account · show gateway credits balance",
         "/fast · Model · toggle Fast mode when supported",
         "/ultrafast · Model · request Ultra mode when supported",
         "/statusline · Appearance · toggle status line segments",
@@ -322,6 +324,7 @@ mod tests {
                 ),
                 ("/settings", "/settings [startup-scrollback [on|off]]", true),
                 ("/alias", "/alias [name] [command]", true),
+                ("/credits", "/credits (/balance)", false),
                 ("/ultrafast", "/ultrafast [on|off|status]", true),
                 (
                     "/statusline",
