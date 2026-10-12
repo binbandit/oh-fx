@@ -355,6 +355,7 @@ fn undecided() -> Completion {
         finish_reason: FinishReason::Stop,
         usage: Usage::default(),
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }

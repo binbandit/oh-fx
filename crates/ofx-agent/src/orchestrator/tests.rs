@@ -575,6 +575,7 @@ fn completion(
             output_tokens: Some(2),
         },
         billing: None,
+        service_tier: None,
         provider_replay: None,
     }
 }

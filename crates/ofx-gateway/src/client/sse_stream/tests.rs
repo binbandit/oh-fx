@@ -353,3 +353,41 @@ async fn a_delta_that_is_not_text_is_invalid_provider_state() {
     let error = consume(&wire).await.unwrap_err();
     assert_eq!(error.code, "InvalidProviderState");
 }
+
+#[tokio::test]
+async fn the_finish_names_the_gateway_confirmed_service_tier() {
+    for (metadata, tier) in [
+        (
+            r#""providerMetadata":{"gateway":{"serviceTier":"ultrafast"}}"#,
+            Some(ServiceTier::Ultrafast),
+        ),
+        (
+            r#""provider_metadata":{"gateway":{"serviceTier":"fast"}}"#,
+            Some(ServiceTier::Priority),
+        ),
+        (
+            r#""providerMetadata":{"gateway":{"serviceTier":"default"}}"#,
+            Some(ServiceTier::Standard),
+        ),
+        (
+            r#""providerMetadata":{"gateway":{"serviceTier":"flex"}}"#,
+            Some(ServiceTier::Flex),
+        ),
+        (
+            r#""providerMetadata":{"gateway":{"serviceTier":"turbo"}}"#,
+            None,
+        ),
+        (r#""providerMetadata":{"gateway":{"serviceTier":1}}"#, None),
+        (
+            r#""providerMetadata":{"openai":{"serviceTier":"ultrafast"}}"#,
+            None,
+        ),
+        (r#""usage":{}"#, None),
+    ] {
+        let wire = events(&[&format!(
+            r#"{{"type":"finish","finishReason":{{"unified":"stop"}},{metadata}}}"#
+        )]);
+        let completion = consume(&wire).await.unwrap();
+        assert_eq!(completion.service_tier, tier, "{metadata}");
+    }
+}

@@ -166,6 +166,7 @@ async fn bootstrap(
                 fast_mode: modifiers
                     .fast_mode()
                     .or_else(|| saved.map(|preferences| preferences.fast_mode)),
+                ultrafast_mode: ultrafast_requested,
                 context_limits: modifiers.context_limit_overrides(),
                 command_timeout: None,
                 executions: &executions,
