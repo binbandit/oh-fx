@@ -759,3 +759,55 @@ fn a_removed_server_leaving_the_list_keeps_the_reload_that_follows() {
     assert!(screen.contains("  MCP configuration reloaded."), "{screen}");
     assert_eq!(state(&test).load_state, LoadState::Ready);
 }
+
+#[test]
+fn a_confirmation_stays_bound_to_the_server_it_was_opened_for() {
+    let profile = |name: &str| server(name, McpMenuTransport::Stdio, McpMenuStatus::Ready);
+    let signed_in = |name: &str| McpMenuServer {
+        authentication: McpMenuAuthentication::Authenticated,
+        ..server(name, McpMenuTransport::Http, McpMenuStatus::Ready)
+    };
+    let project = |name: &str| McpMenuServer {
+        source: McpMenuSource::Project,
+        admission: Some(McpMenuAdmission::Approved),
+        ..profile(name)
+    };
+    let cases = [
+        (
+            [profile("first"), profile("second")],
+            b"d",
+            McpMenuRequest::Remove {
+                generation: 1,
+                server: "first".to_owned(),
+            },
+        ),
+        (
+            [signed_in("first"), signed_in("second")],
+            b"l",
+            McpMenuRequest::Logout {
+                generation: 1,
+                server: "first".to_owned(),
+            },
+        ),
+        (
+            [project("first"), project("second")],
+            b"x",
+            McpMenuRequest::Trust {
+                generation: 1,
+                change: McpMenuTrust::Reject("first".to_owned()),
+            },
+        ),
+    ];
+    for (servers, key, request) in cases {
+        let mut test = opened_with(servers.to_vec());
+        press(&mut test, b"\r");
+        press(&mut test, key);
+        assert_eq!(state(&test).screen, Screen::Confirm);
+        press(&mut test, b"\x1b[B");
+        press(&mut test, b"\n");
+        press(&mut test, b"\x1b[A");
+        assert_eq!(state(&test).selected_server_index, 0);
+        press(&mut test, b"\r");
+        assert_eq!(requests(&test), [menu(request)]);
+    }
+}

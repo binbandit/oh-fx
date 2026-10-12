@@ -96,7 +96,11 @@ impl Shell<'_> {
         {
             return;
         }
+        let target = menu.selected_server_name();
         self.apply_mcp_menu_event(Event::ShowConfirmation(action));
+        if let Some(menu) = &mut self.mcp_menu {
+            menu.confirmation_target = target;
+        }
     }
 
     pub(super) fn route_mcp_add_key(&mut self, event: &InputEvent) -> bool {

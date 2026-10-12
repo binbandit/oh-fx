@@ -178,7 +178,7 @@ impl McpMenuState {
                     self.load_state = LoadState::Cancelled;
                 }
             }
-            Event::Move(movement) => self.moved(movement),
+            Event::Move(movement) if self.screen != Screen::Confirm => self.moved(movement),
             Event::CycleAddTransport if self.screen == Screen::Add => {
                 self.add_transport = match self.add_transport {
                     McpMenuAddTransport::Local => McpMenuAddTransport::Http,
@@ -197,7 +197,7 @@ impl McpMenuState {
                     self.add_field_index - 1
                 };
             }
-            Event::CycleAddTransport | Event::MoveAddField { .. } => {}
+            Event::Move(_) | Event::CycleAddTransport | Event::MoveAddField { .. } => {}
             Event::ShowDetails => self.screen = Screen::Details,
             Event::ShowAdd => {
                 self.screen = Screen::Add;

@@ -20,6 +20,7 @@ pub(super) struct McpMenu {
     snapshot: McpMenuSnapshot,
     pub(super) feedback: Option<String>,
     pub(super) add: AddForm,
+    pub(super) confirmation_target: Option<String>,
     refresh_due_ms: Option<i64>,
 }
 
@@ -43,6 +44,13 @@ impl McpMenu {
                 draft,
             },
         }
+    }
+
+    fn target_server_name(&self) -> Option<String> {
+        if self.state.screen == Screen::Confirm {
+            return self.confirmation_target.clone();
+        }
+        self.selected_server_name()
     }
 
     pub(super) fn selected_server_name(&self) -> Option<String> {
@@ -92,6 +100,7 @@ impl Shell<'_> {
             snapshot,
             feedback: None,
             add: AddForm::default(),
+            confirmation_target: None,
             refresh_due_ms: Some(self.now_ms() + REFRESH_INTERVAL_MS),
         });
         self.invalidate();
@@ -295,7 +304,7 @@ impl Shell<'_> {
     }
 
     pub(super) fn request_mcp_menu_action(&mut self, action: Action) {
-        let Some(server) = self.mcp_menu.as_ref().map(McpMenu::selected_server_name) else {
+        let Some(server) = self.mcp_menu.as_ref().map(McpMenu::target_server_name) else {
             return;
         };
         let Some(Effect::Action { generation, action }) =

@@ -212,7 +212,7 @@ note = "Server startup under the admission table, discovery, tool publication, l
 upstream = "src/core/mcp/menu_state.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/mcp_menu.rs"]
-note = "The server half of the menu reducer lives in the shell: opening on the server list, wrapping moves that keep the selection in the visible window and the selected server in step, the details, help, add and confirmation screens, the add form's transport cycling and bounded field movement, back to the list, cancelling a pending load and dropping the confirmation, and then closed, refresh, sign-in, logout, add, remove and trust actions with generations that skip zero and ignore stale completions, the confirmation that logout, remove, reject, approve all and reset require, and serverActionAvailable; the catalog sections, filter, preview, argument form and insert action arrive with the catalog tabs."
+note = "The server half of the menu reducer lives in the shell: opening on the server list, wrapping moves that keep the selection in the visible window and the selected server in step, the details, help, add and confirmation screens, the add form's transport cycling and bounded field movement, back to the list, cancelling a pending load and dropping the confirmation, and then closed, refresh, sign-in, logout, add, remove and trust actions with generations that skip zero and ignore stale completions, the confirmation that logout, remove, reject, approve all and reset require, with moves ignored while it is open, where upstream moves the hidden selection, and serverActionAvailable; the catalog sections, filter, preview, argument form and insert action arrive with the catalog tabs."
 
 [[file]]
 upstream = "src/core/mcp/message_carrier.zig"
