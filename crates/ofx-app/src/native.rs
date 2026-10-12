@@ -1,8 +1,10 @@
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ofx_trace::trace_log;
 use ofx_tui::Clipboard;
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
@@ -10,6 +12,7 @@ use rustix::io::Errno;
 const COPY_LIMIT: Duration = Duration::from_secs(5);
 const EXIT_POLL: Duration = Duration::from_millis(10);
 const DEFAULT_SEARCH_PATH: &str = "/usr/local/bin:/bin/:/usr/bin";
+const HOST: &str = "host";
 
 pub(crate) struct NativeClipboard;
 
@@ -32,28 +35,74 @@ fn copy_through(argv: &[&str], text: &[u8], limit: Duration) -> bool {
     let Some((program, arguments)) = argv.split_first() else {
         return false;
     };
-    let Some(mut child) = spawn(program, arguments) else {
-        return false;
+    let mut child = match spawn(program, arguments) {
+        Ok(child) => child,
+        Err(error) => {
+            trace_log!(
+                HOST,
+                "clipboard copy spawn failed err={}",
+                error_name(&error)
+            );
+            return false;
+        }
     };
     let deadline = Instant::now() + limit;
-    let written = child
-        .stdin
-        .take()
-        .is_some_and(|stdin| write_before(&stdin, text, deadline));
-    let status = if written {
-        exit_before(&mut child, deadline)
+    let written = if let Some(stdin) = child.stdin.take() {
+        write_before(&stdin, text, deadline).inspect_err(|error| {
+            trace_log!(HOST, "clipboard copy write failed err={error}");
+        })
     } else {
-        None
+        trace_log!(HOST, "clipboard copy failed reason=stdin_unavailable");
+        Err("StdinUnavailable")
     };
-    if status.is_none() {
+    let status = match written {
+        Ok(()) => exit_before(&mut child, deadline).inspect_err(|error| {
+            trace_log!(HOST, "clipboard copy wait failed err={error}");
+        }),
+        Err(error) => Err(error),
+    };
+    let Ok(status) = status else {
         let _ = child.kill();
         let _ = child.wait();
+        return false;
+    };
+    if !status.success() {
+        trace_unsuccessful(status);
     }
-    status.is_some_and(|status| status.success())
+    status.success()
 }
 
-fn spawn(program: &str, arguments: &[&str]) -> Option<Child> {
+fn trace_unsuccessful(status: ExitStatus) {
+    if let Some(code) = status.code() {
+        trace_log!(HOST, "clipboard copy failed exit_code={code}");
+    } else if let Some(signal) = status.signal() {
+        trace_log!(HOST, "clipboard copy failed term=signal signal={signal}");
+    } else if let Some(signal) = status.stopped_signal() {
+        trace_log!(HOST, "clipboard copy failed term=stopped signal={signal}");
+    } else {
+        trace_log!(
+            HOST,
+            "clipboard copy failed term=unknown status={}",
+            status.into_raw()
+        );
+    }
+}
+
+fn error_name(error: &io::Error) -> &'static str {
+    match error.kind() {
+        ErrorKind::NotFound => "FileNotFound",
+        ErrorKind::PermissionDenied => "AccessDenied",
+        ErrorKind::NotADirectory => "NotDir",
+        ErrorKind::BrokenPipe => "BrokenPipe",
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => "Timeout",
+        _ => "Unexpected",
+    }
+}
+
+fn spawn(program: &str, arguments: &[&str]) -> io::Result<Child> {
     let search = std::env::var_os("PATH").unwrap_or_else(|| DEFAULT_SEARCH_PATH.into());
+    let mut missing = io::Error::from(ErrorKind::NotFound);
+    let mut denied = None;
     for directory in std::env::split_paths(&search) {
         if directory.as_os_str().is_empty() {
             continue;
@@ -65,36 +114,43 @@ fn spawn(program: &str, arguments: &[&str]) -> Option<Child> {
             .stderr(Stdio::null())
             .spawn()
         {
-            Ok(child) => return Some(child),
+            Ok(child) => return Ok(child),
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => denied = Some(error),
             Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::NotFound | ErrorKind::PermissionDenied | ErrorKind::NotADirectory
-                ) => {}
-            Err(_) => return None,
+                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
+            {
+                missing = error;
+            }
+            Err(error) => return Err(error),
         }
     }
-    None
+    Err(denied.unwrap_or(missing))
 }
 
-fn write_before(stdin: &ChildStdin, mut text: &[u8], deadline: Instant) -> bool {
-    if rustix::io::ioctl_fionbio(stdin, true).is_err() {
-        return false;
-    }
+fn write_before(
+    stdin: &ChildStdin,
+    mut text: &[u8],
+    deadline: Instant,
+) -> Result<(), &'static str> {
+    rustix::io::ioctl_fionbio(stdin, true).map_err(errno_name)?;
     while !text.is_empty() {
         match rustix::io::write(stdin, text) {
-            Ok(0) => return false,
+            Ok(0) => return Err("BrokenPipe"),
             Ok(written) => text = &text[written..],
             Err(Errno::INTR) => {}
             Err(Errno::AGAIN) => {
                 if !writable_before(stdin, deadline) {
-                    return false;
+                    return Err("Timeout");
                 }
             }
-            Err(_) => return false,
+            Err(errno) => return Err(errno_name(errno)),
         }
     }
-    true
+    Ok(())
+}
+
+fn errno_name(errno: Errno) -> &'static str {
+    error_name(&io::Error::from(errno))
 }
 
 fn writable_before(stdin: &ChildStdin, deadline: Instant) -> bool {
@@ -111,14 +167,15 @@ fn writable_before(stdin: &ChildStdin, deadline: Instant) -> bool {
     )
 }
 
-fn exit_before(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+fn exit_before(child: &mut Child, deadline: Instant) -> Result<ExitStatus, &'static str> {
     loop {
-        if let Some(status) = child.try_wait().ok()? {
-            return Some(status);
+        if let Some(status) = child.try_wait().map_err(|error| error_name(&error))? {
+            return Ok(status);
         }
         let remaining = deadline
             .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())?;
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or("Timeout")?;
         thread::sleep(remaining.min(EXIT_POLL));
     }
 }
@@ -218,6 +275,81 @@ mod tests {
             fs::read_to_string(&planted).unwrap_or_default()
         );
         assert_eq!(fs::read_to_string(&installed).unwrap().lines().count(), 1);
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_CLIPBOARD_TRACE_CHILD";
+    const TRACE_TEST: &str = "native::tests::clipboard_failures_write_their_host_lines";
+
+    #[test]
+    fn clipboard_failures_write_their_host_lines() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(Path::new(&root), None);
+            assert!(!copy_through(
+                &["oh-fx-clipboard-stand-in"],
+                b"text",
+                COPY_LIMIT
+            ));
+            assert!(!copy_through(
+                &["oh-fx-clipboard-denied"],
+                b"text",
+                COPY_LIMIT
+            ));
+            assert!(!copy_through(
+                &["sh", "-c", "cat >/dev/null; exit 3"],
+                b"text",
+                COPY_LIMIT
+            ));
+            assert!(!copy_through(
+                &["sh", "-c", "cat >/dev/null; kill -TERM $$"],
+                b"text",
+                COPY_LIMIT
+            ));
+            assert!(!copy_through(
+                &["true"],
+                large_text().as_bytes(),
+                COPY_LIMIT
+            ));
+            assert!(!copy_through(
+                &["sh", "-c", "cat >/dev/null; sleep 5"],
+                b"text",
+                HANG_LIMIT
+            ));
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let denied = tempfile::tempdir().unwrap();
+        let unrunnable = denied.path().join("oh-fx-clipboard-denied");
+        fs::write(&unrunnable, "#!/bin/sh\ncat >/dev/null\n").unwrap();
+        fs::set_permissions(&unrunnable, fs::Permissions::from_mode(0o644)).unwrap();
+        let log = root.path().join("trace.log");
+        let search = format!(
+            "{}:{}:/usr/bin:/bin",
+            denied.path().display(),
+            empty.path().display()
+        );
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env("PATH", search)
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [host] clipboard copy spawn failed err=FileNotFound\n",
+            " [host] clipboard copy spawn failed err=AccessDenied\n",
+            " [host] clipboard copy failed exit_code=3\n",
+            " [host] clipboard copy failed term=signal signal=15\n",
+            " [host] clipboard copy write failed err=BrokenPipe\n",
+            " [host] clipboard copy wait failed err=Timeout\n",
+        ] {
+            assert!(written.contains(line), "{line}{written}");
+        }
+        assert!(!written.contains("text"), "{written}");
     }
 
     #[test]
