@@ -124,14 +124,14 @@ impl Shell<'_> {
     }
 
     fn usage_visible_rows(&self, view: &UsageMenuView<'_>) -> usize {
-        usage_desired_row_count(view)
+        usage_desired_row_count(view, self.cols())
             .min(usize::from(self.layout.rows).saturating_sub(RESERVED_ROWS))
     }
 
     fn usage_visible_models(&self) -> usize {
         self.usage_menu.as_ref().map_or(0, |menu| {
             let view = menu.view();
-            usage_visible_model_items(&view, self.usage_visible_rows(&view))
+            usage_visible_model_items(&view, self.usage_visible_rows(&view), self.cols())
         })
     }
 

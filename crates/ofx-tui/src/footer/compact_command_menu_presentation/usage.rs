@@ -1,17 +1,26 @@
-use ofx_contract::{
-    ModelUsage, UsageCompleteness, UsageCoverage, UsageReport, UsageScope, UsageTotals,
-};
+use ofx_contract::{UsageCompleteness, UsageCoverage, UsageReport, UsageScope, UsageTotals};
 use ofx_text::visible_width;
 
 use super::workspace::{action_row, indent};
-use crate::row_text::{Paint, Row, single_line_ellipsized, terminal_safe};
+use crate::row_text::{Paint, Row, single_line_ellipsized};
 use crate::theme::Theme;
+
+mod models;
+mod numbers;
+mod overview;
+
+use models::{ModelMode, model_column_header, model_mode, model_row};
+use numbers::{compact_unsigned, money};
+use overview::{OverviewMode, activity_row, overview_columns, overview_row};
 
 const COLUMN_GAP: usize = 4;
 const MAX_MODEL_ROWS: usize = 20;
 const CONSTRAINED_MODEL_START: usize = 4;
 const MEDIUM_WIDTH: usize = 48;
 const WIDE_HEADER_WIDTH: usize = 64;
+const WIDE_WIDTH: usize = 110;
+const MINIMUM_NAME_WIDTH: usize = 10;
+const ACTIVITY_ROWS: usize = 3;
 const TITLE: &str = "Usage";
 const TABS: [UsageScope; 4] = [
     UsageScope::Days30,
@@ -26,7 +35,16 @@ const HINTS: [&str; 3] = [
     "tab scope  ↑↓ model  enter expand  r refresh  esc",
     "tab ↑↓  enter  r  esc",
 ];
-const TWO_TO_THE_32: f64 = 4_294_967_296.0;
+const EMPTY_TOTALS: UsageTotals = UsageTotals {
+    total_tokens: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: None,
+    request_count: None,
+    total_cost: 0.0,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct UsageMenuView<'a> {
@@ -39,19 +57,31 @@ pub(crate) struct UsageMenuView<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModelMode {
-    Facts,
-    Compact,
-    NameOnly,
+struct Layout {
+    overview_mode: OverviewMode,
+    overview_start: usize,
+    overview_rows: usize,
+    activity_start: Option<usize>,
+    models_header: usize,
+    model_columns: Option<usize>,
+    model_start: usize,
 }
 
-pub(crate) fn usage_desired_row_count(view: &UsageMenuView<'_>) -> usize {
-    let Some(report) = view.report.filter(|report| report.totals.is_some()) else {
+pub(crate) fn usage_desired_row_count(view: &UsageMenuView<'_>, width: usize) -> usize {
+    let Some(report) = view.report else {
         return 2;
     };
+    if report.totals.is_none() {
+        let activity_rows = if report.session_activity.is_some() {
+            ACTIVITY_ROWS
+        } else {
+            0
+        };
+        return 2 + activity_rows;
+    }
     let model_rows =
         report.models.len().min(MAX_MODEL_ROWS) + usize::from(view.expanded_model.is_some());
-    CONSTRAINED_MODEL_START + model_rows.max(1)
+    layout(report, width).model_start + model_rows.max(1)
 }
 
 pub(crate) fn usage_menu_rows(
@@ -76,11 +106,15 @@ pub(crate) fn usage_menu_hint_row(theme: &Theme, width: usize) -> Row {
     Row::styled(hint, theme.dim).clipped(width)
 }
 
-pub(crate) fn usage_visible_model_items(view: &UsageMenuView<'_>, visible_rows: usize) -> usize {
+pub(crate) fn usage_visible_model_items(
+    view: &UsageMenuView<'_>,
+    visible_rows: usize,
+    width: usize,
+) -> usize {
     let Some(report) = view.report.filter(|report| !report.models.is_empty()) else {
         return 0;
     };
-    let Some(model_start) = model_area_start(report, visible_rows) else {
+    let Some(model_start) = model_area_start(report, visible_rows, width) else {
         return 0;
     };
     let model_area_rows = visible_rows.saturating_sub(model_start);
@@ -114,13 +148,72 @@ fn usage_row(
             Row::new()
         };
     };
-    if report.totals.is_none() {
-        return if row_index == 1 {
-            status_row(theme, view, report, width)
+    let Some(totals) = report.totals else {
+        if row_index == 1 {
+            return status_row(theme, view, report, width);
+        }
+        return report
+            .session_activity
+            .and_then(|activity| activity_row(theme, &activity, row_index, 2, width))
+            .unwrap_or_default();
+    };
+    let layout = layout(report, width);
+    if visible_rows < layout.model_start + 1 {
+        return constrained_row(theme, view, report, row_index, visible_rows, width);
+    }
+    if row_index == 1 {
+        return status_row(theme, view, report, width);
+    }
+    let overview = layout.overview_start..layout.overview_start + layout.overview_rows;
+    if overview.contains(&row_index) {
+        return overview_row(
+            theme,
+            &totals,
+            layout.overview_mode,
+            row_index - layout.overview_start,
+            width,
+        );
+    }
+    let activity = layout.activity_start.zip(report.session_activity);
+    if let Some(row) = activity
+        .and_then(|(start, activity)| activity_row(theme, &activity, row_index, start, width))
+    {
+        return row;
+    }
+    if row_index == layout.models_header {
+        return models_header(theme, report.models.len(), width);
+    }
+    if layout.model_columns == Some(row_index) {
+        return model_column_header(theme, report, width);
+    }
+    if row_index < layout.model_start {
+        return Row::new();
+    }
+    if report.models.is_empty() {
+        return if row_index == layout.model_start {
+            styled("  No model usage in this scope.", width, theme.dim)
         } else {
             Row::new()
         };
     }
+    model_row(
+        theme,
+        view,
+        report,
+        row_index - layout.model_start,
+        visible_rows - layout.model_start,
+        width,
+    )
+}
+
+fn constrained_row(
+    theme: &Theme,
+    view: &UsageMenuView<'_>,
+    report: &UsageReport,
+    row_index: usize,
+    visible_rows: usize,
+    width: usize,
+) -> Row {
     let model_start = constrained_model_start(visible_rows);
     match row_index {
         1 if row_index < model_start => status_row(theme, view, report, width),
@@ -136,6 +229,44 @@ fn usage_row(
             visible_rows - model_start,
             width,
         ),
+    }
+}
+
+fn layout(report: &UsageReport, width: usize) -> Layout {
+    let totals = report.totals.unwrap_or(EMPTY_TOTALS);
+    let overview_mode = if width >= WIDE_WIDTH && overview_columns(&totals, width).is_some() {
+        OverviewMode::Wide
+    } else if width >= MEDIUM_WIDTH {
+        OverviewMode::Medium
+    } else {
+        OverviewMode::Narrow
+    };
+    let narrow = overview_mode == OverviewMode::Narrow;
+    let overview_start = if narrow { 2 } else { 3 };
+    let overview_rows = if narrow { 2 } else { 3 };
+    let mut cursor = overview_start + overview_rows;
+    let mut activity_start = None;
+    if report.session_activity.is_some() {
+        cursor += usize::from(!narrow);
+        activity_start = Some(cursor);
+        cursor += ACTIVITY_ROWS;
+    }
+    cursor += usize::from(!narrow);
+    let models_header = cursor;
+    cursor += 1;
+    let mut model_columns = None;
+    if model_mode(report, width) == ModelMode::Columns {
+        model_columns = Some(cursor);
+        cursor += 1;
+    }
+    Layout {
+        overview_mode,
+        overview_start,
+        overview_rows,
+        activity_start,
+        models_header,
+        model_columns,
+        model_start: cursor,
     }
 }
 
@@ -220,142 +351,16 @@ fn models_header(theme: &Theme, model_count: usize, width: usize) -> Row {
     styled(&text, width, theme.system_notice_label)
 }
 
-fn model_row(
-    theme: &Theme,
-    view: &UsageMenuView<'_>,
-    report: &UsageReport,
-    display_row: usize,
-    visible_rows: usize,
-    width: usize,
-) -> Row {
-    let count = report.models.len();
-    let selected = view.selected_model.min(count.saturating_sub(1));
-    let visible_models = count.min(MAX_MODEL_ROWS).min(
-        visible_rows
-            .saturating_sub(usize::from(view.expanded_model.is_some()))
-            .max(1),
-    );
-    let max_start = count.saturating_sub(visible_models);
-    let selection_start = selected.saturating_sub(visible_models.saturating_sub(1));
-    let start = view
-        .model_window_start
-        .min(selected)
-        .max(selection_start)
-        .min(max_start);
-    let mut logical_row = 0;
-    for (index, model) in report.models.iter().enumerate().skip(start) {
-        if logical_row == display_row {
-            return model_summary_row(theme, report, model, index == selected, width);
-        }
-        logical_row += 1;
-        if view.expanded_model == Some(index) {
-            if logical_row == display_row {
-                return styled(&model_detail(&model.totals), width, theme.dim);
-            }
-            logical_row += 1;
-        }
-        if logical_row > display_row {
-            break;
-        }
-    }
-    Row::new()
-}
-
-fn model_summary_row(
-    theme: &Theme,
-    report: &UsageReport,
-    model: &ModelUsage,
-    selected: bool,
-    width: usize,
-) -> Row {
-    let mode = model_mode(report, width);
-    let include_share = mode == ModelMode::Facts;
-    let info = match mode {
-        ModelMode::NameOnly => String::new(),
-        ModelMode::Facts | ModelMode::Compact => {
-            model_facts(model, total_tokens(report), include_share)
-        }
-    };
-    action_row(
-        theme,
-        &terminal_safe(&model.model),
-        &info,
-        selected,
-        info_column(report, width, include_share),
-        width,
-    )
-}
-
-fn model_mode(report: &UsageReport, width: usize) -> ModelMode {
-    if width >= MEDIUM_WIDTH && info_column(report, width, true).is_some() {
-        ModelMode::Facts
-    } else if info_column(report, width, false).is_some() {
-        ModelMode::Compact
-    } else {
-        ModelMode::NameOnly
-    }
-}
-
-fn info_column(report: &UsageReport, width: usize, include_share: bool) -> Option<usize> {
-    let total = total_tokens(report);
-    let longest_model = report
-        .models
-        .iter()
-        .map(|model| visible_width(&terminal_safe(&model.model)))
-        .max()
-        .unwrap_or(0);
-    let widest_info = report
-        .models
-        .iter()
-        .map(|model| visible_width(&model_facts(model, total, include_share)))
-        .max()
-        .unwrap_or(0);
-    if widest_info == 0 || width < indent(width) + 8 + COLUMN_GAP + widest_info {
-        return None;
-    }
-    Some((indent(width) + longest_model + COLUMN_GAP).min(width - widest_info))
-}
-
-fn model_facts(model: &ModelUsage, total_tokens: u64, include_share: bool) -> String {
-    let tokens = compact_unsigned(model.totals.total_tokens);
-    let spend = money(model.totals.total_cost);
-    if include_share {
-        format!(
-            "{tokens} · {} · {spend}",
-            usage_share(model.totals.total_tokens, total_tokens)
-        )
-    } else {
-        format!("{tokens} · {spend}")
-    }
-}
-
-fn model_detail(totals: &UsageTotals) -> String {
-    format!(
-        "Input {} · Output {} · Cache {}/{} · Reasoning {} · Requests {} · {}",
-        compact_unsigned(totals.input_tokens),
-        compact_unsigned(totals.output_tokens),
-        compact_unsigned(totals.cache_read_tokens),
-        compact_unsigned(totals.cache_write_tokens),
-        totals
-            .reasoning_tokens
-            .map_or_else(|| "n/a".to_owned(), compact_unsigned),
-        totals
-            .request_count
-            .map_or_else(|| "n/a".to_owned(), grouped_unsigned),
-        money(totals.total_cost)
-    )
-}
-
-fn total_tokens(report: &UsageReport) -> u64 {
-    report.totals.map_or(0, |totals| totals.total_tokens)
-}
-
-fn model_area_start(report: &UsageReport, visible_rows: usize) -> Option<usize> {
+fn model_area_start(report: &UsageReport, visible_rows: usize, width: usize) -> Option<usize> {
     report.totals?;
     if visible_rows == 1 {
         return Some(0);
     }
-    Some(constrained_model_start(visible_rows))
+    let natural = layout(report, width).model_start;
+    if visible_rows < natural + 1 {
+        return Some(constrained_model_start(visible_rows));
+    }
+    Some(natural)
 }
 
 fn constrained_model_start(visible_rows: usize) -> usize {
@@ -368,50 +373,6 @@ fn constrained_model_start(visible_rows: usize) -> usize {
 
 fn styled(text: &str, width: usize, paint: Paint) -> Row {
     Row::styled(&single_line_ellipsized(text, width), paint)
-}
-
-fn compact_unsigned(value: u64) -> String {
-    for (unit, suffix) in [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")] {
-        if value < unit {
-            continue;
-        }
-        if value.is_multiple_of(unit) {
-            return format!("{}{suffix}", value / unit);
-        }
-        return format!("{:.1}{suffix}", float(value) / float(unit));
-    }
-    value.to_string()
-}
-
-fn grouped_unsigned(value: u64) -> String {
-    let digits = value.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
-}
-
-fn money(value: f64) -> String {
-    format!("${value:.2}")
-}
-
-fn usage_share(tokens: u64, total_tokens: u64) -> String {
-    let share = if total_tokens == 0 {
-        0.0
-    } else {
-        float(tokens) * 100.0 / float(total_tokens)
-    };
-    format!("{share:.1}%")
-}
-
-fn float(value: u64) -> f64 {
-    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
-    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    f64::from(high) * TWO_TO_THE_32 + f64::from(low)
 }
 
 #[cfg(test)]
