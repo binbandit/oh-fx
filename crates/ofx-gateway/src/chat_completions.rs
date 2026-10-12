@@ -274,6 +274,15 @@ pub(crate) async fn http_failure(
             }
         },
     };
+    status_failure(status, &detail, secrets, retry_after)
+}
+
+pub(crate) fn status_failure(
+    status: StatusCode,
+    detail: &str,
+    secrets: &[String],
+    retry_after: Option<Duration>,
+) -> ProviderError {
     let kind = failure_kind(status);
     let displayed = detail.trim_matches([' ', '\t', '\r', '\n']);
     let displayed = &displayed[..displayed.floor_char_boundary(MAX_DISPLAYED_BODY_BYTES)];
@@ -283,7 +292,7 @@ pub(crate) async fn http_failure(
     error.status = Some(status.as_u16());
     error.diagnostic = Some(format_http_recovery_diagnostic(
         status.as_u16(),
-        &detail,
+        detail,
         secrets,
     ));
     error.retry_after = retry_after;

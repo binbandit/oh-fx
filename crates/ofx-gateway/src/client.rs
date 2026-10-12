@@ -11,7 +11,7 @@ use reqwest::{RequestBuilder, StatusCode};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::chat_completions::{SendFailure, http_failure, send, transport_failure};
+use crate::chat_completions::{SendFailure, http_failure, send, status_failure, transport_failure};
 use sse_stream::Stream;
 pub(crate) use sse_stream::{FailureCause, Finish, GatewayCompletion, finish_label};
 
@@ -20,6 +20,14 @@ const TIMEOUT: &str = "Timeout";
 const STREAM_TOO_LONG: &str = "StreamTooLong";
 const CONNECTION_FAILED: &str = "ConnectionFailed";
 const REQUEST_FAILED: &str = "RequestFailed";
+
+fn answered(status: StatusCode, failure: ProviderError, secrets: &[String]) -> ProviderError {
+    let unread = failure.status.is_none() && failure.kind != ProviderErrorKind::Cancelled;
+    if status == StatusCode::UNAUTHORIZED && unread {
+        return status_failure(status, "", secrets, failure.retry_after);
+    }
+    failure
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundedFailure {
@@ -160,7 +168,8 @@ impl GatewayAttempt<'_> {
         let resolved = resolved_model::from_headers(response.headers(), self.model, self.secrets);
         if status != StatusCode::OK {
             trace_log!("stream", "http status={} {ATTEMPT}", status.as_u16());
-            return Err(http_failure(response, cancel, self.secrets, None).await);
+            let failure = http_failure(response, cancel, self.secrets, None).await;
+            return Err(answered(status, failure, self.secrets));
         }
         step("before_sse_consume", format_args!("{ATTEMPT}"));
         let stream = Stream {

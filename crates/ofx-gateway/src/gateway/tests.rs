@@ -948,6 +948,28 @@ async fn a_rejected_login_token_is_refreshed_once_and_the_request_replayed() {
 }
 
 #[tokio::test]
+async fn a_rejection_whose_body_is_cut_off_still_refreshes_and_replays() {
+    let server = FakeServer::start([Reply::cut_off(401, &[], "rejected"), Reply::sse(&[STOP])]);
+    let refresh = ScriptedRefresh::new(Ok(Some(fresh_login("login-new-token"))));
+    let gateway = signed_in(&server, i64::MAX, Arc::<ScriptedRefresh>::clone(&refresh));
+    let (result, events) = run(&gateway, None).await;
+    result.unwrap();
+    assert_eq!(refresh.forced(), [true]);
+    assert!(events.contains(&StreamEvent::RequestReplayed), "{events:?}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer login-new-token")
+    );
+    let keyed_server = FakeServer::start([Reply::cut_off(401, &[], "rejected")]);
+    let (rejected, _) = run(&keyed(&keyed_server), None).await;
+    let error = rejected.unwrap_err();
+    assert_eq!(error.kind, ProviderErrorKind::Unauthorized);
+    assert_eq!(error.status, Some(401));
+}
+
+#[tokio::test]
 async fn a_second_rejection_or_a_failed_refresh_ends_the_turn_with_the_rejection() {
     for (answers, requests, events) in [
         (
