@@ -156,10 +156,15 @@ pub(crate) async fn run_captured(
         child.stderr.take(),
         child_pid(&child),
     ) else {
-        return Err(abandon(&mut child, RunError::Failed("SpawnFailed")).await);
+        return Err(abandon(
+            &mut child,
+            RunError::Failed("SpawnFailed"),
+            Cleanup::PreReady,
+        )
+        .await);
     };
     if let Err(error) = await_ready(&mut stderr, stop, command.deadline).await {
-        return Err(abandon(&mut child, error).await);
+        return Err(abandon(&mut child, error, Cleanup::PreReady).await);
     }
     let exited = match watch_exit(group) {
         Ok(exited) => exited,
@@ -169,13 +174,15 @@ pub(crate) async fn run_captured(
                 "command wait authority unavailable after spawn err={}",
                 error_name(&error)
             );
-            return Err(abandon(&mut child, RunError::Failed(error_name(&error))).await);
+            let failure = RunError::Failed(error_name(&error));
+            return Err(abandon(&mut child, failure, Cleanup::Command).await);
         }
     };
     let mut control = nonce.clone().into_bytes();
     control.push(RELEASE_BYTE);
     if let Err(error) = input.write_all(&control).await {
-        return Err(abandon(&mut child, RunError::Failed(error_name(&error))).await);
+        let failure = RunError::Failed(error_name(&error));
+        return Err(abandon(&mut child, failure, Cleanup::GroupReady).await);
     }
     let mut collection = Collection::new(
         &mut child,
@@ -267,13 +274,45 @@ async fn await_ready(
     }
 }
 
-async fn abandon(child: &mut Child, error: RunError) -> RunError {
-    if let Some(group) = child_pid(child) {
-        let _ = kill_process_group(group, Signal::KILL);
+#[derive(Clone, Copy)]
+enum Cleanup {
+    PreReady,
+    GroupReady,
+    Command,
+}
+
+impl Cleanup {
+    fn failed(self, step: &str, error: &str) {
+        match self {
+            Self::PreReady => trace_log!(
+                CORE,
+                "foreground session cleanup {step} failed phase=pre_ready err={error}"
+            ),
+            Self::GroupReady => trace_log!(
+                CORE,
+                "foreground session cleanup {step} failed phase=group_ready err={error}"
+            ),
+            Self::Command => trace_log!(CORE, "command cleanup {step} failed err={error}"),
+        }
+    }
+}
+
+async fn abandon(child: &mut Child, error: RunError, cleanup: Cleanup) -> RunError {
+    if let Some(group) = child_pid(child)
+        && let Err(errno) = kill_process_group(group, Signal::KILL)
+        && errno != Errno::SRCH
+    {
+        cleanup.failed("kill", errno_name(errno));
     }
     let _ = child.start_kill();
-    let _ = child.wait().await;
+    if let Err(error) = child.wait().await {
+        cleanup.failed("wait", error_name(&error));
+    }
     error
+}
+
+fn errno_name(errno: Errno) -> &'static str {
+    error_name(&io::Error::from(errno))
 }
 
 fn child_pid(child: &Child) -> Option<Pid> {
@@ -439,7 +478,15 @@ impl<'a> Collection<'a> {
     }
 
     async fn observe_exit(&mut self) {
-        let _ = kill_process_group(self.group, Signal::KILL);
+        if let Err(errno) = kill_process_group(self.group, Signal::KILL)
+            && errno != Errno::SRCH
+        {
+            trace_log!(
+                CORE,
+                "remaining captured process group cleanup failed err={}",
+                errno_name(errno)
+            );
+        }
         match &self.termination {
             None => trace_log!(
                 CORE,
@@ -452,7 +499,12 @@ impl<'a> Collection<'a> {
             ),
         }
         let now = Instant::now();
-        let exit = self.child.wait().await.unwrap_or_else(|_| {
+        let exit = self.child.wait().await.unwrap_or_else(|error| {
+            trace_log!(
+                CORE,
+                "command termination became indeterminate boundary=process_wait err={}",
+                error_name(&error)
+            );
             self.indeterminate = true;
             ExitStatus::from_raw(0)
         });
@@ -482,10 +534,10 @@ impl<'a> Collection<'a> {
     }
 
     fn accept_read(&mut self, read: &io::Result<usize>, stream: OutputStream) -> Option<usize> {
-        match *read {
+        match read {
             Ok(0) => {}
-            Ok(length) => return Some(length),
-            Err(_) => self.output_incomplete = true,
+            Ok(length) => return Some(*length),
+            Err(error) => self.drain_incomplete("stream_read", error_name(error)),
         }
         match stream {
             OutputStream::Stdout => self.stdout = None,
@@ -543,7 +595,7 @@ impl<'a> Collection<'a> {
                 );
                 self.settled = true;
                 self.indeterminate = true;
-                self.output_incomplete = true;
+                self.drain_incomplete("termination_settle_deadline", "Timeout");
                 self.kill_group();
                 true
             }
@@ -601,8 +653,24 @@ impl<'a> Collection<'a> {
     }
 
     fn kill_group(&self) {
-        if self.exit.is_none() {
-            let _ = kill_process_group(self.group, Signal::KILL);
+        if self.exit.is_none()
+            && let Err(errno) = kill_process_group(self.group, Signal::KILL)
+            && errno != Errno::SRCH
+        {
+            trace_log!(
+                CORE,
+                "command observer cleanup kill failed err={}",
+                errno_name(errno)
+            );
+        }
+    }
+
+    fn drain_incomplete(&mut self, reason: &str, error: &str) {
+        if !std::mem::replace(&mut self.output_incomplete, true) {
+            trace_log!(
+                CORE,
+                "command output drain incomplete reason={reason} err={error}"
+            );
         }
     }
 
