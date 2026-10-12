@@ -45,6 +45,42 @@ pub fn environment(
     })
 }
 
+pub fn profile_shell(
+    configured_login_shell: Option<&Path>,
+    profile: Profile,
+) -> Result<ShellSpec, ResolveError> {
+    match profile {
+        Profile::Clean => {
+            let path = supported_login_shell(configured_login_shell)?;
+            interactive_invocation(&path, true)?;
+            Ok(ShellSpec::Executable {
+                path,
+                clean_start: true,
+            })
+        }
+        Profile::User => {
+            let Some(configured) = configured_login_shell else {
+                return Ok(ShellSpec::UserLogin);
+            };
+            let path = supported_login_shell(Some(configured))?;
+            if path == configured {
+                return Ok(ShellSpec::UserLogin);
+            }
+            Ok(ShellSpec::Executable {
+                path,
+                clean_start: false,
+            })
+        }
+    }
+}
+
+pub fn check_terminal_shell(
+    configured_login_shell: Option<&Path>,
+    shell: &ShellSpec,
+) -> Result<(), ResolveError> {
+    resolve_terminal_shell(configured_login_shell, shell).map(drop)
+}
+
 pub(crate) fn captured_invocation(environment: &Environment, command: &str) -> Vec<OsString> {
     let path = environment.shell_path();
     let kind = shell_kind(path).unwrap_or(fallback_kind());
@@ -255,6 +291,40 @@ mod tests {
             environment(Some(zsh), Some(Profile::User)),
             Ok(Environment::User(zsh.into()))
         );
+        assert_eq!(
+            profile_shell(Some(zsh), Profile::User),
+            Ok(ShellSpec::UserLogin)
+        );
+        assert_eq!(profile_shell(None, Profile::User), Ok(ShellSpec::UserLogin));
+        assert_eq!(
+            profile_shell(Some(zsh), Profile::Clean),
+            Ok(ShellSpec::Executable {
+                path: zsh.into(),
+                clean_start: true
+            })
+        );
+        assert_eq!(
+            profile_shell(None, Profile::Clean),
+            Err(ResolveError::MissingLoginShell)
+        );
+        assert_eq!(
+            check_terminal_shell(None, &ShellSpec::UserLogin),
+            Err(ResolveError::MissingLoginShell)
+        );
+        assert_eq!(
+            check_terminal_shell(
+                None,
+                &ShellSpec::Executable {
+                    path: "bin/bash".into(),
+                    clean_start: false
+                }
+            ),
+            Err(ResolveError::RelativeShellPath)
+        );
+        assert_eq!(
+            check_terminal_shell(Some(bash), &ShellSpec::UserLogin),
+            Ok(())
+        );
     }
 
     #[test]
@@ -271,7 +341,21 @@ mod tests {
         );
         assert_eq!(
             environment(Some(fish), Some(Profile::Clean)),
-            Ok(Environment::Clean(fallback))
+            Ok(Environment::Clean(fallback.clone()))
+        );
+        assert_eq!(
+            profile_shell(Some(fish), Profile::User),
+            Ok(ShellSpec::Executable {
+                path: fallback.clone(),
+                clean_start: false
+            })
+        );
+        assert_eq!(
+            profile_shell(Some(fish), Profile::Clean),
+            Ok(ShellSpec::Executable {
+                path: fallback,
+                clean_start: true
+            })
         );
     }
 

@@ -169,7 +169,17 @@ impl Terminals {
                 StructuredErrorCode::CapacityExceeded
             }));
         }
-        if let Err(code) = launch(&session, &shell, clean_start, request) {
+        let launched = {
+            let session = Arc::clone(&session);
+            let cwd = request.cwd.to_path_buf();
+            let command = request.command.to_owned();
+            tokio::task::spawn_blocking(move || {
+                launch(&session, &shell, clean_start, &cwd, &command)
+            })
+            .await
+            .unwrap_or(Err(StructuredErrorCode::StartupFailed))
+        };
+        if let Err(code) = launched {
             self.registry.remove(&session);
             session.abandon_unreleased();
             session.finalize_backend().await;
@@ -513,15 +523,16 @@ fn launch(
     session: &Arc<Session>,
     shell: &Path,
     clean_start: bool,
-    request: &StartRequest<'_>,
+    cwd: &Path,
+    command: &str,
 ) -> Result<(), StructuredErrorCode> {
     let executable = path_for_peer_reexec().map_err(|_| StructuredErrorCode::StartupFailed)?;
     let launched = launch_terminal(&TerminalLaunch {
         executable: &executable,
         shell,
         clean_start,
-        cwd: request.cwd,
-        command: request.command,
+        cwd,
+        command,
         dimensions: DEFAULT_DIMENSIONS,
     })
     .map_err(launch_failure_code)?;

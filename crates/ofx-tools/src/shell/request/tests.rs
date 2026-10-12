@@ -2,8 +2,12 @@ use serde_json::Value;
 
 use super::*;
 
+fn unbound(arguments: &str) -> Result<ShellRequest, String> {
+    decode(arguments, false)
+}
+
 fn correction(arguments: &str) -> Value {
-    let failure = decode(arguments).expect_err(arguments);
+    let failure = unbound(arguments).expect_err(arguments);
     let parsed: Value = serde_json::from_str(&failure).unwrap();
     let detail = &parsed["error"];
     assert_eq!(detail["code"], "invalid_shell_request", "{arguments}");
@@ -16,7 +20,7 @@ fn correction(arguments: &str) -> Value {
 }
 
 fn decoded(arguments: &str) -> ShellRequest {
-    decode(arguments).unwrap_or_else(|failure| panic!("{arguments}: {failure}"))
+    unbound(arguments).unwrap_or_else(|failure| panic!("{arguments}: {failure}"))
 }
 
 #[test]
@@ -90,7 +94,7 @@ fn shell_request_correction_suggests_only_unambiguous_repairs_without_executing(
             );
             let request = detail["retry_with"]["request"].to_string();
             assert_eq!(request, expected, "{arguments}");
-            assert!(decode(&request).is_ok(), "{request}");
+            assert!(unbound(&request).is_ok(), "{request}");
         } else {
             assert!(detail.get("retry_with").is_none(), "{arguments}");
             assert!(detail.get("instruction").is_none(), "{arguments}");
@@ -166,9 +170,33 @@ fn shell_timeout_minimum_is_enforced_before_correction_and_execution() {
 }
 
 #[test]
+fn a_session_that_supports_terminals_repairs_terminal_fields() {
+    let tty = decode(r#"{"command":"true","tty":true}"#, true).unwrap_err();
+    let parsed: Value = serde_json::from_str(&tty).unwrap();
+    assert_eq!(
+        parsed["error"]["problems"],
+        serde_json::json!(["request.action is required."])
+    );
+    assert_eq!(
+        parsed["error"]["retry_with"]["request"],
+        serde_json::json!({"action": "run", "command": "true", "tty": true})
+    );
+    let first = decode(r#"{"command":"true","tty":true,"shell":{"kind":"executable","path":"/bin/bash","clean_start":false}}"#, true).unwrap_err();
+    let reordered = decode(r#"{"shell":{"clean_start":false,"path":"/bin/bash","kind":"executable"},"tty":true,"command":"true"}"#, true).unwrap_err();
+    assert_eq!(first, reordered);
+    let omitted = decode(
+        r#"{"command":"true","tty":true,"shell":{"path":"/bin/bash","kind":"executable"}}"#,
+        true,
+    )
+    .unwrap_err();
+    assert!(!omitted.contains("clean_start"), "{omitted}");
+    assert!(omitted.contains("retry_with"), "{omitted}");
+}
+
+#[test]
 fn shell_request_correction_canonicalizes_nested_shell_members() {
-    let first = decode(r#"{"command":"true","tty":true,"shell":{"kind":"executable","path":"/bin/bash","clean_start":false}}"#).unwrap_err();
-    let reordered = decode(r#"{"shell":{"clean_start":false,"path":"/bin/bash","kind":"executable"},"tty":true,"command":"true"}"#).unwrap_err();
+    let first = unbound(r#"{"command":"true","tty":true,"shell":{"kind":"executable","path":"/bin/bash","clean_start":false}}"#).unwrap_err();
+    let reordered = unbound(r#"{"shell":{"clean_start":false,"path":"/bin/bash","kind":"executable"},"tty":true,"command":"true"}"#).unwrap_err();
     assert_eq!(first, reordered);
 }
 
@@ -180,10 +208,10 @@ fn shell_request_correction_bounds_feedback_and_preserves_input_bytes() {
     assert_eq!(parsed["error"]["retry_with"]["request"]["command"], command);
 
     let key = format!("{}\u{1f308}", "x".repeat(63));
-    let bounded = decode(&format!(r#"{{"command":"true","{key}":null}}"#)).unwrap_err();
+    let bounded = unbound(&format!(r#"{{"command":"true","{key}":null}}"#)).unwrap_err();
     assert!(bounded.contains(&format!("request.{} is not accepted", "x".repeat(63))));
     let too_large = " ".repeat(16 * 1024 + 1);
-    let failure = decode(&too_large).unwrap_err();
+    let failure = unbound(&too_large).unwrap_err();
     assert!(failure.len() < 512);
     assert!(!failure.contains("retry_with"));
 }
@@ -202,7 +230,7 @@ fn shell_decoder_preserves_null_omission_and_rejects_cross_action_fields() {
     assert_eq!(placeholders.cwd, None);
     assert_eq!(placeholders.profile, None);
     assert!(
-        decode(r#"{"action":"interact","session_id":"shell-session","command":"true"}"#)
+        unbound(r#"{"action":"interact","session_id":"shell-session","command":"true"}"#)
             .unwrap_err()
             .contains("invalid_shell_request")
     );
@@ -251,7 +279,7 @@ fn shell_decoder_coerces_values_the_way_upstream_parses_them() {
         r#"{"action":"run","command":""}"#,
         r#"{"action":"run","command":"true","command":"false"}"#,
     ] {
-        assert!(decode(arguments).is_err(), "{arguments}");
+        assert!(unbound(arguments).is_err(), "{arguments}");
     }
 }
 
@@ -277,19 +305,19 @@ fn shell_decoder_reads_a_shell_object_encoded_as_a_string() {
     ] {
         let arguments =
             format!(r#"{{"action":"run","command":"true","tty":true,"shell":{shell}}}"#);
-        assert!(decode(&arguments).is_err(), "{arguments}");
+        assert!(unbound(&arguments).is_err(), "{arguments}");
     }
 }
 
 #[test]
 fn shell_interaction_requests_bound_their_waits_and_input() {
     assert!(
-        decode(r#"{"action":"interact","session_id":"shell-1","yield_time_ms":300001}"#)
+        unbound(r#"{"action":"interact","session_id":"shell-1","yield_time_ms":300001}"#)
             .unwrap_err()
             .contains("between 0 and 300000")
     );
     assert!(
-        decode(r#"{"action":"interact","session_id":"shell-1","yield_time_ms":4294967296}"#)
+        unbound(r#"{"action":"interact","session_id":"shell-1","yield_time_ms":4294967296}"#)
             .is_err()
     );
     let oversized = serde_json::json!({
@@ -298,7 +326,7 @@ fn shell_interaction_requests_bound_their_waits_and_input() {
         "chars": "x".repeat(MAX_WRITE_BYTES + 1),
     })
     .to_string();
-    assert!(decode(&oversized).is_err());
+    assert!(unbound(&oversized).is_err());
     assert!(!decoded(r#"{"action":"interact","session_id":"shell-1"}"#).has_input());
     assert!(!decoded(r#"{"action":"interact","session_id":"shell-1","chars":""}"#).has_input());
     assert!(
@@ -309,10 +337,10 @@ fn shell_interaction_requests_bound_their_waits_and_input() {
 #[test]
 fn shell_decoder_rejects_removed_handoff_and_legacy_actions() {
     assert!(
-        decode(r#"{"action":"run","command":"sleep 30","yield_time_ms":0,"handoff":"next_turn"}"#)
+        unbound(r#"{"action":"run","command":"sleep 30","yield_time_ms":0,"handoff":"next_turn"}"#)
             .is_err()
     );
-    assert!(decode(r#"{"action":"wait","session_id":"shell-session"}"#).is_err());
+    assert!(unbound(r#"{"action":"wait","session_id":"shell-session"}"#).is_err());
 }
 
 fn replayed(arguments: &str) -> String {

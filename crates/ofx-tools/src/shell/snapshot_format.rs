@@ -23,23 +23,35 @@ const USAGE_BANNER_LINES: usize = 4;
 const TIMEOUT_EXPIRED: &str = "TimeoutExpired";
 
 pub(super) fn format_snapshot(snapshot: &Snapshot, max_tool_result_bytes: usize) -> String {
+    format_snapshot_accepting(snapshot, None, max_tool_result_bytes)
+}
+
+pub(super) fn format_snapshot_accepting(
+    snapshot: &Snapshot,
+    accepted_bytes: Option<u32>,
+    max_tool_result_bytes: usize,
+) -> String {
     let inline_max_bytes = max_tool_result_bytes.min(LARGE_RESULT_THRESHOLD_BYTES);
+    let snapshot = &Accepting {
+        snapshot,
+        accepted_bytes,
+    };
     if let Some(full) = format_model_safe(
         snapshot,
-        &snapshot.output_delta,
-        snapshot.output_truncated,
+        &snapshot.snapshot.output_delta,
+        snapshot.snapshot.output_truncated,
         inline_max_bytes,
     ) && full.len() <= inline_max_bytes
     {
         return full;
     }
     let mut minimum = 0;
-    let mut maximum = snapshot.output_delta.len().min(inline_max_bytes);
+    let mut maximum = snapshot.snapshot.output_delta.len().min(inline_max_bytes);
     let mut best = None;
     while minimum <= maximum {
         let content_budget = minimum + (maximum - minimum) / 2;
         let projected = write_head_tail_bounded(
-            &snapshot.output_delta,
+            &snapshot.snapshot.output_delta,
             content_budget,
             OMITTED_OUTPUT_MARKER,
             HeadRounding::Up,
@@ -56,8 +68,13 @@ pub(super) fn format_snapshot(snapshot: &Snapshot, max_tool_result_bytes: usize)
     best.unwrap_or_else(|| format_raw(snapshot, "", true))
 }
 
+struct Accepting<'a> {
+    snapshot: &'a Snapshot,
+    accepted_bytes: Option<u32>,
+}
+
 fn format_model_safe(
-    snapshot: &Snapshot,
+    snapshot: &Accepting<'_>,
     output_delta: &[u8],
     output_truncated: bool,
     max_encoded_bytes: usize,
@@ -73,7 +90,8 @@ fn format_model_safe(
     (!encoded.truncated).then(|| format_raw(snapshot, &encoded.text, output_truncated))
 }
 
-fn format_raw(snapshot: &Snapshot, output_delta: &str, output_truncated: bool) -> String {
+fn format_raw(accepting: &Accepting<'_>, output_delta: &str, output_truncated: bool) -> String {
+    let snapshot = accepting.snapshot;
     let projection = projection(snapshot.state);
     let retry_guidance = if snapshot.output_incomplete {
         Some(INCOMPLETE_OUTPUT_RETRY_GUIDANCE)
@@ -108,7 +126,7 @@ fn format_raw(snapshot: &Snapshot, output_delta: &str, output_truncated: bool) -
         json!(projection.termination_indeterminate),
     );
     object.insert("duration_ms".to_owned(), json!(snapshot.duration_ms));
-    object.insert("accepted_bytes".to_owned(), Value::Null);
+    object.insert("accepted_bytes".to_owned(), json!(accepting.accepted_bytes));
     object.insert("error".to_owned(), json!(snapshot.error_name));
     object.insert("retry_guidance".to_owned(), json!(retry_guidance));
     object.insert("output_delta".to_owned(), json!(output_delta));

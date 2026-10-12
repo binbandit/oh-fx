@@ -56,7 +56,7 @@ note = "The record decision is ported: final lifecycles stay, a saved terminatio
 upstream = "src/core/terminal/shell_resolver.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/shell_resolver.rs"]
-note = "Captured invocation, login-shell fallback and clean/user environment selection exist, and a terminal's executable shell resolves to upstream's interactive argv with its bootstrap and source commands; a terminal's shell spec resolves the user's login shell or pins an explicit one as upstream's resolve does; profileShell and environmentForShellSpec arrive with the shell tool's terminals (OH-19). #1137's snapshot invocation, capture scripts and replay arrive with the startup snapshot."
+note = "Captured invocation, login-shell fallback and clean/user environment selection exist, and a terminal's executable shell resolves to upstream's interactive argv with its bootstrap and source commands; a terminal's shell spec resolves the user's login shell or pins an explicit one as upstream's resolve does; profileShell is ported for the shell tool's terminal runs, and environmentForShellSpec's checks run as check_terminal_shell before a terminal starts; the environment it builds only feeds upstream's admission fingerprint, which oh-fx's prepared call replaces. #1137's snapshot invocation, capture scripts and replay arrive with the startup snapshot."
 
 [[file]]
 upstream = "src/core/terminal/shell_snapshot.zig"

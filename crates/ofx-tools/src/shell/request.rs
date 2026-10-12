@@ -185,8 +185,8 @@ pub(super) fn request_arguments(saved: &str) -> Option<String> {
         .then(|| format!(r#"{{"request":{}}}"#, encoded.text))
 }
 
-pub(super) fn decode(arguments: &str) -> Result<ShellRequest, String> {
-    decode_input(arguments).ok_or_else(|| request_correction(arguments))
+pub(super) fn decode(arguments: &str, supports_tty: bool) -> Result<ShellRequest, String> {
+    decode_input(arguments).ok_or_else(|| request_correction(arguments, supports_tty))
 }
 
 fn decode_input(arguments: &str) -> Option<ShellRequest> {
@@ -414,7 +414,7 @@ fn parse_signed_unsigned(text: &str) -> Option<u64> {
     parse_unsigned(text.strip_prefix('+').unwrap_or(text))
 }
 
-fn request_correction(arguments: &str) -> String {
+fn request_correction(arguments: &str, supports_tty: bool) -> String {
     let (mut object, mut problems, mut repairable) = match correction_source(arguments) {
         Ok(source) => source,
         Err(rejected) => return rejected,
@@ -461,9 +461,10 @@ fn request_correction(arguments: &str) -> String {
         problems.push(problem.to_owned());
         repairable = false;
     }
-    if ["tty", "shell", "chars"]
-        .iter()
-        .any(|name| canonical.contains_key(*name))
+    if !supports_tty
+        && ["tty", "shell", "chars"]
+            .iter()
+            .any(|name| canonical.contains_key(*name))
     {
         problems.push("Interactive Shell fields require a saved session.".to_owned());
         repairable = false;

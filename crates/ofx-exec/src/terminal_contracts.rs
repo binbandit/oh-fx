@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::command_contract::CommandStatus;
+
 pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_WRITE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_AUTHORITY_TEXT_BYTES: usize = 4096;
@@ -96,6 +98,41 @@ pub enum StructuredErrorCode {
     Cancelled,
 }
 
+impl Action {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Read => "read",
+            Self::Screen => "screen",
+            Self::Write => "write",
+            Self::Wait => "wait",
+            Self::Inspect => "inspect",
+            Self::List => "list",
+            Self::Signal => "signal",
+            Self::Close => "close",
+        }
+    }
+}
+
+impl StructuredErrorCode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::ShellUnavailable => "shell_unavailable",
+            Self::PtyUnavailable => "pty_unavailable",
+            Self::StartupFailed => "startup_failed",
+            Self::ProcessIdentityUnavailable => "process_identity_unavailable",
+            Self::SessionLost => "session_lost",
+            Self::SessionNotFound => "session_not_found",
+            Self::InvalidLifecycle => "invalid_lifecycle",
+            Self::AuthorityDenied => "authority_denied",
+            Self::ScreenUnavailable => "screen_unavailable",
+            Self::CapacityExceeded => "capacity_exceeded",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalFailure {
     pub action: Action,
@@ -137,6 +174,14 @@ pub enum ReturnOutcome {
 impl ReturnOutcome {
     pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Exited(_) | Self::Signal(_))
+    }
+
+    pub fn status(self) -> Option<CommandStatus> {
+        match self {
+            Self::Exited(code) => Some(CommandStatus::ExitCode(code.into())),
+            Self::Signal(signal) => Some(CommandStatus::Signal(signal)),
+            Self::Started | Self::SafetyCeiling | Self::Cancelled => None,
+        }
     }
 }
 

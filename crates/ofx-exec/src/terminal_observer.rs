@@ -205,7 +205,7 @@ impl TerminalObserver<'_> {
 }
 
 pub fn snapshot_state(facts: &SessionFacts, outcome: Option<ReturnOutcome>) -> SnapshotState {
-    let status = outcome.and_then(status_from_outcome);
+    let status = outcome.and_then(ReturnOutcome::status);
     match facts.lifecycle {
         Lifecycle::Starting | Lifecycle::Running => {
             status.map_or(SnapshotState::Running, SnapshotState::Completed)
@@ -213,14 +213,6 @@ pub fn snapshot_state(facts: &SessionFacts, outcome: Option<ReturnOutcome>) -> S
         Lifecycle::Exited => SnapshotState::Completed(status.unwrap_or(CommandStatus::Finished)),
         Lifecycle::Lost => SnapshotState::Lost,
         Lifecycle::Closed => SnapshotState::Stopped(status),
-    }
-}
-
-fn status_from_outcome(outcome: ReturnOutcome) -> Option<CommandStatus> {
-    match outcome {
-        ReturnOutcome::Exited(code) => Some(CommandStatus::ExitCode(code.into())),
-        ReturnOutcome::Signal(signal) => Some(CommandStatus::Signal(signal)),
-        ReturnOutcome::Started | ReturnOutcome::SafetyCeiling | ReturnOutcome::Cancelled => None,
     }
 }
 

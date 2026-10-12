@@ -1,6 +1,7 @@
 mod presentation;
 mod request;
 mod snapshot_format;
+mod terminal;
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use ofx_contract::{
     ToolSpec,
 };
 use ofx_exec::{
-    Environment, HeldDirectory, ManagedExecutions, Profile, Snapshot, StartCaptured,
+    Environment, HeldDirectory, ManagedExecutions, Profile, ShellSpec, Snapshot, StartCaptured,
     configured_login_shell, environment,
 };
 use ofx_workspace::{PathError, open_directory, path_inside, resolve_workspace_or_external_path};
@@ -24,10 +25,13 @@ use snapshot_format::{
     command_result, format_snapshot, process_presentation, runtime_failure, snapshot_failed,
     stop_result_failed,
 };
+use terminal::terminal_shell;
+pub use terminal::{ShellTerminals, TerminalOwner};
 
 const TOOL_NAME: &str = "shell";
 const DESCRIPTION: &str = "Run every command with shell.run. Fast commands complete in one call; commands still running after yield_time_ms return one owned session_id and remain available across turns. Use shell.interact with that exact session_id: omit chars to observe, or provide chars to send exact input and then observe. Use shell.stop only when termination is requested. output_delta is always terminal-safe; unsafe bytes are escaped while full_output_handle retains exact output, so do not run a separate command merely to test output safety or shell usability. Never detach with &, nohup, setsid, or double-forking. Each call starts a new shell with the user's startup files applied: their aliases, functions, and PATH are available, but cd, export, and alias changes do not carry over to the next call. In zsh, quote glob patterns meant for another program (for example '--include=*.zig') because unmatched globs are errors, and quote words that begin with =.";
-const INPUT_SCHEMA: &str = r#"{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"command":{"type":"string","maxLength":65536,"description":"Shell command to execute exactly once."},"cwd":{"type":"string","description":"Working directory; defaults to the workspace."},"profile":{"type":"string","enum":["clean","user"],"description":"Defaults to user; clean skips user startup files. Mutually exclusive with shell."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"Initial observation window. Defaults to 30000; use 0 to return the owned running handle immediately."},"timeout_ms":{"type":"integer","minimum":1,"description":"Set only when the user explicitly requests a finite deadline. Omit for commands intended to remain running, receive input, continue across turns, or be stopped later."}},"additionalProperties":false,"required":["action","command"]},{"type":"object","properties":{"action":{"type":"string","enum":["interact"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":300000,"description":"Wait before yielding output. Empty observations wait 5000-300000 ms; shorter values are raised to 5000. Non-empty input is capped at 30000 ms and keeps shorter requested waits. Defaults to 5000. If the process remains running, interact with the same session_id again; never rerun it."}},"additionalProperties":false,"required":["action","session_id"]},{"type":"object","properties":{"action":{"type":"string","enum":["stop"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"force":{"type":"boolean","description":"Use immediate force termination when true. Defaults to false."}},"additionalProperties":false,"required":["action","session_id"]}]}},"additionalProperties":false,"required":["request"]}"#;
+const PROCESS_SCHEMA: &str = r#"{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"command":{"type":"string","maxLength":65536,"description":"Shell command to execute exactly once."},"cwd":{"type":"string","description":"Working directory; defaults to the workspace."},"profile":{"type":"string","enum":["clean","user"],"description":"Defaults to user; clean skips user startup files. Mutually exclusive with shell."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"Initial observation window. Defaults to 30000; use 0 to return the owned running handle immediately."},"timeout_ms":{"type":"integer","minimum":1,"description":"Set only when the user explicitly requests a finite deadline. Omit for commands intended to remain running, receive input, continue across turns, or be stopped later."}},"additionalProperties":false,"required":["action","command"]},{"type":"object","properties":{"action":{"type":"string","enum":["interact"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":300000,"description":"Wait before yielding output. Empty observations wait 5000-300000 ms; shorter values are raised to 5000. Non-empty input is capped at 30000 ms and keeps shorter requested waits. Defaults to 5000. If the process remains running, interact with the same session_id again; never rerun it."}},"additionalProperties":false,"required":["action","session_id"]},{"type":"object","properties":{"action":{"type":"string","enum":["stop"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"force":{"type":"boolean","description":"Use immediate force termination when true. Defaults to false."}},"additionalProperties":false,"required":["action","session_id"]}]}},"additionalProperties":false,"required":["request"]}"#;
+const TERMINAL_SCHEMA: &str = r#"{"type":"object","properties":{"request":{"oneOf":[{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"command":{"type":"string","maxLength":65536,"description":"Shell command to execute exactly once."},"cwd":{"type":"string","description":"Working directory; defaults to the workspace."},"profile":{"type":"string","enum":["clean","user"],"description":"Defaults to user; clean skips user startup files. Mutually exclusive with shell."},"tty":{"type":"boolean","description":"Use a persistent TTY when interactive input or human attachment is required. Defaults to false."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"Initial observation window. Defaults to 30000; use 0 to return the owned running handle immediately."},"timeout_ms":{"type":"integer","minimum":1,"description":"Set only when the user explicitly requests a finite deadline. Omit for commands intended to remain running, receive input, continue across turns, or be stopped later."},"reload":{"type":"boolean","description":"Reload the user's startup files before this command, for example after installing a tool or editing a file they source. Edits to the startup files themselves are picked up automatically."}},"additionalProperties":false,"required":["action","command"]},{"type":"object","properties":{"action":{"type":"string","enum":["run"]},"command":{"type":"string","maxLength":65536,"description":"Shell command to execute exactly once."},"cwd":{"type":"string","description":"Working directory; defaults to the workspace."},"shell":{"type":"object","properties":{"kind":{"type":"string","enum":["executable"]},"path":{"type":"string","description":"Absolute path to Bash or zsh."},"clean_start":{"type":"boolean","description":"Skip startup files when true."}},"additionalProperties":false,"required":["kind","path"]},"tty":{"type":"boolean","description":"Use a persistent TTY when interactive input or human attachment is required. Defaults to false."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"Initial observation window. Defaults to 30000; use 0 to return the owned running handle immediately."},"timeout_ms":{"type":"integer","minimum":1,"description":"Set only when the user explicitly requests a finite deadline. Omit for commands intended to remain running, receive input, continue across turns, or be stopped later."}},"additionalProperties":false,"required":["action","command","shell","tty"]},{"type":"object","properties":{"action":{"type":"string","enum":["interact"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"chars":{"type":"string","maxLength":65536,"description":"Exact characters to send to tty=true work before observing it. Omit or send an empty string to only observe. Observe application readiness before sending control characters. Use \\n for Enter and JSON escapes such as \\u0003 for control characters."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":300000,"description":"Wait before yielding output. Empty observations wait 5000-300000 ms; shorter values are raised to 5000. Non-empty input is capped at 30000 ms and keeps shorter requested waits. Defaults to 5000. If the process remains running, interact with the same session_id again; never rerun it."}},"additionalProperties":false,"required":["action","session_id"]},{"type":"object","properties":{"action":{"type":"string","enum":["stop"]},"session_id":{"type":"string","description":"Owned execution handle returned by shell.run."},"force":{"type":"boolean","description":"Use immediate force termination when true. Defaults to false."}},"additionalProperties":false,"required":["action","session_id"]}]}},"additionalProperties":false,"required":["request"]}"#;
 const DEFAULT_YIELD_TIME_MS: u32 = 30_000;
 const MAX_YIELD_TIME_MS: u32 = 30_000;
 const DEFAULT_WAIT_CEILING_MS: u32 = 5_000;
@@ -41,6 +45,7 @@ const UNAVAILABLE: &str = "unavailable";
 
 pub struct Shell {
     spec: ToolSpec,
+    terminal_spec: Option<ToolSpec>,
     context: Arc<ShellContext>,
 }
 
@@ -48,6 +53,7 @@ struct ShellContext {
     workspace_root: PathBuf,
     executions: ManagedExecutions,
     command_timeout: Option<Duration>,
+    terminals: Option<ShellTerminals>,
 }
 
 impl Shell {
@@ -56,12 +62,39 @@ impl Shell {
         executions: ManagedExecutions,
         command_timeout: Option<Duration>,
     ) -> Self {
+        Self::build(workspace_root.into(), executions, command_timeout, None)
+    }
+
+    pub fn with_terminals(
+        workspace_root: impl Into<PathBuf>,
+        executions: ManagedExecutions,
+        command_timeout: Option<Duration>,
+        terminals: ShellTerminals,
+    ) -> Self {
+        Self::build(
+            workspace_root.into(),
+            executions,
+            command_timeout,
+            Some(terminals),
+        )
+    }
+
+    fn build(
+        workspace_root: PathBuf,
+        executions: ManagedExecutions,
+        command_timeout: Option<Duration>,
+        terminals: Option<ShellTerminals>,
+    ) -> Self {
         Self {
-            spec: tool_spec(TOOL_NAME, DESCRIPTION, INPUT_SCHEMA),
+            spec: tool_spec(TOOL_NAME, DESCRIPTION, PROCESS_SCHEMA),
+            terminal_spec: terminals
+                .is_some()
+                .then(|| tool_spec(TOOL_NAME, DESCRIPTION, TERMINAL_SCHEMA)),
             context: Arc::new(ShellContext {
-                workspace_root: workspace_root.into(),
+                workspace_root,
                 executions,
                 command_timeout,
+                terminals,
             }),
         }
     }
@@ -69,7 +102,10 @@ impl Shell {
 
 impl Tool for Shell {
     fn spec(&self) -> &ToolSpec {
-        &self.spec
+        match (&self.terminal_spec, &self.context.terminals) {
+            (Some(terminal_spec), Some(terminals)) if terminals.offered() => terminal_spec,
+            _ => &self.spec,
+        }
     }
 
     fn prepare(&self, arguments: &str) -> Result<Box<dyn PreparedCall>, ToolOutput> {
@@ -79,7 +115,12 @@ impl Tool for Shell {
             &self.context.workspace_root,
             &self.context.executions,
         );
-        let validated = request::decode(&arguments)
+        let supports_tty = self
+            .context
+            .terminals
+            .as_ref()
+            .is_some_and(ShellTerminals::supported);
+        let validated = request::decode(&arguments, supports_tty)
             .map_err(ToolOutput::failure)
             .and_then(|request| self.context.validate(request));
         let effect = match &validated {
@@ -130,7 +171,7 @@ enum Validated {
     Run {
         request: ShellRequest,
         cwd: WorkingDirectory,
-        environment: Option<Environment>,
+        mode: RunMode,
     },
     UnresolvedCwd {
         request: ShellRequest,
@@ -141,14 +182,24 @@ enum Validated {
     Stop(ShellRequest),
 }
 
+enum RunMode {
+    Captured(Environment),
+    Terminal(Result<ShellSpec, String>),
+}
+
+impl RunMode {
+    fn environment(&self) -> Option<&Environment> {
+        match self {
+            Self::Captured(environment) => Some(environment),
+            Self::Terminal(_) => None,
+        }
+    }
+}
+
 impl Validated {
     fn command_request(&self) -> CommandRequest {
         match self {
-            Self::Run {
-                request,
-                cwd,
-                environment,
-            } => run_request(request, &cwd.path, environment.as_ref()),
+            Self::Run { request, cwd, mode } => run_request(request, &cwd.path, mode.environment()),
             Self::UnresolvedCwd { request, cwd, .. } => run_request(request, cwd, None),
             Self::Interact(request) if request.has_input() => CommandRequest::SendInput {
                 input: request.chars.clone().unwrap_or_default(),
@@ -245,15 +296,15 @@ impl ShellContext {
                         });
                     }
                 };
-                let environment = if request.tty {
-                    None
+                let configured = configured_login_shell();
+                let mode = if request.tty {
+                    RunMode::Terminal(terminal_shell(&request, configured.as_deref()))
                 } else {
-                    let configured = configured_login_shell();
-                    Some(
-                        environment(configured.as_deref(), request.profile).map_err(|error| {
+                    RunMode::Captured(environment(configured.as_deref(), request.profile).map_err(
+                        |error| {
                             ToolOutput::failure(format!("shell run profile is invalid: {error}"))
-                        })?,
-                    )
+                        },
+                    )?)
                 };
                 Ok(Validated::Run {
                     request,
@@ -261,7 +312,7 @@ impl ShellContext {
                         path: cwd,
                         held: None,
                     },
-                    environment,
+                    mode,
                 })
             }
             Action::Interact => Ok(Validated::Interact(request)),
@@ -280,10 +331,18 @@ impl ShellContext {
         &self,
         request: ShellRequest,
         cwd: WorkingDirectory,
-        environment: Option<Environment>,
+        mode: RunMode,
         path_access: PathAccess,
         cancel: &CancellationToken,
     ) -> ToolOutput {
+        let environment = match mode {
+            RunMode::Captured(environment) => environment,
+            RunMode::Terminal(shell) => {
+                return self
+                    .run_terminal(request, cwd, shell, path_access, cancel)
+                    .await;
+            }
+        };
         if let Some(root) = path_access.confining_root(&self.workspace_root)
             && !self
                 .resolve_cwd(request.cwd.as_deref())
@@ -291,7 +350,7 @@ impl ShellContext {
         {
             return ToolOutput::failure(runtime_failure(PATH_OUTSIDE_WORKSPACE));
         }
-        let (Some(environment), Some(command)) = (environment, request.command) else {
+        let Some(command) = request.command else {
             return ToolOutput::failure(runtime_failure(UNAVAILABLE));
         };
         let (cwd, cwd_directory) = match cwd.still_named() {
@@ -319,16 +378,25 @@ impl ShellContext {
     async fn interact(&self, request: ShellRequest, cancel: &CancellationToken) -> ToolOutput {
         let has_input = request.has_input();
         let session_id = request.session_id.unwrap_or_default();
+        if let Err(ended) = self.index_terminal(&session_id, cancel).await {
+            return ended;
+        }
+        let ceiling = effective_interact_yield_time(has_input, request.yield_time_ms);
         if let Some(retained) = self.executions.tombstone_snapshot(&session_id) {
             if has_input {
                 return ToolOutput::failure(runtime_failure("ExecutionTerminal"));
             }
             return finish_command(&retained);
         }
+        if self.is_terminal(&session_id) {
+            let chars = request.chars.unwrap_or_default();
+            return self
+                .interact_terminal(&session_id, &chars, ceiling, cancel)
+                .await;
+        }
         if has_input {
             return ToolOutput::failure(runtime_failure("InvalidBackend"));
         }
-        let ceiling = effective_interact_yield_time(has_input, request.yield_time_ms);
         match self
             .executions
             .wait(&session_id, Duration::from_millis(ceiling.into()), cancel)
@@ -339,25 +407,34 @@ impl ShellContext {
         }
     }
 
-    async fn stop(&self, request: ShellRequest) -> ToolOutput {
+    async fn stop(&self, request: ShellRequest, cancel: &CancellationToken) -> ToolOutput {
         let session_id = request.session_id.unwrap_or_default();
-        let snapshot = match self.executions.tombstone_snapshot(&session_id) {
-            Some(retained) => retained,
-            None => match self.executions.stop(&session_id, request.force).await {
-                Ok(snapshot) => snapshot,
-                Err(error) => return ToolOutput::failure(runtime_failure(&error.to_string())),
-            },
-        };
-        let body = format_snapshot(&snapshot, MAX_TOOL_RESULT_BYTES);
-        let output = if stop_result_failed(snapshot.state) {
-            ToolOutput::failure(body)
-        } else {
-            ToolOutput::success(body)
-        };
-        output
-            .with_command_result(command_result(&snapshot))
-            .with_process(process_presentation(&snapshot))
+        if let Err(ended) = self.index_terminal(&session_id, cancel).await {
+            return ended;
+        }
+        if let Some(retained) = self.executions.tombstone_snapshot(&session_id) {
+            return finish_stop(&retained);
+        }
+        if self.is_terminal(&session_id) {
+            return self.stop_terminal(&session_id, request.force, cancel).await;
+        }
+        match self.executions.stop(&session_id, request.force).await {
+            Ok(snapshot) => finish_stop(&snapshot),
+            Err(error) => ToolOutput::failure(runtime_failure(&error.to_string())),
+        }
     }
+}
+
+fn finish_stop(snapshot: &Snapshot) -> ToolOutput {
+    let body = format_snapshot(snapshot, MAX_TOOL_RESULT_BYTES);
+    let output = if stop_result_failed(snapshot.state) {
+        ToolOutput::failure(body)
+    } else {
+        ToolOutput::success(body)
+    };
+    output
+        .with_command_result(command_result(snapshot))
+        .with_process(process_presentation(snapshot))
 }
 
 fn finish_command(snapshot: &Snapshot) -> ToolOutput {
@@ -427,18 +504,14 @@ impl PreparedCall for ShellCall {
             let cancel = context.cancellation;
             match validated {
                 Err(failure) => failure,
-                Ok(Validated::Run {
-                    request,
-                    cwd,
-                    environment,
-                }) => {
+                Ok(Validated::Run { request, cwd, mode }) => {
                     shell
-                        .run(request, cwd, environment, context.path_access, &cancel)
+                        .run(request, cwd, mode, context.path_access, &cancel)
                         .await
                 }
                 Ok(Validated::UnresolvedCwd { failure, .. }) => ToolOutput::failure(failure),
                 Ok(Validated::Interact(request)) => shell.interact(request, &cancel).await,
-                Ok(Validated::Stop(request)) => shell.stop(request).await,
+                Ok(Validated::Stop(request)) => shell.stop(request, &cancel).await,
             }
         })
     }

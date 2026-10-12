@@ -97,7 +97,10 @@ fn the_process_only_schema_matches_upstream_ask_without_a_saved_session() {
         .collect();
     assert_eq!(actions, ["run", "interact", "stop"]);
     for field in ["tty", "shell", "chars"] {
-        assert!(!INPUT_SCHEMA.contains(&format!("\"{field}\":")), "{field}");
+        assert!(
+            !PROCESS_SCHEMA.contains(&format!("\"{field}\":")),
+            "{field}"
+        );
     }
 }
 
@@ -455,4 +458,99 @@ fn only_resolved_run_directories_are_applicable_targets_and_they_resolve_again()
         .unwrap();
     fs::remove_dir(root.join("sub")).unwrap();
     assert_eq!(prepared.applicable_target(), None);
+}
+
+fn terminal_shell(owner: Option<&str>, always_offered: bool) -> (TempDir, Shell) {
+    let directory = tempfile::tempdir().unwrap();
+    let terminal_owner = TerminalOwner::default();
+    terminal_owner.bind(owner.map(str::to_owned));
+    let shell = Shell::with_terminals(
+        directory.path(),
+        ManagedExecutions::new(SessionSupervisor::new("/nonexistent")),
+        None,
+        ShellTerminals {
+            terminals: ofx_exec::Terminals::new(
+                ofx_exec::TerminalStore::new(directory.path().join("store")).unwrap(),
+            ),
+            owner: terminal_owner,
+            always_offered,
+        },
+    );
+    (directory, shell)
+}
+
+#[test]
+fn the_terminal_schema_is_offered_when_a_session_can_own_terminals() {
+    let full = |shell: &Shell| {
+        shell
+            .spec()
+            .input_schema
+            .contains(r#""tty":{"type":"boolean""#)
+    };
+    assert!(!full(&shell()));
+    assert!(!full(&terminal_shell(None, false).1));
+    assert!(full(&terminal_shell(None, true).1));
+    assert!(full(&terminal_shell(Some("owner-session"), false).1));
+    let schema: serde_json::Value =
+        serde_json::from_str(&terminal_shell(None, true).1.spec().input_schema).unwrap();
+    let actions = &schema["properties"]["request"]["oneOf"];
+    assert_eq!(actions.as_array().unwrap().len(), 4);
+    assert_eq!(
+        actions[1]["required"],
+        serde_json::json!(["action", "command", "shell", "tty"])
+    );
+    assert_eq!(
+        actions[2]["properties"]["chars"]["description"],
+        "Exact characters to send to tty=true work before observing it. Omit or send an empty string to only observe. Observe application readiness before sending control characters. Use \\n for Enter and JSON escapes such as \\u0003 for control characters."
+    );
+}
+
+#[test]
+fn terminal_fields_need_a_saved_session_only_without_one() {
+    let correction = |shell: &Shell| match shell.prepare(r#"{"command":"true","tty":true}"#) {
+        Ok(prepared) => prepared.refusal().unwrap().content.clone(),
+        Err(output) => output.content,
+    };
+    assert!(correction(&terminal_shell(None, true).1).contains("require a saved session"));
+    assert!(!correction(&terminal_shell(Some("owner-session"), false).1).contains("saved session"));
+}
+
+#[test]
+fn terminal_failures_and_ended_terminals_keep_upstreams_shape() {
+    assert_eq!(
+        terminal::terminal_failure(&ofx_exec::TerminalFailure {
+            action: ofx_exec::Action::Write,
+            code: ofx_exec::StructuredErrorCode::AuthorityDenied,
+            session_id: Some("shell-AAAAAAAAAAAAAAAAAAAAAA".to_owned()),
+        }),
+        r#"{"failure":{"action":"write","code":"authority_denied","session_id":"shell-AAAAAAAAAAAAAAAAAAAAAA","retryable":false}}"#
+    );
+    assert_eq!(
+        terminal::terminal_failure(&ofx_exec::TerminalFailure {
+            action: ofx_exec::Action::Start,
+            code: ofx_exec::StructuredErrorCode::CapacityExceeded,
+            session_id: None,
+        }),
+        r#"{"failure":{"action":"start","code":"capacity_exceeded","session_id":null,"retryable":false}}"#
+    );
+    assert_eq!(
+        terminal::terminal_ended("shell-AAAAAAAAAAAAAAAAAAAAAA"),
+        r#"{"error":{"tool":"shell","code":"TerminalEnded","session_id":"shell-AAAAAAAAAAAAAAAAAAAAAA","message":"This terminal ended when the oh-fx process that started it exited. It cannot be resumed. Start a new terminal with shell action run and tty true.","retryable":false}}"#
+    );
+}
+
+#[test]
+fn an_unbound_terminal_run_is_unavailable() {
+    let (directory, shell) = terminal_shell(None, true);
+    let mut prepared = shell
+        .prepare(r#"{"action":"run","command":"true","tty":true}"#)
+        .unwrap();
+    prepared.complete();
+    let output = execute(prepared, PathAccess::WorkspaceOrExternal);
+    assert_eq!(output.status, ToolResultStatus::Failure);
+    assert_eq!(
+        output.content,
+        r#"{"error":{"tool":"shell","code":"unavailable","retryable":false}}"#
+    );
+    drop(directory);
 }

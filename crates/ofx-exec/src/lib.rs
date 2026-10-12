@@ -30,7 +30,9 @@ pub use native_session::{
     run_terminal_control, run_terminal_launcher,
 };
 pub use output_echo::OutputEcho;
-pub use shell_resolver::{ResolveError, configured_login_shell, environment};
+pub use shell_resolver::{
+    ResolveError, check_terminal_shell, configured_login_shell, environment, profile_shell,
+};
 pub use terminal_contracts::{
     Action, ClosePolicy, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec,
     StructuredErrorCode, TerminalFailure, TerminalSignal,
