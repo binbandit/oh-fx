@@ -354,6 +354,7 @@ impl WritableSession {
             credential,
         )?;
         self.recovery = Recovery::Saved;
+        self.remember_after_write();
         Ok(())
     }
 
@@ -534,6 +535,7 @@ impl WritableSession {
         events: &[ConversationEvent],
     ) -> Result<(), SessionError> {
         self.writer.append(timestamp_ms, events)?;
+        self.remember_after_write();
         if !events.is_empty() {
             self.metadata.updated_at_ms = timestamp_ms;
             self.started = false;
