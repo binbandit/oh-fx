@@ -499,6 +499,11 @@ impl PreparedCall for EchoCall {
                 return ToolOutput::success(format!("echo {}", self.arguments))
                     .with_context_notices(["echo notice".to_owned()]);
             }
+            if self.arguments.contains("needs_input") {
+                return ToolOutput::failure("echo needs input")
+                    .with_status_detail(ofx_contract::ToolStatusDetail::McpInputRequired)
+                    .finishing_turn();
+            }
             if self.arguments.contains("fail") {
                 ToolOutput::failure("echo failed")
             } else {
@@ -3023,6 +3028,7 @@ mod compaction;
 mod compaction_trace;
 mod empty_replay;
 mod file_evidence;
+mod finishing_tools;
 mod images;
 mod interrupted_closure;
 mod lifecycle;

@@ -152,7 +152,7 @@ note = "Sanitization and bounded inline model output exist; saved large results 
 upstream = "src/core/tooling/tool_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-tools/src/tool_runtime.rs", "crates/ofx-agent/src/orchestrator.rs"]
-note = "Blocking execution, panic containment and prepared calls exist; a tool whose MCP definition changed before execution is selected again with its current schema, or retired with its rejection or withdrawal output, as refreshChangedMcpTool does (in tool_mcp_registry.rs); host/MCP tool authorization and Vision preparation are absent."
+note = "Blocking execution, panic containment and prepared calls exist, and an MCP input-required result finishes the turn as McpInputRequired; a tool whose MCP definition changed before execution is selected again with its current schema, or retired with its rejection or withdrawal output, as refreshChangedMcpTool does (in tool_mcp_registry.rs); host/MCP tool authorization and Vision preparation are absent."
 
 [[file]]
 upstream = "src/core/tooling/tool_set.zig"
