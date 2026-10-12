@@ -1014,3 +1014,28 @@ fn the_arrows_change_tabs_from_the_details_and_the_add_form() {
         ]
     );
 }
+
+#[test]
+fn a_reloaded_catalog_clamps_the_selection_to_its_filtered_rows() {
+    let tools = |names: &[&str]| {
+        McpMenuCatalog::Tools(names.iter().map(|name| (*name).to_owned()).collect())
+    };
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: tools(&["a1", "a2", "a3"]),
+    });
+    press(&mut test, b"\t\x1b[D");
+    press(&mut test, b"/a\x1b[B\x1b[B");
+    assert_eq!(state(&test).query, "a");
+    assert_eq!(state(&test).selected_index, 2);
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 3,
+        catalog: tools(&["a1", "b1", "b2"]),
+    });
+    assert_eq!(state(&test).selected_index, 0);
+    let screen = test.screen();
+    assert!(screen.contains("  a1"), "{screen}");
+    assert!(!screen.contains("b1"), "{screen}");
+}

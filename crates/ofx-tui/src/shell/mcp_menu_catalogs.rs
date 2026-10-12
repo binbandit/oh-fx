@@ -73,20 +73,12 @@ impl Shell<'_> {
         if menu.state.pending_generation != Some(generation) {
             return;
         }
-        let item_count = match catalog {
-            McpMenuCatalog::Tools(tools) => {
-                menu.catalogs.tools = tools;
-                menu.catalogs.tools.len()
-            }
-            McpMenuCatalog::Resources(resources) => {
-                menu.catalogs.resources = resources;
-                menu.catalogs.resources.len()
-            }
-            McpMenuCatalog::Prompts(prompts) => {
-                menu.catalogs.prompts = prompts;
-                menu.catalogs.prompts.len()
-            }
-        };
+        match catalog {
+            McpMenuCatalog::Tools(tools) => menu.catalogs.tools = tools,
+            McpMenuCatalog::Resources(resources) => menu.catalogs.resources = resources,
+            McpMenuCatalog::Prompts(prompts) => menu.catalogs.prompts = prompts,
+        }
+        let item_count = menu.catalogs.count(menu.state.section, &menu.state.query);
         menu.feedback = None;
         menu.reveal_due_ms = None;
         menu.state.apply(Event::CatalogLoaded {
