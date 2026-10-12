@@ -527,6 +527,7 @@ fn into_completion(
         usage,
         tools,
         replay,
+        billing,
         ..
     } = completion;
     Ok(Completion {
@@ -538,7 +539,7 @@ fn into_completion(
             source: replay_source(model),
             parts_json,
         }),
-        billing: None,
+        billing: billing.map(Box::new),
     })
 }
 
