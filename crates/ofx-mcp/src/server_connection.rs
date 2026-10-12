@@ -226,7 +226,6 @@ impl McpClient {
                     .is_some_and(|resources| resources.subscribe) =>
             {
                 let uri = value.get("params")?.get("uri")?.as_str()?.to_owned();
-                self.notification_stats.note(false);
                 Some(ServerNotification::ResourceUpdated { uri })
             }
             _ => Some(ServerNotification::Other {
