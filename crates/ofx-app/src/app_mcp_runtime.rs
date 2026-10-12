@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use ofx_config::{ProfilePaths, Settings};
 use ofx_contract::{Notice, NoticeTone, UiEvent};
 use ofx_mcp::{
-    AuthenticationOutcome, McpRuntime, NativeConfigLoad, ProfileStoreError, ProjectMcpChoices,
-    ReloadOutcome, load_native_configs, preview_workspace_authority, profile_config_path,
+    AuthenticationOutcome, McpError, McpRuntime, NativeConfigLoad, ProfileStoreError,
+    ProjectMcpChoices, ReloadOutcome, load_native_configs, preview_workspace_authority,
+    profile_config_path,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -98,16 +99,30 @@ fn project_choices(settings: &Settings) -> Option<ProjectMcpChoices> {
     ProjectMcpChoices::parse(settings.workspace_entry(), &mut Vec::new()).ok()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReloadFailure {
     Cancelled,
     AuthorityReduced,
-    Failed,
+    Failed(String),
+}
+
+impl ReloadFailure {
+    fn failed(error: ProfileStoreError) -> Self {
+        Self::Failed(match error {
+            ProfileStoreError::Io(error) => McpError::from(error).to_string(),
+            error => error.to_string(),
+        })
+    }
 }
 
 struct Pending {
     cancel: CancellationToken,
     task: JoinHandle<()>,
+}
+
+enum AuthenticationRefusal {
+    Busy,
+    Invalid(McpError),
 }
 
 struct PendingAuthentication {
@@ -147,7 +162,10 @@ impl McpHost {
         self.discard_authentication("reload");
         let runtime = Arc::clone(&self.runtime);
         let sources = self.sources.clone();
-        self.replace_pending(|cancel| async move { reload(&runtime, &sources, &cancel).await });
+        self.replace_pending(
+            |cancel| async move { reload(&runtime, &sources, &cancel).await },
+            reload_notice,
+        );
     }
 
     pub(crate) fn list_resources(&self, server: String, templates: bool) {
@@ -228,23 +246,25 @@ impl McpHost {
         self.runtime.revoke_workspace_except(&[]);
         let runtime = Arc::clone(&self.runtime);
         let sources = self.sources.clone();
-        self.replace_pending(move |cancel| async move {
-            reduce(&runtime, &sources, rebuild, &cancel).await
-        });
+        self.replace_pending(
+            move |cancel| async move { reduce(&runtime, &sources, rebuild, &cancel).await },
+            reload_notice,
+        );
     }
 
-    fn replace_pending<F, W>(&self, work: W)
+    fn replace_pending<F, W, S>(&self, work: W, settle: S)
     where
         W: FnOnce(CancellationToken) -> F,
         F: Future<Output = Result<ReloadOutcome, ReloadFailure>> + Send + 'static,
+        S: FnOnce(Result<ReloadOutcome, ReloadFailure>) -> Option<UiEvent> + Send + 'static,
     {
         self.cancel_pending();
         let cancel = CancellationToken::new();
         let emit = Arc::clone(&self.emit);
         let reloading = work(cancel.clone());
         let task = tokio::spawn(async move {
-            if let Some(notice) = completion_notice(reloading.await) {
-                emit(UiEvent::Notice { notice });
+            if let Some(event) = settle(reloading.await) {
+                emit(event);
             }
         });
         *lock(&self.pending) = Some(Pending { cancel, task });
@@ -257,7 +277,25 @@ impl McpHost {
         }
     }
 
-    pub(crate) fn begin_authentication(&self, server: String) -> String {
+    pub(crate) fn begin_authentication(&self, server: &str) -> String {
+        let profile = self.sources.profile_path();
+        let started =
+            self.start_authentication(server, move |name, result, reconnect| UiEvent::Notice {
+                notice: mcp_auth_notices::completion(name, result, reconnect, profile.as_deref()),
+            });
+        match started {
+            Ok(()) => mcp_auth_notices::waiting(server),
+            Err(AuthenticationRefusal::Busy) => mcp_auth_notices::busy(server),
+            Err(AuthenticationRefusal::Invalid(error)) => mcp_auth_notices::failed(server, &error),
+        }
+    }
+
+    fn start_authentication<S>(&self, server: &str, settle: S) -> Result<(), AuthenticationRefusal>
+    where
+        S: FnOnce(&str, Result<AuthenticationOutcome, McpError>, Option<McpError>) -> UiEvent
+            + Send
+            + 'static,
+    {
         let mut slot = lock(&self.authentication);
         let reloading = lock(&self.pending)
             .as_ref()
@@ -267,16 +305,15 @@ impl McpHost {
                 .as_ref()
                 .is_some_and(|pending| !pending.task.is_finished())
         {
-            return mcp_auth_notices::busy(&server);
+            return Err(AuthenticationRefusal::Busy);
         }
-        if let Err(error) = self.runtime.validate_authentication_server(&server) {
-            return mcp_auth_notices::failed(&server, &error);
-        }
+        self.runtime
+            .validate_authentication_server(server)
+            .map_err(AuthenticationRefusal::Invalid)?;
         let cancel = CancellationToken::new();
         let runtime = Arc::clone(&self.runtime);
         let emit = Arc::clone(&self.emit);
-        let profile = self.sources.profile_path();
-        let name = server.clone();
+        let name = server.to_owned();
         let stop = cancel.clone();
         let task = tokio::spawn(async move {
             let open = |url: &str| ofx_auth::browser_allowed() && ofx_auth::open_url(url);
@@ -291,17 +328,14 @@ impl McpHost {
             if stop.is_cancelled() {
                 return;
             }
-            emit(UiEvent::Notice {
-                notice: mcp_auth_notices::completion(&name, result, reconnect, profile.as_deref()),
-            });
+            emit(settle(&name, result, reconnect));
         });
-        let waiting = mcp_auth_notices::waiting(&server);
         *slot = Some(PendingAuthentication {
-            server,
+            server: server.to_owned(),
             cancel,
             task,
         });
-        waiting
+        Ok(())
     }
 
     pub(crate) fn logout(&self, server: String) -> Option<String> {
@@ -355,20 +389,26 @@ async fn reload(
     if cancel.is_cancelled() {
         return Err(ReloadFailure::Cancelled);
     }
-    let Ok(authority) = sources.authority() else {
-        return Err(if runtime.revoke_workspace_except(&[]) {
-            ReloadFailure::AuthorityReduced
-        } else {
-            ReloadFailure::Failed
-        });
+    let authority = match sources.authority() {
+        Ok(authority) => authority,
+        Err(error) => {
+            return Err(if runtime.revoke_workspace_except(&[]) {
+                ReloadFailure::AuthorityReduced
+            } else {
+                ReloadFailure::failed(error)
+            });
+        }
     };
     let reduced = runtime.revoke_workspace_except(&authority);
-    let Ok(candidate) = sources.load() else {
-        return Err(if reduced {
-            ReloadFailure::AuthorityReduced
-        } else {
-            ReloadFailure::Failed
-        });
+    let candidate = match sources.load() {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            return Err(if reduced {
+                ReloadFailure::AuthorityReduced
+            } else {
+                ReloadFailure::failed(error)
+            });
+        }
     };
     runtime
         .reconcile(candidate, !reduced, true, cancel)
@@ -388,11 +428,15 @@ async fn reduce(
     if !rebuild {
         return Ok(runtime.current_outcome());
     }
-    let candidate = sources.load().map_err(|_| ReloadFailure::Failed)?;
+    let candidate = sources.load().map_err(ReloadFailure::failed)?;
     runtime
         .reconcile(candidate, false, false, cancel)
         .await
         .map_err(|_| ReloadFailure::Cancelled)
+}
+
+fn reload_notice(result: Result<ReloadOutcome, ReloadFailure>) -> Option<UiEvent> {
+    completion_notice(result).map(|notice| UiEvent::Notice { notice })
 }
 
 fn completion_notice(result: Result<ReloadOutcome, ReloadFailure>) -> Option<Notice> {
@@ -422,7 +466,7 @@ fn completion_notice(result: Result<ReloadOutcome, ReloadFailure>) -> Option<Not
         Err(ReloadFailure::AuthorityReduced) => {
             (NoticeTone::Warning, AUTHORITY_REDUCED_FAILED.to_owned())
         }
-        Err(ReloadFailure::Failed) => (NoticeTone::Warning, RELOAD_FAILED.to_owned()),
+        Err(ReloadFailure::Failed(_)) => (NoticeTone::Warning, RELOAD_FAILED.to_owned()),
         Err(ReloadFailure::Cancelled) => return None,
     };
     Some(Notice::new(tone, TOPIC, body))
@@ -512,7 +556,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            body(Err(ReloadFailure::Failed)),
+            body(Err(ReloadFailure::Failed("LockBusy".to_owned()))),
             Some((NoticeTone::Warning, RELOAD_FAILED.to_owned()))
         );
         assert_eq!(
@@ -569,7 +613,7 @@ mod tests {
         let (host, events, listener, _data) = hanging_host();
         listener.set_nonblocking(true).unwrap();
         assert_eq!(
-            host.begin_authentication("docs".to_owned()),
+            host.begin_authentication("docs"),
             mcp_auth_notices::waiting("docs")
         );
         let mut parked = None;
@@ -582,12 +626,12 @@ mod tests {
         }
         assert!(parked.is_some(), "the authentication reached discovery");
         assert_eq!(
-            host.begin_authentication("docs".to_owned()),
+            host.begin_authentication("docs"),
             mcp_auth_notices::busy("docs")
         );
         host.begin_reload();
         assert_eq!(
-            host.begin_authentication("docs".to_owned()),
+            host.begin_authentication("docs"),
             mcp_auth_notices::busy("docs")
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -604,7 +648,7 @@ mod tests {
             }
         });
         assert_eq!(
-            host.begin_authentication("docs".to_owned()),
+            host.begin_authentication("docs"),
             mcp_auth_notices::waiting("docs")
         );
         for _ in 0..200 {
@@ -629,7 +673,7 @@ mod tests {
             )]
         );
         assert_eq!(
-            host.begin_authentication("absent".to_owned()),
+            host.begin_authentication("absent"),
             "MCP authentication for 'absent' failed: McpServerNotFound."
         );
     }
@@ -662,7 +706,7 @@ mod tests {
     async fn a_logout_waits_only_for_a_pending_authentication_of_the_same_server() {
         let (host, events, _listener, _data) = hanging_host();
         assert_eq!(
-            host.begin_authentication("docs".to_owned()),
+            host.begin_authentication("docs"),
             mcp_auth_notices::waiting("docs")
         );
         assert_eq!(
