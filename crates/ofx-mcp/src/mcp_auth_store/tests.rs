@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 
 use super::*;
 
@@ -649,33 +649,36 @@ fn a_held_lock_makes_the_store_busy() {
 fn concurrent_writers_keep_every_identity() {
     let home = Home::new();
     let store = Arc::new(home.store());
-    let writers: Vec<_> = (0..8)
-        .map(|index| {
+    let start = Arc::new(Barrier::new(2));
+    let writers: Vec<_> = ["one", "two"]
+        .into_iter()
+        .map(|server| {
             let store = Arc::clone(&store);
+            let start = Arc::clone(&start);
             thread::spawn(move || {
-                save_for(
-                    &store,
-                    &format!("server-{index}"),
-                    &credentials("https://mcp.example/a", &format!("token-{index}")),
-                )
-                .unwrap();
+                let credentials = credentials(
+                    &format!("https://mcp.example/{server}"),
+                    &format!("{server}-secret"),
+                );
+                start.wait();
+                save_for(&store, server, &credentials)
             })
         })
         .collect();
     for writer in writers {
-        writer.join().unwrap();
+        writer.join().unwrap().unwrap();
     }
-    for index in 0..8 {
+    for server in ["one", "two"] {
         let loaded = store
             .load(&lookup(
-                &format!("server-{index}"),
-                "https://mcp.example/a",
+                server,
+                &format!("https://mcp.example/{server}"),
                 None,
                 None,
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(loaded.access_token.as_str(), format!("token-{index}"));
+        assert_eq!(loaded.access_token.as_str(), format!("{server}-secret"));
     }
 }
 
