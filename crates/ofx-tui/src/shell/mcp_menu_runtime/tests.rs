@@ -691,6 +691,19 @@ fn a_refresh_that_drops_the_selected_server_keeps_the_add_form() {
     assert_eq!(state(&test).add_field_index, 1);
     assert_eq!(test.shell.mcp_menu.as_ref().unwrap().add.name, "napz");
     assert!(requests(&test).is_empty(), "{:?}", requests(&test));
+    press(&mut test, b"/bin/true\r\r");
+    assert_eq!(state(&test).pending_generation, Some(1));
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&[]),
+    });
+    assert_eq!(state(&test).pending_generation, Some(1));
+    test.deliver(outcome(
+        1,
+        McpMenuOutcome::Continuing,
+        "Saved MCP server; reconnecting…",
+    ));
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert_eq!(state(&test).load_state, LoadState::Loading);
 }
 
 #[test]
@@ -710,4 +723,39 @@ fn a_change_for_a_server_the_menu_no_longer_lists_fails_in_its_feedback_row() {
         screen.contains("MCP operation failed: McpServerNotFound"),
         "{screen}"
     );
+}
+
+#[test]
+fn a_removed_server_leaving_the_list_keeps_the_reload_that_follows() {
+    let mut test = opened(&["docs", "other"]);
+    press(&mut test, b"\r");
+    press(&mut test, b"d");
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test),
+        [menu(McpMenuRequest::Remove {
+            generation: 1,
+            server: "docs".to_owned(),
+        })]
+    );
+    test.deliver(outcome_for(
+        1,
+        McpMenuOutcome::Continuing,
+        "Removed MCP server; reconnecting…",
+        servers(&["docs", "other"]),
+    ));
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["other"]),
+    });
+    assert_eq!(state(&test).pending_generation, Some(1));
+    assert_eq!(state(&test).load_state, LoadState::Loading);
+    test.deliver(outcome_for(
+        1,
+        McpMenuOutcome::Succeeded,
+        "MCP configuration reloaded.",
+        servers(&["other"]),
+    ));
+    let screen = test.screen();
+    assert!(screen.contains("  MCP configuration reloaded."), "{screen}");
+    assert_eq!(state(&test).load_state, LoadState::Ready);
 }
