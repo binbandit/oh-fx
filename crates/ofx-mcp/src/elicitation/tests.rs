@@ -1,18 +1,31 @@
 use serde_json::{Value, json};
 
 use super::*;
-use crate::elicitation::form::{Field, FieldKind, parse_form_schema};
+use crate::elicitation::form::parse_form_schema;
 
 const LEGACY_06: ElicitationWire = ElicitationWire::LegacyMcp2025_06;
 const LEGACY_11: ElicitationWire = ElicitationWire::LegacyMcp2025_11;
 
 fn schema(text: &str) -> Outcome<Vec<Field>> {
     let value: Value = serde_json::from_str(text).unwrap();
-    parse_form_schema(LEGACY_11, &value)
+    parse_form_schema(LEGACY_11, &value).map(|form| form.fields)
 }
 
 fn request(wire: ElicitationWire, text: &str) -> Outcome<Mode> {
-    parse_request(wire, &serde_json::from_str(text).unwrap())
+    parse_request(wire, &serde_json::from_str(text).unwrap()).map(|request| request.mode())
+}
+
+fn form(text: &str) -> FormSchema {
+    let value: Value = serde_json::from_str(text).unwrap();
+    parse_form_schema(LEGACY_11, &value).unwrap()
+}
+
+fn content(form: &FormSchema, entries: &[(&str, &str)]) -> Outcome<()> {
+    let entries: Vec<(String, String)> = entries
+        .iter()
+        .map(|(name, json)| ((*name).to_owned(), (*json).to_owned()))
+        .collect();
+    form.validate_answers(&entries)
 }
 
 fn values(fields: &[Field], text: &str) -> Outcome<()> {
@@ -465,4 +478,113 @@ fn bracketed_hosts_end_at_their_bracket_as_upstream_parses_them() {
     );
     assert!(uri::parse("x://u]@[h:1").is_none());
     assert!(uri::parse("x://[h]:port").is_none());
+}
+
+#[test]
+fn capability_modes_report_support() {
+    let form = ElicitationCapabilities {
+        form: true,
+        url: false,
+    };
+    assert!(form.supports(Mode::Form) && !form.supports(Mode::Url));
+    assert!(form.any() && !ElicitationCapabilities::default().any());
+}
+
+#[test]
+fn form_content_needs_every_required_field_and_no_unknown_field() {
+    let profile = form(
+        r#"{"type":"object","properties":{"name":{"type":"string","title":"Name","description":"Who"},"age":{"type":"integer","minimum":18},"color":{"type":"string","enum":["red"],"enumNames":["Red"],"default":"red"}},"required":["name","age"]}"#,
+    );
+    assert_eq!(profile.fields[0].display_name(), "Name");
+    assert_eq!(profile.fields[1].display_name(), "age");
+    assert_eq!(profile.fields[0].description.as_deref(), Some("Who"));
+    assert_eq!(profile.fields[2].default_json.as_deref(), Some("\"red\""));
+    assert_eq!(profile.fields[2].choices[0].title, "Red");
+    assert!(profile.fields[0].required && !profile.fields[2].required);
+    assert_eq!(
+        content(&profile, &[("name", "\"Ada\""), ("age", "42")]),
+        Ok(())
+    );
+    assert_eq!(
+        content(&profile, &[("name", "\"Ada\""), ("age", "1e400")]),
+        Ok(())
+    );
+    let invalid: [&[(&str, &str)]; 5] = [
+        &[("age", "42")],
+        &[("name", "\"Ada\""), ("age", "17")],
+        &[("name", "\"Ada\""), ("age", "42"), ("extra", "1")],
+        &[("name", "\"Ada\""), ("age", "42"), ("color", "\"blue\"")],
+        &[("name", "7"), ("age", "42")],
+    ];
+    for entries in invalid {
+        assert_eq!(
+            content(&profile, entries),
+            Err(ElicitationError::InvalidResponse),
+            "{entries:?}"
+        );
+    }
+}
+
+#[test]
+fn typed_numbers_are_checked_from_their_exact_lexeme() {
+    let numbers = form(
+        r#"{"type":"object","properties":{"fraction":{"type":"number","minimum":0.1,"maximum":0.3,"multipleOf":0.1}}}"#,
+    );
+    let fraction = &numbers.fields[0];
+    assert_eq!(
+        validate_field_json(fraction, "0.300000000000000000000000000000"),
+        Ok(())
+    );
+    assert_eq!(
+        validate_field_json(fraction, "0.300000000000000000000000000001"),
+        Err(ElicitationError::InvalidResponse)
+    );
+    assert_eq!(validate_field_json(fraction, " 0.2 "), Ok(()));
+    for invalid in ["0.25", "\"0.2\"", "01", "-", "true", "0.4", "1e999999999"] {
+        assert_eq!(
+            validate_field_json(fraction, invalid),
+            Err(ElicitationError::InvalidResponse),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn answers_are_validated_against_their_request_and_written_as_upstream_does() {
+    let name = parse_request(
+        LEGACY_11,
+        &json!({"message":"Name","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}),
+    )
+    .unwrap();
+    assert_eq!(name.message, "Name");
+    let accepted = Answer::AcceptForm(vec![("name".to_owned(), "\"Ada\"".to_owned())]);
+    assert_eq!(validate_answer(&name, &accepted), Ok(()));
+    assert_eq!(
+        accepted.to_json(),
+        r#"{"action":"accept","content":{"name":"Ada"}}"#
+    );
+    assert_eq!(validate_answer(&name, &Answer::Decline), Ok(()));
+    assert_eq!(Answer::Decline.to_json(), r#"{"action":"decline"}"#);
+    assert_eq!(Answer::Cancel.to_json(), r#"{"action":"cancel"}"#);
+    assert_eq!(
+        validate_answer(&name, &Answer::AcceptForm(Vec::new())),
+        Err(ElicitationError::InvalidResponse)
+    );
+    let oversized = Answer::AcceptForm(vec![(
+        "name".to_owned(),
+        format!("\"{}\"", "x".repeat(MAX_RESPONSE_BYTES)),
+    )]);
+    assert_eq!(
+        validate_answer(&name, &oversized),
+        Err(ElicitationError::LimitExceeded)
+    );
+    let url = parse_request(
+        LEGACY_11,
+        &json!({"mode":"url","message":"Open","url":"https://example.test","elicitationId":"e"}),
+    )
+    .unwrap();
+    assert_eq!(
+        validate_answer(&url, &accepted),
+        Err(ElicitationError::InvalidResponse)
+    );
 }

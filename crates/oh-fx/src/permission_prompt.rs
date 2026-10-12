@@ -1,10 +1,12 @@
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Write};
 use std::thread;
 
 use ofx_agent::Approvals;
 use ofx_contract::{ApprovalDecision, ApprovalRequest, CommandRequest};
 use ofx_shell::{command_risk_note, command_safer_alternative};
 use ofx_text::encode_terminal_safe;
+
+use crate::terminal_lines::{Line, next_line};
 
 const MAX_COMMAND_LABEL_BYTES: usize = 120;
 const ANSWER_BUFFER_BYTES: usize = 256;
@@ -28,7 +30,10 @@ pub(crate) fn ask(approvals: &Approvals, request: &ApprovalRequest) -> io::Resul
     let answering = approvals.clone();
     if thread::Builder::new()
         .name("permission-prompt".to_owned())
-        .spawn(move || answering.resolve(id, decision(&mut io::stdin().lock())))
+        .spawn(move || {
+            let line = next_line().blocking_recv().unwrap_or(Line::Closed);
+            answering.resolve(id, decision(&line));
+        })
         .is_err()
     {
         approvals.resolve(id, ApprovalDecision::Deny);
@@ -67,21 +72,12 @@ fn run_command_label(command: &str) -> String {
     format!("shell.run {encoded}{suffix}")
 }
 
-fn decision(input: &mut impl Read) -> ApprovalDecision {
-    let mut line = Vec::new();
-    let mut byte = [0];
-    loop {
-        match input.read(&mut byte) {
-            Ok(0) => break,
-            Ok(_) if byte[0] == b'\n' => break,
-            Ok(_) if line.len() + 1 == ANSWER_BUFFER_BYTES => {
-                discard_rest_of_line(input);
-                return ApprovalDecision::Deny;
-            }
-            Ok(_) => line.push(byte[0]),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(_) => return ApprovalDecision::Deny,
-        }
+fn decision(line: &Line) -> ApprovalDecision {
+    let Line::Text(line) = line else {
+        return ApprovalDecision::Deny;
+    };
+    if line.len() >= ANSWER_BUFFER_BYTES {
+        return ApprovalDecision::Deny;
     }
     let start = line
         .iter()
@@ -94,17 +90,6 @@ fn decision(input: &mut impl Read) -> ApprovalDecision {
     match &line[start..end] {
         b"y" | b"Y" => ApprovalDecision::Once,
         _ => ApprovalDecision::Deny,
-    }
-}
-
-fn discard_rest_of_line(input: &mut impl Read) {
-    let mut byte = [0];
-    loop {
-        match input.read(&mut byte) {
-            Ok(1..) if byte[0] != b'\n' => {}
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            _ => return,
-        }
     }
 }
 

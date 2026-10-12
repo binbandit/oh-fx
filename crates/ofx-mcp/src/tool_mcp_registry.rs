@@ -298,6 +298,7 @@ impl PreparedCall for McpCall {
                 CallOptions {
                     max_tool_result_bytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
                     progress: None,
+                    elicitation: None,
                 },
             );
             let Some(outcome) = context.cancellation.run_until_cancelled(call).await else {

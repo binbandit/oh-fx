@@ -23,8 +23,7 @@ use crate::mcp_contract::validate_json_rpc_response_envelope;
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::timing::{spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
-    Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
-    ShutdownMode, TransportRequest,
+    Cancellation, McpTransport, ProgressNotification, ProgressSink, ShutdownMode, TransportRequest,
 };
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
@@ -278,12 +277,7 @@ impl StdioDispatcher {
             PendingMeta {
                 max_frame_bytes: request.max_response_bytes,
                 progress: request.progress.clone(),
-                elicitation: match request.server_requests {
-                    ServerRequestPolicy::RefuseElicitation(wire) => {
-                        Some(Arc::new(ElicitationContext::new(wire)))
-                    }
-                    ServerRequestPolicy::Reject => None,
-                },
+                elicitation: request.elicitation.clone(),
             },
         );
         shared
@@ -300,7 +294,13 @@ impl StdioDispatcher {
         shared
             .write_bounded(&request.body, request.deadline, &phase)
             .await?;
-        let outcome = pending.wait_until(request.deadline).await;
+        let outcome = pending.wait_while(request.expired()).await;
+        if let Some(context) = &request.elicitation {
+            if outcome.is_err() {
+                context.finish();
+            }
+            context.answered().await;
+        }
         cancel_on_drop.armed = false;
         match outcome {
             Ok(frame) => Ok(frame),
@@ -574,21 +574,27 @@ impl Shared {
             }
         };
         let shared = Arc::clone(self);
+        let answering = owner.as_ref().map(ElicitationContext::begin_answer);
         spawn(async move {
-            let response = match owner {
-                Some(context) => context
-                    .respond(&frame)
-                    .unwrap_or_else(|_| server_request_failed_response(&frame)),
-                None => method_not_found_response(&frame),
+            let (response, timeout) = match &answering {
+                Some(answering) => (
+                    answering
+                        .context()
+                        .respond(&frame)
+                        .await
+                        .unwrap_or_else(|_| server_request_failed_response(&frame)),
+                    answering.context().operation_timeout(),
+                ),
+                None => (
+                    method_not_found_response(&frame),
+                    SERVER_REQUEST_WRITE_TIMEOUT,
+                ),
             };
             let phase = AtomicU8::new(WritePhase::Waiting as u8);
             let _ = shared
-                .write_bounded(
-                    &response,
-                    Instant::now() + SERVER_REQUEST_WRITE_TIMEOUT,
-                    &phase,
-                )
+                .write_bounded(&response, Instant::now() + timeout, &phase)
                 .await;
+            drop(answering);
         });
     }
 }
@@ -605,7 +611,10 @@ struct PendingMetaGuard<'a> {
 
 impl Drop for PendingMetaGuard<'_> {
     fn drop(&mut self) {
-        lock(&self.shared.pending).remove(&self.id);
+        let removed = lock(&self.shared.pending).remove(&self.id);
+        if let Some(context) = removed.and_then(|meta| meta.elicitation) {
+            context.finish();
+        }
     }
 }
 
@@ -812,6 +821,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    use crate::protocol_negotiation::ElicitationWire;
+    use crate::test_support::{ScriptedAnswers, operation_elicitation};
 
     use super::*;
 
@@ -1037,6 +1049,73 @@ done"#;
             .await
         );
         dispatcher.shutdown(ShutdownMode::Graceful).await;
+    }
+
+    #[tokio::test]
+    async fn an_owned_elicitation_is_answered_before_the_operation_result() {
+        let script = r#"while IFS= read -r line; do
+  case "$line" in
+    *'"tools/call"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      printf '{"jsonrpc":"2.0","id":"ask","method":"elicitation/create","params":{"message":"Who?","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}\n'
+      IFS= read -r answer
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"answer":%s}}\n' "$id" "$answer" ;;
+  esac
+done"#;
+        let (dispatcher, _notifications) = shell(script);
+        let answers = ScriptedAnswers::new(&["Ada", "Submit"]);
+        let mut call = request(&dispatcher, "tools/call", Duration::from_secs(5));
+        call.elicitation = ElicitationContext::new(
+            ElicitationWire::LegacyMcp2025_11,
+            operation_elicitation(&answers),
+            call.deadline,
+            Duration::from_secs(5),
+        )
+        .map(Arc::new);
+        let response = dispatcher.request(call).await.unwrap();
+        assert!(
+            response.contains(
+                r#""answer":{"jsonrpc":"2.0","id":"ask","result":{"action":"accept","content":{"name":"Ada"}}}"#
+            ),
+            "{response}"
+        );
+        assert!(lock(&dispatcher.shared.pending).is_empty());
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
+    }
+
+    #[tokio::test]
+    async fn an_operation_that_answers_first_still_waits_for_its_open_elicitation() {
+        let script = r#"while IFS= read -r line; do
+  case "$line" in
+    *'"tools/call"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+      printf '{"jsonrpc":"2.0","id":"ask","method":"elicitation/create","params":{"message":"Who?","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}\n'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}\n' "$id"
+      IFS= read -r answer
+      printf '%s\n' "$answer" >&2 ;;
+  esac
+done"#;
+        let (dispatcher, _notifications) = shell(script);
+        let answers = ScriptedAnswers::new(&["Ada", "Submit"]);
+        let mut call = request(&dispatcher, "tools/call", Duration::from_secs(5));
+        call.elicitation = ElicitationContext::new(
+            ElicitationWire::LegacyMcp2025_11,
+            operation_elicitation(&answers),
+            call.deadline,
+            Duration::from_secs(5),
+        )
+        .map(Arc::new);
+        let response = dispatcher.request(call).await.unwrap();
+        assert!(response.contains(r#""result":{"ok":true}"#), "{response}");
+        dispatcher.shutdown(ShutdownMode::Graceful).await;
+        let stderr = dispatcher.settled_diagnostics().await.stderr;
+        assert!(
+            String::from_utf8_lossy(stderr.head()).contains(
+                r#"{"jsonrpc":"2.0","id":"ask","result":{"action":"accept","content":{"name":"Ada"}}}"#
+            ),
+            "{:?}",
+            String::from_utf8_lossy(stderr.head())
+        );
     }
 
     #[tokio::test]

@@ -20,8 +20,7 @@ use crate::server_auth::HttpAuth;
 use crate::streamable_http::{MediaType, parse_media_type, validate_header_value};
 use crate::timing::{sleep, spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
-    Cancellation, McpTransport, ProgressNotification, ProgressSink, ServerRequestPolicy,
-    ShutdownMode, TransportRequest,
+    Cancellation, McpTransport, ProgressNotification, ProgressSink, ShutdownMode, TransportRequest,
 };
 
 pub(crate) const HTTP_INITIALIZED_NOTIFICATION: &str =
@@ -29,7 +28,6 @@ pub(crate) const HTTP_INITIALIZED_NOTIFICATION: &str =
 const MAX_SSE_EVENTS: usize = 1024;
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 const CANCELLATION_TIMEOUT: Duration = Duration::from_millis(100);
-const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const NOTIFICATION_FRAME_LIMIT: usize = 64 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 1024;
 const RETRY_INITIAL: Duration = Duration::from_millis(100);
@@ -226,13 +224,9 @@ impl LegacyHttpClient {
             return Err(McpError::McpConnectionClosed);
         }
         let committed = AtomicBool::new(false);
-        let elicitation = match request.server_requests {
-            ServerRequestPolicy::RefuseElicitation(wire) => Some(ElicitationContext::new(wire)),
-            ServerRequestPolicy::Reject => None,
-        };
         let options = PostOptions {
             progress: request.progress.as_ref(),
-            elicitation: elicitation.as_ref(),
+            elicitation: request.elicitation.as_deref(),
             committed: Some(&committed),
             ..PostOptions::new(request.id, request.max_response_bytes)
         };
@@ -242,10 +236,13 @@ impl LegacyHttpClient {
             committed: &committed,
             armed: request.send_cancellation,
         };
-        let outcome = timeout_at(request.deadline, self.shared.post(&request.body, &options)).await;
+        let outcome = tokio::select! {
+            outcome = self.shared.post(&request.body, &options) => Ok(outcome),
+            () = request.expired() => Err(()),
+        };
         cancel_on_drop.armed = false;
         match outcome {
-            Err(_) => {
+            Err(()) => {
                 if request.send_cancellation && committed.load(Ordering::Acquire) {
                     self.shared
                         .send_cancellation(request.id, "McpRequestTimedOut")
@@ -570,8 +567,8 @@ impl HttpShared {
         elicitation: Option<&ElicitationContext>,
     ) -> Result<(), McpError> {
         let context = elicitation.ok_or(McpError::UnsupportedServerRequest)?;
-        let response = context.respond(event.data.as_bytes())?;
-        self.send_notification(&response, Instant::now() + SERVER_REQUEST_TIMEOUT)
+        let response = context.respond(event.data.as_bytes()).await?;
+        self.send_notification(&response, Instant::now() + context.operation_timeout())
             .await
     }
 
@@ -816,6 +813,7 @@ mod tests {
     use crate::server_connection::{McpClient, ServerNotification};
     use crate::server_transport::ConnectOptions;
     use crate::test_support::{FakeServer, RecordedRequest, Reply};
+    use crate::test_support::{ScriptedAnswers, operation_elicitation};
     use crate::tool_operations::CallOptions;
 
     type BoxedHandler = Box<dyn Fn(&RecordedRequest) -> Reply + Send + Sync>;
@@ -1112,15 +1110,20 @@ mod tests {
         let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
             .await
             .unwrap();
-        client
-            .call_tool(
+        let call = |elicitation| {
+            client.call_tool(
                 "remote_tool",
                 "{}",
-                CallOptions::default(),
+                CallOptions {
+                    elicitation,
+                    ..CallOptions::default()
+                },
                 Instant::now() + Duration::from_secs(10),
             )
-            .await
-            .unwrap();
+        };
+        assert_eq!(call(None).await, Err(McpError::UnsupportedServerRequest));
+        let answers = ScriptedAnswers::new(&[]);
+        call(Some(operation_elicitation(&answers))).await.unwrap();
         let answer = server
             .requests()
             .into_iter()
@@ -1129,6 +1132,67 @@ mod tests {
         assert_eq!(
             answer.body,
             "{\"jsonrpc\":\"2.0\",\"id\":\"s-1\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
+        );
+        assert!(answers.questions().is_empty());
+        client.shutdown(ShutdownMode::ProcessExit).await;
+    }
+
+    #[tokio::test]
+    async fn an_elicitation_during_a_tool_call_is_answered_before_its_result() {
+        let server = FakeServer::start(|request| match (request.method.as_str(), request.method_name().as_deref()) {
+            ("POST", Some("tools/call")) => {
+                let done = final_event(request, "done");
+                Reply::sse(&[
+                    "data: {\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"elicitation/create\",\"params\":{\"message\":\"Who?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}}\n\n",
+                    &done,
+                ])
+            }
+            ("POST", None) => Reply::status(202),
+            _ => session_handler("2025-11-25")(request),
+        })
+        .await;
+        let answers = ScriptedAnswers::new(&["Ada", "Submit"]);
+        let options = ConnectOptions {
+            elicitation: Some(operation_elicitation(&answers).responder),
+            ..ConnectOptions::default()
+        };
+        let client = McpClient::connect(&remote(&server.url), &options)
+            .await
+            .unwrap();
+        let initialize = server
+            .requests()
+            .into_iter()
+            .find(|request| request.method_name().as_deref() == Some("initialize"))
+            .unwrap();
+        assert!(
+            initialize
+                .body
+                .contains("\"capabilities\":{\"elicitation\":{\"form\":{}}}")
+        );
+        client
+            .call_tool(
+                "remote_tool",
+                "{}",
+                CallOptions {
+                    elicitation: Some(operation_elicitation(&answers)),
+                    ..CallOptions::default()
+                },
+                Instant::now() + Duration::from_secs(10),
+            )
+            .await
+            .unwrap();
+        let answer = server
+            .requests()
+            .into_iter()
+            .find(|request| request.body.contains("\"result\""))
+            .unwrap();
+        assert_eq!(
+            answer.body,
+            "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"action\":\"accept\",\"content\":{\"name\":\"Ada\"}}}"
+        );
+        assert_eq!(
+            answers.questions()[0],
+            "MCP server fixture requests name (required)\nReason: Who?"
         );
         client.shutdown(ShutdownMode::ProcessExit).await;
     }
