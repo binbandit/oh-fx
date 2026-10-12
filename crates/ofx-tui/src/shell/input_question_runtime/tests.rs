@@ -675,9 +675,21 @@ fn escape_on_an_elicitation_cancels_the_turn_without_a_question_row() {
     press(&mut test, b"\x1b");
     test.advance(100);
     test.step();
-    assert!(test.sent().contains(&UiCommand::Cancel {
-        turn_id: TurnId::new(1)
-    }));
+    let sent = test.sent();
+    let cancelled = sent.iter().position(|command| {
+        *command
+            == UiCommand::Cancel {
+                turn_id: TurnId::new(1),
+            }
+    });
+    let answered_first = sent
+        .iter()
+        .position(|command| matches!(command, UiCommand::QuestionAnswered { .. }));
+    assert!(
+        answered_first
+            .zip(cancelled)
+            .is_some_and(|(answer, cancel)| answer < cancel)
+    );
     assert_eq!(answers(&test), [answered(4, None)]);
     let screen = test.screen();
     assert!(

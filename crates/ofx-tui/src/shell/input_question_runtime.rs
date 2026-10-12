@@ -269,10 +269,13 @@ impl Shell<'_> {
         match prompt.source {
             QuestionSource::AgentQuestion => {
                 self.cancel_visible_turn_noting(Entry::QuestionCancelled);
+                self.answer_question(prompt.request_id, None);
             }
-            QuestionSource::McpElicitation => self.cancel_visible_turn(),
+            QuestionSource::McpElicitation => {
+                self.answer_question(prompt.request_id, None);
+                self.cancel_visible_turn();
+            }
         }
-        self.answer_question(prompt.request_id, None);
     }
 
     fn answer_question(&mut self, request_id: RequestId, answers: Option<Vec<String>>) {
