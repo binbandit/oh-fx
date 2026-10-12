@@ -96,7 +96,11 @@ impl<'a> McpMenuView<'a> {
     pub(crate) fn item_count(self) -> usize {
         match self.state.section {
             Section::Servers => self.snapshot.servers.len(),
-            section => self.catalogs.count(section, &self.state.query),
+            section => self.catalogs.count(
+                section,
+                &self.state.query,
+                self.selected_server().map(|server| server.name.as_str()),
+            ),
         }
     }
 

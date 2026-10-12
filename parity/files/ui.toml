@@ -104,7 +104,7 @@ note = "Question option/freeform panels, hints and resolution rows are implement
 upstream = "src/ui/footer/render_input.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
-note = "Composer input rows, the session menu projection the resume picker draws, the usage menu projection (UsageMenuView) and the MCP menu projection for the servers and the tool, resource and prompt catalogs with their query matches (McpMenuView and McpMenuCatalogs in mcp_menu_presentation.rs) exist, with its preview, its argument fields arriving with their screen; upstream prepared model, help and settings menu projection adapters are absent."
+note = "Composer input rows, the session menu projection the resume picker draws, the usage menu projection (UsageMenuView) and the MCP menu projection for the servers and the tool, resource and prompt catalogs with their query matches, a resource or prompt list counting only for the server that listed it (McpMenuView and McpMenuCatalogs in mcp_menu_presentation.rs), exist, with its preview, its argument fields arriving with their screen; upstream prepared model, help and settings menu projection adapters are absent."
 
 [[file]]
 upstream = "src/ui/footer/resume_menu_presentation.zig"

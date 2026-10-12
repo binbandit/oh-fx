@@ -1228,3 +1228,55 @@ fn a_preview_targets_the_filtered_item_and_starts_without_old_feedback() {
         Some("current")
     );
 }
+
+#[test]
+fn a_catalog_cached_for_one_server_is_neither_shown_nor_opened_for_another() {
+    let resource = |uri: &str| McpMenuResource {
+        uri: uri.to_owned(),
+        name: uri.to_owned(),
+        title: None,
+        description: None,
+        template: false,
+    };
+    let mut test = opened(&["first", "second"]);
+    press(&mut test, b"\t\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 2,
+        catalog: McpMenuCatalog::Resources(vec![resource("custom://first-only")]),
+    });
+    assert!(test.screen().contains("custom://first-only"));
+    press(&mut test, b"\x1b[D\x1b[D\x1b[B\t\t");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&load(
+            5,
+            McpMenuCatalogRequest::Resources("second".to_owned())
+        ))
+    );
+    test.advance(200);
+    refresh_now(&mut test);
+    let screen = press(&mut test, b"\r");
+    assert!(!screen.contains("custom://first-only"), "{screen}");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&load(
+            5,
+            McpMenuCatalogRequest::Resources("second".to_owned())
+        ))
+    );
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 5,
+        catalog: McpMenuCatalog::Resources(vec![resource("custom://second-only")]),
+    });
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            6,
+            McpMenuPreviewTarget::Resource {
+                server: "second".to_owned(),
+                uri: "custom://second-only".to_owned(),
+            }
+        ))
+    );
+}

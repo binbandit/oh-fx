@@ -10,6 +10,8 @@ static NO_CATALOGS: McpMenuCatalogs = McpMenuCatalogs {
     tools: Vec::new(),
     resources: Vec::new(),
     prompts: Vec::new(),
+    resources_server: None,
+    prompts_server: None,
 };
 
 fn theme() -> Theme {
@@ -543,6 +545,8 @@ fn catalogs() -> McpMenuCatalogs {
                 description: None,
             },
         ],
+        resources_server: Some("docs".to_owned()),
+        prompts_server: Some("docs".to_owned()),
     }
 }
 

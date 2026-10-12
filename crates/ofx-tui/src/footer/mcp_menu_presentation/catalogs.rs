@@ -16,10 +16,12 @@ pub(crate) struct McpMenuCatalogs {
     pub(crate) tools: Vec<String>,
     pub(crate) resources: Vec<McpMenuResource>,
     pub(crate) prompts: Vec<McpMenuPrompt>,
+    pub(crate) resources_server: Option<String>,
+    pub(crate) prompts_server: Option<String>,
 }
 
 impl McpMenuCatalogs {
-    pub(crate) fn count(&self, section: Section, query: &str) -> usize {
+    pub(crate) fn count(&self, section: Section, query: &str, server: Option<&str>) -> usize {
         match section {
             Section::Servers => 0,
             Section::Tools => self
@@ -27,8 +29,14 @@ impl McpMenuCatalogs {
                 .iter()
                 .filter(|tool| matches(tool, query))
                 .count(),
-            Section::Resources => self.resources().filter(|item| item.matches(query)).count(),
-            Section::Prompts => self.prompts().filter(|item| item.matches(query)).count(),
+            Section::Resources => self
+                .resources(server)
+                .filter(|item| item.matches(query))
+                .count(),
+            Section::Prompts => self
+                .prompts(server)
+                .filter(|item| item.matches(query))
+                .count(),
         }
     }
 
@@ -50,10 +58,13 @@ impl McpMenuCatalogs {
                     .map(|tool| McpMenuPreviewTarget::Tool(tool.clone()));
             }
             Section::Resources => self
-                .resources()
+                .resources(server.as_deref())
                 .filter(|item| item.matches(query))
                 .nth(index),
-            Section::Prompts => self.prompts().filter(|item| item.matches(query)).nth(index),
+            Section::Prompts => self
+                .prompts(server.as_deref())
+                .filter(|item| item.matches(query))
+                .nth(index),
         };
         match item? {
             Item::Resource(resource) if !resource.template => {
@@ -70,7 +81,13 @@ impl McpMenuCatalogs {
         }
     }
 
-    fn row(&self, section: Section, query: &str, index: usize) -> Option<(&str, &str)> {
+    fn row(
+        &self,
+        section: Section,
+        query: &str,
+        index: usize,
+        server: Option<&str>,
+    ) -> Option<(&str, &str)> {
         match section {
             Section::Servers => None,
             Section::Tools => self
@@ -80,24 +97,32 @@ impl McpMenuCatalogs {
                 .nth(index)
                 .map(|tool| (tool.as_str(), "Tool")),
             Section::Resources => self
-                .resources()
+                .resources(server)
                 .filter(|item| item.matches(query))
                 .nth(index)
                 .map(Item::columns),
             Section::Prompts => self
-                .prompts()
+                .prompts(server)
                 .filter(|item| item.matches(query))
                 .nth(index)
                 .map(Item::columns),
         }
     }
 
-    fn resources(&self) -> impl Iterator<Item = Item<'_>> {
-        self.resources.iter().map(Item::Resource)
+    fn resources(&self, server: Option<&str>) -> impl Iterator<Item = Item<'_>> {
+        let listed = self.resources_server.as_deref() == server;
+        self.resources
+            .iter()
+            .filter(move |_| listed)
+            .map(Item::Resource)
     }
 
-    fn prompts(&self) -> impl Iterator<Item = Item<'_>> {
-        self.prompts.iter().map(Item::Prompt)
+    fn prompts(&self, server: Option<&str>) -> impl Iterator<Item = Item<'_>> {
+        let listed = self.prompts_server.as_deref() == server;
+        self.prompts
+            .iter()
+            .filter(move |_| listed)
+            .map(Item::Prompt)
     }
 }
 
@@ -197,7 +222,12 @@ pub(super) fn catalog_row(
     let index =
         visible_window_start(state.window_start, state.selected_index, count, visible) + body_index;
     view.catalogs
-        .row(state.section, &state.query, index)
+        .row(
+            state.section,
+            &state.query,
+            index,
+            view.selected_server().map(|server| server.name.as_str()),
+        )
         .map_or_else(Row::new, |(identity, description)| {
             item_row(
                 theme,

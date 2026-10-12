@@ -148,12 +148,21 @@ impl Shell<'_> {
         let Some(menu) = self.mcp_menu_awaiting(generation) else {
             return;
         };
+        let server = menu.selected_server_name();
         match catalog {
             McpMenuCatalog::Tools(tools) => menu.catalogs.tools = tools,
-            McpMenuCatalog::Resources(resources) => menu.catalogs.resources = resources,
-            McpMenuCatalog::Prompts(prompts) => menu.catalogs.prompts = prompts,
+            McpMenuCatalog::Resources(resources) => {
+                menu.catalogs.resources = resources;
+                menu.catalogs.resources_server.clone_from(&server);
+            }
+            McpMenuCatalog::Prompts(prompts) => {
+                menu.catalogs.prompts = prompts;
+                menu.catalogs.prompts_server.clone_from(&server);
+            }
         }
-        let item_count = menu.catalogs.count(menu.state.section, &menu.state.query);
+        let item_count =
+            menu.catalogs
+                .count(menu.state.section, &menu.state.query, server.as_deref());
         menu.feedback = None;
         menu.reveal_due_ms = None;
         menu.state.apply(Event::CatalogLoaded {
