@@ -14,7 +14,7 @@ note = "Clean/User environment profiles and shell paths exist; requiresShellRout
 upstream = "src/core/execution/command_runner.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/command_runner.rs"]
-note = "Foreground supervisor and process completion exist; direct-argv route execution and Darwin lineage tracking are absent."
+note = "Foreground supervisor and process completion exist, with upstream's `core` lines for the shell environment, termination requests, forced kills, leader completion, settlement expiry, indeterminate exits and a lost exit watch; direct-argv route execution and Darwin lineage tracking are absent."
 
 [[file]]
 upstream = "src/core/execution/local_executor.zig"
@@ -26,7 +26,7 @@ note = "Approved direct argv/pipeline route execution and route-specific foregro
 upstream = "src/core/execution/managed_execution.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/managed_execution.rs"]
-note = "Captured running handles, output snapshots, waits and stop exist; persisted execution/replay artifacts and reattached process identities are absent."
+note = "Captured running handles, output snapshots, waits and stop exist, with upstream's lost and indeterminate `core` lines; persisted execution/replay artifacts and reattached process identities are absent."
 
 [[file]]
 upstream = "src/core/execution/managed_execution_contract.zig"

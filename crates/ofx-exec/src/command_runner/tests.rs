@@ -116,3 +116,92 @@ fn foreground_force_cleanup_preserves_the_supervisor() {
     assert_eq!(termination_signal(StopIntent::Force), FORCE_SIGNAL);
     assert_eq!(termination_signal(StopIntent::Graceful), Signal::TERM);
 }
+
+const TRACE_CHILD: &str = "OH_FX_COMMAND_RUNNER_TRACE_CHILD";
+const TRACE_TEST: &str = "command_runner::tests::collection_writes_its_core_lines";
+
+async fn collect_traced(
+    script: &str,
+    deadline: Option<Instant>,
+    requested: &[StopIntent],
+    watch_for_exit: bool,
+) {
+    let (mut child, stdout, stderr) = spawn_group(script);
+    let group = child_pid(&child).expect("the command's group");
+    let (_never_sent, never) = oneshot::channel();
+    let exited = if watch_for_exit {
+        watch_exit(group).expect("watch the command's exit")
+    } else {
+        never
+    };
+    let mut collection =
+        Collection::new(&mut child, group, (stdout, stderr), NONCE, deadline, exited);
+    let (requests, mut stop) = watch::channel(None);
+    let requested = requested.to_vec();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for intent in requested {
+            requests.send_replace(Some(intent));
+        }
+        requests.closed().await;
+    });
+    let mut sink = |_: OutputStream, _: &[u8]| {};
+    timeout(LONG, collection.collect(&mut stop, &mut sink))
+        .await
+        .expect("collection ends");
+    drop(stop);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+#[test]
+fn collection_writes_its_core_lines() {
+    if let Some(root) = env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        block_on(async {
+            collect_traced("exit 0", None, &[], true).await;
+            collect_traced(
+                "trap '' TERM; sleep 30",
+                None,
+                &[StopIntent::Graceful],
+                true,
+            )
+            .await;
+            collect_traced(
+                "exec sleep 30",
+                Some(Instant::now() + Duration::from_millis(50)),
+                &[],
+                true,
+            )
+            .await;
+            collect_traced("exec sleep 60", None, &[StopIntent::Force], false).await;
+        });
+        return;
+    }
+    let root = tempfile::tempdir().expect("a trace directory");
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(env::current_exe().expect("the test binary"))
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(Stdio::null())
+        .status()
+        .expect("run the traced child");
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    for line in [
+        " [core] captured command leader completed; remaining process group terminated\n",
+        " [core] command termination requested source=cancelled force=false\n",
+        " [core] command force-killed reason=termination_grace_expired\n",
+        " [core] captured command leader completed during cancelled; termination cleanup continuing\n",
+        " [core] command termination requested source=timeout\n",
+        " [core] captured command leader completed during timed_out; termination cleanup continuing\n",
+        " [core] command termination requested source=cancelled force=true\n",
+        " [core] command termination settlement expired boundary=post_force source=cancelled wait_ready=false\n",
+    ] {
+        assert!(written.contains(line), "{line}{written}");
+    }
+    assert!(!written.contains("sleep"), "{written}");
+}
