@@ -435,6 +435,37 @@ fn an_ask_that_cannot_ask_for_a_url_ends_the_turn_as_mcp_input_required() {
         2,
         "no request follows the input-required result"
     );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("oh-fx: McpInputRequired"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn an_ask_without_json_names_mcp_input_required_on_stderr() {
+    for flags in [&[][..], &["--quiet"][..]] {
+        let server = provider();
+        let home = Home::with(
+            &server,
+            "ask",
+            r#"{"elicitations":[{"mode":"url","message":"Connect your account","url":"https://example.test/connect?state=opaque","elicitationId":"connect-1"}]}"#,
+        );
+        fs::write(home.state.join("url_required"), "").expect("ask for a URL first");
+        let output = home
+            .command()
+            .args(flags)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run oh-fx");
+        assert_eq!(output.status.code(), Some(1), "{flags:?} {output:?}");
+        assert!(output.stdout.is_empty(), "{flags:?} {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.ends_with("oh-fx: McpInputRequired\n"),
+            "{flags:?} {stderr}"
+        );
+        assert_eq!(server.requests().len(), 2, "{flags:?}");
+    }
 }
 
 #[test]

@@ -1698,6 +1698,20 @@ impl Presenter {
         })
     }
 
+    fn describe_ending(&self) -> FailureSummary {
+        let Some(detail) = self.ended_by else {
+            return FailureSummary {
+                error: None,
+                auth_failure: false,
+            };
+        };
+        self.describe_error(detail.text(), None)
+            .unwrap_or_else(|error| FailureSummary {
+                error: Some(crate::write_error_name(&error).to_owned()),
+                auth_failure: false,
+            })
+    }
+
     fn describe_error(&self, code: &str, detail: Option<&str>) -> io::Result<FailureSummary> {
         if self.mode != OutputMode::Json {
             write_stderr(&format!("oh-fx: {code}\n"))?;
@@ -1762,10 +1776,7 @@ impl Presenter {
                 auth_failure: false,
             },
             (None, Some(failure)) => self.describe_failure(failure),
-            (None, None) => FailureSummary {
-                error: self.ended_by.map(|detail| detail.text().to_owned()),
-                auth_failure: false,
-            },
+            (None, None) => self.describe_ending(),
         };
         let completed = report.outcome == TurnOutcome::Completed
             && self.write_error.is_none()
