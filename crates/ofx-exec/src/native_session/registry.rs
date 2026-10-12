@@ -1,7 +1,10 @@
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use ofx_contract::valid_session_id;
+use ofx_vt::Grid;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -11,10 +14,13 @@ use crate::managed_execution::MAX_LIVE_ENTRIES;
 use crate::self_exe::path_for_peer_reexec;
 use crate::shell_resolver::{ResolveError, configured_login_shell, resolve_terminal_shell};
 use crate::terminal_contracts::{
-    Action, Dimensions, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec,
-    StructuredErrorCode, TerminalFailure,
+    Action, ClosePolicy, Dimensions, Lifecycle, MAX_AUTHORITY_TEXT_BYTES, MAX_COMMAND_BYTES,
+    MAX_WRITE_BYTES, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec, StructuredErrorCode,
+    TerminalFailure,
 };
-use crate::terminal_store::{NewTerminal, StoreError, TerminalStore, now_ms};
+use crate::terminal_store::{
+    DurableTerminal, NewTerminal, StoreError, TerminalRecord, TerminalStore, now_ms,
+};
 
 const DEFAULT_DIMENSIONS: Dimensions = Dimensions {
     rows: 24,
@@ -31,6 +37,7 @@ pub struct StartRequest<'a> {
     pub shell: &'a ShellSpec,
     pub return_when: ReturnCondition,
     pub wait_ceiling: Duration,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +47,38 @@ pub struct Outcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadResult {
+    pub session: SessionFacts,
+    pub output: Vec<u8>,
+    pub total_bytes: u64,
+    pub contains_escape: bool,
+    pub output_incomplete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenResult {
+    pub session: SessionFacts,
+    pub text: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteResult {
+    pub session: SessionFacts,
+    pub accepted_bytes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectResult {
     pub session: SessionFacts,
     pub shell: String,
     pub cwd: String,
     pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseResult {
+    pub session: SessionFacts,
+    pub policy: ClosePolicy,
 }
 
 #[derive(Clone)]
@@ -81,6 +115,9 @@ impl Terminals {
         cancel: &CancellationToken,
     ) -> Result<Outcome, TerminalFailure> {
         let refuse = |code| TerminalFailure::new(Action::Start, code, None);
+        if !valid_start(request) {
+            return Err(refuse(StructuredErrorCode::InvalidRequest));
+        }
         let (shell, clean_start) =
             resolve_terminal_shell(configured_login_shell().as_deref(), request.shell).map_err(
                 |error| {
@@ -101,7 +138,7 @@ impl Terminals {
                     shell: &shell.to_string_lossy(),
                     cwd: &request.cwd.to_string_lossy(),
                     command: request.command,
-                    timeout_ms: None,
+                    timeout_ms: request.timeout_ms,
                     dimensions: DEFAULT_DIMENSIONS,
                 },
                 now_ms(),
@@ -112,7 +149,8 @@ impl Terminals {
                     _ => StructuredErrorCode::AuthorityDenied,
                 })
             })?;
-        let session = Arc::new(Session::new(durable));
+        let grid = Grid::new(DEFAULT_DIMENSIONS.columns, DEFAULT_DIMENSIONS.rows).ok();
+        let session = Arc::new(Session::new(durable, grid));
         if !self.registry.reserve(&session) {
             session.abandon_unreleased();
             return Err(refuse(if self.registry.exiting() {
@@ -152,6 +190,64 @@ impl Terminals {
         }
     }
 
+    pub fn read(&self, owner: &str, session_id: &str) -> Result<ReadResult, TerminalFailure> {
+        if let Some(session) = self.live(Action::Read, owner, session_id)? {
+            let drained = session.drain();
+            return Ok(ReadResult {
+                session: session.facts(),
+                output: drained.head,
+                total_bytes: drained.total_bytes,
+                contains_escape: drained.contains_escape,
+                output_incomplete: drained.incomplete,
+            });
+        }
+        let durable = self.saved(Action::Read, owner, session_id)?;
+        Ok(ReadResult {
+            session: saved_facts(durable.record()),
+            output: Vec::new(),
+            total_bytes: 0,
+            contains_escape: false,
+            output_incomplete: true,
+        })
+    }
+
+    pub fn screen(&self, owner: &str, session_id: &str) -> Result<ScreenResult, TerminalFailure> {
+        let unavailable = || {
+            TerminalFailure::new(
+                Action::Screen,
+                StructuredErrorCode::ScreenUnavailable,
+                Some(session_id),
+            )
+        };
+        let Some(session) = self.live(Action::Screen, owner, session_id)? else {
+            self.saved(Action::Screen, owner, session_id)?;
+            return Err(unavailable());
+        };
+        Ok(ScreenResult {
+            text: session.screen_text().ok_or_else(unavailable)?,
+            session: session.facts(),
+        })
+    }
+
+    pub fn write(
+        &self,
+        owner: &str,
+        session_id: &str,
+        text: &str,
+    ) -> Result<WriteResult, TerminalFailure> {
+        let failure = |code| TerminalFailure::new(Action::Write, code, Some(session_id));
+        if text.is_empty() || text.len() > MAX_WRITE_BYTES {
+            return Err(failure(StructuredErrorCode::InvalidRequest));
+        }
+        let session = self
+            .live(Action::Write, owner, session_id)?
+            .ok_or_else(|| failure(StructuredErrorCode::SessionNotFound))?;
+        Ok(WriteResult {
+            accepted_bytes: session.write(text.as_bytes()).map_err(failure)?,
+            session: session.facts(),
+        })
+    }
+
     pub async fn wait(
         &self,
         owner: &str,
@@ -160,15 +256,27 @@ impl Terminals {
         ceiling: Duration,
         cancel: &CancellationToken,
     ) -> Result<Outcome, TerminalFailure> {
-        let session = self.live(Action::Wait, owner, session_id)?;
+        let failure = |code| TerminalFailure::new(Action::Wait, code, Some(session_id));
+        if ceiling.is_zero() {
+            return Err(failure(StructuredErrorCode::InvalidRequest));
+        }
+        let Some(session) = self.live(Action::Wait, owner, session_id)? else {
+            if condition != ReturnCondition::Exit {
+                return Err(failure(StructuredErrorCode::SessionNotFound));
+            }
+            let durable = self.saved(Action::Wait, owner, session_id)?;
+            let termination = durable
+                .termination()
+                .ok_or_else(|| failure(StructuredErrorCode::SessionNotFound))?;
+            return Ok(Outcome {
+                session: saved_facts(durable.record()),
+                outcome: termination.into(),
+            });
+        };
         match session.wait_for(condition, ceiling, cancel).await {
             Err(SessionLost) => {
                 session.finalize_backend().await;
-                Err(TerminalFailure::new(
-                    Action::Wait,
-                    StructuredErrorCode::SessionLost,
-                    Some(session_id),
-                ))
+                Err(failure(StructuredErrorCode::SessionLost))
             }
             Ok(outcome) => {
                 if outcome.is_terminal() {
@@ -183,12 +291,58 @@ impl Terminals {
     }
 
     pub fn inspect(&self, owner: &str, session_id: &str) -> Result<InspectResult, TerminalFailure> {
-        let session = self.live(Action::Inspect, owner, session_id)?;
+        if let Some(session) = self.live(Action::Inspect, owner, session_id)? {
+            return Ok(InspectResult {
+                session: session.facts(),
+                shell: session.shell.clone(),
+                cwd: session.cwd.clone(),
+                command: Some(session.command.clone()),
+            });
+        }
+        let durable = self.saved(Action::Inspect, owner, session_id)?;
+        let record = durable.record();
         Ok(InspectResult {
-            session: session.facts(),
-            shell: session.shell.clone(),
-            cwd: session.cwd.clone(),
-            command: Some(session.command.clone()),
+            session: saved_facts(record),
+            shell: record.shell.clone(),
+            cwd: record.cwd.clone(),
+            command: record.command.clone(),
+        })
+    }
+
+    pub fn list(&self, owner: &str) -> Result<Vec<SessionFacts>, TerminalFailure> {
+        let records = self
+            .registry
+            .store
+            .reconcile_owner(owner, now_ms())
+            .map_err(|error| TerminalFailure::new(Action::List, error.code(), Some(owner)))?;
+        Ok(records
+            .iter()
+            .map(|record| {
+                self.registry
+                    .find(&record.session_id)
+                    .map_or_else(|| saved_facts(record), |session| session.facts())
+            })
+            .collect())
+    }
+
+    pub async fn close(
+        &self,
+        owner: &str,
+        session_id: &str,
+        policy: ClosePolicy,
+    ) -> Result<CloseResult, TerminalFailure> {
+        let failure = |code| TerminalFailure::new(Action::Close, code, Some(session_id));
+        if let Some(session) = self.live(Action::Close, owner, session_id)? {
+            let session = session.close(policy).await.map_err(failure)?;
+            return Ok(CloseResult { session, policy });
+        }
+        let mut durable = self.saved(Action::Close, owner, session_id)?;
+        durable
+            .close(now_ms())
+            .map_err(|error| failure(error.code()))?;
+        Ok(CloseResult {
+            session: saved_facts(durable.record()),
+            policy,
         })
     }
 
@@ -218,16 +372,40 @@ impl Terminals {
         action: Action,
         owner: &str,
         session_id: &str,
-    ) -> Result<Arc<Session>, TerminalFailure> {
+    ) -> Result<Option<Arc<Session>>, TerminalFailure> {
         let failure = |code| TerminalFailure::new(action, code, Some(session_id));
-        let session = self
+        if !valid_session_id(session_id) {
+            return Err(failure(StructuredErrorCode::InvalidRequest));
+        }
+        match self.registry.find(session_id) {
+            Some(session) if session.owner != owner || session.is_closing() => {
+                Err(failure(StructuredErrorCode::AuthorityDenied))
+            }
+            found => Ok(found),
+        }
+    }
+
+    fn saved(
+        &self,
+        action: Action,
+        owner: &str,
+        session_id: &str,
+    ) -> Result<DurableTerminal, TerminalFailure> {
+        let failure = |code| TerminalFailure::new(action, code, Some(session_id));
+        let durable = self
             .registry
-            .find(session_id)
-            .ok_or_else(|| failure(StructuredErrorCode::SessionNotFound))?;
-        if session.owner != owner {
+            .store
+            .open(owner, session_id)
+            .map_err(|error| {
+                failure(match error {
+                    StoreError::OwnedByAnotherSession => StructuredErrorCode::AuthorityDenied,
+                    _ => StructuredErrorCode::SessionNotFound,
+                })
+            })?;
+        if durable.record().lifecycle == Lifecycle::Closed {
             return Err(failure(StructuredErrorCode::AuthorityDenied));
         }
-        Ok(session)
+        Ok(durable)
     }
 }
 
@@ -326,6 +504,29 @@ fn launch_failure_code(error: LaunchError) -> StructuredErrorCode {
     }
 }
 
+fn valid_start(request: &StartRequest<'_>) -> bool {
+    let cwd = request.cwd.as_os_str().as_bytes();
+    request.cwd.is_absolute()
+        && valid_bounded_text(cwd, MAX_AUTHORITY_TEXT_BYTES)
+        && valid_bounded_text(request.command.as_bytes(), MAX_COMMAND_BYTES)
+        && !request.wait_ceiling.is_zero()
+        && request
+            .timeout_ms
+            .is_none_or(|timeout| timeout != 0 && i64::try_from(timeout).is_ok())
+}
+
+fn valid_bounded_text(text: &[u8], maximum: usize) -> bool {
+    !text.is_empty() && text.len() <= maximum && !text.contains(&0)
+}
+
+fn saved_facts(record: &TerminalRecord) -> SessionFacts {
+    SessionFacts {
+        session_id: record.session_id.clone(),
+        lifecycle: record.lifecycle,
+        timed_out: record.timed_out,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,7 +546,7 @@ mod tests {
                 0,
             )
             .unwrap();
-        Arc::new(Session::new(durable))
+        Arc::new(Session::new(durable, None))
     }
 
     fn end(registry: &Registry, id: &str) {
