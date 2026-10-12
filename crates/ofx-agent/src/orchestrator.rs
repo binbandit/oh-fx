@@ -17,9 +17,9 @@ use ofx_contract::{
     McpServersCatalog, McpServersSection, ModelCapabilities, ModelFailureDiagnostic, ModelProvider,
     ModelRecoveryAction, ModelRecoveryCause, ModelRecoveryRequiredAction, ModelRequest, PathAccess,
     PermissionGate, PermissionTraceFacts, PreparedCall, ProviderError, ProviderErrorKind,
-    ProviderOptions, RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId, ReviewFailure,
-    ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, RouteRecoveryKind,
-    RouteRecoveryStatus, SkillBinding, StopOutcome, StreamEvent, SubagentStatus,
+    ProviderOptions, ProviderRouting, RecordedOutput, RecoveredTurn, RecoveryStrategy, RequestId,
+    ReviewFailure, ReviewHold, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests,
+    RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StopOutcome, StreamEvent, SubagentStatus,
     SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
     ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
     ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome, TurnStop, UiEvent, Usage,
@@ -135,6 +135,7 @@ pub struct AgentConfig {
     pub fast_mode: bool,
     pub ultrafast_mode: bool,
     pub auto_compact_percent: AutoCompactPercent,
+    pub provider_routing: ProviderRouting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1225,7 +1226,7 @@ impl Agent {
         events: EventSink<'_>,
     ) -> ProviderOptions<'_> {
         let Some(known) = &self.capabilities else {
-            return conversation_options(ProviderOptions::default());
+            return conversation_options(ProviderOptions::default(), &self.config.provider_routing);
         };
         let options = known
             .model
@@ -1237,7 +1238,7 @@ impl Agent {
                 text: format!("{FAST_UNAVAILABLE_NOTICE}\n"),
             });
         }
-        conversation_options(options)
+        conversation_options(options, &self.config.provider_routing)
     }
 
     async fn complete(
@@ -2281,9 +2282,13 @@ impl Agent {
     }
 }
 
-fn conversation_options(options: ProviderOptions<'_>) -> ProviderOptions<'_> {
+fn conversation_options<'a>(
+    options: ProviderOptions<'a>,
+    routing: &'a ProviderRouting,
+) -> ProviderOptions<'a> {
     ProviderOptions {
         prompt_caching: true,
+        routing: Some(routing),
         ..options
     }
 }

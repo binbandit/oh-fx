@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use ofx_contract::{
     ActionLabel, ApplicableTarget, AutoCompactPercent, CallDescription, CommandProfile,
     CommandRequest, Concurrency, FileChangeStats, FileMutation, FileMutationState,
-    ModelRecoveryAction, PreparedCall, ProviderReplay, ReasoningEffort, RecoveryToolState,
-    ReplaySource, RootUserRequests, StreamSink, SubagentStatus, ToolActivity, ToolCallId,
-    ToolChoice, ToolEffect, ToolImage,
+    ModelRecoveryAction, PreparedCall, ProviderReplay, ProviderRouting, ReasoningEffort,
+    RecoveryToolState, ReplaySource, RootUserRequests, StreamSink, SubagentStatus, ToolActivity,
+    ToolCallId, ToolChoice, ToolEffect, ToolImage,
 };
 
 use super::*;
@@ -36,6 +36,7 @@ struct SeenRequest {
     max_output_tokens: Option<u32>,
     reasoning_effort: Option<String>,
     fast: bool,
+    routing: Option<ProviderRouting>,
 }
 
 type Projection = (String, Vec<String>, bool, bool);
@@ -96,6 +97,7 @@ impl ModelProvider for FakeProvider {
             max_output_tokens: request.max_output_tokens,
             reasoning_effort: request.provider_options.reasoning_effort.map(str::to_owned),
             fast: request.provider_options.fast,
+            routing: request.provider_options.routing.cloned(),
         });
         self.sessions
             .lock()
@@ -653,6 +655,7 @@ fn config() -> AgentConfig {
         fast_mode: false,
         ultrafast_mode: false,
         auto_compact_percent: AutoCompactPercent::new(80).unwrap(),
+        provider_routing: ProviderRouting::default(),
     }
 }
 
@@ -731,6 +734,7 @@ async fn final_answers_stream_raw_text_and_complete_the_turn() {
             max_output_tokens: Some(64),
             reasoning_effort: None,
             fast: false,
+            routing: Some(ProviderRouting::default()),
         }]
     );
 }

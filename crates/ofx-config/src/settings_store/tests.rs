@@ -192,6 +192,9 @@ fn settings_that_cannot_hold_the_selection_are_refused_unchanged() {
         r#"{"permission_mode":"sometimes"}"#,
         r#"{"max_agent_steps":-1}"#,
         r#"{"auto_compact_percent":90}"#,
+        r#"{"provider_order":"azure"}"#,
+        r#"{"provider_order":["azure","azure"]}"#,
+        r#"{"provider_strict":"yes"}"#,
     ] {
         let fixture = Fixture::with_settings(original);
         assert_eq!(

@@ -30,6 +30,13 @@ pub struct ProviderOptions<'a> {
     pub reasoning_effort: Option<&'a str>,
     pub fast: bool,
     pub prompt_caching: bool,
+    pub routing: Option<&'a ProviderRouting>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderRouting {
+    pub order: Vec<String>,
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
