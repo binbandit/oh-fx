@@ -435,6 +435,55 @@ fn credits_and_balance_show_the_gateway_credits_in_the_shell() {
 }
 
 #[test]
+fn quitting_during_a_held_credits_request_still_shuts_down_in_order() {
+    let gate = Gate::default();
+    let server = FakeServer::start([Reply::status(200, "{}").after(&gate)]);
+    let refused = RefusedPort::reserve();
+    let home = Home::with_settings(&json!({
+        "provider": "gateway",
+        "models": {"gateway": "zai/glm-5.2"},
+    }));
+    let credits = format!("http://{}/coding-agent/v1/credits", server.address());
+    let mut command = home.command();
+    command
+        .env("AI_GATEWAY_API_KEY", "vck_live_0123456789abcdef")
+        .env("OH_FX_E2E_GATEWAY_CREDITS_URL", &credits)
+        .env("OH_FX_E2E_GATEWAY_MODELS_URL", refused.base_url())
+        .env("OH_FX_GATEWAY_BASE_URL", refused.base_url());
+    let mut session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "Run /help for commands");
+    session.send(b"/credits\r");
+    let deadline = Instant::now() + WAIT;
+    while server.requests().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the credits request never arrived"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+    let saved = home.root.join("state/oh-fx/diagnostics/last-shutdown.json");
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&saved).expect("read the shutdown report"))
+            .expect("parse the shutdown report");
+    let stages: Vec<&str> = report["stages"]
+        .as_array()
+        .expect("the stages")
+        .iter()
+        .map(|stage| stage["name"].as_str().expect("a stage name"))
+        .collect();
+    for stage in ["persistence_finalized", "worker_thread_joined", "complete"] {
+        assert!(stages.contains(&stage), "{report}");
+    }
+    assert!(
+        !stages.contains(&"worker_thread_join_timed_out"),
+        "{report}"
+    );
+    gate.open();
+}
+
+#[test]
 fn logout_in_a_host_managed_shell_leaves_authentication_to_the_host() {
     let home = Home::with_settings(&settings("http://127.0.0.1:9"));
     let mut command = home.command();

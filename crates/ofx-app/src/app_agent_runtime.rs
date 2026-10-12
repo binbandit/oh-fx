@@ -490,6 +490,10 @@ enum Wake {
     SignIn(Result<(), ChatGptError>),
 }
 
+fn credits_errand(source: ModelSource) -> BoxFuture<'static, Vec<Notice>> {
+    Box::pin(async move { vec![credits_notice(&source.credits().await)] })
+}
+
 struct CatalogFetch {
     source: ModelSource,
     provider: String,
@@ -918,8 +922,8 @@ impl Controller {
             }
             CommandEffect::Logout(target) => self.sign_out(&target).await,
             CommandEffect::ShowCredits => {
-                let notice = credits_notice(&self.state.setup.models_source().credits().await);
-                self.state.emit(UiEvent::Notice { notice });
+                self.catalog
+                    .run(credits_errand(self.state.setup.models_source()));
             }
         }
         true
@@ -1521,10 +1525,7 @@ fn run_deferred(
             }
             CommandEffect::Logout(target) => return state.sign_out_during_work(catalog, &target),
             CommandEffect::ShowCredits => {
-                let source = catalog.source.clone();
-                return catalog.run(Box::pin(async move {
-                    vec![credits_notice(&source.credits().await)]
-                }));
+                return catalog.run(credits_errand(catalog.source.clone()));
             }
             CommandEffect::Clear => {
                 state.pending_clear = Some(state.received_prompts);
