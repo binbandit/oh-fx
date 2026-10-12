@@ -98,15 +98,17 @@ impl Agent {
         if self.resolve_capabilities(cancel).await.is_err() {
             return Err(CompactionError::Cancelled);
         }
-        let options = conversation_options(self.capabilities.as_ref().map_or_else(
-            ProviderOptions::default,
-            |known| {
-                known.model.provider_options(
-                    self.config.reasoning_effort.as_deref(),
-                    self.config.fast_mode,
-                )
-            },
-        ));
+        let options = conversation_options(
+            self.capabilities
+                .as_ref()
+                .map_or_else(ProviderOptions::default, |known| {
+                    known.model.provider_options(
+                        self.config.reasoning_effort.as_deref(),
+                        self.config.fast_mode,
+                    )
+                }),
+            &self.config.provider_routing,
+        );
         let size = self.compaction_size(self.request_fixed_tokens);
         let trace = self.tracer(TraceContext {
             turn_id: ofx_trace::next_turn_id(),

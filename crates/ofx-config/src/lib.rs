@@ -8,6 +8,7 @@ mod io;
 mod model_capabilities;
 mod model_provider;
 mod paths;
+mod provider_routing;
 mod settings_store;
 
 pub use config_runtime::{

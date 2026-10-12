@@ -650,6 +650,7 @@ async fn gateway_review_bodies_carry_no_model_derived_options_for_any_family() {
                 reasoning_effort: Some("high"),
                 fast: true,
                 prompt_caching: true,
+                routing: None,
             },
             session_id: None,
         };

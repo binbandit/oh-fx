@@ -3,9 +3,10 @@ use std::fmt::Write;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ofx_contract::{
-    ChatMessage, DuplicateKeys, ImageAttachment, Json, ModelRequest, ProviderReplay, ReplaySource,
-    ToolArgumentIntegrity, ToolCall, ToolExecutionProvenance, ToolImage, ToolResultStatus,
-    ToolSpec, parse_strict_json, tool_permission_denial_reason,
+    ChatMessage, DuplicateKeys, ImageAttachment, Json, ModelRequest, ProviderOptions,
+    ProviderReplay, ProviderRouting, ReplaySource, ToolArgumentIntegrity, ToolCall,
+    ToolExecutionProvenance, ToolImage, ToolResultStatus, ToolSpec, parse_strict_json,
+    tool_permission_denial_reason,
 };
 use ofx_images::{AttachmentError, load_verified_snapshot};
 
@@ -69,8 +70,7 @@ pub(crate) fn build_request(request: &ModelRequest<'_>, user_agent: &str) -> Res
     }
     write_provider_options(
         &mut out,
-        request.provider_options.fast,
-        request.provider_options.prompt_caching,
+        &request.provider_options,
         parallel_tool_calls(request.model),
     );
     if request.model == USER_AGENT_MODEL {
@@ -181,26 +181,28 @@ fn write_tools(out: &mut String, tools: &[ToolSpec]) {
 
 fn write_provider_options(
     out: &mut String,
-    fast: bool,
-    prompt_caching: bool,
+    options: &ProviderOptions<'_>,
     parallel_tool_calls: Option<bool>,
 ) {
-    let gateway = fast || prompt_caching;
+    let routing = options.routing.filter(|routing| !routing.order.is_empty());
+    let gateway = options.fast || options.prompt_caching || routing.is_some();
     if !gateway && parallel_tool_calls.is_none() {
         return;
     }
     out.push_str(",\"providerOptions\":{");
     if gateway {
+        let mut fields = Vec::new();
+        if options.fast {
+            fields.push("\"speed\":\"fast\"".to_owned());
+        }
+        if options.prompt_caching {
+            fields.push("\"caching\":\"auto\"".to_owned());
+        }
+        if let Some(routing) = routing {
+            fields.push(routing_field(routing));
+        }
         out.push_str("\"gateway\":{");
-        if fast {
-            out.push_str("\"speed\":\"fast\"");
-        }
-        if prompt_caching {
-            if fast {
-                out.push(',');
-            }
-            out.push_str("\"caching\":\"auto\"");
-        }
+        out.push_str(&fields.join(","));
         out.push('}');
     }
     if let Some(parallel) = parallel_tool_calls {
@@ -212,6 +214,22 @@ fn write_provider_options(
         out.push('}');
     }
     out.push('}');
+}
+
+fn routing_field(routing: &ProviderRouting) -> String {
+    let mut field = String::from(if routing.strict {
+        "\"only\":["
+    } else {
+        "\"order\":["
+    });
+    for (index, slug) in routing.order.iter().enumerate() {
+        if index > 0 {
+            field.push(',');
+        }
+        push_json_string(&mut field, slug);
+    }
+    field.push(']');
+    field
 }
 
 fn validate_history(messages: &[ChatMessage]) -> Result<()> {

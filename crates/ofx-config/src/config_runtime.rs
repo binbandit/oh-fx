@@ -4,8 +4,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ofx_contract::{
-    AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ReasoningEffort,
-    StatuslineItem, StatuslineToggles, parse_strict_json_value,
+    AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ProviderRouting,
+    ReasoningEffort, StatuslineItem, StatuslineToggles, parse_strict_json_value,
 };
 use serde_json::{Map, Value};
 
@@ -18,7 +18,7 @@ use crate::context_limits::{
 };
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
-use crate::settings_store::{MAX_PROVIDER_ORDER_ENTRIES, validate_provider_slug};
+use crate::provider_routing::{RoutingLayer, parse_provider_order_list, resolve};
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 const PROJECT_FILE: &str = ".oh-fx.json";
@@ -303,6 +303,12 @@ pub enum LayerError {
     InvalidCredentialSourceType,
     #[error("InvalidCredentialSource")]
     InvalidCredentialSource,
+    #[error("InvalidProviderOrderType")]
+    InvalidProviderOrderType,
+    #[error("InvalidProviderOrderValue")]
+    InvalidProviderOrderValue,
+    #[error("InvalidProviderStrictType")]
+    InvalidProviderStrictType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -363,6 +369,7 @@ struct Layer {
     session_titles: Option<bool>,
     auto_upgrade: Option<bool>,
     theme: Option<String>,
+    provider_routing: RoutingLayer,
 }
 
 impl Layer {
@@ -413,6 +420,7 @@ pub struct Settings {
     resumed: Layer,
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
+    project_routing: RoutingLayer,
     additional_directories: Vec<String>,
     additional_directories_read_at: usize,
     diagnostics: Vec<ConfigDiagnostic>,
@@ -883,6 +891,17 @@ impl Settings {
         )
     }
 
+    pub fn provider_routing(&self, lookup: EnvironmentLookup<'_>) -> ProviderRouting {
+        resolve(
+            [
+                &self.workspace.provider_routing,
+                &self.global.provider_routing,
+                &self.project_routing,
+            ],
+            lookup,
+        )
+    }
+
     pub fn auto_compact_percent(&self, lookup: EnvironmentLookup<'_>) -> AutoCompactPercent {
         AutoCompactPercent::resolve(
             self.workspace
@@ -906,13 +925,14 @@ impl Settings {
             }
         }
         let parsed = parse_steps(&project).and_then(|steps| {
-            parse_switch(&project, "context", LayerError::InvalidContextType)
-                .map(|context| (steps, context))
+            let context = parse_switch(&project, "context", LayerError::InvalidContextType)?;
+            Ok((steps, context, RoutingLayer::parse(&project)?))
         });
         match parsed {
-            Ok((steps, context)) => {
+            Ok((steps, context, routing)) => {
                 self.project_max_agent_steps = steps;
                 self.project_context = context;
+                self.project_routing = routing;
             }
             Err(failure) => self.diagnose(ConfigLayer::Project, failure.into(), None),
         }
@@ -1012,20 +1032,7 @@ impl Settings {
 }
 
 pub fn is_valid_provider_order_list(raw: &str) -> bool {
-    let mut slugs: Vec<&str> = Vec::new();
-    for slug in raw.split(',').map(|token| token.trim_matches(TRIMMED)) {
-        if slug.is_empty() {
-            continue;
-        }
-        if !validate_provider_slug(slug)
-            || slugs.len() >= MAX_PROVIDER_ORDER_ENTRIES
-            || slugs.contains(&slug)
-        {
-            return false;
-        }
-        slugs.push(slug);
-    }
-    !slugs.is_empty()
+    matches!(parse_provider_order_list(raw), Ok(Some(_)))
 }
 
 fn environment_provider(lookup: EnvironmentLookup<'_>) -> Option<String> {
@@ -1139,6 +1146,7 @@ fn parse_layer(object: &Map<String, Value>, scope: LayerScope) -> Result<ParsedL
         Err(error) => rejected.push(LayerError::ContextLimits(error)),
     }
     layer.max_agent_steps = parse_steps(object)?;
+    layer.provider_routing = RoutingLayer::parse(object)?;
     layer.auto_compact_percent = object
         .get("auto_compact_percent")
         .map(parse_auto_compact_percent)
