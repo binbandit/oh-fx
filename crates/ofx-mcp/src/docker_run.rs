@@ -6,9 +6,12 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use ofx_text::lowercase_hex;
+use ofx_trace::trace_log;
 use rustix::fs::{FileType, Mode, OFlags};
 use tokio::process::Command;
 
+use crate::error::McpError;
+use crate::mcp_trace::{MCP, TIMEOUT};
 use crate::timing::timeout;
 
 const MAX_CONTAINER_ID_BYTES: u64 = 128;
@@ -36,8 +39,18 @@ impl Cleanup {
     pub(crate) async fn run(self) {
         let container_id = read_container_id(&self.cidfile_path);
         let _ = fs::remove_file(&self.cidfile_path);
-        let Ok(container_id) = container_id else {
-            return;
+        let container_id = match container_id {
+            Ok(container_id) => container_id,
+            Err(error) => {
+                if error.kind() != io::ErrorKind::NotFound {
+                    trace_log!(
+                        MCP,
+                        "docker MCP cleanup skipped unreadable cidfile err={}",
+                        McpError::from(error)
+                    );
+                }
+                return;
+            }
         };
         let mut command = Command::new(&self.docker_command);
         command
@@ -47,8 +60,34 @@ impl Cleanup {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        if let Ok(mut child) = command.spawn() {
-            let _ = timeout(CLEANUP_TIMEOUT, child.wait()).await;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                trace_log!(
+                    MCP,
+                    "docker MCP cleanup failed err={}",
+                    McpError::from(error)
+                );
+                return;
+            }
+        };
+        match timeout(CLEANUP_TIMEOUT, child.wait()).await {
+            Err(_) => trace_log!(MCP, "docker MCP cleanup failed err={TIMEOUT}"),
+            Ok(Err(error)) => trace_log!(
+                MCP,
+                "docker MCP cleanup failed err={}",
+                McpError::from(error)
+            ),
+            Ok(Ok(status)) if !status.success() => trace_log!(
+                MCP,
+                "docker MCP cleanup failed term={}",
+                if status.code().is_some() {
+                    "exited"
+                } else {
+                    "signal"
+                }
+            ),
+            Ok(Ok(_)) => trace_log!(MCP, "docker MCP container cleanup complete"),
         }
     }
 }

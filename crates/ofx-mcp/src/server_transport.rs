@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ofx_http::ConnectionOptions;
 use ofx_text::{HeadRounding, encode_terminal_safe, mask_secrets, write_head_tail_bounded};
+use ofx_trace::trace_log;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -23,6 +24,7 @@ use crate::legacy_streamable_http::{
 };
 use crate::mcp_auth_store::CredentialStore;
 use crate::mcp_contract::McpServerConfig;
+use crate::mcp_trace::MCP;
 use crate::operation_control::monotonic_millis;
 use crate::protocol_messages::{
     STDIO_INITIALIZED_NOTIFICATION, ServerCapabilities, build_legacy_initialize_request,
@@ -136,6 +138,17 @@ enum StartupRestartDecision {
     StopChildExited,
 }
 
+impl StartupRestartDecision {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::StopLimit => "stop_limit",
+            Self::StopDeadlineSpent => "stop_deadline_spent",
+            Self::StopChildExited => "stop_child_exited",
+        }
+    }
+}
+
 fn decide_startup_restart(
     attempts: u8,
     limit: u8,
@@ -178,10 +191,27 @@ pub(crate) async fn connect_stdio(
             Instant::now() >= deadline,
             failure.error == McpError::McpServerExitedDuringStartup,
         );
-        if decision != StartupRestartDecision::Restart {
-            return Err(failure);
+        match decision {
+            StartupRestartDecision::Restart => {}
+            StartupRestartDecision::StopLimit => return Err(failure),
+            StartupRestartDecision::StopDeadlineSpent | StartupRestartDecision::StopChildExited => {
+                trace_log!(
+                    MCP,
+                    "skipping stdio startup restart server={} reason={} err={}",
+                    config.name,
+                    decision.label(),
+                    failure.error
+                );
+                return Err(failure);
+            }
         }
         restart_attempts += 1;
+        trace_log!(
+            MCP,
+            "restarting stdio server after startup failure server={} attempt={restart_attempts} err={}",
+            config.name,
+            failure.error
+        );
     }
 }
 

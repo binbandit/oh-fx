@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ofx_jsonrpc::{Correlator, RegisterError, RequestId, WaitError};
+use ofx_trace::trace_log;
 use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Response, StatusCode, Url};
 use serde_json::Value;
@@ -14,6 +15,7 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_sse::{Event, Parser};
 use crate::legacy_streamable_http::HttpEndpoint;
+use crate::mcp_trace::{MCP, TIMEOUT};
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::server_auth::HttpAuth;
 use crate::streamable_http::{EndpointError, MediaType, parse_media_type, validate_endpoint};
@@ -268,11 +270,20 @@ impl SseShared {
 
     pub(crate) async fn send_cancellation(&self, endpoint: &str, request_id: u64, reason: &str) {
         let body = build_cancellation_notification(request_id, reason);
-        let _ = timeout_at(
+        let sent = timeout_at(
             Instant::now() + CANCELLATION_TIMEOUT,
             self.post_message(endpoint, &body, None),
         )
         .await;
+        let error = match sent {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => TIMEOUT.to_owned(),
+        };
+        trace_log!(
+            MCP,
+            "failed to send HTTP+SSE cancellation request_id={request_id} err={error}"
+        );
     }
 
     async fn read_connection(&self) -> Result<(), McpError> {
@@ -351,7 +362,9 @@ impl SseShared {
         } else {
             Ok(data.to_owned())
         };
-        self.responses.resolve(&key, outcome);
+        if !self.responses.resolve(&key, outcome) {
+            trace_log!(MCP, "ignored late HTTP+SSE response request_id={id}");
+        }
         Ok(())
     }
 

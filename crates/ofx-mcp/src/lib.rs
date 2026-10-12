@@ -27,6 +27,7 @@ mod mcp_auth_store;
 mod mcp_contract;
 mod mcp_json;
 mod mcp_runtime;
+mod mcp_trace;
 mod model_catalog;
 mod native_config;
 mod oauth_uri;
