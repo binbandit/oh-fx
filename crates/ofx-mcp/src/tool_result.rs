@@ -1,4 +1,6 @@
-use ofx_contract::{ToolOutput, format_tool_execution_error_json, prepare_model_output};
+use ofx_contract::{
+    ToolOutput, ToolStatusDetail, format_tool_execution_error_json, prepare_model_output,
+};
 use ofx_images::{parse_tool_images, supported_media_type};
 use ofx_jsonrpc::RpcError;
 use ofx_text::sanitize_model_text_owned;
@@ -55,7 +57,9 @@ pub(crate) fn model_output(
             prefixed_name,
             format!("{{\"resultType\":\"input_required\",\"inputRequests\":{requests}}}"),
             max_bytes,
-        )),
+        ))
+        .with_status_detail(ToolStatusDetail::McpInputRequired)
+        .finishing_turn(),
         ToolCallOutcome::InputRoundsExceeded => ToolOutput::failure(prepare_model_output(
             prefixed_name,
             INPUT_ROUNDS_EXCEEDED.to_owned(),
@@ -282,11 +286,17 @@ mod tests {
         ));
         assert_eq!(required.status, ToolResultStatus::Failure);
         assert_eq!(
+            required.status_detail,
+            Some(ToolStatusDetail::McpInputRequired)
+        );
+        assert!(required.finish_turn);
+        assert_eq!(
             required.content,
             r#"{"resultType":"input_required","inputRequests":{"e1":{"method":"elicitation/create","params":{"mode":"url"}}}}"#
         );
         let exceeded = output(ToolCallOutcome::InputRoundsExceeded);
         assert_eq!(exceeded.status, ToolResultStatus::Failure);
+        assert!(!exceeded.finish_turn);
         assert_eq!(
             exceeded.content,
             "MCP protocol failure: input-required continuation limit exceeded"

@@ -407,6 +407,37 @@ fn a_terminal_ask_declines_a_url_without_opening_it() {
 }
 
 #[test]
+fn an_ask_that_cannot_ask_for_a_url_ends_the_turn_as_mcp_input_required() {
+    let server = provider();
+    let home = Home::with(
+        &server,
+        "ask",
+        r#"{"elicitations":[{"mode":"url","message":"Connect your account","url":"https://example.test/connect?state=opaque","elicitationId":"connect-1"}]}"#,
+    );
+    fs::write(home.state.join("url_required"), "").expect("ask for a URL first");
+    let output = home
+        .command()
+        .arg("--json")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run oh-fx");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["error"], "McpInputRequired", "{result}");
+    assert_eq!(result["exit_code"], 1);
+    assert_eq!(result["final_output"], "");
+    assert_eq!(
+        result["tool_calls"][1],
+        json!({"name": "mcp_fixture_profile", "status": "error"})
+    );
+    assert_eq!(
+        server.requests().len(),
+        2,
+        "no request follows the input-required result"
+    );
+}
+
+#[test]
 fn the_shell_retries_a_tool_call_after_its_url_flow_is_completed() {
     let server = provider();
     let home = Home::with(

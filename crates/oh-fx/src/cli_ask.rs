@@ -26,8 +26,8 @@ use ofx_config::{
 use ofx_contract::{
     ApprovalRequest, CallDescription, FULL_ACCESS_WARNING, ImageAttachment, ModelRecoveryAction,
     ModelRecoveryCause, PermissionMode, QuestionAsker, RecoveredTurn, RouteRecoveryStatus,
-    ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent,
-    Usage, format_unknown_action,
+    ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, ToolStatusDetail,
+    TurnOutcome, UiEvent, Usage, format_unknown_action,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_gateway::HttpFailure;
@@ -1090,6 +1090,7 @@ struct Presenter {
     recovery: Option<RouteRecoveryStatus>,
     saving: bool,
     write_error: Option<&'static str>,
+    ended_by: Option<ToolStatusDetail>,
     command_echo: Option<Arc<CommandEcho>>,
     command_calls: Vec<ToolCallId>,
     approvals: Option<Approvals>,
@@ -1132,6 +1133,7 @@ impl Presenter {
             recovery: None,
             saving: false,
             write_error: None,
+            ended_by: None,
             command_echo: None,
             command_calls: Vec::new(),
             approvals: None,
@@ -1271,6 +1273,7 @@ impl Presenter {
                 status,
                 content,
                 command_result,
+                status_detail,
                 ..
             } => self.tool_finished(
                 &call_id,
@@ -1281,6 +1284,7 @@ impl Presenter {
                     &content,
                     command_result.as_deref(),
                 ),
+                status_detail,
             ),
             UiEvent::ToolRejected {
                 call_id,
@@ -1305,7 +1309,15 @@ impl Presenter {
         self.write_status(StatusBlock::Notice, &format!("[notice] {text}\n"))
     }
 
-    fn tool_finished(&mut self, call_id: &ToolCallId, record: ToolRecord) -> io::Result<()> {
+    fn tool_finished(
+        &mut self,
+        call_id: &ToolCallId,
+        record: ToolRecord,
+        detail: Option<ToolStatusDetail>,
+    ) -> io::Result<()> {
+        if detail == Some(ToolStatusDetail::McpInputRequired) {
+            self.ended_by = detail;
+        }
         self.tool_calls.push(record);
         match self.take_settling_progress(call_id) {
             Some(line) => self.write_status(StatusBlock::Progress, &line),
@@ -1751,7 +1763,7 @@ impl Presenter {
             },
             (None, Some(failure)) => self.describe_failure(failure),
             (None, None) => FailureSummary {
-                error: None,
+                error: self.ended_by.map(|detail| detail.text().to_owned()),
                 auth_failure: false,
             },
         };
