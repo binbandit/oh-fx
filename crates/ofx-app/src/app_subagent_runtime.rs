@@ -118,14 +118,13 @@ impl ChildAgents for ChildFactory {
 
     fn agent(&self, settings: &ChildSettings, permission_mode: LivePermissionMode) -> Agent {
         let route = self.route();
-        let parent = self.parent_config().clone();
         let config = AgentConfig {
             model: settings.model.clone(),
             max_output_tokens: output_tokens(route.connection.as_ref(), &settings.model),
             reasoning_effort: settings.effort.clone().into_named(),
             fast_mode: settings.fast_mode,
-            ultrafast_mode: parent.ultrafast_mode && settings.ultrafast_mode,
-            ..parent
+            ultrafast_mode: settings.ultrafast_mode,
+            ..self.parent_config().clone()
         };
         let permissions =
             PermissionPolicy::new(permission_mode.clone(), self.workspace_root.clone())

@@ -19,11 +19,13 @@ pub(crate) struct ChildRelay<'a> {
     pub(crate) feedback: &'a (dyn Fn(String) + Sync),
     pub(crate) child_id: &'a str,
     pub(crate) parent_id: &'a str,
+    pub(crate) parent_ultrafast: bool,
 }
 
 pub(crate) struct ChildRuntime {
     agent: Agent,
     base_prompt: String,
+    ultrafast_preference: bool,
     permission_mode: LivePermissionMode,
     record: Option<Arc<dyn ChildRecord>>,
 }
@@ -49,6 +51,7 @@ impl ChildRuntime {
     pub(crate) fn new(agent: Agent, permission_mode: LivePermissionMode) -> Self {
         Self {
             base_prompt: agent.config().system_prompt.clone(),
+            ultrafast_preference: agent.config().ultrafast_mode,
             agent,
             permission_mode,
             record: None,
@@ -81,6 +84,7 @@ impl ChildRuntime {
         self.agent.replace_tools(tools);
         let mut config = self.agent.config().clone();
         config.system_prompt = system_prompt(&self.base_prompt, instructions);
+        config.ultrafast_mode = self.ultrafast_preference && relay.parent_ultrafast;
         self.agent.set_config(config);
         self.agent
             .inherit_root_user_requests(Arc::clone(&work.root_user_requests));

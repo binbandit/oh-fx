@@ -1,17 +1,18 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ofx_contract::{
     Admission, ApplicableTarget, ApprovalAnswer, ApprovalDecision, ApprovalOrigin,
-    AutoCompactPercent, CallDescription, ChatMessage, Completion, Concurrency, FileChange,
-    FileMutation, FileMutationState, FinishReason, ModelProvider, ModelRequest, PathAccess,
-    PermissionGate, PreparedCall, ProposedFileChange, ProviderError, ProviderErrorKind,
-    ProviderRouting, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, StreamEvent,
-    StreamSink, SubagentRequestInput, SubagentStatus, SubagentStatusSink, Tool, ToolActivity,
-    ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
+    AutoCompactPercent, CallDescription, CapabilityLookup, CapabilityResolver, ChatMessage,
+    Completion, Concurrency, FileChange, FileMutation, FileMutationState, FinishReason,
+    ModelCapabilities, ModelProvider, ModelRequest, PathAccess, PermissionGate, PreparedCall,
+    ProposedFileChange, ProviderError, ProviderErrorKind, ProviderRouting, ReviewRequest,
+    ReviewVerdict, Reviewed, RootUserRequests, StreamEvent, StreamSink, SubagentRequestInput,
+    SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolCall, ToolCallId, ToolEffect,
+    ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -43,6 +44,7 @@ pub(super) struct Seen {
     system_prompt: String,
     tools: Vec<String>,
     pub(super) messages: Vec<ChatMessage>,
+    ultrafast: bool,
 }
 
 #[derive(Default)]
@@ -79,6 +81,7 @@ impl ModelProvider for Provider {
             system_prompt: request.instructions[0].to_owned(),
             tools: request.tools.iter().map(|tool| tool.name.clone()).collect(),
             messages: request.messages.to_vec(),
+            ultrafast: request.provider_options.ultrafast,
         });
         let script = self.scripts.lock().unwrap().pop_front();
         let probes = request.messages.len();
@@ -205,6 +208,23 @@ impl PreparedCall for ProbeCall {
     }
 }
 
+struct UltraCapable;
+
+impl CapabilityResolver for UltraCapable {
+    fn resolve<'a>(
+        &'a self,
+        _model: &'a str,
+        _cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, CapabilityLookup> {
+        Box::pin(async {
+            CapabilityLookup::Resolved(ModelCapabilities {
+                supports_ultrafast_mode: true,
+                ..ModelCapabilities::default()
+            })
+        })
+    }
+}
+
 pub(super) struct Agents {
     provider: Arc<Provider>,
     created: Mutex<Vec<(ChildSettings, LivePermissionMode)>>,
@@ -217,6 +237,7 @@ pub(super) struct Agents {
     pub(super) asked: Notify,
     issued: AtomicUsize,
     released: Arc<AtomicUsize>,
+    parent_ultrafast: AtomicBool,
 }
 
 impl Agents {
@@ -235,7 +256,7 @@ impl ChildAgents for Agents {
                 model: "parent-model".to_owned(),
                 effort: ReasoningEffort::Auto,
                 fast_mode: false,
-                ultrafast_mode: false,
+                ultrafast_mode: self.parent_ultrafast.load(Ordering::SeqCst),
             },
             permission_mode: PermissionMode::Auto,
         }
@@ -258,11 +279,12 @@ impl ChildAgents for Agents {
                 step_limit: 0,
                 reasoning_effort: settings.effort.clone().into_named(),
                 fast_mode: settings.fast_mode,
-                ultrafast_mode: false,
+                ultrafast_mode: settings.ultrafast_mode,
                 auto_compact_percent: AutoCompactPercent::resolve(None, None),
                 provider_routing: ProviderRouting::default(),
             },
-        );
+        )
+        .with_capability_resolver(Arc::new(UltraCapable));
         if self.asks {
             agent.with_approvals(self.approvals.clone())
         } else {
@@ -334,6 +356,7 @@ impl Harness {
             asked: Notify::new(),
             issued: AtomicUsize::new(0),
             released: Arc::new(AtomicUsize::new(0)),
+            parent_ultrafast: AtomicBool::new(false),
         });
         Self {
             host: SubagentHost::new(Arc::clone(&agents) as Arc<dyn ChildAgents>),
@@ -424,6 +447,41 @@ async fn a_run_returns_the_childs_reply_from_a_fresh_conversation() {
             .iter()
             .all(|(_, mode)| mode.get() == PermissionMode::Auto)
     );
+}
+
+#[tokio::test]
+async fn a_named_child_stops_asking_for_ultra_once_its_parent_does() {
+    let harness = Harness::new(vec![Script::Reply("first"), Script::Reply("second")]);
+    harness
+        .agents
+        .parent_ultrafast
+        .store(true, Ordering::SeqCst);
+    let first = SubagentRequestInput::Message {
+        agent: "reviewer",
+        instructions: None,
+        message: "look at a",
+        model: Some("openai/gpt-6-astra"),
+        effort: None,
+    };
+    assert_eq!(harness.run("call-1", first).await, succeeded("first"));
+    harness
+        .agents
+        .parent_ultrafast
+        .store(false, Ordering::SeqCst);
+    assert_eq!(
+        harness
+            .run("call-2", message("reviewer", None, "look at b"))
+            .await,
+        succeeded("second")
+    );
+    let seen = harness.provider.seen();
+    assert_eq!(
+        seen.iter()
+            .map(|request| request.ultrafast)
+            .collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert_eq!(harness.agents.created.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
