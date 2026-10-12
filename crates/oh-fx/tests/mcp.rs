@@ -1465,9 +1465,11 @@ fn the_mcp_menu_adds_removes_and_trusts_servers() {
     session.send(b"\r");
     session
         .wait_for(SHELL_WAIT, |screen| {
-            screen.contains("MCP 1  [Servers]") && !screen.contains(&added)
+            screen.contains("MCP 1  [Servers]")
+                && !screen.contains(&added)
+                && screen.contains("MCP configuration reloaded.")
         })
-        .unwrap_or_else(|screen| panic!("the removed server stayed listed:\n{screen}"));
+        .unwrap_or_else(|screen| panic!("the removal did not finish reloading:\n{screen}"));
     session.send(b"\r");
     session.send(b"x");
     shown(
