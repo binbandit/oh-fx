@@ -1,12 +1,13 @@
 use ofx_contract::{
-    DuplicateKeys, Json, Object, ProviderError, ProviderErrorKind, StreamEvent, StreamSink, Usage,
-    parse_strict_json,
+    DuplicateKeys, Json, Object, ProviderBilling, ProviderError, ProviderErrorKind, StreamEvent,
+    StreamSink, Usage, parse_strict_json,
 };
 use ofx_http::SseDecoder;
 use ofx_text::mask_secrets;
 use ofx_trace::{TraceContext, keyless_json_preview, trace_event, trace_log};
 use tokio_util::sync::CancellationToken;
 
+mod billing;
 mod tools;
 
 use super::replay::ReplayBuilder;
@@ -14,6 +15,7 @@ use super::resolved_model;
 use crate::chat_completions::ChunkSource;
 use crate::secret_mask::mask_configured_secrets;
 use crate::stall_watch::StallWatch;
+use billing::Generation;
 pub(crate) use tools::ToolStream;
 
 const MAX_SSE_EVENT_BYTES: usize = 32 * 1024 * 1024;
@@ -98,6 +100,8 @@ pub(crate) struct GatewayCompletion {
     pub(crate) events: usize,
     pub(crate) tools: ToolStream,
     pub(crate) replay: Option<String>,
+    pub(crate) billing: Option<ProviderBilling>,
+    generation: Generation,
 }
 
 pub(crate) struct Stream<'a> {
@@ -190,12 +194,14 @@ impl Stream<'_> {
         let Some(fields) = root.as_object() else {
             return Ok(false);
         };
+        completion.generation.observe(fields);
         let Some(kind) = fields.get("type").and_then(Json::as_str) else {
             return Ok(false);
         };
         replay.observe(kind, fields, completion.content.len())?;
         match kind {
             "response-metadata" => {
+                completion.generation.response_metadata(fields);
                 if let Some(model) = fields
                     .get("modelId")
                     .and_then(Json::as_str)
@@ -240,6 +246,7 @@ impl Stream<'_> {
                 }
                 completion.finish = Some(finish);
                 completion.usage = usage(fields);
+                completion.billing = completion.generation.billing(fields, &completion.tools);
                 terminated("valid_finish", completion.finish);
                 return Ok(true);
             }

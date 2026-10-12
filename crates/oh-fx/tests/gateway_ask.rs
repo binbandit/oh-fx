@@ -179,6 +179,74 @@ fn provider_routing_from_settings_the_project_and_the_environment_reaches_the_ga
     );
 }
 
+fn billed_reply(cost: Option<&str>) -> Reply {
+    let mut gateway = json!({
+        "generationId": "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "routing": {"canonicalSlug": "zai/glm-5.2"},
+    });
+    if let Some(cost) = cost {
+        gateway["cost"] = json!(cost);
+    }
+    Reply::sse(&[
+        json!({"type": "response-metadata", "timestamp": "2026-04-01T12:11:07Z", "modelId": "zai/glm-5.2"}).to_string(),
+        json!({"type": "text-delta", "id": "t", "delta": "billed"}).to_string(),
+        json!({
+            "type": "finish",
+            "finishReason": {"unified": "stop"},
+            "usage": {"inputTokens": {"total": 12, "cacheRead": 4}, "outputTokens": {"total": 3}},
+            "providerMetadata": {"gateway": gateway},
+        })
+        .to_string(),
+    ])
+}
+
+fn saved_usage(home: &Home, output: &Output) -> Value {
+    let result: Value = serde_json::from_str(&stdout(output)).expect("a JSON result");
+    let id = result["session_id"].as_str().expect("a session id");
+    let usage = home
+        .root
+        .join("data/oh-fx/sessions")
+        .join(id)
+        .join("usage-v2.json");
+    serde_json::from_str::<Value>(&fs::read_to_string(usage).expect("read usage-v2.json"))
+        .expect("session usage")["snapshot"]
+        .clone()
+}
+
+#[test]
+fn a_gateway_finish_with_its_generation_and_cost_settles_exact_usage() {
+    let server = FakeServer::start([billed_reply(Some("0.0125")), billed_reply(None)]);
+    let url = chat_url(&server);
+    let home = Home::with_settings(&json!({"session_titles": false}));
+    let trace = home.root.join("trace.log");
+    let environment = [
+        ("AI_GATEWAY_API_KEY", API_KEY),
+        ("OH_FX_E2E_GATEWAY_CHAT_URL", url.as_str()),
+        ("OH_FX_TRACE_LOG", trace.to_str().expect("a text path")),
+    ];
+    let exact = home.run(&["ask", "--json", "first"], &environment);
+    assert!(exact.status.success(), "{}", stderr(&exact));
+    let snapshot = saved_usage(&home, &exact);
+    assert_eq!(snapshot["billing"], "complete", "{snapshot}");
+    assert_eq!(snapshot["models"][0]["model"], "zai/glm-5.2", "{snapshot}");
+    assert_eq!(snapshot["input_tokens"], 12, "{snapshot}");
+    assert_eq!(snapshot["cache_read_tokens"], 4, "{snapshot}");
+    assert_eq!(snapshot["total_cost"], 0.0125, "{snapshot}");
+    let log = fs::read_to_string(&trace).expect("read the trace log");
+    assert!(!log.contains("stream billing ignored"), "{log}");
+
+    let unpriced = home.run(&["ask", "--json", "second"], &environment);
+    assert!(unpriced.status.success(), "{}", stderr(&unpriced));
+    let snapshot = saved_usage(&home, &unpriced);
+    assert_ne!(snapshot["billing"], "complete", "{snapshot}");
+    let log = fs::read_to_string(&trace).expect("read the trace log");
+    assert!(
+        log.lines().any(|line| line.contains("[sse]")
+            && line.ends_with("stream billing ignored reason=invalid_terminal_metadata")),
+        "{log}"
+    );
+}
+
 #[test]
 fn the_oidc_token_outranks_the_api_key_and_blank_values_do_not_count() {
     for (oidc, bearer) in [(OIDC_TOKEN, OIDC_TOKEN), (" \t", API_KEY)] {
