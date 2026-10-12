@@ -1978,7 +1978,7 @@ fn installing_then_showing_a_skill_completes_while_native_stream_is_held() {
         })
         .unwrap();
     session.send(b"/exit\r");
-    assert!(session.wait_exit(WAIT).unwrap().success());
+    assert!(session.exited_within(WAIT).success());
 }
 
 #[test]
@@ -2009,7 +2009,7 @@ fn native_cancel_stays_live_while_an_install_waits_for_its_lock() {
         })
         .unwrap();
     session.send(b"/exit\r");
-    assert!(session.wait_exit(WAIT).unwrap().success());
+    assert!(session.exited_within(WAIT).success());
 }
 
 #[test]
@@ -2055,7 +2055,7 @@ fn native_approval_stays_live_while_an_install_waits_for_its_lock() {
         })
         .unwrap();
     session.send(b"/exit\r");
-    assert!(session.wait_exit(WAIT).unwrap().success());
+    assert!(session.exited_within(WAIT).success());
 }
 
 #[test]
