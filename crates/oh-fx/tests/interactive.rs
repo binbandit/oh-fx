@@ -647,6 +647,7 @@ fn an_explicit_ultra_request_outlasts_a_resumed_session_saved_without_it() {
     wait(&session, "ultrafast: requested on");
     session.send(b"first\r");
     wait(&session, "First done.");
+    wait(&session, "Gateway did not confirm it was served");
     quit(session);
     let ultra = saved_session_ids(&home).pop().expect("the Ultra session");
 
