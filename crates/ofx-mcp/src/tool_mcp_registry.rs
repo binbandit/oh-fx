@@ -330,7 +330,12 @@ impl PreparedCall for McpCall {
                 ),
                 Err(CallFailure::DefinitionChanged) => self.changed_definition(),
                 Err(CallFailure::Mcp(error)) => {
-                    if error == McpError::McpResponseFrameTooLarge {
+                    if matches!(
+                        error,
+                        McpError::McpResponseFrameTooLarge
+                            | McpError::ResponseTooLarge
+                            | McpError::SseEventTooLarge
+                    ) {
                         trace_log!(
                             MCP,
                             "server {server_name} exceeded response frame cap_bytes={}",
