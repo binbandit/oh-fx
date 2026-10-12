@@ -120,6 +120,7 @@ pub enum ToolStatusDetail {
     StalePreview,
     Cancelled,
     Rejected,
+    McpInputRequired,
 }
 
 impl ToolStatusDetail {
@@ -129,6 +130,7 @@ impl ToolStatusDetail {
             Self::StalePreview => "stale preview",
             Self::Cancelled => "cancelled",
             Self::Rejected => "rejected",
+            Self::McpInputRequired => "McpInputRequired",
         }
     }
 }

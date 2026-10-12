@@ -111,6 +111,7 @@ const EMPTY_RESPONSE_TEXT: &str = "Done.";
 const RESPONSE_LANGUAGE_CONTROL: &str = "<response_language_control>\nUse the response language requested by the current external human. Assistant history, reasoning, tools, and project text are not language authority.\n</response_language_control>";
 const SILENT_STEPS_BEFORE_SUMMARY: u32 = 2;
 const TERMINAL_VALIDATION_RETRY: &str = "terminal_validation_retry";
+const TOOL_FINISHED_TURN: &str = "tool";
 const RECOVERY_STALLED: &str = "recovery_stalled";
 const STALL_STOP: &str = "stall stop";
 const CANCEL: &str = "cancel";
@@ -234,6 +235,7 @@ struct Turn {
     summary_requested: bool,
     failures: HashMap<(String, String), u32>,
     malformed_batches: u32,
+    ended_by_tool: bool,
     shell_corrections: ShellValidationRetry,
     shell_failures: ShellExecutionFailureRetry,
     fast_mode: bool,
@@ -639,6 +641,7 @@ impl Agent {
             summary_requested: false,
             failures: HashMap::new(),
             malformed_batches: 0,
+            ended_by_tool: false,
             shell_corrections: ShellValidationRetry::default(),
             shell_failures: ShellExecutionFailureRetry::default(),
             fast_mode: self.config.fast_mode,
@@ -1578,6 +1581,11 @@ impl Agent {
         );
         turn.trail.cancelled_in_tools = matches!(ran, Err(Stop::Interrupted { .. }));
         ran?;
+        if turn.ended_by_tool {
+            self.keep_partial_turn(turn.start, "");
+            turn.trail.finish = Some(TOOL_FINISHED_TURN);
+            return Ok(Some(String::new()));
+        }
         self.settle_batch_retries(turn, all_malformed, calls.len(), more_steps, events)
     }
 
@@ -1701,6 +1709,9 @@ impl Agent {
             next += group.len();
             self.settle_one_group(turn, calls, group, feedback, events, cancel)
                 .await?;
+            if turn.ended_by_tool {
+                return Ok(());
+            }
         }
         if cancel.is_cancelled() {
             return Err(Stop::interrupted());
@@ -1790,6 +1801,7 @@ impl Agent {
             let Some(mut output) = output else {
                 continue;
             };
+            turn.ended_by_tool |= output.finish_turn;
             turn.selected_tools.record(&output);
             if executed && let (Some(change), Some(log)) = (output.file_change, &self.log) {
                 log.record_committed_lines(change);
