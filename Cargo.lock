@@ -784,6 +784,7 @@ dependencies = [
  "nix",
  "ofx-config",
  "ofx-contract",
+ "ofx-trace",
  "rustix",
  "serde",
  "serde_json",

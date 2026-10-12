@@ -14,6 +14,7 @@ use std::process::{ExitStatus, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use rustix::io::Errno;
 use rustix::process::{
     Pid, Signal, WaitId, WaitIdOptions, kill_process, kill_process_group, waitid,
@@ -35,6 +36,7 @@ use launch_probe::LaunchProbe;
 use natural_drain::NaturalDrain;
 use status_probe::StatusProbe;
 
+pub(crate) const CORE: &str = "core";
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINATION_GRACE: Duration = Duration::from_millis(700);
 pub(crate) const TERMINATION_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -113,6 +115,16 @@ enum Source {
     TimedOut,
 }
 
+impl Source {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Natural => "natural",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed_out",
+        }
+    }
+}
+
 struct Termination {
     source: Source,
     intent: StopIntent,
@@ -151,7 +163,14 @@ pub(crate) async fn run_captured(
     }
     let exited = match watch_exit(group) {
         Ok(exited) => exited,
-        Err(error) => return Err(abandon(&mut child, RunError::Failed(error_name(&error))).await),
+        Err(error) => {
+            trace_log!(
+                CORE,
+                "command wait authority unavailable after spawn err={}",
+                error_name(&error)
+            );
+            return Err(abandon(&mut child, RunError::Failed(error_name(&error))).await);
+        }
     };
     let mut control = nonce.clone().into_bytes();
     control.push(RELEASE_BYTE);
@@ -421,6 +440,17 @@ impl<'a> Collection<'a> {
 
     async fn observe_exit(&mut self) {
         let _ = kill_process_group(self.group, Signal::KILL);
+        match &self.termination {
+            None => trace_log!(
+                CORE,
+                "captured command leader completed; remaining process group terminated"
+            ),
+            Some(termination) => trace_log!(
+                CORE,
+                "captured command leader completed during {}; termination cleanup continuing",
+                termination.source.label()
+            ),
+        }
         let now = Instant::now();
         let exit = self.child.wait().await.unwrap_or_else(|_| {
             self.indeterminate = true;
@@ -494,11 +524,23 @@ impl<'a> Collection<'a> {
             }
             Some(Termination { forced: None, .. }) => {
                 self.escalate();
+                trace_log!(
+                    CORE,
+                    "command force-killed reason=termination_grace_expired"
+                );
                 false
             }
             Some(Termination {
-                forced: Some(_), ..
+                source,
+                forced: Some(_),
+                ..
             }) => {
+                trace_log!(
+                    CORE,
+                    "command termination settlement expired boundary=post_force source={} wait_ready={}",
+                    source.label(),
+                    self.exit.is_some()
+                );
                 self.settled = true;
                 self.indeterminate = true;
                 self.output_incomplete = true;
@@ -521,11 +563,23 @@ impl<'a> Collection<'a> {
                     StopIntent::Graceful => self.deliver(StopIntent::Graceful),
                     StopIntent::Force => self.escalate(),
                 }
+                match source {
+                    Source::Cancelled => trace_log!(
+                        CORE,
+                        "command termination requested source=cancelled force={}",
+                        intent == StopIntent::Force
+                    ),
+                    Source::TimedOut => {
+                        trace_log!(CORE, "command termination requested source=timeout");
+                    }
+                    Source::Natural => {}
+                }
             }
             Some(termination) if intent > termination.intent => {
                 termination.intent = intent;
                 if termination.forced.is_none() {
                     self.escalate();
+                    trace_log!(CORE, "command force-killed reason=force_cancel");
                 }
             }
             Some(_) => {}
@@ -592,13 +646,20 @@ fn termination_signal(intent: StopIntent) -> Signal {
 }
 
 fn supervisor_status(exit: ExitStatus) -> CommandStatus {
-    match (exit.code(), exit.signal()) {
-        (Some(code), _) => CommandStatus::ExitCode(code.into()),
-        (None, Some(signal)) => {
-            u32::try_from(signal).map_or(CommandStatus::Indeterminate, CommandStatus::Signal)
-        }
-        (None, None) => CommandStatus::Indeterminate,
-    }
+    let term = match (exit.code(), exit.signal()) {
+        (Some(code), _) => return CommandStatus::ExitCode(code.into()),
+        (None, Some(signal)) => match u32::try_from(signal) {
+            Ok(signal) => return CommandStatus::Signal(signal),
+            Err(_) => "signal",
+        },
+        (None, None) if exit.stopped_signal().is_some() => "stopped",
+        (None, None) => "unknown",
+    };
+    trace_log!(
+        CORE,
+        "command termination became indeterminate boundary=child_term term={term}"
+    );
+    CommandStatus::Indeterminate
 }
 
 async fn read_chunk<R: AsyncRead + Unpin>(

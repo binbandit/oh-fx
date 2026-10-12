@@ -19,6 +19,7 @@ use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use tokio_util::sync::CancellationToken;
 
 const OWNER_CHILD_VARIABLE: &str = "OH_FX_TEST_OWNER_DIRECTORY";
+const TRACE_CHILD: &str = "OH_FX_MANAGED_EXECUTION_TRACE_CHILD";
 const BASH: &str = "/bin/bash";
 const LONG: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(10);
@@ -110,7 +111,11 @@ for victim in victims:
 
 type Test = fn();
 
-const TESTS: [(&str, Test); 29] = [
+const TESTS: [(&str, Test); 30] = [
+    (
+        "managed_executions_write_their_core_lines",
+        managed_executions_write_their_core_lines,
+    ),
     (
         "a_fast_command_completes_inside_its_yield_window",
         a_fast_command_completes_inside_its_yield_window,
@@ -606,6 +611,60 @@ fn observing_returns_only_output_produced_since_the_last_delivery() {
         assert_eq!(seen, "");
         assert_eq!(empty.state, last.state);
     });
+}
+
+fn managed_executions_write_their_core_lines() {
+    if let Some(root) = env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(Path::new(&root), None);
+        block_on(async {
+            let executions = executions();
+            let finished = executions
+                .start_captured(run("printf secret", LONG), &CancellationToken::new())
+                .await
+                .expect("the test step succeeds");
+            assert_eq!(
+                finished.state,
+                SnapshotState::Completed(CommandStatus::ExitCode(0))
+            );
+            let input = StartCaptured {
+                timeout: Some(Duration::from_millis(200)),
+                ..run("printf secret; exec sleep 60", LONG)
+            };
+            let stopped = executions
+                .start_captured(input, &CancellationToken::new())
+                .await
+                .expect("the test step succeeds");
+            assert_eq!(stopped.state, SnapshotState::Stopped(None));
+        });
+        return;
+    }
+    let root = tempfile::tempdir().expect("the test step succeeds");
+    let log = root.path().join("trace.log");
+    let status = process::Command::new(env::current_exe().expect("the test step succeeds"))
+        .arg("managed_executions_write_their_core_lines")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env(TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(Stdio::null())
+        .status()
+        .expect("the test step succeeds");
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        written
+            .matches(" [core] command runner explicit environment=clean shell=/bin/bash\n")
+            .count(),
+        2,
+        "{written}"
+    );
+    assert!(
+        written
+            .contains(" [core] managed execution became lost boundary=worker_route execution_id="),
+        "{written}"
+    );
+    assert!(written.contains(" err=TimeoutExpired\n"), "{written}");
+    assert!(!written.contains("secret"), "{written}");
 }
 
 fn a_deadline_stops_the_command_with_timeout_expired() {

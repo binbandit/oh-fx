@@ -13,6 +13,13 @@ pub enum Environment {
 }
 
 impl Environment {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Clean(_) => "clean",
+            Self::User(_) => "user",
+        }
+    }
+
     pub(crate) fn shell_path(&self) -> &Path {
         match self {
             Self::Clean(path) | Self::User(path) => path,
