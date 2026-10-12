@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
 use ofx_text::is_terminal_safe;
+use ofx_trace::trace_log;
 use rustix::fs::{AtFlags, FileType, statat};
 
 use crate::file_index_cache;
@@ -19,11 +20,21 @@ pub(crate) const MAX_INDEXED_FILES: usize = 100_000;
 pub const MAX_PATH_LEN: usize = 2048;
 pub(crate) const MAX_SEARCH_RESULTS: usize = 64;
 const LOADER_THREAD: &str = "oh-fx-file-index";
+pub(crate) const CORE: &str = "core";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateKind {
     File,
     Directory,
+}
+
+impl CandidateKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +170,16 @@ enum LoaderOutcome {
     Canceled,
 }
 
+impl LoaderOutcome {
+    fn state(&self) -> &'static str {
+        match self {
+            Self::Ready(_) => "ready",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+        }
+    }
+}
+
 struct Loader {
     id: usize,
     done: Arc<AtomicBool>,
@@ -226,12 +247,42 @@ impl FileIndex {
             return;
         }
         if self.loader.is_some() {
-            self.pending_scope = Some(PendingScope { roots, epoch });
+            self.replace_pending(roots, epoch);
             return;
         }
         self.roots = roots;
         self.scope_epoch = epoch;
-        self.start_load();
+        if !self.start_load() {
+            trace_log!(
+                CORE,
+                "file index refresh not started generation={}",
+                self.generation
+            );
+        }
+    }
+
+    fn replace_pending(&mut self, roots: Vec<PathBuf>, epoch: u64) {
+        if let Some(pending) = &self.pending_scope {
+            if pending.epoch == epoch && pending.roots == roots {
+                trace_log!(
+                    CORE,
+                    "file index refresh coalesced generation={} identical=true",
+                    self.generation
+                );
+                return;
+            }
+            trace_log!(
+                CORE,
+                "file index pending refresh superseded generation={}",
+                self.generation
+            );
+        }
+        self.pending_scope = Some(PendingScope { roots, epoch });
+        trace_log!(
+            CORE,
+            "file index refresh coalesced generation={} identical=false",
+            self.generation
+        );
     }
 
     pub fn current_state(&self) -> IndexState {
@@ -260,21 +311,37 @@ impl FileIndex {
             return false;
         };
         let outcome = loader.thread.join().unwrap_or(LoaderOutcome::Failed);
+        let state = outcome.state();
+        trace_log!(
+            CORE,
+            "file index generation joined generation={} state={state}",
+            loader.id
+        );
         let mut visible_changed = false;
         let mut adopted_from_cache = false;
         match outcome {
             LoaderOutcome::Ready(generation) if generation.id == loader.id => {
+                trace_log!(
+                    CORE,
+                    "file index generation adopted generation={} count={} from_cache={}",
+                    generation.id,
+                    generation.count(),
+                    generation.from_cache
+                );
                 adopted_from_cache = generation.from_cache;
                 self.active = Some(generation);
                 self.initial_failed = false;
                 visible_changed = true;
             }
-            LoaderOutcome::Ready(_) | LoaderOutcome::Canceled => {}
+            LoaderOutcome::Ready(_) | LoaderOutcome::Canceled => {
+                trace_discarded(loader.id, state);
+            }
             LoaderOutcome::Failed => {
                 if self.active.is_none() {
                     self.initial_failed = true;
                     visible_changed = true;
                 }
+                trace_discarded(loader.id, state);
             }
         }
         if !self.stop.load(Ordering::SeqCst) {
@@ -385,12 +452,12 @@ impl FileIndex {
             .is_ok_and(|stat| kind_matches(expected, FileType::from_raw_mode(stat.st_mode)))
     }
 
-    fn start_load(&mut self) {
+    fn start_load(&mut self) -> bool {
         if self.roots.is_empty() {
-            return;
+            return false;
         }
         if self.loader.is_some() || self.stop.load(Ordering::SeqCst) {
-            return;
+            return false;
         }
         let allow_cache = self.cache_attempted_roots.as_ref() != Some(&self.roots);
         if allow_cache {
@@ -416,13 +483,40 @@ impl FileIndex {
                 self.generation = id;
                 self.initial_failed = false;
                 self.loader = Some(Loader { id, done, thread });
+                trace_log!(
+                    CORE,
+                    "file index generation started generation={id} caller_thread={} from_cache={allow_cache}",
+                    ofx_trace::thread_id()
+                );
+                true
             }
-            Err(_) => {
+            Err(error) => {
                 if self.active.is_none() {
                     self.initial_failed = true;
                 }
+                trace_log!(
+                    CORE,
+                    "file index generation spawn failed generation={id} err={}",
+                    spawn_error_name(&error)
+                );
+                false
             }
         }
+    }
+}
+
+fn trace_discarded(generation: usize, state: &str) {
+    trace_log!(
+        CORE,
+        "file index generation discarded generation={generation} state={state}"
+    );
+}
+
+fn spawn_error_name(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::OutOfMemory => "OutOfMemory",
+        std::io::ErrorKind::WouldBlock => "SystemResources",
+        _ => "Unexpected",
     }
 }
 
@@ -439,7 +533,32 @@ fn scope_roots(primary: &Path, additional: &[PathBuf]) -> Vec<PathBuf> {
 impl Drop for FileIndex {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        trace_log!(
+            CORE,
+            "file index shutdown requested generation={} loader={} active={} loading={} queued={}",
+            self.generation,
+            if self.loader.is_some() {
+                "owned"
+            } else {
+                "none"
+            },
+            self.active.is_some(),
+            self.loader.is_some(),
+            self.pending_scope.is_some()
+        );
         drop(self.saving.lock().unwrap_or_else(PoisonError::into_inner));
+        if let Some(active) = &self.active {
+            trace_log!(
+                CORE,
+                "file index shutdown reclaiming generation={}",
+                active.id
+            );
+        }
+        trace_log!(
+            CORE,
+            "file index shutdown complete generation={}",
+            self.generation
+        );
     }
 }
 
@@ -456,7 +575,31 @@ struct LoadJob {
 
 impl LoadJob {
     fn run(self) -> LoaderOutcome {
+        trace_log!(
+            CORE,
+            "file index loader entered generation={} worker_thread={}",
+            self.id,
+            ofx_trace::thread_id()
+        );
         let outcome = self.load();
+        match &outcome {
+            LoaderOutcome::Ready(generation) => trace_log!(
+                CORE,
+                "file index generation ready generation={} count={} worker_cleanup=complete",
+                self.id,
+                generation.count()
+            ),
+            LoaderOutcome::Failed => trace_log!(
+                CORE,
+                "file index generation failed generation={} stage=discovery err=FileNotFound worker_cleanup=complete",
+                self.id
+            ),
+            LoaderOutcome::Canceled => trace_log!(
+                CORE,
+                "file index generation canceled generation={} worker_cleanup=complete",
+                self.id
+            ),
+        }
         self.done.store(true, Ordering::Release);
         outcome
     }
@@ -468,12 +611,23 @@ impl LoadJob {
         let roots: Vec<&Path> = self.roots.iter().map(PathBuf::as_path).collect();
         if self.allow_cache
             && let Some(cache_dir) = &self.cache_dir
-            && let Ok(Some(candidates)) = file_index_cache::load(cache_dir, &roots)
+            && let Some(candidates) = file_index_cache::load(cache_dir, &roots)
+                .inspect_err(|error| {
+                    trace_log!(CORE, "file index cache ignored err={error}");
+                })
+                .ok()
+                .flatten()
         {
             return match Generation::build(self.id, self.scope_epoch, &candidates, Some(&self.stop))
             {
                 Some(mut generation) => {
                     generation.from_cache = true;
+                    trace_log!(
+                        CORE,
+                        "file index cache painted generation={} count={}",
+                        self.id,
+                        generation.count()
+                    );
                     LoaderOutcome::Ready(generation)
                 }
                 None => LoaderOutcome::Canceled,
@@ -495,7 +649,13 @@ impl LoadJob {
             if self.stopped() {
                 return LoaderOutcome::Canceled;
             }
-            let _ = file_index_cache::save(cache_dir, &roots, &candidates);
+            if let Err(error) = file_index_cache::save(cache_dir, &roots, &candidates) {
+                trace_log!(
+                    CORE,
+                    "file index cache not saved generation={} err={error}",
+                    self.id
+                );
+            }
         }
         match Generation::build(self.id, self.scope_epoch, &candidates, Some(&self.stop)) {
             Some(generation) if !self.stopped() => LoaderOutcome::Ready(generation),
