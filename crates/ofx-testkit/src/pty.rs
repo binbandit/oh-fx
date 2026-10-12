@@ -472,6 +472,7 @@ fn stacks(pid: Pid) -> String {
 
 #[cfg(not(target_os = "macos"))]
 fn stacks(pid: Pid) -> String {
+    use std::fmt::Write as _;
     let tasks = format!("/proc/{}/task", pid.as_raw_nonzero());
     let Ok(entries) = std::fs::read_dir(tasks) else {
         return String::new();
@@ -480,13 +481,14 @@ fn stacks(pid: Pid) -> String {
     for entry in entries.flatten() {
         let task = entry.path();
         let read = |name: &str| std::fs::read_to_string(task.join(name)).unwrap_or_default();
-        report.push_str(&format!(
+        let _ = write!(
+            report,
             "{} {} wchan={}\n{}",
             task.display(),
             read("comm").trim_end(),
             read("wchan"),
             read("stack")
-        ));
+        );
     }
     report
 }
