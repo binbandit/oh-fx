@@ -1,9 +1,10 @@
 use ofx_contract::{
-    McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication, McpMenuCancel,
-    McpMenuCatalog, McpMenuCatalogRequest, McpMenuConnection, McpMenuCounts, McpMenuOutcome,
-    McpMenuPreview, McpMenuPreviewTarget, McpMenuPrompt, McpMenuRequest, McpMenuResource,
-    McpMenuServer, McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport,
-    McpMenuTrust, UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
+    McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuArgument, McpMenuAuthentication,
+    McpMenuCancel, McpMenuCatalog, McpMenuCatalogRequest, McpMenuCompletionTarget,
+    McpMenuConnection, McpMenuCounts, McpMenuOutcome, McpMenuPreview, McpMenuPreviewTarget,
+    McpMenuPrompt, McpMenuPromptArgument, McpMenuRequest, McpMenuResource, McpMenuServer,
+    McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport, McpMenuTrust,
+    UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
 };
 
 use super::super::mcp_menu::{Action, Event, LoadState, Screen, Section};
@@ -1095,7 +1096,7 @@ fn enter_previews_a_tool_that_scrolls_and_inserts_into_the_composer() {
 }
 
 #[test]
-fn enter_previews_resources_and_prompts_of_the_selected_server_but_not_templates() {
+fn enter_previews_resources_and_prompts_of_the_selected_server_and_asks_for_template_arguments() {
     let mut test = opened(&["docs"]);
     press(&mut test, b"\t\t");
     test.deliver(UiEvent::McpMenuLoaded {
@@ -1119,6 +1120,8 @@ fn enter_previews_resources_and_prompts_of_the_selected_server_but_not_templates
     });
     press(&mut test, b"\x1b[B\r");
     assert_eq!(requests(&test).len(), 2);
+    assert_eq!(state(&test).screen, Screen::Arguments);
+    escape(&mut test);
     press(&mut test, b"\x1b[A\r");
     assert_eq!(
         requests(&test).last(),
@@ -1148,6 +1151,7 @@ fn enter_previews_resources_and_prompts_of_the_selected_server_but_not_templates
             name: "review".to_owned(),
             title: Some("Review".to_owned()),
             description: None,
+            arguments: Vec::new(),
         }]),
     });
     press(&mut test, b"\r");
@@ -1158,6 +1162,7 @@ fn enter_previews_resources_and_prompts_of_the_selected_server_but_not_templates
             McpMenuPreviewTarget::Prompt {
                 server: "docs".to_owned(),
                 name: "review".to_owned(),
+                arguments: Vec::new(),
             }
         ))
     );
@@ -1279,4 +1284,187 @@ fn a_catalog_cached_for_one_server_is_neither_shown_nor_opened_for_another() {
             }
         ))
     );
+}
+
+fn prompt_with(arguments: &[(&str, bool)]) -> McpMenuCatalog {
+    McpMenuCatalog::Prompts(vec![McpMenuPrompt {
+        name: "review".to_owned(),
+        title: None,
+        description: None,
+        arguments: arguments
+            .iter()
+            .map(|(name, required)| McpMenuPromptArgument {
+                name: (*name).to_owned(),
+                required: *required,
+            })
+            .collect(),
+    }])
+}
+
+fn argument(name: &str, value: &str) -> McpMenuArgument {
+    McpMenuArgument {
+        name: name.to_owned(),
+        value: value.to_owned(),
+    }
+}
+
+fn fields(test: &TestShell) -> Vec<String> {
+    let menu = test.shell.mcp_menu.as_ref().unwrap();
+    menu.view("")
+        .arguments
+        .iter()
+        .map(|field| field.value.clone())
+        .collect()
+}
+
+#[test]
+fn a_prompt_with_arguments_completes_and_previews_with_its_form() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\x1b[D");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: prompt_with(&[("topic", true), ("tone", false), ("topic", false)]),
+    });
+    let screen = press(&mut test, b"\r");
+    assert_eq!(state(&test).screen, Screen::Arguments);
+    assert!(screen.contains("  > topic *"), "{screen}");
+    assert!(screen.contains("  tone"), "{screen}");
+    assert_eq!(fields(&test).len(), 2);
+    let screen = press(&mut test, b"al");
+    assert!(screen.contains("  > topic *           al"), "{screen}");
+    press(&mut test, b"\t");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&menu(McpMenuRequest::Complete {
+            generation: 2,
+            target: McpMenuCompletionTarget::Prompt {
+                server: "docs".to_owned(),
+                name: "review".to_owned(),
+            },
+            argument: argument("topic", "al"),
+            context: vec![argument("tone", "")],
+        }))
+    );
+    press(&mut test, b"zz\r");
+    assert!(test.shell.composer.is_empty());
+    assert_eq!(state(&test).argument_index, 0);
+    test.deliver(UiEvent::McpMenuCompleted {
+        generation: 2,
+        value: "alpha".to_owned(),
+    });
+    assert_eq!(fields(&test), ["alpha", ""]);
+    press(&mut test, b"\r");
+    assert_eq!(state(&test).argument_index, 1);
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            3,
+            McpMenuPreviewTarget::Prompt {
+                server: "docs".to_owned(),
+                name: "review".to_owned(),
+                arguments: vec![argument("topic", "alpha"), argument("tone", "")],
+            }
+        ))
+    );
+    assert_eq!(state(&test).screen, Screen::Arguments);
+    let screen = test.screen();
+    assert!(screen.contains("  Completing MCP argument…"), "{screen}");
+    test.deliver(previewed(3, "MCP prompt · untrusted content", "user: hi"));
+    assert_eq!(state(&test).screen, Screen::Preview);
+}
+
+#[test]
+fn the_form_asks_for_every_required_value_and_keeps_one_an_empty_draft_would_clear() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\x1b[D");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: prompt_with(&[("topic", true)]),
+    });
+    press(&mut test, b"\r\r");
+    let screen = test.screen();
+    assert!(
+        screen.contains("  Complete every required MCP argument."),
+        "{screen}"
+    );
+    assert_eq!(requests(&test).len(), 1);
+    press(&mut test, b"beta\r");
+    assert_eq!(fields(&test), ["beta"]);
+    assert_eq!(requests(&test).len(), 2);
+    escape(&mut test);
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert_eq!(
+        requests(&test).last(),
+        Some(&cancel(2, McpMenuCancel::Back))
+    );
+    press(&mut test, b"\r");
+    assert_eq!(fields(&test), [""]);
+    press(&mut test, b"gamma");
+    escape(&mut test);
+    assert!(test.shell.composer.is_empty());
+    assert_eq!(state(&test).screen, Screen::Browse);
+}
+
+#[test]
+fn a_resource_template_previews_its_expanded_uri() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 2,
+        catalog: McpMenuCatalog::Resources(vec![
+            McpMenuResource {
+                uri: "custom://project/{project}{?lang}".to_owned(),
+                name: "project".to_owned(),
+                title: None,
+                description: None,
+                template: true,
+            },
+            McpMenuResource {
+                uri: "custom://{broken".to_owned(),
+                name: "broken".to_owned(),
+                title: None,
+                description: None,
+                template: true,
+            },
+        ]),
+    });
+    press(&mut test, b"\r");
+    press(&mut test, b"alpha team\r");
+    press(&mut test, b"\t");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&menu(McpMenuRequest::Complete {
+            generation: 3,
+            target: McpMenuCompletionTarget::Resource {
+                server: "docs".to_owned(),
+                uri_template: "custom://project/{project}{?lang}".to_owned(),
+            },
+            argument: argument("lang", ""),
+            context: vec![argument("project", "alpha team")],
+        }))
+    );
+    test.deliver(UiEvent::McpMenuCompleted {
+        generation: 3,
+        value: "en".to_owned(),
+    });
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            4,
+            McpMenuPreviewTarget::Resource {
+                server: "docs".to_owned(),
+                uri: "custom://project/alpha%20team?lang=en".to_owned(),
+            }
+        ))
+    );
+    escape(&mut test);
+    press(&mut test, b"\x1b[B\r");
+    let screen = test.screen();
+    assert!(
+        screen.contains("  MCP preview failed: McpResourceTemplateInvalid"),
+        "{screen}"
+    );
+    assert_eq!(state(&test).load_state, LoadState::Failed);
 }

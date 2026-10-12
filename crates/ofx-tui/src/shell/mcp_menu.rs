@@ -24,6 +24,7 @@ pub(crate) enum Screen {
     Browse,
     Details,
     Preview,
+    Arguments,
     Add,
     Info,
     Confirm,
@@ -35,6 +36,7 @@ impl Screen {
             Screen::Browse => "browse",
             Screen::Details => "details",
             Screen::Preview => "preview",
+            Screen::Arguments => "arguments",
             Screen::Add => "add",
             Screen::Info => "info",
             Screen::Confirm => "confirm",
@@ -93,6 +95,10 @@ pub(crate) enum Event {
     ScrollPreview { delta: isize, row_count: usize },
     PreviewLoaded(u64),
     InsertPreview,
+    ShowArguments(usize),
+    MoveArgument { delta: isize, field_count: usize },
+    RequestCompletion,
+    CompletionLoaded(u64),
     ActionSucceeded(u64),
     EffectFailed(u64),
 }
@@ -103,6 +109,7 @@ pub(crate) enum Effect {
     Action { generation: u64, action: Action },
     LoadCatalog { generation: u64, section: Section },
     LoadPreview { generation: u64 },
+    Complete { generation: u64 },
     Insert { generation: u64 },
     Cancel(u64),
 }
@@ -123,6 +130,7 @@ pub(crate) struct McpMenuState {
     pub(crate) add_field_index: usize,
     pub(crate) filter_active: bool,
     pub(crate) query: String,
+    pub(crate) argument_index: usize,
 }
 
 pub(crate) fn server_action_available(action: Action, server: &McpMenuServer) -> bool {
@@ -199,6 +207,7 @@ impl McpMenuState {
             add_field_index: 0,
             filter_active: false,
             query: String::new(),
+            argument_index: 0,
         };
         state.clamp_selection(server_count, server_count);
         state
@@ -229,7 +238,9 @@ impl McpMenuState {
             Event::Back => return self.back(),
             Event::RequestAction(action) => return self.request_action(action),
             Event::CycleSection(delta) => return self.cycle_section(delta),
-            Event::BeginPreview | Event::InsertPreview => return self.preview_effect(event),
+            Event::BeginPreview | Event::InsertPreview | Event::RequestCompletion => {
+                return self.start_effect(event);
+            }
             Event::BeginFilter
             | Event::AppendFilterByte(_)
             | Event::DeleteFilterByte
@@ -237,6 +248,7 @@ impl McpMenuState {
             | Event::ClearFilter => self.filter(event),
             Event::CatalogLoaded { .. }
             | Event::PreviewLoaded(_)
+            | Event::CompletionLoaded(_)
             | Event::ActionSucceeded(_)
             | Event::EffectFailed(_) => self.complete(event),
             Event::Move(_)
@@ -246,7 +258,9 @@ impl McpMenuState {
             | Event::ShowDetails
             | Event::ShowAdd
             | Event::ShowInfo
-            | Event::ShowConfirmation(_) => self.navigate(event),
+            | Event::ShowConfirmation(_)
+            | Event::ShowArguments(_)
+            | Event::MoveArgument { .. } => self.navigate(event),
         }
         None
     }
@@ -257,6 +271,7 @@ impl McpMenuState {
         }
         self.screen = Screen::Browse;
         self.confirmation_action = None;
+        self.argument_index = 0;
         let pending = self.pending_generation.take();
         if pending.is_some() {
             self.load_state = LoadState::Cancelled;
@@ -273,7 +288,7 @@ impl McpMenuState {
         Some(self.begin_action(action))
     }
 
-    fn preview_effect(&mut self, event: Event) -> Option<Effect> {
+    fn start_effect(&mut self, event: Event) -> Option<Effect> {
         match event {
             Event::BeginPreview if self.section != Section::Servers => {
                 self.filter_active = false;
@@ -283,6 +298,10 @@ impl McpMenuState {
             Event::InsertPreview if self.screen == Screen::Preview => {
                 let generation = self.begin_generation(true);
                 Some(Effect::Insert { generation })
+            }
+            Event::RequestCompletion if self.screen == Screen::Arguments => {
+                let generation = self.begin_generation(true);
+                Some(Effect::Complete { generation })
             }
             _ => None,
         }
@@ -339,6 +358,9 @@ impl McpMenuState {
                     self.confirmation_action = None;
                 }
             }
+            Event::CompletionLoaded(generation) => {
+                self.settle(generation, LoadState::Ready);
+            }
             Event::EffectFailed(generation) => {
                 self.settle(generation, LoadState::Failed);
             }
@@ -387,6 +409,24 @@ impl McpMenuState {
             Event::ShowConfirmation(action) => {
                 self.screen = Screen::Confirm;
                 self.confirmation_action = Some(action);
+            }
+            Event::ShowArguments(field_count)
+                if self.section != Section::Servers && field_count > 0 =>
+            {
+                self.screen = Screen::Arguments;
+                self.filter_active = false;
+                self.argument_index = 0;
+            }
+            Event::MoveArgument { delta, field_count }
+                if self.screen == Screen::Arguments && field_count > 0 && delta != 0 =>
+            {
+                self.argument_index = if delta > 0 {
+                    (self.argument_index + 1) % field_count
+                } else if self.argument_index == 0 {
+                    field_count - 1
+                } else {
+                    self.argument_index - 1
+                };
             }
             _ => {}
         }

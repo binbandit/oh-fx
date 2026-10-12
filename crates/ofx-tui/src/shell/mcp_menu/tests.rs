@@ -467,3 +467,35 @@ fn preview_scrolling_stays_within_its_visual_rows() {
     state.apply(scroll(-1));
     assert_eq!(state.window_start, 0);
 }
+
+#[test]
+fn the_argument_form_keeps_its_state_through_completion_and_can_be_cancelled() {
+    let mut state = McpMenuState::open(1);
+    state.apply(Event::CycleSection(1));
+    state.apply(Event::CatalogLoaded {
+        generation: 1,
+        item_count: 1,
+    });
+    assert_eq!(state.apply(Event::RequestCompletion), None);
+    state.apply(Event::ShowArguments(2));
+    assert_eq!(state.screen, Screen::Arguments);
+    state.apply(Event::MoveArgument {
+        delta: 1,
+        field_count: 2,
+    });
+    assert_eq!(state.argument_index, 1);
+    assert_eq!(
+        state.apply(Event::RequestCompletion),
+        Some(Effect::Complete { generation: 2 })
+    );
+    state.apply(Event::CompletionLoaded(2));
+    assert_eq!(state.screen, Screen::Arguments);
+    assert_eq!(state.load_state, LoadState::Ready);
+    state.apply(Event::RequestCompletion);
+    assert_eq!(state.apply(Event::Back), Some(Effect::Cancel(3)));
+    assert_eq!(state.screen, Screen::Browse);
+    assert_eq!(state.argument_index, 0);
+    state.apply(Event::CycleSection(-1));
+    state.apply(Event::ShowArguments(1));
+    assert_eq!(state.screen, Screen::Browse);
+}

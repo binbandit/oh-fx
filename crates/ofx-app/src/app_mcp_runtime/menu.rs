@@ -43,6 +43,12 @@ impl McpHost {
             McpMenuRequest::LoadPreview { generation, target } => {
                 self.load_menu_preview(generation, target);
             }
+            McpMenuRequest::Complete {
+                generation,
+                target,
+                argument,
+                context,
+            } => self.complete_menu_argument(generation, target, argument, context),
             McpMenuRequest::Cancel { generation, reason } => {
                 self.cancel_menu_operation(generation, reason);
             }
@@ -192,6 +198,7 @@ fn authentication_feedback(
 
 mod catalogs;
 mod changes;
+mod completions;
 mod previews;
 
 #[cfg(test)]

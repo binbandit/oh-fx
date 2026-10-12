@@ -2,7 +2,7 @@ use ofx_contract::{McpMenuAddForm, McpMenuAddTransport, McpMenuRequest, McpMenuT
 
 use super::Shell;
 use super::mcp_menu::{Action, Event, Screen, Section, server_action_available};
-use crate::input::{Action as InputAction, InputEvent, ShortcutAction};
+use crate::input::{Action as InputAction, InputEvent, RawTerminalInput, ShortcutAction};
 
 const CTRL_Z: u8 = 26;
 const SERVER_NOT_FOUND: &str = "MCP operation failed: McpServerNotFound";
@@ -75,7 +75,12 @@ impl Shell<'_> {
             Screen::Browse if menu.state.section == Section::Servers => {
                 self.apply_mcp_menu_event(Event::ShowAdd);
             }
-            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm | Screen::Preview => {}
+            Screen::Browse
+            | Screen::Add
+            | Screen::Info
+            | Screen::Confirm
+            | Screen::Preview
+            | Screen::Arguments => {}
         }
     }
 
@@ -118,13 +123,7 @@ impl Shell<'_> {
                     self.composer.clear();
                 }
                 b'\r' => self.advance_mcp_add_form(),
-                b'$' => self.insert("$"),
-                CTRL_Z => return false,
-                byte if byte == b' ' || byte.is_ascii_graphic() => return false,
-                _ => match raw.composer_shortcut {
-                    Some(ShortcutAction::InsertNewline | ShortcutAction::HistoryNext) | None => {}
-                    Some(action) => self.route_shortcut(action),
-                },
+                _ => return self.route_mcp_form_byte(*raw),
             },
             InputEvent::Action(decoded) => match decoded.action {
                 InputAction::Escape => {
@@ -146,6 +145,19 @@ impl Shell<'_> {
             | InputEvent::TextDropped(_)
             | InputEvent::NativeClearProbe
             | InputEvent::NativeClearDetected => return false,
+        }
+        true
+    }
+
+    pub(super) fn route_mcp_form_byte(&mut self, raw: RawTerminalInput) -> bool {
+        match raw.byte {
+            b'$' => self.insert("$"),
+            CTRL_Z => return false,
+            byte if byte == b' ' || byte.is_ascii_graphic() => return false,
+            _ => match raw.composer_shortcut {
+                Some(ShortcutAction::InsertNewline | ShortcutAction::HistoryNext) | None => {}
+                Some(action) => self.route_shortcut(action),
+            },
         }
         true
     }

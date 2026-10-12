@@ -7,6 +7,7 @@ use super::Shell;
 use super::mcp_menu::{
     Action, Effect, Event, McpMenuState, Move, Screen, Section, server_action_available,
 };
+use super::mcp_menu_arguments::ArgumentForm;
 use crate::footer::mcp_menu_presentation::{
     AddFields, MAX_INLINE_ROWS, McpMenuCatalogs, McpMenuView, mcp_menu_hint_row, mcp_menu_rows,
     menu_row_count, preview_visual_row_count, visible_items_for_budget,
@@ -28,6 +29,8 @@ pub(super) struct McpMenu {
     pub(super) confirmation_target: Option<String>,
     pub(super) catalogs: McpMenuCatalogs,
     pub(super) preview: Option<McpMenuPreview>,
+    pub(super) argument_form: Option<ArgumentForm>,
+    pub(super) completing: Option<usize>,
     refresh_due_ms: Option<i64>,
     pub(super) reveal_due_ms: Option<i64>,
 }
@@ -57,6 +60,10 @@ impl McpMenu {
                 .preview
                 .as_ref()
                 .map(|preview| preview.display.as_str()),
+            arguments: self
+                .argument_form
+                .as_ref()
+                .map_or(&[], |form| form.fields.as_slice()),
         }
     }
 
@@ -125,6 +132,8 @@ impl Shell<'_> {
             confirmation_target: None,
             catalogs: McpMenuCatalogs::default(),
             preview: None,
+            argument_form: None,
+            completing: None,
             refresh_due_ms: Some(self.now_ms() + REFRESH_INTERVAL_MS),
             reveal_due_ms: None,
         });
@@ -146,6 +155,9 @@ impl Shell<'_> {
                 generation,
                 preview,
             } => self.mcp_menu_previewed(generation, preview),
+            UiEvent::McpMenuCompleted { generation, value } => {
+                self.mcp_menu_completed(generation, value);
+            }
             _ => {}
         }
     }
@@ -272,12 +284,10 @@ impl Shell<'_> {
     }
 
     fn route_mcp_menu_key(&mut self, event: &InputEvent) -> bool {
-        if self
-            .mcp_menu
-            .as_ref()
-            .is_some_and(|menu| menu.state.screen == Screen::Add)
-        {
-            return self.route_mcp_add_key(event);
+        match self.mcp_menu.as_ref().map(|menu| menu.state.screen) {
+            Some(Screen::Add) => return self.route_mcp_add_key(event),
+            Some(Screen::Arguments) => return self.route_mcp_argument_key(event),
+            _ => {}
         }
         if self
             .mcp_menu
@@ -367,7 +377,11 @@ impl Shell<'_> {
                 self.mcp_menu_generation = generation;
                 self.load_mcp_menu_catalog(generation, section);
             }
-            Some(Effect::LoadPreview { generation } | Effect::Insert { generation }) => {
+            Some(
+                Effect::LoadPreview { generation }
+                | Effect::Insert { generation }
+                | Effect::Complete { generation },
+            ) => {
                 self.mcp_menu_generation = generation;
             }
             Some(Effect::Cancel(generation)) => {
@@ -423,7 +437,12 @@ impl Shell<'_> {
                     self.request_mcp_menu_action(action);
                 }
             }
-            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm | Screen::Preview => {}
+            Screen::Browse
+            | Screen::Add
+            | Screen::Info
+            | Screen::Confirm
+            | Screen::Preview
+            | Screen::Arguments => {}
         }
     }
 

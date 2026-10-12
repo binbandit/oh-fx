@@ -457,6 +457,10 @@ pub enum UiEvent {
         generation: u64,
         preview: McpMenuPreview,
     },
+    McpMenuCompleted {
+        generation: u64,
+        value: String,
+    },
     SettingsChanged {
         snapshot: SettingsSnapshot,
     },

@@ -1,4 +1,4 @@
-use ofx_contract::{McpMenuPreviewTarget, McpMenuPrompt, McpMenuResource};
+use ofx_contract::{McpMenuPrompt, McpMenuResource};
 use ofx_text::contains_ignore_case;
 
 use super::{McpMenuView, TEXT_INDENT, safe_line, text_row, visible_window_start};
@@ -22,63 +22,21 @@ pub(crate) struct McpMenuCatalogs {
 
 impl McpMenuCatalogs {
     pub(crate) fn count(&self, section: Section, query: &str, server: Option<&str>) -> usize {
-        match section {
-            Section::Servers => 0,
-            Section::Tools => self
-                .tools
-                .iter()
-                .filter(|tool| matches(tool, query))
-                .count(),
-            Section::Resources => self
-                .resources(server)
-                .filter(|item| item.matches(query))
-                .count(),
-            Section::Prompts => self
-                .prompts(server)
-                .filter(|item| item.matches(query))
-                .count(),
-        }
+        self.listed(section, server)
+            .filter(|item| item.matches(query))
+            .count()
     }
 
-    pub(crate) fn preview_target(
+    pub(crate) fn item(
         &self,
         section: Section,
         query: &str,
         index: usize,
-        server: Option<String>,
-    ) -> Option<McpMenuPreviewTarget> {
-        let item = match section {
-            Section::Servers => return None,
-            Section::Tools => {
-                return self
-                    .tools
-                    .iter()
-                    .filter(|tool| matches(tool, query))
-                    .nth(index)
-                    .map(|tool| McpMenuPreviewTarget::Tool(tool.clone()));
-            }
-            Section::Resources => self
-                .resources(server.as_deref())
-                .filter(|item| item.matches(query))
-                .nth(index),
-            Section::Prompts => self
-                .prompts(server.as_deref())
-                .filter(|item| item.matches(query))
-                .nth(index),
-        };
-        match item? {
-            Item::Resource(resource) if !resource.template => {
-                Some(McpMenuPreviewTarget::Resource {
-                    server: server?,
-                    uri: resource.uri.clone(),
-                })
-            }
-            Item::Resource(_) => None,
-            Item::Prompt(prompt) => Some(McpMenuPreviewTarget::Prompt {
-                server: server?,
-                name: prompt.name.clone(),
-            }),
-        }
+        server: Option<&str>,
+    ) -> Option<Item<'_>> {
+        self.listed(section, server)
+            .filter(|item| item.matches(query))
+            .nth(index)
     }
 
     fn row(
@@ -88,45 +46,31 @@ impl McpMenuCatalogs {
         index: usize,
         server: Option<&str>,
     ) -> Option<(&str, &str)> {
-        match section {
-            Section::Servers => None,
-            Section::Tools => self
-                .tools
-                .iter()
-                .filter(|tool| matches(tool, query))
-                .nth(index)
-                .map(|tool| (tool.as_str(), "Tool")),
-            Section::Resources => self
-                .resources(server)
-                .filter(|item| item.matches(query))
-                .nth(index)
-                .map(Item::columns),
-            Section::Prompts => self
-                .prompts(server)
-                .filter(|item| item.matches(query))
-                .nth(index)
-                .map(Item::columns),
-        }
+        self.item(section, query, index, server).map(Item::columns)
     }
 
-    fn resources(&self, server: Option<&str>) -> impl Iterator<Item = Item<'_>> {
-        let listed = self.resources_server.as_deref() == server;
-        self.resources
-            .iter()
-            .filter(move |_| listed)
-            .map(Item::Resource)
-    }
-
-    fn prompts(&self, server: Option<&str>) -> impl Iterator<Item = Item<'_>> {
-        let listed = self.prompts_server.as_deref() == server;
-        self.prompts
-            .iter()
-            .filter(move |_| listed)
-            .map(Item::Prompt)
+    fn listed<'a>(
+        &'a self,
+        section: Section,
+        server: Option<&str>,
+    ) -> impl Iterator<Item = Item<'a>> + use<'a> {
+        let tools = (section == Section::Tools)
+            .then(|| self.tools.iter().map(|tool| Item::Tool(tool.as_str())));
+        let resources = (section == Section::Resources
+            && self.resources_server.as_deref() == server)
+            .then(|| self.resources.iter().map(Item::Resource));
+        let prompts = (section == Section::Prompts && self.prompts_server.as_deref() == server)
+            .then(|| self.prompts.iter().map(Item::Prompt));
+        tools
+            .into_iter()
+            .flatten()
+            .chain(resources.into_iter().flatten())
+            .chain(prompts.into_iter().flatten())
     }
 }
 
-enum Item<'a> {
+pub(crate) enum Item<'a> {
+    Tool(&'a str),
     Resource(&'a McpMenuResource),
     Prompt(&'a McpMenuPrompt),
 }
@@ -134,6 +78,7 @@ enum Item<'a> {
 impl<'a> Item<'a> {
     fn matches(&self, query: &str) -> bool {
         match self {
+            Item::Tool(name) => matches(name, query),
             Item::Resource(resource) => {
                 matches(&resource.uri, query)
                     || matches(&resource.name, query)
@@ -150,6 +95,7 @@ impl<'a> Item<'a> {
 
     fn columns(self) -> (&'a str, &'a str) {
         match self {
+            Item::Tool(name) => (name, "Tool"),
             Item::Resource(resource) => (
                 &resource.uri,
                 resource

@@ -21,6 +21,7 @@ while IFS= read -r line; do
     *'"method":"prompts/list"'*) reply "$id" '{"prompts":[{"name":"review"},{"name":"tone","arguments":[{"name":"tone","required":true}]}]}' ;;
     *'custom://broken'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"broken"}}\n' "$id" ;;
     *'"method":"resources/read"'*) reply "$id" '{"contents":[{"uri":"custom://alpha","text":"line one\nline two"},{"uri":"custom://alpha","blob":"AAAA"}]}' ;;
+    *'"method":"prompts/get"'*'"arguments":{"tone":"warm"}'*) reply "$id" '{"messages":[{"role":"user","content":{"type":"text","text":"Warm review"}}]}' ;;
     *'"method":"prompts/get"'*) reply "$id" '{"messages":[{"role":"user","content":{"type":"text","text":"Review this"}},{"role":"assistant","content":{"type":"text","text":"Sure"}}]}' ;;
   esac
 done"#;
@@ -142,6 +143,7 @@ async fn previews_show_a_tool_schema_a_resource_and_a_prompt_with_upstreams_head
             McpMenuPreviewTarget::Prompt {
                 server: "docs".to_owned(),
                 name: "review".to_owned(),
+                arguments: Vec::new(),
             },
         )
         .await;
@@ -203,6 +205,7 @@ async fn a_preview_that_cannot_load_settles_the_menu_with_its_error() {
                 McpMenuPreviewTarget::Prompt {
                     server: "docs".to_owned(),
                     name: "tone".to_owned(),
+                    arguments: Vec::new(),
                 },
             )
             .await,
@@ -221,5 +224,32 @@ fn a_preview_is_bounded_on_a_character_boundary_and_displayed_on_one_line() {
     assert_eq!(
         flattened.display,
         format!("{PROMPT_HEADING}one two\\x1b]0;owned\\x07")
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_previews_with_its_filled_arguments() {
+    let fixture = fixture().await;
+    let argument = |name: &str, value: &str| McpMenuArgument {
+        name: name.to_owned(),
+        value: value.to_owned(),
+    };
+    let preview = fixture
+        .preview(
+            1,
+            McpMenuPreviewTarget::Prompt {
+                server: "docs".to_owned(),
+                name: "tone".to_owned(),
+                arguments: vec![argument("tone", "warm"), argument("extra", "")],
+            },
+        )
+        .await;
+    assert_eq!(
+        preview.insert,
+        "user: {\"type\":\"text\",\"text\":\"Warm review\"}"
+    );
+    assert_eq!(
+        arguments_json(&[argument("topic", "a \"b\""), argument("tone", "")]),
+        r#"{"topic":"a \"b\""}"#
     );
 }

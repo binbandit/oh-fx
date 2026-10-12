@@ -68,6 +68,7 @@ fn frame_with(
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     let rows = mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget, width));
     rows.iter()
@@ -92,6 +93,7 @@ fn hint(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize) -> Strin
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     mcp_menu_hint_row(&theme(), view, width, false).text()
 }
@@ -108,6 +110,7 @@ fn the_empty_server_state_is_compact_and_actionable() {
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     assert_eq!(menu_row_count(view, 20, 80), 3);
     let rows = frame(&state, &empty, 100, 20);
@@ -171,6 +174,7 @@ fn the_selection_stays_visible_with_one_body_row() {
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     assert_eq!(menu_row_count(view, 3, 40), 3);
     let rows = frame(&state, &servers, 40, 3);
@@ -319,6 +323,7 @@ fn feedback_takes_the_second_header_row_and_warns_after_a_failure() {
             catalogs: &NO_CATALOGS,
             loading_visible: true,
             preview: None,
+            arguments: &[],
         };
         mcp_menu_rows(&theme(), view, 80, 3)[1].segments()[1].paint
     };
@@ -382,6 +387,7 @@ fn hints_fit_the_width_and_name_only_available_actions() {
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     assert_eq!(
         mcp_menu_hint_row(&theme(), view, 100, true).text(),
@@ -495,6 +501,7 @@ fn catalog_frame(
         catalogs,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget, width))
         .iter()
@@ -538,11 +545,13 @@ fn catalogs() -> McpMenuCatalogs {
                 name: "review".to_owned(),
                 title: Some("Review".to_owned()),
                 description: Some("Review code".to_owned()),
+                arguments: Vec::new(),
             },
             McpMenuPrompt {
                 name: "plain".to_owned(),
                 title: None,
                 description: None,
+                arguments: Vec::new(),
             },
         ],
         resources_server: Some("docs".to_owned()),
@@ -637,6 +646,7 @@ fn a_filter_narrows_the_catalog_and_names_an_empty_match() {
         catalogs: &catalogs,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     assert_eq!(view.item_count(), 0);
     assert_eq!(
@@ -680,6 +690,7 @@ fn empty_loading_and_failed_catalogs_say_so() {
         catalogs: &empty,
         loading_visible: false,
         preview: None,
+        arguments: &[],
     };
     let rows = mcp_menu_rows(&theme(), hidden, 80, 3);
     assert_eq!(rows[2].text(), "");
@@ -743,6 +754,7 @@ fn preview_frame(preview: &str, window_start: usize, width: usize, budget: usize
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: Some(preview),
+        arguments: &[],
     };
     mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget, width))
         .iter()
@@ -794,6 +806,7 @@ fn a_preview_renders_from_its_window_with_the_preview_hints() {
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: Some(text),
+        arguments: &[],
     };
     assert_eq!(
         mcp_menu_hint_row(&theme(), view, 80, false).text(),
@@ -818,8 +831,63 @@ fn a_preview_screen_without_content_says_it_is_loading() {
         catalogs: &NO_CATALOGS,
         loading_visible: true,
         preview: None,
+        arguments: &[],
     };
     let rows = mcp_menu_rows(&theme(), view, 80, menu_row_count(view, 12, 80));
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[2].text(), "  Loading MCP content…");
+}
+
+#[test]
+fn the_argument_form_marks_its_field_and_shows_the_draft() {
+    let servers = snapshot(vec![ready("docs")]);
+    let mut state = McpMenuState::open(1);
+    loaded(&mut state, -1, 1);
+    state.apply(Event::ShowArguments(2));
+    let mut completing = state.clone();
+    completing.apply(Event::RequestCompletion);
+    let fields = [
+        McpMenuArgumentField {
+            name: "topic".to_owned(),
+            required: true,
+            value: "alpha".to_owned(),
+        },
+        McpMenuArgumentField {
+            name: "tone".to_owned(),
+            required: false,
+            value: "warm".to_owned(),
+        },
+    ];
+    let view = |state, draft| McpMenuView {
+        state,
+        snapshot: &servers,
+        feedback: None,
+        add: AddFields {
+            draft,
+            ..AddFields::default()
+        },
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
+        preview: None,
+        arguments: &fields,
+    };
+    let rows = |view| {
+        mcp_menu_rows(&theme(), view, 80, menu_row_count(view, 12, 80))
+            .iter()
+            .map(Row::text)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        rows(view(&state, "beta"))[2..],
+        [
+            "  > topic *           beta".to_owned(),
+            "  tone                warm".to_owned(),
+        ]
+    );
+    assert_eq!(rows(view(&state, ""))[2], "  > topic *           alpha");
+    assert_eq!(
+        mcp_menu_hint_row(&theme(), view(&state, ""), 80, false).text(),
+        "type value  enter next/preview  tab complete  esc cancel"
+    );
+    assert_eq!(rows(view(&completing, ""))[1], "  Completing MCP argument…");
 }

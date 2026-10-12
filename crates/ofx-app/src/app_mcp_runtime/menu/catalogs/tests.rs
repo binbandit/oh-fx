@@ -133,6 +133,7 @@ async fn catalogs_list_every_tool_and_the_servers_resources_and_prompts() {
             name: "review".to_owned(),
             title: Some("Review".to_owned()),
             description: Some("Review code".to_owned()),
+            arguments: Vec::new(),
         }])
     );
 }

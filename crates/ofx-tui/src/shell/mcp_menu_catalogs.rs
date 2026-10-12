@@ -5,7 +5,7 @@ use ofx_contract::{
 use ofx_trace::trace_log;
 
 use super::Shell;
-use super::mcp_menu::{Effect, Event, Section};
+use super::mcp_menu::{Event, Section};
 use super::mcp_menu_runtime::McpMenu;
 use crate::composer::InsertResult;
 use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, InputEvent, ShortcutAction};
@@ -64,31 +64,6 @@ impl Shell<'_> {
         });
     }
 
-    pub(super) fn open_mcp_menu_item(&mut self) {
-        let Some(menu) = &self.mcp_menu else {
-            return;
-        };
-        let state = &menu.state;
-        let Some(target) = menu.catalogs.preview_target(
-            state.section,
-            &state.query,
-            state.selected_index,
-            menu.selected_server_name(),
-        ) else {
-            return;
-        };
-        if let Some(Effect::LoadPreview { generation }) =
-            self.apply_mcp_menu_event(Event::BeginPreview)
-        {
-            if let Some(menu) = &mut self.mcp_menu {
-                menu.feedback = None;
-            }
-            self.send(UiCommand::McpMenu {
-                request: McpMenuRequest::LoadPreview { generation, target },
-            });
-        }
-    }
-
     pub(super) fn mcp_menu_previewed(&mut self, generation: u64, preview: McpMenuPreview) {
         let Some(menu) = self.mcp_menu_awaiting(generation) else {
             return;
@@ -99,7 +74,7 @@ impl Shell<'_> {
         self.invalidate();
     }
 
-    fn mcp_menu_awaiting(&mut self, generation: u64) -> Option<&mut McpMenu> {
+    pub(super) fn mcp_menu_awaiting(&mut self, generation: u64) -> Option<&mut McpMenu> {
         let pending = self
             .mcp_menu
             .as_ref()

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use ofx_contract::{
     McpMenuCancel, McpMenuCatalog, McpMenuCatalogRequest, McpMenuOutcome, McpMenuPrompt,
-    McpMenuResource, UiEvent,
+    McpMenuPromptArgument, McpMenuResource, UiEvent,
 };
 use ofx_mcp::{McpError, McpRuntime, PromptSummary, ResourceSummary};
 
@@ -136,6 +136,14 @@ fn prompt(summary: PromptSummary) -> McpMenuPrompt {
         name: summary.name,
         title: summary.title,
         description: summary.description,
+        arguments: summary
+            .arguments
+            .into_iter()
+            .map(|argument| McpMenuPromptArgument {
+                name: argument.name,
+                required: argument.required,
+            })
+            .collect(),
     }
 }
 

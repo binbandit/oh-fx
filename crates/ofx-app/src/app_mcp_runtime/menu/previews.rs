@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use ofx_contract::{McpMenuPreview, McpMenuPreviewTarget, UiEvent};
+use ofx_contract::{McpMenuArgument, McpMenuPreview, McpMenuPreviewTarget, UiEvent};
 use ofx_mcp::{FeatureFailure, McpRuntime, MenuToolSchema, ResourceData};
 use ofx_text::encode_terminal_safe_inline;
+use serde_json::Value;
 
 use super::super::McpHost;
 
@@ -59,9 +60,13 @@ async fn preview(
                 .collect();
             Ok(menu_preview(RESOURCE_HEADING, &parts.join("\n\n")))
         }
-        McpMenuPreviewTarget::Prompt { server, name } => {
+        McpMenuPreviewTarget::Prompt {
+            server,
+            name,
+            arguments,
+        } => {
             let result = runtime
-                .get_prompt(&server, &name, "{}")
+                .get_prompt(&server, &name, &arguments_json(&arguments))
                 .await
                 .map_err(failure_name)?;
             let messages: Vec<String> = result
@@ -72,6 +77,21 @@ async fn preview(
             Ok(menu_preview(PROMPT_HEADING, &messages.join("\n\n")))
         }
     }
+}
+
+fn arguments_json(arguments: &[McpMenuArgument]) -> String {
+    let fields: Vec<String> = arguments
+        .iter()
+        .filter(|argument| !argument.value.is_empty())
+        .map(|argument| {
+            format!(
+                "{}:{}",
+                Value::from(argument.name.as_str()),
+                Value::from(argument.value.as_str())
+            )
+        })
+        .collect();
+    format!("{{{}}}", fields.join(","))
 }
 
 fn failure_name(failure: FeatureFailure) -> String {

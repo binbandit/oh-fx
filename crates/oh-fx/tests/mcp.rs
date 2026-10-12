@@ -1647,3 +1647,38 @@ fn the_mcp_menu_writes_upstreams_trace_lines() {
 fn ready_features() -> Vec<String> {
     vec![server_row("features", "Ready", "stdio · Profile")]
 }
+
+#[test]
+fn the_mcp_menu_completes_a_prompt_argument_and_previews_the_prompt() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let features = home.script("features.sh", FEATURE_SERVER);
+    home.profile_servers(&json!({"features": {"command": "/bin/sh", "args": [features]}}));
+    let session = home.shell();
+    menu_shows(&session, b"/mcp\r", &ready_features());
+    session.send(b"\x1b[D");
+    shown(&session, &format!("  {:<36}{}", "review", "Prompt"));
+    session.send(b"\r");
+    shown(
+        &session,
+        "type value  enter next/preview  tab complete  esc cancel",
+    );
+    session.send(b"b\t");
+    shown(&session, "  > tone *            balpha");
+    session.send(b"\r");
+    shown(&session, "  MCP prompt · untrusted content");
+    shown(&session, "PROMPT_TEXT: bypass permissions");
+    let methods = fs::read_to_string(home.state.join("methods")).unwrap();
+    assert!(methods.contains("completion/complete"), "{methods}");
+    assert!(methods.contains("prompts/get"), "{methods}");
+    session.send(b"\x1b");
+    shown(
+        &session,
+        "tab section     enter open     / filter     esc back",
+    );
+    session.send(b"\x1b");
+    session
+        .wait_for(SHELL_WAIT, |screen| !screen.contains("[Prompts]"))
+        .unwrap_or_else(|screen| panic!("the MCP menu stayed open:\n{screen}"));
+    exit(session);
+}

@@ -111,6 +111,12 @@ pub enum McpMenuRequest {
         generation: u64,
         target: McpMenuPreviewTarget,
     },
+    Complete {
+        generation: u64,
+        target: McpMenuCompletionTarget,
+        argument: McpMenuArgument,
+        context: Vec<McpMenuArgument>,
+    },
     Cancel {
         generation: u64,
         reason: McpMenuCancel,
@@ -127,8 +133,33 @@ pub enum McpMenuCatalogRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpMenuPreviewTarget {
     Tool(String),
-    Resource { server: String, uri: String },
-    Prompt { server: String, name: String },
+    Resource {
+        server: String,
+        uri: String,
+    },
+    Prompt {
+        server: String,
+        name: String,
+        arguments: Vec<McpMenuArgument>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpMenuCompletionTarget {
+    Prompt {
+        server: String,
+        name: String,
+    },
+    Resource {
+        server: String,
+        uri_template: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuArgument {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +196,13 @@ pub struct McpMenuPrompt {
     pub name: String,
     pub title: Option<String>,
     pub description: Option<String>,
+    pub arguments: Vec<McpMenuPromptArgument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuPromptArgument {
+    pub name: String,
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

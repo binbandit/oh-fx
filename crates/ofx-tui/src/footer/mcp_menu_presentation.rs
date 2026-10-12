@@ -13,7 +13,7 @@ use crate::theme::Theme;
 mod catalogs;
 mod preview;
 
-pub(crate) use catalogs::McpMenuCatalogs;
+pub(crate) use catalogs::{Item, McpMenuCatalogs};
 pub(crate) use preview::preview_visual_row_count;
 
 const HEADER_ROWS: usize = 2;
@@ -42,6 +42,12 @@ const CATALOG_HINTS: [&str; 3] = [
     "↑↓ move  tab section  enter  / filter  esc",
     "tab enter / esc",
 ];
+const ARGUMENT_HINTS: [&str; 3] = [
+    "type value  enter next/preview  tab complete  esc cancel",
+    "type  enter next  tab complete  esc",
+    "enter tab esc",
+];
+const COMPLETING: &str = "Completing MCP argument…";
 const PREVIEW_HINTS: [&str; 3] = [
     "↑↓ scroll     i insert     esc back",
     "↑↓ scroll  i insert  esc",
@@ -82,6 +88,14 @@ pub(crate) struct McpMenuView<'a> {
     pub(crate) catalogs: &'a McpMenuCatalogs,
     pub(crate) loading_visible: bool,
     pub(crate) preview: Option<&'a str>,
+    pub(crate) arguments: &'a [McpMenuArgumentField],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpMenuArgumentField {
+    pub(crate) name: String,
+    pub(crate) required: bool,
+    pub(crate) value: String,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -128,6 +142,7 @@ pub(crate) fn menu_row_count(view: McpMenuView<'_>, max_rows: usize, width: usiz
         Screen::Info => 2 + INFO_HINTS.len(),
         Screen::Confirm => 1,
         Screen::Preview => preview_visual_row_count(view.preview, width),
+        Screen::Arguments => view.arguments.len().max(1),
     };
     header_rows + body_rows.min(body_budget)
 }
@@ -169,6 +184,7 @@ pub(crate) fn mcp_menu_hint_row(
         Screen::Info => [INFO_ESCAPES[0], INFO_ESCAPES[1], INFO_ESCAPES[1]],
         Screen::Confirm => CONFIRM_HINTS,
         Screen::Preview => PREVIEW_HINTS,
+        Screen::Arguments => ARGUMENT_HINTS,
     };
     let hint = variants
         .into_iter()
@@ -215,6 +231,9 @@ fn compose_row(
             };
             return text_row(feedback, width, paint, TEXT_INDENT);
         }
+        if view.state.screen == Screen::Arguments && view.state.load_state == LoadState::Loading {
+            return text_row(COMPLETING, width, theme.dim, TEXT_INDENT);
+        }
         if !view.state.query.is_empty() {
             return text_row(
                 &format!("Filter: {}", view.state.query),
@@ -258,6 +277,7 @@ fn compose_row(
         Screen::Details => details_row(theme, view, body_index, width),
         Screen::Add => add_row(theme, view, body_index, width),
         Screen::Info => info_row(theme, view, body_index, width),
+        Screen::Arguments => argument_row(theme, view, body_index, width),
         Screen::Preview => preview
             .and_then(|lines| lines.get(body_index))
             .map_or_else(Row::new, |line| {
@@ -531,6 +551,25 @@ fn info_row(theme: &Theme, view: McpMenuView<'_>, row_index: usize, width: usize
             text_row(hint, width, theme.dim, TEXT_INDENT)
         }),
     }
+}
+
+fn argument_row(theme: &Theme, view: McpMenuView<'_>, row_index: usize, width: usize) -> Row {
+    let Some(field) = view.arguments.get(row_index) else {
+        return Row::new();
+    };
+    let selected = row_index == view.state.argument_index;
+    let label = format!(
+        "{}{}{}",
+        if selected { "> " } else { "" },
+        field.name,
+        if field.required { " *" } else { "" }
+    );
+    let value = if selected && !view.add.draft.is_empty() {
+        view.add.draft
+    } else {
+        &field.value
+    };
+    fact_row(theme, &label, value, width)
 }
 
 fn fact_row(theme: &Theme, label: &str, value: &str, width: usize) -> Row {
