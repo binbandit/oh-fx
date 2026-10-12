@@ -30,7 +30,7 @@ note = "CRC32C (slicing by 8, with upstream's check value) and the frame check o
 upstream = "src/core/session_manager/schema.zig"
 status = "partial"
 modules = ["crates/ofx-session/src/session_manager/fields.rs", "crates/ofx-session/src/session_manager/json.rs"]
-note = "The body field reader exists with upstream's fast path for objects as fx writes them and its std.json fallback: whitespace, first-wins duplicate names, numbers std.json turns into integers, enum values by name or index, and strings given as byte arrays. A number written as a JSON string in Zig's hexadecimal-float or digit-separated-float form is refused where upstream accepts it. The header parser, kinds, encoders and id rules come with the log reader and writer."
+note = "The body field reader exists with upstream's fast path for objects as fx writes them and its std.json fallback: whitespace, first-wins duplicate names, numbers std.json turns into integers, rounded through f128 as std.json rounds them, enum values by name or index, and strings given as byte arrays. A JSON-string number in Zig's hexadecimal-float form, a value matching f128's underflow point in more than 58 digits, and a digit-separated float on Zig's slow float path read differently; fx writes none of them. The header parser, kinds, encoders and id rules come with the log reader and writer."
 
 [[file]]
 upstream = "src/core/session_manager/session.zig"

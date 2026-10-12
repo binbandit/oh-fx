@@ -1,4 +1,8 @@
 const WHITESPACE: &[u8] = b" \t\n\r";
+const MAX_U64_DIGITS: i64 = 20;
+const F128_FRACTION_BITS: u32 = 112;
+const UNDERFLOW_ORDER: i64 = -4965;
+const UNDERFLOW_DIGITS: &str = "3237587559719012555462219479113823276249784669017340504844";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Value<'a> {
@@ -258,11 +262,7 @@ pub(crate) fn slice_to_u64(text: &str) -> Option<u64> {
 }
 
 fn parse_integer(text: &str) -> Option<u64> {
-    let (negative, digits) = match text.as_bytes().first()? {
-        b'+' => (false, &text[1..]),
-        b'-' => (true, &text[1..]),
-        _ => (false, text),
-    };
+    let (negative, digits) = split_sign(text);
     if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') {
         return None;
     }
@@ -274,15 +274,26 @@ fn parse_integer(text: &str) -> Option<u64> {
     (!negative || value == 0).then_some(value)
 }
 
-fn integral_decimal(text: &str) -> Option<u64> {
-    let (negative, unsigned) = match text.as_bytes().first()? {
-        b'+' => (false, &text[1..]),
-        b'-' => (true, &text[1..]),
+fn split_sign(text: &str) -> (bool, &str) {
+    match text.as_bytes().first() {
+        Some(b'+') => (false, &text[1..]),
+        Some(b'-') => (true, &text[1..]),
         _ => (false, text),
-    };
+    }
+}
+
+fn integral_decimal(text: &str) -> Option<u64> {
+    let (negative, signed) = split_sign(text);
+    if !valid_underscores(signed) {
+        return None;
+    }
+    let unsigned: String = signed
+        .chars()
+        .filter(|&character| character != '_')
+        .collect();
     let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
         Some(at) => (&unsigned[..at], exponent_of(&unsigned[at + 1..])?),
-        None => (unsigned, 0),
+        None => (unsigned.as_str(), 0),
     };
     let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     let digits_valid = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
@@ -291,47 +302,106 @@ fn integral_decimal(text: &str) -> Option<u64> {
         return None;
     }
     let digits: String = whole.chars().chain(fraction.chars()).collect();
-    let scale = exponent.checked_sub(i64::try_from(fraction.len()).ok()?)?;
-    let significant = digits.trim_start_matches('0');
+    let leading = digits.trim_start_matches('0');
+    let significant = leading.trim_end_matches('0');
     if significant.is_empty() {
         return Some(0);
     }
-    if negative {
+    let trailing = i64::try_from(leading.len() - significant.len()).ok()?;
+    let fraction_len = i64::try_from(fraction.len()).ok()?;
+    let scale = exponent
+        .saturating_sub(fraction_len)
+        .saturating_add(trailing);
+    let order = i64::try_from(significant.len()).ok()?.saturating_add(scale);
+    if order > MAX_U64_DIGITS {
         return None;
     }
-    let value = if scale >= 0 {
-        if i64::try_from(significant.len()).ok()? + scale > 20 {
-            return None;
-        }
-        format!("{significant}{}", "0".repeat(usize::try_from(scale).ok()?))
+    if order < UNDERFLOW_ORDER || (order == UNDERFLOW_ORDER && significant <= UNDERFLOW_DIGITS) {
+        return Some(0);
+    }
+    if negative || order < 0 {
+        return None;
+    }
+    if scale >= 0 {
+        let zeros = usize::try_from(scale).ok()?;
+        return format!("{significant}{}", "0".repeat(zeros)).parse().ok();
+    }
+    let (whole, fraction) = significant.split_at(usize::try_from(order).ok()?);
+    let floor: u128 = if whole.is_empty() {
+        0
     } else {
-        let cut = usize::try_from(-scale).ok()?;
-        if significant.len() < cut {
-            return None;
-        }
-        let (kept, dropped) = significant.split_at(significant.len() - cut);
-        if dropped.bytes().any(|byte| byte != b'0') {
-            return None;
-        }
-        if kept.is_empty() {
-            return Some(0);
-        }
-        kept.to_owned()
+        whole.parse().ok()?
     };
-    value.parse().ok()
+    if floor > 0 && fraction <= half_spacing(floor, false)?.as_str() {
+        return u64::try_from(floor).ok();
+    }
+    let ceiling = floor + 1;
+    let gap = complement(fraction);
+    if gap <= half_spacing(ceiling, true)? {
+        return u64::try_from(ceiling).ok();
+    }
+    None
+}
+
+fn half_spacing(integer: u128, below: bool) -> Option<String> {
+    let narrower = below && integer.is_power_of_two();
+    let bits = (F128_FRACTION_BITS + 1 + u32::from(narrower)).checked_sub(integer.ilog2())?;
+    let places = usize::try_from(bits).ok()?;
+    let mut digits = vec![1_u8];
+    for _ in 0..places {
+        let mut carry = 0;
+        for digit in &mut digits {
+            let product = *digit * 5 + carry;
+            *digit = product % 10;
+            carry = product / 10;
+        }
+        if carry > 0 {
+            digits.push(carry);
+        }
+    }
+    digits.resize(places, 0);
+    Some(
+        digits
+            .iter()
+            .rev()
+            .map(|digit| char::from(b'0' + digit))
+            .collect(),
+    )
+}
+
+fn complement(fraction: &str) -> String {
+    let last = fraction.len() - 1;
+    fraction
+        .bytes()
+        .enumerate()
+        .map(|(at, digit)| {
+            let whole = if at == last { 10 } else { 9 };
+            char::from(b'0' + whole - (digit - b'0'))
+        })
+        .collect()
+}
+
+fn valid_underscores(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().all(|(at, &byte)| {
+        byte != b'_'
+            || (at > 0
+                && bytes[at - 1].is_ascii_digit()
+                && bytes.get(at + 1).is_some_and(u8::is_ascii_digit))
+    })
 }
 
 fn exponent_of(text: &str) -> Option<i64> {
-    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let (negative, digits) = split_sign(text);
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    let magnitude: i64 = digits.parse().ok()?;
-    Some(if text.starts_with('-') {
-        -magnitude
-    } else {
-        magnitude
-    })
+    let magnitude = digits.bytes().fold(0_i64, |value, digit| {
+        value
+            .saturating_mul(10)
+            .saturating_add(i64::from(digit - b'0'))
+    });
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 #[cfg(test)]

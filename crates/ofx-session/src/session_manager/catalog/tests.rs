@@ -124,6 +124,34 @@ fn a_damaged_line_is_skipped_and_the_rest_still_folds() {
 }
 
 #[test]
+fn a_put_with_an_out_of_range_number_is_skipped_and_an_underflow_reads_as_zero() {
+    let record = |id: &str, updated: &str| {
+        framed(&format!(
+            "{{\"op\":\"put\",\"id\":\"{id}\",\"role\":\"root\",\"host\":\"ask\",\"workspace\":\"/w\",\"created\":0,\"updated\":{updated},\"turns\":1,\"opened\":[0,0,0,0,0]"
+        ))
+    };
+    let mut bytes = record("huge", "1e9223372036854775807");
+    bytes.extend(record("tiny", "1.0e-9223372036854775807"));
+    bytes.extend(record("negative", "-1.0e-9223372036854775808"));
+    bytes.extend(put("plain", 5, [0; HOST_COUNT]));
+    let root = Root::new(&bytes, &["huge", "tiny", "negative", "plain"]);
+    let listed: Vec<(String, u64)> = list(&root.dir(), None, 10)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|item| (item.id, item.updated_ms))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("plain".to_owned(), 5),
+            ("negative".to_owned(), 0),
+            ("tiny".to_owned(), 0)
+        ]
+    );
+}
+
+#[test]
 fn list_gives_root_sessions_newest_first_and_skips_folders_that_are_gone() {
     let root = Root::new(FIXTURE, &[A, B, C, D]);
     assert_eq!(

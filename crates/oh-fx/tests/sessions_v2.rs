@@ -137,7 +137,7 @@ fn crc32c(bytes: &[u8]) -> u32 {
     !crc
 }
 
-fn put(id: &str, workspace: &str, title: &str, updated_ms: u64) -> String {
+fn put(id: &str, workspace: &str, title: &str, updated_ms: impl std::fmt::Display) -> String {
     let payload = format!(
         "{{\"op\":\"put\",\"id\":\"{id}\",\"role\":\"root\",\"host\":\"ask\",\"workspace\":\"{workspace}\",\"title\":\"{title}\",\"language\":\"und-Latn\",\"created\":{updated_ms},\"updated\":{updated_ms},\"turns\":1,\"opened\":[0,0,0,0,0]"
     );
@@ -281,6 +281,37 @@ fn session_last_on_v2_describes_the_newest_session_of_the_workspace() {
     assert_eq!(
         home.listed(&["--sessions-v2", "session", "last"], &[]),
         "[session] ownLatestId1\ncreated_at_ms: 25\nupdated_at_ms: 25\nlanguage: und-Latn\nhistory_len: 1\n"
+    );
+}
+
+#[test]
+fn a_put_with_an_out_of_range_number_is_skipped_and_an_underflow_reads_as_zero() {
+    let home = Home::new("http://127.0.0.1:9");
+    let workspace = home.workspace();
+    let index = [
+        put("fxHugeNumbr1", &workspace, "Huge.", "1e9223372036854775807"),
+        put(
+            "fxTinyNumbr2",
+            &workspace,
+            "Tiny.",
+            "1.0e-9223372036854775807",
+        ),
+        put("fxPlainOne03", &workspace, "Plain.", 5),
+    ]
+    .concat();
+    install(
+        &home.fx_root(),
+        3,
+        index.as_bytes(),
+        &["fxHugeNumbr1", "fxTinyNumbr2", "fxPlainOne03"],
+    );
+    assert_eq!(
+        ids(&home.listed(&["--sessions-v2", "sessions", "--all", "--json"], &[])),
+        ["fxPlainOne03", "fxTinyNumbr2"]
+    );
+    assert!(
+        home.listed(&["--sessions-v2", "session", "last", "--json"], &[])
+            .contains("\"id\":\"fxPlainOne03\"")
     );
 }
 
