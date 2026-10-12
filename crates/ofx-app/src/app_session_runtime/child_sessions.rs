@@ -69,7 +69,7 @@ impl ChildStore for SessionChildren {
             model: settings.model.clone(),
             effort: settings.effort.clone(),
             fast_mode: settings.fast_mode,
-            ultrafast_mode: false,
+            ultrafast_mode: settings.ultrafast_mode,
         };
         let session = self
             .sessions
@@ -91,6 +91,7 @@ impl ChildStore for SessionChildren {
             model: preferences.model.clone(),
             effort: preferences.effort.clone(),
             fast_mode: preferences.fast_mode,
+            ultrafast_mode: preferences.ultrafast_mode,
         };
         Ok(ResumedChild {
             record: Arc::new(ChildSession {

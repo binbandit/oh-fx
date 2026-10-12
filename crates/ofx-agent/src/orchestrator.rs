@@ -261,6 +261,7 @@ struct Turn {
 struct CatalogNotices {
     fast: bool,
     tool_images: bool,
+    ultrafast: bool,
 }
 
 #[derive(Default)]

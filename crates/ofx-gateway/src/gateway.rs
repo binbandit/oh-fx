@@ -445,6 +445,7 @@ fn into_review_completion(
         tool_calls,
         usage,
         billing: None,
+        service_tier: None,
         provider_replay: None,
     })
 }
@@ -528,6 +529,7 @@ fn into_completion(
         tools,
         replay,
         billing,
+        service_tier,
         ..
     } = completion;
     Ok(Completion {
@@ -540,6 +542,7 @@ fn into_completion(
             parts_json,
         }),
         billing: billing.map(Box::new),
+        service_tier,
     })
 }
 

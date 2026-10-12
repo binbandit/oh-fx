@@ -161,6 +161,7 @@ pub struct Launch<'a> {
     pub system_prompt: Option<String>,
     pub reasoning_effort: Option<String>,
     pub fast_mode: Option<bool>,
+    pub ultrafast_mode: bool,
     pub context_limits: &'a [ContextLimitOverride],
     pub command_timeout: Option<Duration>,
     pub executions: &'a ManagedExecutions,
@@ -584,7 +585,7 @@ impl Profile {
             fast_mode: launch
                 .fast_mode
                 .unwrap_or_else(|| self.settings.fast_mode_for(&route.selection, &route.model)),
-            ultrafast_mode: false,
+            ultrafast_mode: launch.ultrafast_mode,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
             provider_routing: mem::take(&mut launch.routing_flags)
                 .applied_to(self.settings.provider_routing(&lookup)),
@@ -1342,6 +1343,7 @@ mod tests {
                     system_prompt: None,
                     reasoning_effort: None,
                     fast_mode: None,
+                    ultrafast_mode: false,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
@@ -1399,6 +1401,7 @@ mod tests {
                     system_prompt: None,
                     reasoning_effort: None,
                     fast_mode: flag,
+                    ultrafast_mode: false,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
@@ -1499,6 +1502,7 @@ mod tests {
                     system_prompt: None,
                     reasoning_effort: None,
                     fast_mode: None,
+                    ultrafast_mode: false,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
@@ -1684,6 +1688,7 @@ mod tests {
                     system_prompt: None,
                     reasoning_effort: None,
                     fast_mode: None,
+                    ultrafast_mode: false,
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
