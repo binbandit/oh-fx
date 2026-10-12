@@ -186,12 +186,16 @@ impl ControllerState {
     }
 
     fn settings_snapshot(&self, models: &[ModelOption]) -> SettingsSnapshot {
-        let supports_fast_mode = capabilities_of(models, &self.model).supports_fast_mode;
+        let capabilities = capabilities_of(models, &self.model);
         SettingsSnapshot {
             model: self.model.clone(),
             effort: self.effort.display_label().to_owned(),
-            reasoning_efforts: capabilities_of(models, &self.model).reasoning_efforts,
-            fast_mode: FastModeSetting::new(self.fast_mode(), supports_fast_mode),
+            reasoning_efforts: capabilities.reasoning_efforts,
+            fast_mode: FastModeSetting::new(self.fast_mode(), capabilities.supports_fast_mode),
+            ultrafast_mode: FastModeSetting::new(
+                self.ultrafast_requested(),
+                capabilities.supports_ultrafast_mode,
+            ),
             permission_mode: self.permissions.mode(),
             statusline: self.statusline,
             session_titles: self.setup.session_titles_enabled(),
@@ -243,6 +247,7 @@ impl ControllerState {
 fn setting_change(setting: SettingId, delta: isize) -> Option<ModelChange> {
     match setting {
         SettingId::FastMode => Some(ModelChange::ToggleFast),
+        SettingId::UltrafastMode => Some(ModelChange::ToggleUltrafast),
         SettingId::Effort => Some(ModelChange::StepEffort(delta)),
         _ => None,
     }

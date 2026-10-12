@@ -12,8 +12,8 @@ use std::time::Duration;
 use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{
-    BoxFuture, HookRegistrationError, HookView, Notice, NoticeTone, PermissionMode, UiCommand,
-    UiEvent,
+    BoxFuture, HookRegistrationError, HookView, ModelControls, Notice, NoticeTone, PermissionMode,
+    UiCommand, UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
@@ -280,6 +280,13 @@ impl From<io::Error> for SessionError {
     }
 }
 
+fn shell_controls(setup: &AgentSetup, ultrafast: bool) -> ModelControls {
+    ModelControls {
+        ultrafast,
+        ..setup.model_controls()
+    }
+}
+
 fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(), SessionError> {
     let (sender, receiver) = ui_channel()?;
     let steering = Arc::new(WorkerRuntime::default());
@@ -311,7 +318,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
-        model_controls: session.setup.model_controls(),
+        model_controls: shell_controls(&session.setup, session.ultrafast_requested),
         provider: session.setup.provider().label().to_owned(),
         providers: provider_names(session.profile.settings()),
         permission_mode: session.permission_mode,

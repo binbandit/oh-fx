@@ -251,6 +251,7 @@ fn the_status_line_shows_the_controller_s_effort_and_fast_mode() {
             effort: named("high"),
             effort_supported: true,
             fast: true,
+            ultrafast: false,
         },
     });
     assert_eq!(status_row(&mut test), "auto · model-a · high · ⚡︎");
@@ -259,6 +260,7 @@ fn the_status_line_shows_the_controller_s_effort_and_fast_mode() {
             effort: named("high"),
             effort_supported: false,
             fast: false,
+            ultrafast: false,
         },
     });
     assert_eq!(status_row(&mut test), "auto · model-a");
@@ -895,6 +897,7 @@ fn committed_controls_updates_preserve_a_pending_picker_and_appear_on_dismissal(
             effort: named("low"),
             effort_supported: true,
             fast: false,
+            ultrafast: false,
         },
     });
     assert_eq!(status_row(&mut test), "auto · x · high · ⚡︎");

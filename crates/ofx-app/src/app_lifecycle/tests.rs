@@ -763,7 +763,7 @@ fn shell_options() -> ShellOptions {
         statusline: ofx_contract::StatuslineToggles::default(),
         workspace_identity: None,
         theme: None,
-        model_controls: ofx_contract::ModelControls::default(),
+        model_controls: ModelControls::default(),
         recording: None,
     }
 }
