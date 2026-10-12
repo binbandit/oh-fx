@@ -1,13 +1,16 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use ofx_config::ProviderId;
-use ofx_contract::ReasoningEffort;
+use ofx_contract::{ConversationLog, HistoryTurn, ReasoningEffort, TurnEnd};
 
 use super::*;
 use crate::session_codec::SavedProvider;
+use crate::session_codec::recovery_checkpoint::RouteCredential;
+use crate::session_conversation_log::SessionLog;
 use crate::session_event::{
     AssistantEvent, ContextCheckpointEvent, ConversationEvent, TurnCompletedEvent, UserEvent,
 };
@@ -478,6 +481,38 @@ fn remembered_session_ids_are_bounded_and_unambiguous() {
         parse_remembered_session_id(&bytes),
         Err(SessionError::InvalidRememberedSession)
     );
+}
+
+#[test]
+fn a_new_session_is_remembered_once_its_turn_is_saved_even_when_its_metadata_write_fails() {
+    let fixture = Fixture::new();
+    let store = fixture.store("/workspace");
+    let mut session = store.start(preferences()).unwrap();
+    store.remember_on_first_write(&mut session);
+    let id = session.id().to_owned();
+    session.observe_prompt("Проверь файл, please");
+    let session = Arc::new(Mutex::new(session));
+    let mut log = SessionLog::new(
+        Arc::clone(&session),
+        SavedProvider::new(ProviderId::Gateway, None).unwrap(),
+        RouteCredential::configured(),
+    );
+    let folder = fixture.session_dir(&id);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o500)).unwrap();
+    let saved = log.record_turn(&HistoryTurn {
+        user: "Проверь файл, please",
+        steps: Vec::new(),
+        steering: Vec::new(),
+        files: &[],
+        end: TurnEnd::Replied {
+            text: "ok",
+            provider_replay: None,
+        },
+    });
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(saved.is_err());
+    assert_eq!(store.remembered_session_id(), Ok(Some(id)));
+    assert_eq!(session.lock().unwrap().take_remember_failure(), None);
 }
 
 #[test]

@@ -4,6 +4,7 @@ mod conversation_progress;
 mod conversation_recovery;
 mod conversation_writer;
 pub(crate) mod managed_file;
+mod remembered;
 mod turn_events;
 mod turn_recovery;
 mod turn_restore;
@@ -55,6 +56,7 @@ use managed_file::{
     Access, create_managed_file, create_private_dir, entry_exists, lock_with_deadline,
     open_managed_file, publish_dir, read_managed_file, remove_dir_tree, same_directory, sync_dir,
 };
+use remembered::Remembering;
 use turn_events::{TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
 pub(crate) use turn_recovery::{RECOVERY_FILE, read_checkpoint};
@@ -151,6 +153,7 @@ pub struct WritableSession {
     work_id: Option<String>,
     usage: Usage,
     usage_checkpoints: UsageCheckpoints,
+    remembering: Option<Box<Remembering>>,
 }
 
 impl WritableSession {
@@ -351,6 +354,7 @@ impl WritableSession {
             credential,
         )?;
         self.recovery = Recovery::Saved;
+        self.remember_after_write();
         Ok(())
     }
 
@@ -531,6 +535,7 @@ impl WritableSession {
         events: &[ConversationEvent],
     ) -> Result<(), SessionError> {
         self.writer.append(timestamp_ms, events)?;
+        self.remember_after_write();
         if !events.is_empty() {
             self.metadata.updated_at_ms = timestamp_ms;
             self.started = false;
@@ -650,6 +655,7 @@ pub(crate) fn start_session(
                 work_id: None,
                 usage: Usage::fresh(),
                 usage_checkpoints: UsageCheckpoints::default(),
+                remembering: None,
             }
         });
     let id = metadata_id;
@@ -787,6 +793,7 @@ fn resume_owned(
         work_id: None,
         usage,
         usage_checkpoints: UsageCheckpoints::default(),
+        remembering: None,
     })
 }
 
