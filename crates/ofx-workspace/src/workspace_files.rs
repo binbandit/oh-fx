@@ -8,9 +8,11 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use memchr::{memchr, memchr_iter};
+use ofx_trace::trace_log;
 use rustix::fs::{AtFlags, Dir, DirEntry, FileType, Mode, OFlags, open, openat, statat};
 
 use crate::bounded_process::run_bounded;
+use crate::file_index::CORE;
 use crate::ignored_dirs::IGNORED_DIRECTORY_NAMES;
 use crate::pathing::MAX_PATH_BYTES;
 
@@ -277,13 +279,34 @@ pub(crate) fn discover_listing_files(
     options: &DiscoveryOptions<'_>,
 ) -> Result<Discovery, GitFileListFailed> {
     let Some(git) = trusted_git_executable() else {
+        trace_log!(
+            CORE,
+            "workspace file discovery trusted Git unavailable; falling back root={}",
+            workspace_root.display()
+        );
         return Ok(walk_workspace(workspace_root, options));
     };
+    trace_spawning();
     match git_raw_list(workspace_root, options, git) {
         Ok(raw) => Ok(parse_raw_list(raw, options)),
         Err(error) if has_git_metadata(workspace_root) => Err(error),
-        Err(GitFileListFailed) => Ok(walk_workspace(workspace_root, options)),
+        Err(error) => {
+            trace_log!(
+                CORE,
+                "workspace file discovery falling back root={} err={error}",
+                workspace_root.display()
+            );
+            Ok(walk_workspace(workspace_root, options))
+        }
     }
+}
+
+fn trace_spawning() {
+    trace_log!(
+        CORE,
+        "workspace file discovery process spawning thread={}",
+        ofx_trace::thread_id()
+    );
 }
 
 pub(crate) fn discover_listing_directories(
@@ -291,6 +314,11 @@ pub(crate) fn discover_listing_directories(
     options: &DiscoveryOptions<'_>,
 ) -> Result<Discovery, GitFileListFailed> {
     let Some(git) = trusted_git_executable() else {
+        trace_log!(
+            CORE,
+            "workspace directory discovery trusted Git unavailable; falling back root={}",
+            workspace_root.display()
+        );
         return Ok(walk_workspace_paths(
             workspace_root,
             options,
@@ -298,6 +326,7 @@ pub(crate) fn discover_listing_directories(
             None,
         ));
     };
+    trace_spawning();
     match git_ignored_directories(workspace_root, git) {
         Ok(ignored) => {
             let git_options = DiscoveryOptions {
@@ -312,12 +341,19 @@ pub(crate) fn discover_listing_directories(
             ))
         }
         Err(error) if has_git_metadata(workspace_root) => Err(error),
-        Err(GitFileListFailed) => Ok(walk_workspace_paths(
-            workspace_root,
-            options,
-            WalkTarget::Directories,
-            None,
-        )),
+        Err(error) => {
+            trace_log!(
+                CORE,
+                "workspace directory discovery falling back root={} err={error}",
+                workspace_root.display()
+            );
+            Ok(walk_workspace_paths(
+                workspace_root,
+                options,
+                WalkTarget::Directories,
+                None,
+            ))
+        }
     }
 }
 
@@ -409,17 +445,40 @@ fn git_listing(
     git_executable: Option<&Path>,
     work_tree_holds_root: impl Fn(&Path) -> bool,
 ) -> Option<Discovery> {
-    let git = git_executable?;
+    let Some(git) = git_executable else {
+        trace_log!(
+            CORE,
+            "workspace file discovery trusted Git unavailable; falling back root={}",
+            workspace_root.display()
+        );
+        return None;
+    };
     if !work_tree_holds_root(git) {
         return None;
     }
-    let raw = git_raw_list(workspace_root, options, git).ok()?;
+    let raw = git_raw_list(workspace_root, options, git)
+        .inspect_err(|error| {
+            trace_log!(
+                CORE,
+                "workspace file discovery falling back root={} err={error}",
+                workspace_root.display()
+            );
+        })
+        .ok()?;
     let parsed = parse_raw_list(raw, options);
-    (options.untracked == UntrackedFiles::Only
+    if options.untracked == UntrackedFiles::Only
         || !parsed.files.is_empty()
         || parsed.stats.incomplete
-        || parsed.stats.skipped_overlong > 0)
-        .then_some(parsed)
+        || parsed.stats.skipped_overlong > 0
+    {
+        return Some(parsed);
+    }
+    trace_log!(
+        CORE,
+        "workspace file discovery git returned no candidates; falling back root={}",
+        workspace_root.display()
+    );
+    None
 }
 
 fn git_list_arguments(options: &DiscoveryOptions<'_>) -> &'static [&'static str] {

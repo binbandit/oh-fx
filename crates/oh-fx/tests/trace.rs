@@ -127,6 +127,19 @@ fn quit(launched: &mut Launched) {
     assert!(launched.server.requests().is_empty());
 }
 
+fn report_tail<'a>(report: &'a str, log: &Path) -> &'a str {
+    let heading = format!("\n## Trace Tail\npath={} last_bytes=", log.display());
+    let start = report.find(&heading).expect("the report has a trace tail") + heading.len();
+    let (bytes, rest) = report[start..]
+        .split_once('\n')
+        .expect("the trace tail names its size");
+    let bytes: usize = bytes.parse().expect("the trace tail size is a number");
+    let tail = rest
+        .strip_prefix("only obvious secrets masked\n")
+        .expect("the trace tail says what it masks");
+    &tail[..bytes]
+}
+
 #[test]
 fn trace_copies_a_private_report_with_the_trace_log_tail() {
     let (_home, mut launched) = launch(0);
@@ -161,11 +174,11 @@ fn trace_copies_a_private_report_with_the_trace_log_tail() {
         written.contains(" [herdr] disabled socket=(unset) pane=(unset) fx_herdr=(unset)\n"),
         "{written}"
     );
-    assert!(report.contains(&format!(
-        "\n## Trace Tail\npath={} last_bytes={}\nonly obvious secrets masked\n{written}",
-        log.display(),
-        written.len()
-    )));
+    let tail = report_tail(&report, &log);
+    assert!(
+        tail.ends_with('\n') && written.contains(tail),
+        "{tail}\n---\n{written}"
+    );
     assert!(report.contains("\nTERM: xterm-256color\n"));
     quit(&mut launched);
 }

@@ -155,7 +155,9 @@ impl FilePicker {
                 };
                 self.state.stage(revision, status, rows);
             }
-            None => self.state.stage(revision, Status::Unavailable, Vec::new()),
+            None => {
+                self.state.stage(revision, Status::Unavailable, Vec::new());
+            }
         }
         true
     }

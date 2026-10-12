@@ -11,6 +11,7 @@ memchr.workspace = true
 ofx-contract.workspace = true
 ofx-markdown.workspace = true
 ofx-text.workspace = true
+ofx-trace.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "process", "stdio", "termios"] }
 signal-hook.workspace = true
 thiserror.workspace = true

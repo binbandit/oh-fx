@@ -246,3 +246,12 @@ fn the_log_directory_is_created_when_tracing_starts() {
     traced(file_options(&path)).line("test", format_args!("created"));
     assert!(read(&path).contains("[test] created"));
 }
+
+#[test]
+fn each_thread_keeps_its_own_trace_thread_id() {
+    let here = thread_id();
+    assert_eq!(thread_id(), here);
+    let there = std::thread::spawn(thread_id).join().unwrap();
+    assert_ne!(there, here);
+    assert!(here > 0 && there > 0);
+}
