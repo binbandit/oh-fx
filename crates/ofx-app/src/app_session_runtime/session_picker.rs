@@ -1,6 +1,7 @@
 use ofx_agent::Agent;
 use ofx_contract::{HistoryEntry, Notice, NoticeTone, ResumeRefusal};
 use ofx_session::{SessionCatalog, SessionError};
+use ofx_trace::trace_log;
 use tokio::time::Instant;
 
 use super::persistence::{Persistence, SESSION_TOPIC};
@@ -98,6 +99,10 @@ impl Persistence {
 }
 
 fn refused(error: SessionError) -> Refused {
+    trace_log!(
+        "session",
+        "picker resume failed err={error} picker_active=true"
+    );
     let explained = match error {
         SessionError::FxSessionOpen
         | SessionError::FxCompactionUnfinished

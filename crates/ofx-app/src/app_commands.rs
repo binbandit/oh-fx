@@ -25,8 +25,8 @@ const CLIPBOARD_TOPIC: &str = "clipboard";
 const NO_REPLY_TO_COPY: &str = "No assistant reply to copy.";
 const COPIED: &str = "Copied to clipboard.";
 const COPY_FAILED: &str = "Failed to copy to clipboard.";
-const FAST_TOPIC: &str = "fast";
-const ULTRAFAST_TOPIC: &str = "ultrafast";
+pub(crate) const FAST_TOPIC: &str = "fast";
+pub(crate) const ULTRAFAST_TOPIC: &str = "ultrafast";
 const ULTRAFAST_USAGE: &str = "usage: /ultrafast [on|off|status]";
 const ULTRAFAST_UNAVAILABLE: &str =
     "Ultra mode is unavailable for this model and may increase cost.";

@@ -153,3 +153,104 @@ async fn trace_reports_the_last_shutdown_the_previous_session_saved() {
         "{report}"
     );
 }
+
+const SESSION_TRACE_CHILD: &str = "OH_FX_SESSION_TRACE_CHILD";
+const SESSION_TRACE_TEST: &str = "app_agent_runtime::tests::trace::session_lines_name_speeds_turns_and_errors_without_session_text";
+
+async fn change_speeds() {
+    let codex = FakeServer::start([]);
+    let catalog = codex_catalog(true, 8);
+    let mut harness = Harness::codex(&codex, &catalog).await;
+    assert_eq!(fast_notice(&mut harness).await, "fast|on");
+    assert_eq!(fast_notice(&mut harness).await, "fast|off");
+    fs::write(
+        harness.home.path().join("config/settings.json"),
+        r#"{"workspaces":"legacy"}"#,
+    )
+    .unwrap();
+    harness.command(&format!("/model {CODEX_MODEL}"));
+    assert_eq!(notices_until(&mut harness, "model").await.len(), 2);
+    let server = FakeServer::start([]);
+    let home = tempfile::tempdir().unwrap();
+    let setup = agent_setup(&home, &server).await;
+    let mut harness = Harness::requesting_ultrafast(home, setup);
+    assert_eq!(
+        ultrafast_notice(&mut harness, "/ultrafast off").await,
+        (NoticeTone::Neutral, "requested off".to_owned())
+    );
+}
+
+async fn resume_after_an_unclean_exit_and_then_a_missing_session() {
+    let server = FakeServer::start([Reply::sse(&chat_text_events(&["answer a"]))]);
+    let mut harness = Harness::start_saved(&server).await;
+    chat(&mut harness, &["question a"]).await;
+    let first = saved_sessions(&harness.home)[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    harness.command("/new");
+    harness
+        .until(|event| matches!(event, UiEvent::ConversationCleared { .. }))
+        .await;
+    pause_a_saved_response(&harness.home, &first);
+    fs::write(
+        harness
+            .home
+            .path()
+            .join("data/sessions")
+            .join(&first)
+            .join("recovery.asked"),
+        "{\"asked_at_ms\":1}\n",
+    )
+    .unwrap();
+    harness.send(UiCommand::ResumeSession { id: first });
+    harness
+        .until(|event| matches!(event, UiEvent::SessionResumed { .. }))
+        .await;
+    harness.send(UiCommand::ResumeSession {
+        id: "oh-fx-missing-session".to_owned(),
+    });
+    harness
+        .until(|event| matches!(event, UiEvent::SessionResumeFailed { .. }))
+        .await;
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn session_lines_name_speeds_turns_and_errors_without_session_text() {
+    if let Some(root) = std::env::var_os(SESSION_TRACE_CHILD) {
+        ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+        change_speeds().await;
+        resume_after_an_unclean_exit_and_then_a_missing_session().await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("trace.log");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([SESSION_TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(SESSION_TRACE_CHILD, root.path())
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    for line in [
+        format!(
+            " [session] fast mode changed old=false new=true ultrafast_old=false ultrafast_new=false model={CODEX_MODEL} supports_fast=true\n"
+        ),
+        format!(
+            " [session] fast mode changed old=true new=false ultrafast_old=false ultrafast_new=false model={CODEX_MODEL} supports_fast=true\n"
+        ),
+        " [session] ultrafast mode changed old=true new=false fast_old=false fast_new=false model=model-a supports_ultrafast=false\n".to_owned(),
+        " [session] model settings persistence failed err=InvalidSettingsFormat\n".to_owned(),
+        " [session] event=auto_continue_suppressed reason=unclean_exit turn_id=2\n".to_owned(),
+        " [session] picker resume failed err=SessionNotFound picker_active=true\n".to_owned(),
+    ] {
+        assert!(written.contains(&line), "{line}{written}");
+    }
+    for text in ["question a", "answer a", "fix the build"] {
+        assert!(!written.contains(text), "{text}\n{written}");
+    }
+}

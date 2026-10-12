@@ -12,7 +12,7 @@ use crate::session_commands::{
 
 const STARTUP_SCROLLBACK_ON: &str = "startup-scrollback on";
 const STARTUP_SCROLLBACK_OFF: &str = "startup-scrollback off";
-const EFFORT_TOPIC: &str = "effort";
+pub(super) const EFFORT_TOPIC: &str = "effort";
 
 pub(super) struct MenuSettings {
     startup_scrollback: bool,
