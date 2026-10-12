@@ -272,6 +272,7 @@ impl Shell<'_> {
             effort_supported: !efforts.is_empty(),
             fast: intrinsically_fast(&flow.pending)
                 || (capabilities.supports_fast_mode && speed == "fast"),
+            ultrafast: false,
         };
         (&flow.pending, Cow::Owned(controls))
     }

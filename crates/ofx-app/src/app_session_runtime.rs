@@ -455,7 +455,7 @@ pub fn configured_preferences(
         model: setup.configured_model().to_owned(),
         effort: settings.reasoning_effort(),
         fast_mode: settings.fast_mode_for(&setup.provider(), setup.configured_model()),
-        ultrafast_mode: false,
+        ultrafast_mode: settings.configured_ultrafast_mode().unwrap_or(false),
     }
 }
 

@@ -45,12 +45,13 @@ impl StartupStatus {
             &workspace_root,
             paths.as_ref().map(|paths| paths.state.as_path()),
         );
-        let settings = match &paths {
+        let mut settings = match &paths {
             Some(paths) => Settings::load(paths, &workspace_root)?,
             None => Settings::default(),
         };
         let home = env::home_dir();
         let lookup = |name: &str| env::var(name).ok();
+        settings.observe_ultrafast_override(&lookup);
         let sources = StatusSources {
             paths: paths.as_ref(),
             home: home.as_deref(),
@@ -115,6 +116,7 @@ impl StatusSources<'_> {
             permission_mode: settings.permission_mode(lookup),
             workspace_root,
             agent_step_limit: settings.max_agent_steps(lookup),
+            ultrafast_requested: settings.ultrafast_mode(),
             mcp,
         })
     }

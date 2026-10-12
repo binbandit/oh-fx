@@ -6,7 +6,7 @@ use crate::shell::model_menu::{CatalogLoad, ModelMenu};
 use crate::theme::Theme;
 
 const HEADER_ROWS: usize = 2;
-const SETTING_ROWS: usize = 10;
+const SETTING_ROWS: usize = 11;
 const INLINE_MODEL_ROWS: usize = 6;
 const MODEL_STATE_INDENT: usize = 4;
 const INDENT: usize = 2;

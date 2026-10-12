@@ -21,6 +21,7 @@ pub(crate) struct Theme {
     pub(crate) permission_auto: Paint,
     pub(crate) user_card_marker: Paint,
     pub(crate) tool_stdout: Paint,
+    pub(crate) ultrafast_marker: Paint,
     diff_added_marker: Option<Color>,
     diff_removed_marker: Option<Color>,
     inline_code: Paint,
@@ -49,6 +50,7 @@ const FX_DARK: Theme = Theme {
     permission_auto: Paint::fg(252),
     user_card_marker: Paint::fg(255),
     tool_stdout: Paint::fg(245),
+    ultrafast_marker: Paint::fg(220),
     diff_added_marker: None,
     diff_removed_marker: None,
     inline_code: Paint::fg(245),
@@ -77,6 +79,7 @@ const FX_LIGHT: Theme = Theme {
     permission_auto: Paint::fg(238),
     user_card_marker: Paint::fg(235),
     tool_stdout: Paint::fg(245),
+    ultrafast_marker: Paint::fg(220),
     diff_added_marker: None,
     diff_removed_marker: None,
     inline_code: Paint::fg(247),
@@ -90,6 +93,11 @@ const FX_LIGHT: Theme = Theme {
 impl Theme {
     pub(crate) fn builtin(light: bool, pinned: bool, truecolor: bool) -> Self {
         let mut theme = if light { FX_LIGHT } else { FX_DARK };
+        theme.ultrafast_marker = Paint::colored(Some(if truecolor {
+            Color::Rgb(255, 204, 0)
+        } else {
+            Color::Indexed(220)
+        }));
         if pinned {
             let (added, removed) = if truecolor {
                 (Color::Rgb(48, 164, 108), Color::Rgb(229, 72, 77))

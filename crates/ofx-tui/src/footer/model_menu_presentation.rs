@@ -224,6 +224,9 @@ fn facts(option: &ModelOption) -> String {
     if option.capabilities.supports_fast_mode {
         facts.push("Fast".to_owned());
     }
+    if option.capabilities.supports_ultrafast_mode {
+        facts.push("Ultra".to_owned());
+    }
     facts.join(FACT_SEPARATOR)
 }
 
@@ -501,5 +504,14 @@ mod tests {
         assert_eq!(two[1], "Models 25  [All]");
         assert_eq!(two[2], "  p/selected-model");
         assert_eq!(visible_items(&menu, &catalog, 7), 5);
+    }
+
+    #[test]
+    fn an_ultra_model_lists_ultra_after_fast() {
+        let mut ultra = rich("openai/gpt-6-astra", 1_000_000, Some(128_000), true);
+        ultra.capabilities.supports_ultrafast_mode = true;
+        assert_eq!(facts(&ultra), "1M context · 128K output · Fast · Ultra");
+        ultra.capabilities.supports_fast_mode = false;
+        assert_eq!(facts(&ultra), "1M context · 128K output · Ultra");
     }
 }

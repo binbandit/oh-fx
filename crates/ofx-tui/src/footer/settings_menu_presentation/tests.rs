@@ -17,6 +17,7 @@ fn snapshot() -> SettingsSnapshot {
         effort: "default".to_owned(),
         reasoning_efforts: Vec::new(),
         fast_mode: FastModeSetting::On,
+        ultrafast_mode: FastModeSetting::Unavailable,
         permission_mode: PermissionMode::Ask,
         statusline,
         session_titles: true,
@@ -68,13 +69,14 @@ fn every_setting_takes_one_row_at_wide_and_narrow_widths() {
     let text = texts(&wide);
     assert_eq!(
         text[0],
-        "Settings 10  [All]  Interface  Agent  Notifications  Advanced"
+        "Settings 11  [All]  Interface  Agent  Notifications  Advanced"
     );
     assert_eq!(text[1], "");
     assert_eq!(text[2], "  Status line context      off  on");
     assert!(!text[2].contains("Show context usage"));
     assert_eq!(text[6], "  Reasoning effort         default");
-    assert_eq!(text[11], "  Prompt history           off  on");
+    assert_eq!(text[8], "  Ultra mode               off");
+    assert_eq!(text[12], "  Prompt history           off  on");
     let compact = texts(&settings_menu_rows(&theme(), view(&snapshot, ""), 4, 100));
     assert_eq!(compact.len(), 4);
     assert_eq!(compact[2], "  Status line context      off  on");
@@ -88,7 +90,7 @@ fn every_setting_takes_one_row_at_wide_and_narrow_widths() {
     for row in &narrow {
         assert!(row.width() <= 24, "{:?}", row.text());
     }
-    assert_eq!(narrow[0].text(), "Settings 10  [All]");
+    assert_eq!(narrow[0].text(), "Settings 11  [All]");
 }
 
 #[test]
@@ -157,7 +159,7 @@ fn an_empty_search_says_so_and_a_short_menu_follows_the_selection() {
         "No settings found."
     );
     let last = SettingsView {
-        selected: 9,
+        selected: 10,
         ..view(&snapshot, "")
     };
     let rows = texts(&settings_menu_rows(&theme(), last, 5, 100));
@@ -225,7 +227,7 @@ fn model_choices_stay_visible_under_the_model_row_within_the_budget() {
     assert_eq!(
         texts(&settings_menu_rows(&theme(), models, 8, 100)),
         [
-            "Settings 10  [All]  Interface  Agent  Notifications  Advanced",
+            "Settings 11  [All]  Interface  Agent  Notifications  Advanced",
             "",
             "  Status line workspace    off  on",
             "  Model                    zai/glm-5.2",

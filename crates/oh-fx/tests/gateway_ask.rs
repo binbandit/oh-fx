@@ -373,6 +373,47 @@ fn ask_routing_flags_outrank_the_environment_and_settings() {
 }
 
 #[test]
+fn the_ultra_setting_and_its_variable_choose_the_tier_for_ask() {
+    let home = Home::with_settings(&json!({
+        "models": {"gateway": "openai/gpt-6-astra"},
+        "ultrafast_mode": true,
+    }));
+    let run = |environment: &[(&str, &str)]| {
+        let catalog = ultra_catalog();
+        let chat = FakeServer::start([reply("tiered")]);
+        let chat_url = chat_url(&chat);
+        let models_url = format!("http://{}/coding-agent/v1/models", catalog.address());
+        let mut variables = vec![
+            ("AI_GATEWAY_API_KEY", API_KEY),
+            ("OH_FX_E2E_GATEWAY_CHAT_URL", chat_url.as_str()),
+            ("OH_FX_E2E_GATEWAY_MODELS_URL", models_url.as_str()),
+        ];
+        variables.extend_from_slice(environment);
+        let output = home.run(&["ask", "--no-save", "hello"], &variables);
+        let tiers: Vec<Value> = chat
+            .requests()
+            .iter()
+            .map(|request| request.json()["providerOptions"]["openai"].clone())
+            .collect();
+        (output, tiers)
+    };
+    let (setting, tiers) = run(&[]);
+    assert!(setting.status.success(), "{}", stderr(&setting));
+    assert_eq!(tiers, [json!({"serviceTier": "ultrafast"})]);
+    let (off, tiers) = run(&[("OH_FX_ULTRAFAST", " off ")]);
+    assert!(off.status.success(), "{}", stderr(&off));
+    assert_eq!(tiers, [Value::Null]);
+    let (invalid, tiers) = run(&[("OH_FX_ULTRAFAST", "sometimes")]);
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(
+        stderr(&invalid).contains("oh-fx: InvalidUltrafastOverride"),
+        "{}",
+        stderr(&invalid)
+    );
+    assert!(tiers.is_empty());
+}
+
+#[test]
 fn the_oidc_token_outranks_the_api_key_and_blank_values_do_not_count() {
     for (oidc, bearer) in [(OIDC_TOKEN, OIDC_TOKEN), (" \t", API_KEY)] {
         let server = FakeServer::start([reply("ok")]);

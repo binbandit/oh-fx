@@ -23,6 +23,7 @@ fn inspection(profile_diagnostic: ProfileConfigDiagnostic) -> LocalConfigInspect
 
 fn report(auth: AuthStatus, mcp: LocalConfigInspection) -> StatusReport {
     StatusReport {
+        ultrafast_requested: false,
         model: "model-a".to_owned(),
         model_origin: "default",
         model_source: Some("local".to_owned()),

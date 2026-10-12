@@ -8,6 +8,7 @@ fn snapshot() -> SettingsSnapshot {
         effort: "default".to_owned(),
         reasoning_efforts: Vec::new(),
         fast_mode: FastModeSetting::On,
+        ultrafast_mode: FastModeSetting::Unavailable,
         permission_mode: PermissionMode::Ask,
         statusline,
         session_titles: true,
@@ -19,9 +20,9 @@ fn snapshot() -> SettingsSnapshot {
 #[test]
 fn the_catalog_groups_searchable_settings_by_category() {
     let snapshot = snapshot();
-    assert_eq!(snapshot.filtered_count(SettingCategory::All, ""), 10);
+    assert_eq!(snapshot.filtered_count(SettingCategory::All, ""), 11);
     assert_eq!(snapshot.filtered_count(SettingCategory::Interface, ""), 3);
-    assert_eq!(snapshot.filtered_count(SettingCategory::Agent, ""), 5);
+    assert_eq!(snapshot.filtered_count(SettingCategory::Agent, ""), 6);
     assert_eq!(
         snapshot.filtered_count(SettingCategory::Notifications, ""),
         0
@@ -94,6 +95,18 @@ fn choices_are_typed_and_the_model_and_an_unsupported_fast_mode_offer_none() {
     };
     assert_eq!(unsupported.option_count(SettingId::FastMode), 0);
     assert_eq!(unsupported.cycle_change(SettingId::FastMode, 1), None);
+    assert_eq!(snapshot.option_count(SettingId::UltrafastMode), 0);
+    let ultra = SettingsSnapshot {
+        ultrafast_mode: FastModeSetting::new(false, true),
+        ..snapshot.clone()
+    };
+    assert_eq!(ultra.option_count(SettingId::UltrafastMode), 2);
+    assert_eq!(ultra.value(SettingId::UltrafastMode), "off");
+    let row = ultra
+        .item_at(SettingCategory::Agent, "highest-speed", 0)
+        .unwrap();
+    assert_eq!(row.id, SettingId::UltrafastMode);
+    assert_eq!(row.label, "Ultra mode");
     let off = snapshot
         .cycle_change(SettingId::StatuslineContext, 1)
         .unwrap();

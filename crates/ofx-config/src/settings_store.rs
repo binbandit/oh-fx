@@ -30,6 +30,7 @@ const RETIRED_SETTINGS: [&str; 2] = ["input_appearance", "maxxing_mode"];
 const FAST_MODE: &str = "fast_mode";
 const EFFORT: &str = "effort";
 const FAST_MODE_MODEL_BOUND: &str = "fast_mode_model_bound";
+const ULTRAFAST_MODE: &str = "ultrafast_mode";
 const LEGACY_CODEX_MODEL: &str = "codex_model";
 const PERMISSION_MODE: &str = "permission_mode";
 const YOLO_ACKNOWLEDGED: &str = "yolo_acknowledged";
@@ -79,6 +80,12 @@ const FAST_MODE_MIGRATION: Migration = Migration {
     field: FAST_MODE,
     binding: Some(FAST_MODE_MODEL_BOUND),
     snapshot: "settings.json.preference-migration.fast_mode.json",
+};
+const ULTRAFAST_MODE_MIGRATION: Migration = Migration {
+    container: None,
+    field: ULTRAFAST_MODE,
+    binding: None,
+    snapshot: "settings.json.preference-migration.ultrafast_mode.json",
 };
 const EFFORT_MIGRATION: Migration = Migration {
     container: None,
@@ -243,6 +250,7 @@ enum Patch<'a> {
         model: &'a str,
         effort: Option<&'a str>,
         fast_mode: bool,
+        ultrafast_mode: Option<bool>,
     },
     PermissionMode(PermissionMode),
     YoloAcknowledged,
@@ -362,7 +370,7 @@ pub fn save_model_preference(
     provider: &ProviderId,
     model: &str,
     effort: Option<&str>,
-    fast_mode: bool,
+    (fast_mode, ultrafast_mode): (bool, Option<bool>),
 ) -> Result<(), SettingsWriteFailure> {
     commit(
         paths,
@@ -371,6 +379,7 @@ pub fn save_model_preference(
             model,
             effort,
             fast_mode,
+            ultrafast_mode,
         },
         &mut || {},
     )
@@ -710,6 +719,7 @@ fn apply(
             model,
             effort,
             fast_mode,
+            ultrafast_mode,
         } => {
             application.changed |= put_model(root, provider, model)?;
             application.changed |= put_string(root, "provider", provider.label());
@@ -717,9 +727,7 @@ fn apply(
                 application.changed |= put_string(root, EFFORT, effort);
                 migrate_workspace_preference(root, &EFFORT_MIGRATION, &mut application);
             }
-            application.changed |= put_bool(root, FAST_MODE, fast_mode);
-            application.changed |= put_bool(root, FAST_MODE_MODEL_BOUND, true);
-            migrate_workspace_preference(root, &FAST_MODE_MIGRATION, &mut application);
+            put_speed(root, (fast_mode, ultrafast_mode), &mut application);
         }
         Patch::PermissionMode(mode) => {
             application.changed |= put_string(root, PERMISSION_MODE, mode.label());
@@ -955,6 +963,20 @@ fn apply_provider_model(
     }
     clear_workspace_fast_mode_bindings(root);
     Ok(changed)
+}
+
+fn put_speed(
+    root: &mut Map<String, Value>,
+    (fast_mode, ultrafast_mode): (bool, Option<bool>),
+    application: &mut Application,
+) {
+    application.changed |= put_bool(root, FAST_MODE, fast_mode);
+    application.changed |= put_bool(root, FAST_MODE_MODEL_BOUND, true);
+    migrate_workspace_preference(root, &FAST_MODE_MIGRATION, application);
+    if let Some(ultrafast_mode) = ultrafast_mode {
+        application.changed |= put_bool(root, ULTRAFAST_MODE, ultrafast_mode);
+        migrate_workspace_preference(root, &ULTRAFAST_MODE_MIGRATION, application);
+    }
 }
 
 fn migrate_workspace_preference(
