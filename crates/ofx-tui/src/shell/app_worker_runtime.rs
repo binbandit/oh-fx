@@ -224,11 +224,10 @@ impl Shell<'_> {
             UiEvent::WorkspaceMenuOpened { menu } => self.open_workspace_menu(menu),
             UiEvent::UsageMenu { update } => self.update_usage_menu(update),
             UiEvent::SettingsMenuOpened { snapshot } => self.open_settings_menu(snapshot),
-            UiEvent::McpMenuOpened { snapshot } => self.open_mcp_menu(snapshot),
-            UiEvent::McpMenuRefreshed { snapshot } => self.mcp_menu_refreshed(snapshot),
-            UiEvent::McpMenuSettled { settled, snapshot } => {
-                self.mcp_menu_settled(settled, snapshot);
-            }
+            event @ (UiEvent::McpMenuOpened { .. }
+            | UiEvent::McpMenuRefreshed { .. }
+            | UiEvent::McpMenuSettled { .. }
+            | UiEvent::McpMenuLoaded { .. }) => self.mcp_menu_event(event),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
             UiEvent::SignInStarted { url } => self.sign_in_started(url),
