@@ -211,3 +211,67 @@ fn closing_the_menu_clears_what_was_pasted_while_it_was_open() {
     assert!(test.shell.mcp_menu.is_none(), "{screen}");
     assert!(test.shell.composer.is_empty());
 }
+
+struct OneSkill;
+
+impl crate::shell::SkillCatalogSource for OneSkill {
+    fn menu_items(&self) -> Vec<ofx_contract::SkillMenuItem> {
+        vec![ofx_contract::SkillMenuItem {
+            name: "review".to_owned(),
+            description: "review workflow".to_owned(),
+            path: std::path::PathBuf::from("/skills/review"),
+            source: ofx_contract::SkillMenuSource::OhFx,
+            group: ofx_contract::SkillMenuGroup::Workspace,
+            scope: "oh-fx · Workspace".to_owned(),
+            source_label: String::new(),
+        }]
+    }
+}
+
+#[test]
+fn the_sessions_shortcut_waits_for_the_menu_to_close() {
+    let mut test = opened(&["docs"]);
+    let screen = press(&mut test, b"\x1b[114;9u");
+    assert!(test.shell.mcp_menu.is_some(), "{screen}");
+    assert!(
+        !test
+            .sent()
+            .iter()
+            .any(|command| matches!(command, UiCommand::OpenSessions { .. })),
+        "{:?}",
+        test.sent()
+    );
+    escape(&mut test);
+    press(&mut test, b"\x1b[114;9u");
+    assert!(
+        test.sent()
+            .iter()
+            .any(|command| matches!(command, UiCommand::OpenSessions { .. }))
+    );
+}
+
+#[test]
+fn closing_the_menu_drops_a_skill_mention_pasted_while_it_was_open() {
+    let mut test = TestShell::start_with(|options| {
+        options.skill_catalog = Some(Box::new(OneSkill));
+    });
+    test.deliver(UiEvent::McpMenuOpened {
+        snapshot: servers(&["docs"]),
+    });
+    press(&mut test, b"\x1b[200~$rev\x1b[201~");
+    assert_eq!(test.shell.composer.text(), "$rev");
+    let screen = escape(&mut test);
+    assert!(test.shell.mcp_menu.is_none(), "{screen}");
+    assert!(test.shell.composer.is_empty());
+    assert!(!test.shell.skills_menu_visible(), "{screen}");
+    assert!(!screen.contains("Skills 1"), "{screen}");
+    press(&mut test, b"\r");
+    assert!(
+        !test
+            .sent()
+            .iter()
+            .any(|command| matches!(command, UiCommand::Submit { .. })),
+        "{:?}",
+        test.sent()
+    );
+}
