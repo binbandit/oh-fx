@@ -13,6 +13,7 @@ nix = { workspace = true, features = ["signal", "user"] }
 ofx-config.workspace = true
 ofx-contract.workspace = true
 ofx-trace.workspace = true
+ofx-vt.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "process", "pty", "stdio", "termios"] }
 serde.workspace = true
 serde_json.workspace = true

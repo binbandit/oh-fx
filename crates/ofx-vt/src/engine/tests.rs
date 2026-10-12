@@ -625,3 +625,27 @@ fn fragmented_feeds_match_a_single_feed() {
         );
     }
 }
+
+#[test]
+fn screen_projection_collapses_blank_repaint_rows() {
+    assert_eq!(fed(4, 3, b"\r\nA B").screen_text(), b"\nA B");
+    assert_eq!(fed(4, 3, b"").screen_text(), b"");
+    assert_eq!(fed(4, 3, b"   \r\n  ").screen_text(), b"");
+    assert_eq!(
+        fed(6, 2, "a\u{4e2d}b  ".as_bytes()).screen_text(),
+        "a\u{4e2d}b".as_bytes()
+    );
+    assert_eq!(
+        fed(4, 2, "e\u{301}".as_bytes()).screen_text(),
+        "e\u{301}".as_bytes()
+    );
+    assert_eq!(fed(5, 3, b"top\x1b[3;2Hend").screen_text(), b"top\n\n end");
+    assert_eq!(
+        fed(4, 2, " \u{301}".as_bytes()).screen_text(),
+        " \u{301}".as_bytes()
+    );
+    assert_eq!(
+        fed(6, 2, "\u{4e2d}   \r\n".as_bytes()).screen_text(),
+        "\u{4e2d}".as_bytes()
+    );
+}

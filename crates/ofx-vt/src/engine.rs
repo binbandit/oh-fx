@@ -305,6 +305,49 @@ impl Grid {
         out
     }
 
+    pub fn screen_text(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let Some(last_row) = (1..=self.rows)
+            .rev()
+            .find(|&row| self.row_cells(row).iter().any(|cell| is_visible(*cell)))
+        else {
+            return out;
+        };
+        for row in 1..=last_row {
+            if row != 1 {
+                out.push(b'\n');
+            }
+            let cells = self.row_cells(row);
+            let end = cells
+                .iter()
+                .rposition(|cell| is_visible(*cell))
+                .map_or(0, |index| index + 1);
+            for cell in &cells[..end] {
+                if cell.width == 0 {
+                    continue;
+                }
+                if is_visible(*cell) {
+                    self.push_cell(*cell, &mut out);
+                } else {
+                    out.push(b' ');
+                }
+            }
+        }
+        out
+    }
+
+    fn row_cells(&self, row: u16) -> &[Cell] {
+        let base = self.row_base(row);
+        &self.cells[base..base + usize::from(self.cols)]
+    }
+
+    fn push_cell(&self, cell: Cell, out: &mut Vec<u8>) {
+        let character = char::from_u32(cell.codepoint).unwrap_or('\u{fffd}');
+        let mut encoded = [0_u8; 4];
+        out.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+        out.extend_from_slice(self.combining_suffix(cell.suffix));
+    }
+
     fn row_text(&self, row: u16, out: &mut Vec<u8>) {
         let base = self.row_base(row);
         for cell in &self.cells[base..base + usize::from(self.cols)] {
@@ -1277,6 +1320,10 @@ fn display_unit(bytes: &[u8], start: usize) -> (usize, u8) {
         unit.byte_len.max(1),
         u8::try_from(unit.cell_width).unwrap_or(2),
     )
+}
+
+fn is_visible(cell: Cell) -> bool {
+    cell.width != 0 && !(cell.width == 1 && cell.codepoint == 0x20 && cell.suffix == 0)
 }
 
 #[cfg(test)]
