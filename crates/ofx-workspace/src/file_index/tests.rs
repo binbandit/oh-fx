@@ -651,3 +651,88 @@ fn a_missing_root_fails_the_first_load() {
     assert_eq!(index.current_state(), IndexState::Failed);
     assert_eq!(index.readable_revision().state, IndexState::Failed);
 }
+
+const TRACE_CHILD: &str = "OH_FX_FILE_INDEX_TRACE_CHILD";
+const TRACE_TEST: &str =
+    "file_index::tests::an_index_load_writes_its_core_lines_without_file_names";
+
+fn load_traced_index(root: &Path) {
+    write(root, "kept.txt");
+    write(root, "bad\u{1b}name.txt");
+    let missing = root.join("missing");
+    let cache = tempfile::tempdir().unwrap();
+    file_index_cache::save(
+        cache.path(),
+        &[root, missing.as_path()],
+        &[file("cached.txt")],
+    )
+    .unwrap();
+    let saved = fs::read_dir(cache.path().join("file-index"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut bytes = fs::read(&saved).unwrap();
+    let last = bytes.len() - 2;
+    bytes[last] ^= 1;
+    fs::write(&saved, bytes).unwrap();
+    let mut index = FileIndex::new(Some(cache.path().to_owned()));
+    index.ensure_scope(root, &[missing]);
+    wait_until_settled(&mut index);
+    assert_eq!(paths(&search(&index, "")), ["kept.txt"]);
+    index.refresh();
+    index.refresh();
+    index.refresh();
+    wait_until_settled(&mut index);
+    drop(index);
+}
+
+#[test]
+fn an_index_load_writes_its_core_lines_without_file_names() {
+    if let Some(root) = std::env::var_os(TRACE_CHILD) {
+        ofx_trace::configure_from_env(Path::new(&root), None);
+        load_traced_index(Path::new(&root).join("workspace").as_path());
+        return;
+    }
+    let (_temp, root) = workspace();
+    let log = root.join("trace.log");
+    fs::create_dir(root.join("workspace")).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([TRACE_TEST, "--exact", "--test-threads=1"])
+        .env_clear()
+        .env(TRACE_CHILD, &root)
+        .env("OH_FX_TRACE_LOG", &log)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let written = fs::read_to_string(&log).unwrap_or_default();
+    let workspace = root.join("workspace");
+    for line in [
+        " [core] file index cache ignored err=InvalidIndexCache\n".to_owned(),
+        " [core] file index generation started generation=1 caller_thread=".to_owned(),
+        " [core] file index loader entered generation=1 worker_thread=".to_owned(),
+        " [core] workspace file discovery process spawning thread=".to_owned(),
+        format!(
+            " [core] workspace file discovery falling back root={} err=GitFileListFailed\n",
+            workspace.display()
+        ),
+        " [core] file index root admission omitted root=1 err=FileNotFound\n".to_owned(),
+        " [core] file index omitted unsafe candidate bytes=12 kind=file\n".to_owned(),
+        " [core] file index generation ready generation=1 count=1 worker_cleanup=complete\n"
+            .to_owned(),
+        " [core] file index generation joined generation=1 state=ready\n".to_owned(),
+        " [core] file index generation adopted generation=1 count=1 from_cache=false\n".to_owned(),
+        " [core] file index refresh coalesced generation=2 identical=false\n".to_owned(),
+        " [core] file index refresh coalesced generation=2 identical=true\n".to_owned(),
+        " [core] file index shutdown requested generation=3 loader=none active=true loading=false queued=false\n".to_owned(),
+        " [core] file index shutdown reclaiming generation=3\n".to_owned(),
+        " [core] file index shutdown complete generation=3\n".to_owned(),
+    ] {
+        assert!(written.contains(&line), "{line}\n{written}");
+    }
+    for name in ["kept.txt", "name.txt", "cached.txt"] {
+        assert!(!written.contains(name), "{name}\n{written}");
+    }
+}

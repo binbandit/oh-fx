@@ -2,6 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
+use ofx_trace::trace_log;
+
 use crate::composer::file_completion_state::{
     Anchor, CAPACITY, FileMatch, IndexRevision, LookupMode, State, Status,
 };
@@ -10,6 +12,8 @@ pub type DirectoryLister =
     Arc<dyn Fn(&str, usize, &AtomicBool) -> Option<Vec<FileMatch>> + Send + Sync>;
 
 const LISTER_THREAD: &str = "oh-fx-directory-completion";
+const INPUT: &str = "input";
+const PATH_UNAVAILABLE: &str = "PathUnavailable";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Request {
@@ -51,6 +55,11 @@ impl Task {
         if !self.abandoned {
             self.abandoned = true;
             self.cancel.store(true, Ordering::Release);
+            trace_log!(
+                INPUT,
+                "directory completion cancelled request={}",
+                self.request.id
+            );
         }
     }
 }
@@ -80,7 +89,17 @@ impl DirectoryCompletionJob {
         if let Some(task) = &mut self.task {
             task.stop();
         }
-        self.pending = None;
+        self.drop_pending("stopped");
+    }
+
+    fn drop_pending(&mut self, reason: &str) {
+        if let Some(request) = self.pending.take() {
+            trace_log!(
+                INPUT,
+                "directory completion pending dropped request={} reason={reason}",
+                request.id
+            );
+        }
     }
 
     pub(super) fn reconcile(&mut self, state: &mut State, eligible: bool) {
@@ -94,7 +113,7 @@ impl DirectoryCompletionJob {
             .as_ref()
             .is_some_and(|request| !eligible || !request.matches(state))
         {
-            self.pending = None;
+            self.drop_pending(if eligible { "superseded" } else { "hidden" });
         }
         if !eligible && state.directory_request.is_some() {
             state.directory_request = None;
@@ -109,13 +128,13 @@ impl DirectoryCompletionJob {
         self.reconcile(state, true);
         state.stage(IndexRevision::READY, Status::Loading, Vec::new());
         let Some(request) = Request::copy(id, state) else {
-            fail(state, id);
+            fail(state, id, PATH_UNAVAILABLE);
             return;
         };
         if self.task.is_some() {
             self.pending = Some(request);
-        } else if !self.start(request) {
-            fail(state, id);
+        } else if let Err(error) = self.start(request) {
+            fail(state, id, error);
         }
     }
 
@@ -131,33 +150,50 @@ impl DirectoryCompletionJob {
         let Some(task) = self.task.take() else {
             return false;
         };
-        let outcome = task.thread.join().ok().flatten();
+        let outcome = match task.thread.join() {
+            Ok(Some(rows)) => Ok(rows),
+            Ok(None) => Err(PATH_UNAVAILABLE),
+            Err(_) => Err("Unexpected"),
+        };
         if !task.abandoned && task.request.matches(state) {
             match outcome {
-                Some(rows) => {
+                Ok(rows) => {
                     state.directory_request = None;
                     let status = if rows.is_empty() {
                         Status::Empty
                     } else {
                         Status::Ready
                     };
-                    state.stage(IndexRevision::READY, status, rows);
+                    let count = rows.len();
+                    let revision = state.stage(IndexRevision::READY, status, rows);
+                    trace_log!(
+                        INPUT,
+                        "file picker prepared revision={revision} count={count} indexed=false request={}",
+                        task.request.id
+                    );
                 }
-                None => fail(state, task.request.id),
+                Err(error) => fail(state, task.request.id, error),
             }
+        } else {
+            trace_log!(
+                INPUT,
+                "directory completion stale output dropped request={} failed={}",
+                task.request.id,
+                outcome.is_err()
+            );
         }
         if let Some(request) = self.pending.take() {
             let id = request.id;
-            if !self.start(request) {
-                fail(state, id);
+            if let Err(error) = self.start(request) {
+                fail(state, id, error);
             }
         }
         true
     }
 
-    fn start(&mut self, request: Request) -> bool {
+    fn start(&mut self, request: Request) -> Result<(), &'static str> {
         let Some(lister) = self.lister.clone() else {
-            return false;
+            return Err(PATH_UNAVAILABLE);
         };
         let done = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -175,9 +211,12 @@ impl DirectoryCompletionJob {
                 worker_done.store(true, Ordering::Release);
                 rows
             });
-        let Ok(thread) = spawned else {
-            return false;
-        };
+        let thread = spawned.map_err(|error| match error.kind() {
+            std::io::ErrorKind::OutOfMemory => "OutOfMemory",
+            std::io::ErrorKind::WouldBlock => "SystemResources",
+            _ => "Unexpected",
+        })?;
+        trace_log!(INPUT, "directory completion started request={}", request.id);
         self.task = Some(Task {
             request,
             done,
@@ -185,7 +224,7 @@ impl DirectoryCompletionJob {
             abandoned: false,
             thread,
         });
-        true
+        Ok(())
     }
 }
 
@@ -195,7 +234,11 @@ impl Drop for DirectoryCompletionJob {
     }
 }
 
-fn fail(state: &mut State, id: u64) {
+fn fail(state: &mut State, id: u64, error: &str) {
+    trace_log!(
+        INPUT,
+        "directory completion failed request={id} err={error}"
+    );
     if state.directory_request != Some(id) {
         return;
     }
@@ -283,6 +326,72 @@ mod tests {
         job.schedule(&mut state);
         settle(&mut job, &mut state);
         assert_eq!(presented(&state), (Status::Ready, vec!["./ba".to_owned()]));
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_DIRECTORY_COMPLETION_TRACE_CHILD";
+    const TRACE_TEST: &str =
+        "shell::directory_completion_job::tests::directory_completion_writes_its_input_lines";
+
+    fn complete_traced_directories() {
+        let lister: DirectoryLister = Arc::new(|query: &str, _: usize, cancel: &AtomicBool| {
+            if query == "./slow/" {
+                while !cancel.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            (query != "./missing/").then(|| vec![row(&format!("{query}secret.txt"))])
+        });
+        let mut job = DirectoryCompletionJob::new(Some(lister));
+        let mut state = State::default();
+        bind(&mut state, "@./");
+        job.schedule(&mut state);
+        settle(&mut job, &mut state);
+        bind(&mut state, "@./missing/");
+        job.schedule(&mut state);
+        settle(&mut job, &mut state);
+        bind(&mut state, "@./slow/");
+        job.schedule(&mut state);
+        job.schedule(&mut state);
+        job.reconcile(&mut state, false);
+        settle(&mut job, &mut state);
+        DirectoryCompletionJob::new(None).schedule(&mut state);
+    }
+
+    #[test]
+    fn directory_completion_writes_its_input_lines() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+            complete_traced_directories();
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [input] directory completion started request=1\n",
+            " count=1 indexed=false request=1\n",
+            " [input] directory completion failed request=2 err=PathUnavailable\n",
+            " [input] directory completion pending dropped request=4 reason=hidden\n",
+            " [input] directory completion cancelled request=3\n",
+            " [input] directory completion stale output dropped request=3 failed=true\n",
+            " [input] directory completion failed request=1 err=PathUnavailable\n",
+        ] {
+            assert!(written.contains(line), "{line}\n{written}");
+        }
+        assert!(
+            written.contains(" [input] file picker prepared revision="),
+            "{written}"
+        );
+        assert!(!written.contains("secret"), "{written}");
     }
 
     #[test]

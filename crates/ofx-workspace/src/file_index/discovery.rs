@@ -1,15 +1,18 @@
 use std::collections::HashSet;
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, open, statat};
 
 use ofx_text::is_terminal_safe;
+use ofx_trace::trace_log;
 
-use super::{Candidate, CandidateKind, MAX_INDEXED_FILES, accepted_candidate};
+use super::{CORE, Candidate, CandidateKind, MAX_INDEXED_FILES, accepted_candidate};
+use crate::path_error::PathError;
 use crate::workspace_files::{
-    CandidatePaths, DiscoveryOptions, GitFileListFailed, UntrackedFiles,
-    discover_listing_directories, discover_listing_files,
+    CandidatePaths, DiscoveryOptions, UntrackedFiles, discover_listing_directories,
+    discover_listing_files,
 };
 
 const GIT_METADATA_NAME: &str = ".git";
@@ -59,20 +62,42 @@ fn discover_root(
     };
     let files = match discover_listing_files(root, &options) {
         Ok(files) => files,
-        Err(GitFileListFailed) => return Ok(false),
+        Err(error) => {
+            checkpoint(stop)?;
+            trace_log!(
+                CORE,
+                "file index root discovery omitted root={root_index} err={error}"
+            );
+            return Ok(false);
+        }
     };
     checkpoint(stop)?;
     let directories = match discover_listing_directories(root, &options) {
         Ok(listing) => listing.files,
-        Err(GitFileListFailed) => CandidatePaths::default(),
+        Err(error) => {
+            checkpoint(stop)?;
+            trace_log!(
+                CORE,
+                "file index root directory discovery omitted root={root_index} err={error}"
+            );
+            CandidatePaths::default()
+        }
     };
     checkpoint(stop)?;
-    let Ok(root_directory) = open(
+    let root_directory = match open(
         root,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
-    ) else {
-        return Ok(false);
+    ) {
+        Ok(root_directory) => root_directory,
+        Err(errno) => {
+            trace_log!(
+                CORE,
+                "file index root admission omitted root={root_index} err={}",
+                PathError::from(std::io::Error::from(errno))
+            );
+            return Ok(false);
+        }
     };
     let mut files = files.files.iter().peekable();
     let mut directories = directories.iter().peekable();
@@ -92,29 +117,9 @@ fn discover_root(
         if candidates.len() >= MAX_INDEXED_FILES {
             break;
         }
-        if path
-            .split(|byte| *byte == b'/')
-            .any(|component| component == GIT_METADATA_NAME.as_bytes())
-        {
-            continue;
-        }
-        let Some(path) = std::str::from_utf8(path)
-            .ok()
-            .filter(|path| is_terminal_safe(path.as_bytes()))
-        else {
+        let Some(path) = admitted(&root_directory, path, kind) else {
             continue;
         };
-        if kind == CandidateKind::File {
-            let Ok(stat) = statat(&root_directory, path, AtFlags::SYMLINK_NOFOLLOW) else {
-                continue;
-            };
-            if !matches!(
-                FileType::from_raw_mode(stat.st_mode),
-                FileType::RegularFile | FileType::Symlink
-            ) {
-                continue;
-            }
-        }
         let absolute = root.join(path);
         let candidate = Candidate {
             path: if root_index == 0 {
@@ -129,6 +134,45 @@ fn discover_root(
         }
     }
     Ok(true)
+}
+
+fn admitted(root_directory: impl AsFd, path: &[u8], kind: CandidateKind) -> Option<&str> {
+    if path
+        .split(|byte| *byte == b'/')
+        .any(|component| component == GIT_METADATA_NAME.as_bytes())
+    {
+        return None;
+    }
+    let Some(path) = std::str::from_utf8(path)
+        .ok()
+        .filter(|path| is_terminal_safe(path.as_bytes()))
+    else {
+        trace_log!(
+            CORE,
+            "file index omitted unsafe candidate bytes={} kind={}",
+            path.len(),
+            kind.label()
+        );
+        return None;
+    };
+    if kind == CandidateKind::Directory {
+        return Some(path);
+    }
+    let stat = statat(root_directory, path, AtFlags::SYMLINK_NOFOLLOW)
+        .inspect_err(|errno| {
+            trace_log!(
+                CORE,
+                "file index omitted missing candidate bytes={} err={}",
+                path.len(),
+                PathError::from(std::io::Error::from(*errno))
+            );
+        })
+        .ok()?;
+    matches!(
+        FileType::from_raw_mode(stat.st_mode),
+        FileType::RegularFile | FileType::Symlink
+    )
+    .then_some(path)
 }
 
 fn checkpoint(stop: &AtomicBool) -> Result<(), DiscoveryError> {

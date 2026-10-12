@@ -26,19 +26,19 @@ note = "The bounded ring the diagnostic rings share, the compaction, tool-call a
 upstream = "src/core/workspace/directory_completion_job.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/shell/directory_completion_job.rs"]
-note = "Background scheduling, cancellation, episode/request matching and harvesting exist; request scope_epoch identity and workspace-scope-change reconciliation are absent."
+note = "Background scheduling, cancellation, episode/request matching and harvesting exist, with upstream's `input` trace lines; request scope_epoch identity and workspace-scope-change reconciliation are absent."
 
 [[file]]
 upstream = "src/core/workspace/file_index.zig"
 status = "partial"
 modules = ["crates/ofx-workspace/src/file_index.rs"]
-note = "Ranking, revisions, indexing the workspace with its active additional roots, and scope-change rebuilding with one coalesced pending scope exist; cancellable scan behavior is absent."
+note = "Ranking, revisions, indexing the workspace with its active additional roots, and scope-change rebuilding with one coalesced pending scope exist, with upstream's `core` trace lines as docs/differences/trace.md records; cancellable scan behavior is absent."
 
 [[file]]
 upstream = "src/core/workspace/file_index_cache.zig"
 status = "partial"
 modules = ["crates/ofx-workspace/src/file_index_cache.rs"]
-note = "Private bounded index caching exists; multi-root scope identity and trace failure publication are absent."
+note = "Private bounded index caching exists, and a rejected or unsaved cache names upstream's errors in the file index's trace lines; multi-root scope identity is absent."
 
 [[file]]
 upstream = "src/core/workspace/glob_pattern.zig"
@@ -50,7 +50,7 @@ note = "Glob-star, single-star and question-mark basename/path matching, separat
 upstream = "src/core/workspace/grep_search.zig"
 status = "ported"
 modules = ["crates/ofx-workspace/src/grep_search.rs"]
-note = "Fixed-string git-grep/fallback search, path filtering, deterministic ordering and file/result/output limits are implemented; documented discovery/path safety differences apply."
+note = "Fixed-string git-grep/fallback search, path filtering, deterministic ordering and file/result/output limits are implemented, with upstream's `grep_files` fallback and skip trace lines; documented discovery/path safety differences apply."
 
 [[file]]
 upstream = "src/core/workspace/ignored_dirs.zig"
@@ -133,7 +133,7 @@ note = "Add, remove and clear commit to settings with upstream's patch, effectiv
 upstream = "src/core/workspace/workspace_files.zig"
 status = "partial"
 modules = ["crates/ofx-workspace/src/workspace_files.rs"]
-note = "Bounded git/fallback file and directory discovery, sorting and path filtering exist; discoverCancellable and discoverDirectoriesCancellable cancellation are absent."
+note = "Bounded git/fallback file and directory discovery, sorting and path filtering exist, with upstream's fallback and process trace lines; discoverCancellable and discoverDirectoriesCancellable cancellation are absent."
 
 [[file]]
 upstream = "src/core/workspace/workspace_menu.zig"
