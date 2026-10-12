@@ -232,7 +232,6 @@ fn commands_the_binary_cannot_run_yet_fail_with_one_message() {
         (&["--provider", "local"], "--provider"),
         (&["--sessions-v2"], "--sessions-v2"),
         (&["--sessions-v2", "resume", "last"], "--sessions-v2"),
-        (&["balance"], "credits"),
         (&["mcp", "path"], "mcp"),
     ] {
         let output = oh_fx(args, &[]);
@@ -387,25 +386,13 @@ fn interactive_and_resume_launches_need_a_terminal() {
 
 #[test]
 fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
-    for (args, kind) in [
-        (&["balance", "--json"][..], "credits"),
-        (&["--sessions-v2", "session", "x", "--json"], "session"),
-    ] {
-        let output = oh_fx(args, &[]);
-        assert_eq!(output.status.code(), Some(1), "{args:?}");
-        assert_eq!(
-            stderr(&output),
-            format!("oh-fx: {kind} is not available yet\n"),
-            "{args:?}"
-        );
-        assert_eq!(
-            stdout(&output),
-            format!(
-                "{{\"kind\":\"{kind}\",\"error\":\"{kind} is not available yet\",\"code\":\"NotAvailableYet\"}}\n"
-            ),
-            "{args:?}"
-        );
-    }
+    let output = oh_fx(&["--sessions-v2", "session", "x", "--json"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), "oh-fx: session is not available yet\n");
+    assert_eq!(
+        stdout(&output),
+        "{\"kind\":\"session\",\"error\":\"session is not available yet\",\"code\":\"NotAvailableYet\"}\n"
+    );
 }
 
 #[test]
@@ -980,4 +967,49 @@ fn models_sends_the_key_to_the_base_url_override_and_traces_the_load() {
         "{line}"
     );
     assert!(!log.contains(key));
+}
+
+#[test]
+fn credits_and_balance_read_the_gateway_credits_from_the_loopback_override() {
+    let key = "vck_live_0123456789abcdef";
+    let server = FakeServer::start([
+        Reply::status(200, r#"{"balance":"12.50","used":"7.50","plan":"pro"}"#),
+        Reply::status(200, r#"{"balance":"12.50"}"#),
+        Reply::status(
+            401,
+            format!(r#"{{"error":{{"message":"key {key} is not valid"}}}}"#),
+        ),
+    ]);
+    let url = format!("http://{}/coding-agent/v1/credits", server.address());
+    let environment = [
+        ("OH_FX_E2E_GATEWAY_CREDITS_URL", url.as_str()),
+        ("AI_GATEWAY_API_KEY", key),
+    ];
+    let text = oh_fx(&["credits"], &environment);
+    assert!(text.status.success(), "{}", stderr(&text));
+    assert_eq!(
+        stdout(&text),
+        "[credits] balance=12.50\n[credits] used=7.50\n[credits] plan=pro\n"
+    );
+    let json = oh_fx(&["balance", "--json"], &environment);
+    assert!(json.status.success(), "{}", stderr(&json));
+    assert_eq!(
+        stdout(&json),
+        "{\"kind\":\"credits\",\"balance\":\"12.50\",\"used\":null,\"plan\":null}\n"
+    );
+    let rejected = oh_fx(&["credits"], &environment);
+    assert_eq!(rejected.status.code(), Some(1));
+    assert_eq!(stdout(&rejected), "");
+    assert!(
+        stderr(&rejected).starts_with("[credits] error: API access denied"),
+        "{}",
+        stderr(&rejected)
+    );
+    assert!(!stderr(&rejected).contains(key));
+    let requests = server.requests();
+    assert_eq!(requests[0].path, "/coding-agent/v1/credits");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {key}").as_str())
+    );
 }

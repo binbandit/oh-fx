@@ -251,6 +251,7 @@ fn run_a_codex_session(home: &Path) -> ! {
         gateway: ofx_gateway::GatewayEndpoints::default(),
         vercel: ofx_auth::VercelEndpoints::default(),
         gateway_models: ofx_gateway::GatewayModelsEndpoints::default(),
+        gateway_credits: ofx_gateway::GatewayCreditsEndpoints::default(),
     };
     let setup = runtime
         .block_on(profile.connect_interactive(

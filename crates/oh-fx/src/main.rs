@@ -4,6 +4,7 @@ mod auto_upgrade;
 mod cli_ask;
 mod cli_replay;
 mod command_echo;
+mod credits_command;
 mod doctor_command;
 mod github_workflow;
 mod help;
@@ -114,6 +115,7 @@ fn run(invocation: Invocation) -> ExitCode {
             Command::Login(provider) => login_command::login(provider.as_ref()),
             Command::Logout(provider) => login_command::logout(provider.as_ref()),
             Command::Models(format) => models_command::run(format),
+            Command::Credits(format) => credits_command::run(format),
             Command::Permissions(format) => permissions_command::run(format),
             Command::Provider(target) => provider_command::run(target),
             Command::Status(format) => status_command::run(format),

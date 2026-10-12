@@ -258,6 +258,7 @@ async fn saved_codex_request() {
                     gateway: ofx_gateway::GatewayEndpoints::default(),
                     vercel: ofx_auth::VercelEndpoints::default(),
                     gateway_models: ofx_gateway::GatewayModelsEndpoints::default(),
+                    gateway_credits: ofx_gateway::GatewayCreditsEndpoints::default(),
                 },
             },
             &cancel,
