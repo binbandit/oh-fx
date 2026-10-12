@@ -4,10 +4,18 @@ use rustix::process::{
 };
 
 #[cfg(target_os = "linux")]
-use crate::process_tree::{Tracker, instance_token, proc_shows_own_pid_namespace};
+use crate::process_tree::{
+    Tracker, group_session, instance, instance_token, proc_shows_own_pid_namespace,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ShellIdentity(Option<String>);
+pub(super) struct ShellIdentity(Option<Recorded>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Recorded {
+    token: String,
+    session: Option<Pid>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ShellCheck {
@@ -22,15 +30,24 @@ impl ShellIdentity {
             return ShellCheck::Same;
         };
         match Kernel::current(shell) {
-            Some(current) if &current == expected => ShellCheck::Same,
+            Some(current) if current == expected.token => ShellCheck::Same,
             None if process_missing(shell) => ShellCheck::Gone,
             _ => ShellCheck::Replaced,
         }
     }
 
+    pub(super) fn holds_group(&self, group: Pid) -> bool {
+        self.0.as_ref().is_some_and(|recorded| {
+            recorded.session.is_some() && Kernel::group_session(group) == recorded.session
+        })
+    }
+
     #[cfg(test)]
-    pub(super) fn recorded(token: &str) -> Self {
-        Self(Some(token.to_owned()))
+    pub(super) fn recorded(token: &str, session: Pid) -> Self {
+        Self(Some(Recorded {
+            token: token.to_owned(),
+            session: Some(session),
+        }))
     }
 }
 
@@ -44,6 +61,7 @@ pub(super) enum GroupDelivery {
 pub(super) trait Identities {
     fn identify(shell: Pid) -> Option<ShellIdentity>;
     fn current(shell: Pid) -> Option<String>;
+    fn group_session(group: Pid) -> Option<Pid>;
 }
 
 pub(super) trait Descendants: Sized {
@@ -75,13 +93,20 @@ impl Identities for Kernel {
         if !proc_shows_own_pid_namespace() {
             return Some(ShellIdentity(None));
         }
-        instance_token(shell)
-            .ok()
-            .map(|token| ShellIdentity(Some(token)))
+        instance(shell).ok().map(|instance| {
+            ShellIdentity(Some(Recorded {
+                token: instance.token,
+                session: instance.session,
+            }))
+        })
     }
 
     fn current(shell: Pid) -> Option<String> {
         instance_token(shell).ok()
+    }
+
+    fn group_session(group: Pid) -> Option<Pid> {
+        group_session(group)
     }
 }
 
@@ -92,6 +117,10 @@ impl Identities for Kernel {
     }
 
     fn current(_: Pid) -> Option<String> {
+        None
+    }
+
+    fn group_session(_: Pid) -> Option<Pid> {
         None
     }
 }
@@ -172,16 +201,19 @@ fn process_missing(shell: Pid) -> bool {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::os::unix::process::CommandExt;
     use std::process::Command;
 
-    use rustix::process::{getpid, kill_process};
+    use rustix::process::{getpid, getsid, kill_process};
 
     use super::*;
 
     #[test]
     fn a_shell_identity_names_its_process_until_the_process_is_gone() {
         let own = Kernel::identify(getpid()).unwrap();
-        if let Some(token) = &own.0 {
+        if let Some(recorded) = &own.0 {
+            assert_eq!(recorded.session, Some(getsid(None).unwrap()));
+            let token = &recorded.token;
             let fields: Vec<&str> = token.split(':').collect();
             assert_eq!(fields.len(), 3, "{token}");
             assert_eq!(fields[0], "linux");
@@ -196,7 +228,11 @@ mod tests {
         if identity.0.is_some() {
             assert_eq!(identity.check(getpid()), ShellCheck::Replaced);
             assert_eq!(
-                ShellIdentity::recorded("linux:00000000000000000000000000000000:1").check(pid),
+                ShellIdentity::recorded(
+                    "linux:00000000000000000000000000000000:1",
+                    getsid(None).unwrap()
+                )
+                .check(pid),
                 ShellCheck::Replaced
             );
         }
@@ -208,5 +244,29 @@ mod tests {
             ShellCheck::Same
         };
         assert_eq!(identity.check(pid), gone);
+    }
+
+    #[test]
+    fn a_group_belongs_to_a_shell_only_through_its_recorded_session() {
+        let session = getsid(None).unwrap();
+        let mut leader = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = Pid::from_child(&leader);
+        let token = "linux:00000000000000000000000000000000:1";
+        let other = Pid::from_raw(session.as_raw_nonzero().get() + 1).unwrap();
+        let ours = ShellIdentity::recorded(token, session).holds_group(group);
+        let theirs = ShellIdentity::recorded(token, other).holds_group(group);
+        kill_process(group, Signal::KILL).unwrap();
+        leader.wait().unwrap();
+        let after = ShellIdentity::recorded(token, session).holds_group(group);
+        if proc_shows_own_pid_namespace() {
+            assert!(ours);
+        }
+        assert!(!theirs);
+        assert!(!after);
+        assert!(!ShellIdentity(None).holds_group(group));
     }
 }

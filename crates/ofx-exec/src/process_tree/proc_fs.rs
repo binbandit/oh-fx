@@ -51,6 +51,16 @@ fn normalized_boot_id(text: &str) -> Option<String> {
     .then_some(id)
 }
 
+pub(super) fn group_session(group: Pid) -> Option<Pid> {
+    fs::read_dir("/proc")
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| parse_pid(entry.file_name().to_str()?))
+        .filter_map(|pid| capture_snapshot(pid).ok())
+        .find(|snapshot| snapshot.process_group == Some(group))?
+        .session
+}
+
 pub(super) fn shows_own_pid_namespace() -> bool {
     fs::read_to_string("/proc/self/status").is_ok_and(|status| lists_only(&status, getpid()))
 }

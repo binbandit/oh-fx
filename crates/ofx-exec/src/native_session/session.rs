@@ -471,8 +471,12 @@ impl Session {
 
     fn signal_group(&self, signal: Signal) -> bool {
         self.signal_target().is_some_and(|(shell, identity)| {
-            identity.check(shell) != ShellCheck::Replaced
-                && processes::signal_group(shell, signal) == GroupDelivery::Delivered
+            let reachable = match identity.check(shell) {
+                ShellCheck::Same => true,
+                ShellCheck::Gone => identity.holds_group(shell),
+                ShellCheck::Replaced => false,
+            };
+            reachable && processes::signal_group(shell, signal) == GroupDelivery::Delivered
         })
     }
 
@@ -493,14 +497,11 @@ impl Session {
         if check == ShellCheck::Replaced {
             return TreeSignal::Incomplete;
         }
-        let group = if identity.check(shell) == ShellCheck::Replaced {
-            if processes::group_missing(shell) {
-                GroupDelivery::Missing
-            } else {
-                GroupDelivery::Failed
-            }
-        } else {
-            processes::signal_group(shell, signal)
+        let group = match identity.check(shell) {
+            ShellCheck::Replaced if processes::group_missing(shell) => GroupDelivery::Missing,
+            ShellCheck::Replaced => GroupDelivery::Failed,
+            ShellCheck::Gone if !identity.holds_group(shell) => GroupDelivery::Failed,
+            ShellCheck::Same | ShellCheck::Gone => processes::signal_group(shell, signal),
         };
         let incomplete = tree.is_some_and(|tree| tree.signal_outside_group(signal, shell));
         let reached = match group {
@@ -830,7 +831,7 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
-    use rustix::process::{kill_process, test_kill_process};
+    use rustix::process::{getsid, kill_process, test_kill_process};
 
     use super::*;
     use crate::terminal_contracts::Dimensions;
@@ -957,11 +958,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_forced_close_kills_the_group_of_a_shell_that_already_exited() {
-        let directory = tempfile::tempdir().unwrap();
-        let (session, _terminal) = running(directory.path());
-        let member_file = directory.path().join("member");
+    fn group_whose_leader_exited(directory: &Path) -> (Pid, Pid) {
+        let member_file = directory.join("member");
         let mut leader = Command::new("/bin/sh")
             .arg("-c")
             .arg("sleep 30 & echo $! > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"")
@@ -983,28 +981,72 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
+        (shell, member)
+    }
+
+    fn force_close_recorded(
+        session: &Session,
+        shell: Pid,
+        recorded_session: Pid,
+    ) -> Result<Lifecycle, StructuredErrorCode> {
         {
             let mut state = session.lock();
             state.shell_group = Some(shell);
             state.shell_identity = Some(ShellIdentity::recorded(
                 "linux:00000000000000000000000000000000:1",
+                recorded_session,
             ));
         }
-        let closed = tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
             .unwrap()
-            .block_on(session.close(ClosePolicy::Force));
+            .block_on(session.close(ClosePolicy::Force))
+            .map(|facts| facts.lifecycle)
+    }
+
+    fn dead_in_time(pid: Pid) -> bool {
         let deadline = Instant::now() + DRAINED;
-        while !dead(member) && Instant::now() < deadline {
+        while !dead(pid) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
-        let killed = dead(member);
+        dead(pid)
+    }
+
+    #[test]
+    fn a_forced_close_kills_the_group_of_a_shell_that_already_exited() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (session, _terminal) = running(directory.path());
+        let (shell, member) = group_whose_leader_exited(directory.path());
+        let closed = force_close_recorded(&session, shell, getsid(None).unwrap());
+        let killed = dead_in_time(member);
         if !killed {
             let _ = kill_process(member, Signal::KILL);
         }
-        assert_eq!(closed.map(|facts| facts.lifecycle), Ok(Lifecycle::Closed));
+        assert_eq!(closed, Ok(Lifecycle::Closed));
         assert!(killed, "the shell's group outlived the forced close");
+    }
+
+    #[test]
+    fn a_forced_close_spares_a_group_it_cannot_tie_to_its_terminal() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, _terminal) = running(directory.path());
+        let (shell, member) = group_whose_leader_exited(directory.path());
+        let elsewhere = Pid::from_raw(getsid(None).unwrap().as_raw_nonzero().get() + 1).unwrap();
+        let begun = Instant::now();
+        let closed = force_close_recorded(&session, shell, elsewhere);
+        let took = begun.elapsed();
+        let spared = !dead(member);
+        let _ = kill_process(member, Signal::KILL);
+        assert_eq!(closed, Err(StructuredErrorCode::SessionLost));
+        assert!(
+            spared,
+            "a group that could not be tied to the terminal was signalled"
+        );
+        assert!(took < PROMPT, "the close took {took:?}");
     }
 
     #[test]

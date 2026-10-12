@@ -58,10 +58,27 @@ enum Sent {
     Unknown,
 }
 
-pub(crate) fn instance_token(pid: Pid) -> Result<String, InspectionError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Instance {
+    pub(crate) token: String,
+    pub(crate) session: Option<Pid>,
+}
+
+pub(crate) fn instance(pid: Pid) -> Result<Instance, InspectionError> {
     let boot_id = proc_fs::boot_id()?;
     let snapshot = proc_fs::capture_snapshot(pid)?;
-    Ok(format!("linux:{boot_id}:{}", snapshot.identity.start_ticks))
+    Ok(Instance {
+        token: format!("linux:{boot_id}:{}", snapshot.identity.start_ticks),
+        session: snapshot.session,
+    })
+}
+
+pub(crate) fn instance_token(pid: Pid) -> Result<String, InspectionError> {
+    instance(pid).map(|instance| instance.token)
+}
+
+pub(crate) fn group_session(group: Pid) -> Option<Pid> {
+    proc_fs::group_session(group)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
