@@ -1,9 +1,7 @@
 use ofx_contract::{McpMenuRequest, McpMenuServer, McpMenuSettled, McpMenuSnapshot, UiCommand};
 
 use super::Shell;
-use super::mcp_menu::{
-    Action, Effect, Event, LoadState, McpMenuState, Move, Screen, server_action_available,
-};
+use super::mcp_menu::{Action, Effect, Event, McpMenuState, Move, Screen, server_action_available};
 use crate::footer::mcp_menu_presentation::{
     MAX_INLINE_ROWS, McpMenuView, mcp_menu_hint_row, mcp_menu_rows, menu_row_count,
     visible_items_for_budget,
@@ -43,9 +41,7 @@ impl McpMenu {
             self.state.selected_server_index = kept.unwrap_or(0);
             self.state.selected_index = self.state.selected_server_index;
             if kept.is_none() {
-                self.state.pending_generation = None;
-                self.state.screen = Screen::Browse;
-                self.state.load_state = LoadState::Ready;
+                self.state.selected_server_removed();
             }
         }
         self.snapshot = next;
@@ -68,7 +64,8 @@ impl Shell<'_> {
         self.model_menu = None;
         self.close_picker();
         self.mcp_menu = Some(McpMenu {
-            state: McpMenuState::open(snapshot.servers.len()),
+            state: McpMenuState::open(snapshot.servers.len())
+                .after_generation(self.mcp_menu_generation),
             snapshot,
             feedback: None,
             refresh_due_ms: Some(self.now_ms() + REFRESH_INTERVAL_MS),
@@ -189,9 +186,13 @@ impl Shell<'_> {
 
     fn apply_mcp_menu_event(&mut self, event: Event) -> Option<Effect> {
         let effect = self.mcp_menu.as_mut()?.state.apply(event);
-        if effect == Some(Effect::Close) {
-            self.mcp_menu = None;
-            self.composer.clear();
+        match effect {
+            Some(Effect::Close) => {
+                self.mcp_menu = None;
+                self.composer.clear();
+            }
+            Some(Effect::Action { generation, .. }) => self.mcp_menu_generation = generation,
+            None => {}
         }
         effect
     }

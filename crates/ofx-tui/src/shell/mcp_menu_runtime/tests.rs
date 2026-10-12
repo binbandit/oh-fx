@@ -342,3 +342,70 @@ fn closing_the_menu_drops_a_skill_mention_pasted_while_it_was_open() {
         test.sent()
     );
 }
+
+fn pending(test: &TestShell) -> (Option<u64>, LoadState, Screen) {
+    let menu_state = &test.shell.mcp_menu.as_ref().unwrap().state;
+    (
+        menu_state.pending_generation,
+        menu_state.load_state,
+        menu_state.screen,
+    )
+}
+
+#[test]
+fn a_reopened_menu_ignores_what_the_closed_one_started() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"r");
+    escape(&mut test);
+    assert!(test.shell.mcp_menu.is_none());
+    test.deliver(UiEvent::McpMenuOpened {
+        snapshot: servers(&["docs"]),
+    });
+    press(&mut test, b"r");
+    assert_eq!(
+        test.sent(),
+        [
+            menu(McpMenuRequest::Reload { generation: 1 }),
+            menu(McpMenuRequest::Reload { generation: 2 }),
+        ]
+    );
+    test.deliver(settled(1, false, "MCP reload failed: stale", &["old"]));
+    let screen = test.screen();
+    assert!(!screen.contains("stale"), "{screen}");
+    assert!(!screen.contains("old"), "{screen}");
+    assert_eq!(
+        pending(&test),
+        (Some(2), LoadState::Loading, Screen::Browse)
+    );
+    test.deliver(settled(2, true, "MCP configuration reloaded.", &["docs"]));
+    assert!(test.screen().contains("  MCP configuration reloaded."));
+    assert_eq!(pending(&test), (None, LoadState::Ready, Screen::Browse));
+}
+
+#[test]
+fn a_refresh_that_drops_the_selected_server_keeps_a_reload_and_cancels_a_sign_in() {
+    let mut test = opened(&["docs", "remote"]);
+    press(&mut test, b"r");
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["remote"]),
+    });
+    assert_eq!(
+        pending(&test),
+        (Some(1), LoadState::Loading, Screen::Browse)
+    );
+    test.deliver(settled(1, true, "MCP configuration reloaded.", &["remote"]));
+    assert!(test.screen().contains("  MCP configuration reloaded."));
+    assert_eq!(pending(&test), (None, LoadState::Ready, Screen::Browse));
+    press(&mut test, b"\r\r");
+    assert_eq!(
+        test.sent().last(),
+        Some(&menu(McpMenuRequest::Authenticate {
+            generation: 2,
+            server: "remote".to_owned(),
+        }))
+    );
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["docs"]),
+    });
+    assert_eq!(pending(&test), (None, LoadState::Ready, Screen::Browse));
+}

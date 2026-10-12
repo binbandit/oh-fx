@@ -54,6 +54,7 @@ pub(crate) struct McpMenuState {
     pub(crate) load_state: LoadState,
     next_generation: u64,
     pub(crate) pending_generation: Option<u64>,
+    pending_server: bool,
 }
 
 pub(crate) fn server_action_available(action: Action, server: &McpMenuServer) -> bool {
@@ -69,6 +70,13 @@ pub(crate) fn server_action_available(action: Action, server: &McpMenuServer) ->
     }
 }
 
+fn targets_selected_server(action: Action) -> bool {
+    match action {
+        Action::Authenticate => true,
+        Action::Refresh => false,
+    }
+}
+
 impl McpMenuState {
     pub(crate) fn open(server_count: usize) -> Self {
         let mut state = Self {
@@ -79,9 +87,23 @@ impl McpMenuState {
             load_state: LoadState::Ready,
             next_generation: 1,
             pending_generation: None,
+            pending_server: false,
         };
         state.clamp_selection(server_count, server_count);
         state
+    }
+
+    pub(crate) fn after_generation(mut self, generation: u64) -> Self {
+        self.next_generation = generation.wrapping_add(1).max(1);
+        self
+    }
+
+    pub(crate) fn selected_server_removed(&mut self) {
+        if self.pending_server || self.pending_generation.is_none() {
+            self.pending_generation = None;
+            self.load_state = LoadState::Ready;
+        }
+        self.screen = Screen::Browse;
     }
 
     pub(crate) fn apply(&mut self, event: Event) -> Option<Effect> {
@@ -127,6 +149,7 @@ impl McpMenuState {
         let generation = self.next_generation;
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
         self.pending_generation = Some(generation);
+        self.pending_server = targets_selected_server(action);
         self.load_state = LoadState::Loading;
         Effect::Action { generation, action }
     }
