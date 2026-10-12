@@ -23,15 +23,14 @@ pub use managed_execution::{
     ExecutionError, ManagedExecutions, Snapshot, SnapshotState, StartCaptured,
 };
 pub use native_session::{
-    CloseResult, ControlFrame, ControlKind, InspectResult, LaunchError, LaunchedTerminal, Liveness,
-    Outcome, ReadResult, ScreenResult, StartRequest, StartupFailure, TerminalLaunch, Terminals,
-    WriteResult, is_terminal_control_invocation, is_terminal_launcher_invocation, launch_terminal,
-    read_control_frame, run_terminal_control, run_terminal_launcher,
+    CloseResult, InspectResult, Outcome, ReadResult, ScreenResult, SignalResult, StartRequest,
+    Terminals, WriteResult, is_terminal_control_invocation, is_terminal_launcher_invocation,
+    run_terminal_control, run_terminal_launcher,
 };
 pub use output_echo::OutputEcho;
 pub use shell_resolver::{ResolveError, configured_login_shell, environment};
 pub use terminal_contracts::{
-    Action, ClosePolicy, Dimensions, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts,
-    ShellSpec, StructuredErrorCode, TerminalFailure,
+    Action, ClosePolicy, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec,
+    StructuredErrorCode, TerminalFailure, TerminalSignal,
 };
 pub use terminal_store::{StoreError, TerminalStore};

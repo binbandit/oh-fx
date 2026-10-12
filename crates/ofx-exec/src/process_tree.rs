@@ -45,6 +45,42 @@ struct ProcessSnapshot {
     zombie: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Delivery {
+    pub(crate) delivered: usize,
+    pub(crate) incomplete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sent {
+    Delivered,
+    Skipped,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Instance {
+    pub(crate) token: String,
+    pub(crate) session: Option<Pid>,
+}
+
+pub(crate) fn instance(pid: Pid) -> Result<Instance, InspectionError> {
+    let boot_id = proc_fs::boot_id()?;
+    let snapshot = proc_fs::capture_snapshot(pid)?;
+    Ok(Instance {
+        token: format!("linux:{boot_id}:{}", snapshot.identity.start_ticks),
+        session: snapshot.session,
+    })
+}
+
+pub(crate) fn instance_token(pid: Pid) -> Result<String, InspectionError> {
+    instance(pid).map(|instance| instance.token)
+}
+
+pub(crate) fn group_session(group: Pid) -> Option<Pid> {
+    proc_fs::group_session(group)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Selection {
     Every,
@@ -193,8 +229,13 @@ impl Tracker {
         &self,
         signal: Signal,
         preserved_group: Pid,
-    ) -> usize {
-        self.signal_processes_with(signal, preserved_group, &SystemEffects)
+    ) -> Delivery {
+        self.signal_processes_with(signal, Some(preserved_group), &SystemEffects)
+    }
+
+    pub(crate) fn signal_every(&self, signal: Signal) -> usize {
+        self.signal_processes_with(signal, None, &SystemEffects)
+            .delivered
     }
 
     pub(crate) fn any_alive(&self) -> bool {
@@ -224,14 +265,18 @@ impl Tracker {
     fn signal_processes_with(
         &self,
         signal: Signal,
-        preserved_group: Pid,
+        preserved_group: Option<Pid>,
         effects: &impl Effects,
-    ) -> usize {
-        self.newest_first()
-            .filter(|&process| {
-                signal_tracked_process(process, signal, Some(preserved_group), effects)
-            })
-            .count()
+    ) -> Delivery {
+        let mut delivery = Delivery::default();
+        for process in self.newest_first() {
+            match send_to_tracked_process(process, signal, preserved_group, effects) {
+                Sent::Delivered => delivery.delivered += 1,
+                Sent::Skipped => {}
+                Sent::Unknown => delivery.incomplete = true,
+            }
+        }
+        delivery
     }
 
     fn freeze_with(
@@ -335,17 +380,34 @@ fn signal_tracked_process(
     preserved_group: Option<Pid>,
     effects: &impl Effects,
 ) -> bool {
-    let Ok(actual) = effects.capture(process.pid) else {
-        return false;
+    send_to_tracked_process(process, signal, preserved_group, effects) == Sent::Delivered
+}
+
+fn send_to_tracked_process(
+    process: TrackedProcess,
+    signal: Signal,
+    preserved_group: Option<Pid>,
+    effects: &impl Effects,
+) -> Sent {
+    let actual = match effects.capture(process.pid) {
+        Ok(actual) => actual,
+        Err(InspectionError::ProcessNotFound) => return Sent::Skipped,
+        Err(_) => return Sent::Unknown,
     };
     if process.identity != actual.identity || actual.zombie {
-        return false;
+        return Sent::Skipped;
     }
     let Some(process_group) = actual.process_group else {
-        return false;
+        return Sent::Skipped;
     };
-    should_signal_process(Some(process_group), preserved_group)
-        && effects.send(process.pid, signal).is_ok()
+    if !should_signal_process(Some(process_group), preserved_group) {
+        return Sent::Skipped;
+    }
+    match effects.send(process.pid, signal) {
+        Ok(()) => Sent::Delivered,
+        Err(Errno::SRCH) => Sent::Skipped,
+        Err(_) => Sent::Unknown,
+    }
 }
 
 fn completion_standing_with(

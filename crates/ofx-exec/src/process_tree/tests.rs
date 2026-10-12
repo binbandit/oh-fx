@@ -9,9 +9,9 @@ use rustix::io::Errno;
 use rustix::process::{Pid, Signal, getpid};
 
 use super::{
-    CompletionStanding, Effects, Frozen, Identity, InspectionError, ProcessSnapshot, Selection,
-    SystemEffects, TrackedProcess, Tracker, completion_standing, proc_fs, should_signal_process,
-    should_traverse_parent, snapshot_belongs_to_parent, snapshot_is_alive,
+    CompletionStanding, Delivery, Effects, Frozen, Identity, InspectionError, ProcessSnapshot,
+    Selection, SystemEffects, TrackedProcess, Tracker, completion_standing, proc_fs,
+    should_signal_process, should_traverse_parent, snapshot_belongs_to_parent, snapshot_is_alive,
 };
 
 type Capture = fn(i32) -> Result<ProcessSnapshot, InspectionError>;
@@ -235,8 +235,14 @@ fn checked_signal_delivery_distinguishes_vanished_stale_and_failed_targets() {
         })
     };
     let tracker = tracking(10..19);
-    let delivered = tracker.signal_processes_with(Signal::TERM, pid(41), &effects);
-    assert_eq!(delivered, 1);
+    let delivery = tracker.signal_processes_with(Signal::TERM, Some(pid(41)), &effects);
+    assert_eq!(
+        delivery,
+        Delivery {
+            delivered: 1,
+            incomplete: true
+        }
+    );
     assert_eq!(effects.sent(), [18, 17, 10]);
 }
 
@@ -249,8 +255,8 @@ fn checked_signal_delivery_keeps_vanished_stale_and_excluded_targets_complete() 
         _ => Ok(grouped(raw, Some(41))),
     });
     let tracker = tracking(21..25);
-    let delivered = tracker.signal_processes_with(Signal::TERM, pid(41), &effects);
-    assert_eq!(delivered, 0);
+    let delivery = tracker.signal_processes_with(Signal::TERM, Some(pid(41)), &effects);
+    assert_eq!(delivery, Delivery::default());
     assert!(effects.sent().is_empty());
 }
 

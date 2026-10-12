@@ -23,12 +23,12 @@ const PRIVATE_PATH_PREFIX: &str = "/tmp/oh-fx-terminal-";
 const PTY_MULTIPLEXER: &str = "/dev/ptmx";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ControlFrame {
-    pub kind: ControlKind,
-    pub value: u32,
+pub(crate) struct ControlFrame {
+    pub(crate) kind: ControlKind,
+    pub(crate) value: u32,
 }
 
-pub fn read_control_frame(reader: &mut impl Read) -> io::Result<ControlFrame> {
+pub(crate) fn read_control_frame(reader: &mut impl Read) -> io::Result<ControlFrame> {
     let mut bytes = [0; CONTROL_FRAME_LEN];
     reader.read_exact(&mut bytes)?;
     let [kind, value @ ..] = bytes;
@@ -54,38 +54,38 @@ pub fn read_control_frame(reader: &mut impl Read) -> io::Result<ControlFrame> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TerminalLaunch<'a> {
-    pub executable: &'a Path,
-    pub shell: &'a Path,
-    pub clean_start: bool,
-    pub cwd: &'a Path,
-    pub command: &'a str,
-    pub dimensions: Dimensions,
+pub(crate) struct TerminalLaunch<'a> {
+    pub(crate) executable: &'a Path,
+    pub(crate) shell: &'a Path,
+    pub(crate) clean_start: bool,
+    pub(crate) cwd: &'a Path,
+    pub(crate) command: &'a str,
+    pub(crate) dimensions: Dimensions,
 }
 
 #[derive(Debug)]
-pub struct LaunchedTerminal {
-    pub master: OwnedFd,
-    pub control: ChildStderr,
-    pub liveness: Liveness,
-    pub launcher: Child,
+pub(crate) struct LaunchedTerminal {
+    pub(crate) master: OwnedFd,
+    pub(crate) control: ChildStderr,
+    pub(crate) liveness: Liveness,
+    pub(crate) launcher: Child,
 }
 
 #[derive(Debug)]
-pub struct Liveness(ChildStdin);
+pub(crate) struct Liveness(ChildStdin);
 
 impl Liveness {
-    pub fn release_launcher(&mut self) -> io::Result<()> {
+    pub(crate) fn release_launcher(&mut self) -> io::Result<()> {
         self.0.write_all(&[LAUNCHER_RELEASE_BYTE])
     }
 
-    pub fn release_command(&mut self) -> io::Result<()> {
+    pub(crate) fn release_command(&mut self) -> io::Result<()> {
         self.0.write_all(&[COMMAND_RELEASE_BYTE])
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum LaunchError {
+pub(crate) enum LaunchError {
     #[error("{0}")]
     Resolve(#[from] ResolveError),
     #[error("PtyUnavailable")]
@@ -106,7 +106,9 @@ impl From<io::Error> for LaunchError {
     }
 }
 
-pub fn launch_terminal(request: &TerminalLaunch<'_>) -> Result<LaunchedTerminal, LaunchError> {
+pub(crate) fn launch_terminal(
+    request: &TerminalLaunch<'_>,
+) -> Result<LaunchedTerminal, LaunchError> {
     let config = encode_config(&launcher_config(request)?)?;
     let (master, slave) = open_pty()?;
     tcsetwinsize(&slave, winsize(request.dimensions)).map_err(|_| LaunchError::ResizeFailed)?;
