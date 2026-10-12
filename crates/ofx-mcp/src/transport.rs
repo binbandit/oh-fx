@@ -9,6 +9,7 @@ use crate::legacy_elicitation_runtime::ElicitationContext;
 use crate::legacy_http_sse::{LegacySseClient, SseShared};
 use crate::legacy_streamable_http::{HttpShared, LegacyHttpClient};
 use crate::server_auth::HttpAuth;
+use crate::server_identity;
 use crate::stdio_dispatcher::{Shared as StdioShared, StdioDispatcher};
 use crate::timing::spawn_on;
 
@@ -101,6 +102,13 @@ pub(crate) enum Transport {
 }
 
 impl Transport {
+    pub(crate) fn connection_generation(&self) -> u64 {
+        match self {
+            Self::Stdio(dispatcher) => dispatcher.generation(),
+            Self::Http(_) | Self::Sse(_) => server_identity::allocate(),
+        }
+    }
+
     pub(crate) fn http_auth(&self) -> Option<&HttpAuth> {
         match self {
             Self::Stdio(_) => None,

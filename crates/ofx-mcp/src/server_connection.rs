@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use serde_json::Value;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
@@ -13,6 +14,7 @@ use crate::error::McpError;
 use crate::feature_catalog::Invalidation;
 use crate::features::tools::ToolCatalog;
 use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
+use crate::mcp_trace::MCP;
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_transport::{
     ConnectOptions, Connected, ServerInfo, StartupFailure, connect_http, connect_sse, connect_stdio,
@@ -42,6 +44,7 @@ pub(crate) struct ToolSnapshot {
 
 pub(crate) struct McpClient {
     pub(crate) transport: Transport,
+    pub(crate) generation: u64,
     pub(crate) info: ServerInfo,
     pub(crate) wire: Option<ElicitationWire>,
     pub(crate) operation_timeout: Duration,
@@ -84,6 +87,7 @@ impl McpClient {
 
     fn from_connected(config: &McpServerConfig, connected: Connected) -> Self {
         Self {
+            generation: connected.transport.connection_generation(),
             transport: connected.transport,
             info: connected.info,
             wire: connected.wire,
@@ -141,12 +145,29 @@ impl McpClient {
         }
     }
 
+    fn ignored_unadvertised(&self) {
+        trace_log!(
+            MCP,
+            "ignored tool subscription notification connection_generation={} reason=ignore_unadvertised",
+            self.generation
+        );
+    }
+
     fn classify_notification(&self, value: &Value) -> Option<ServerNotification> {
-        let method = value.get("method").and_then(Value::as_str)?.to_owned();
+        let Some(method) = value.get("method").and_then(Value::as_str) else {
+            trace_log!(
+                MCP,
+                "ignored malformed tool subscription notification connection_generation={}",
+                self.generation
+            );
+            return None;
+        };
+        let method = method.to_owned();
         let capabilities = self.info.capabilities;
         match method.as_str() {
             "notifications/tools/list_changed" => {
                 if !capabilities.tools_list_changed {
+                    self.ignored_unadvertised();
                     return None;
                 }
                 self.tools_invalidation.invalidate();
@@ -157,6 +178,7 @@ impl McpClient {
                     .resources
                     .is_some_and(|resources| resources.list_changed)
                 {
+                    self.ignored_unadvertised();
                     return None;
                 }
                 self.resources_invalidation.invalidate();
@@ -167,6 +189,7 @@ impl McpClient {
                     .prompts
                     .is_some_and(|prompts| prompts.list_changed)
                 {
+                    self.ignored_unadvertised();
                     return None;
                 }
                 self.prompts_invalidation.invalidate();

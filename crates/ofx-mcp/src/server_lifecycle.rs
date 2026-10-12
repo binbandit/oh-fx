@@ -72,6 +72,12 @@ pub(crate) enum RestartFailure {
 }
 
 impl RestartFailure {
+    fn error(&self) -> &McpError {
+        match self {
+            Self::Unavailable(error) | Self::Failed { error, .. } => error,
+        }
+    }
+
     pub(crate) fn into_error(self) -> McpError {
         match self {
             Self::Unavailable(error) | Self::Failed { error, .. } => error,
@@ -299,7 +305,17 @@ impl Server {
     ) -> Result<ToolCallOutcome, CallFailure> {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
-        let client = self.running_client(deadline).await?;
+        let failed_generation = self.ready_client().map(|client| client.generation);
+        let client = self.running_client(deadline).await.inspect_err(|failure| {
+            if let Some(generation) = failed_generation {
+                trace_log!(
+                    MCP,
+                    "stdio server recovery failed server={} generation={generation} err={}",
+                    self.config.name,
+                    failure.error()
+                );
+            }
+        })?;
         if client.transport.stream_rejected_authentication() {
             self.authentication_failed(&client);
             return Err(McpError::McpAuthenticationRequired.into());
@@ -483,6 +499,13 @@ impl Server {
                 ));
             }
             *restarts += 1;
+            trace_log!(
+                MCP,
+                "restarting stdio server server={} generation={} attempt={}",
+                self.config.name,
+                client.generation,
+                *restarts
+            );
         }
         let span_ms = millis_until(deadline);
         if span_ms == 0 {

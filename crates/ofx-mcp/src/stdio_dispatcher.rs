@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::io;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -21,8 +22,9 @@ use crate::legacy_elicitation_runtime::{
     ElicitationContext, method_not_found_response, server_request_failed_response,
 };
 use crate::mcp_contract::validate_json_rpc_response_envelope;
-use crate::mcp_trace::{MCP, kill_error_name};
+use crate::mcp_trace::{MCP, kill_error_name, server_text_preview};
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
+use crate::server_identity;
 use crate::timing::{spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
     Cancellation, McpTransport, ProgressNotification, ProgressSink, ShutdownMode, TransportRequest,
@@ -169,11 +171,12 @@ enum Inbound {
     Response(ResponseId),
     ProgressNotification(ProgressToken, ProgressNotification),
     Notification,
-    Cancelled,
+    Cancelled(u64),
     Request,
 }
 
 pub(crate) struct Shared {
+    generation: u64,
     pid: u32,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     responses: Correlator<String, McpError>,
@@ -200,6 +203,7 @@ impl StdioDispatcher {
         launch: StdioLaunch,
         notifications: mpsc::UnboundedSender<Value>,
     ) -> Result<Self, McpError> {
+        let generation = server_identity::allocate();
         let prepared = docker_run::prepare(launch.argv)?;
         let (program, args) = prepared
             .argv
@@ -224,7 +228,12 @@ impl StdioDispatcher {
         let stderr = child.stderr.take();
         let (reader_done, _) = watch::channel(false);
         let (stderr_done, _) = watch::channel(stderr.is_none());
+        trace_log!(
+            MCP,
+            "stdio dispatcher started generation={generation} child={pid}"
+        );
         let shared = Arc::new(Shared {
+            generation,
             pid,
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             responses: Correlator::new(),
@@ -250,6 +259,10 @@ impl StdioDispatcher {
                     .map(|cleanup| cleanup.with_environment(launch.environment)),
             ),
         })
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.shared.generation
     }
 
     pub(crate) fn child_diagnostics(&self) -> ChildDiagnostics {
@@ -291,7 +304,8 @@ impl StdioDispatcher {
             shared: Arc::clone(shared),
             id,
             phase: &phase,
-            armed: request.send_cancellation,
+            armed: true,
+            send_cancellation: request.send_cancellation,
         };
         shared
             .write_bounded(&request.body, request.deadline, &phase)
@@ -333,15 +347,29 @@ impl StdioDispatcher {
             StopMode::Forced | StopMode::Abandon => {}
         }
         if matches!(mode, StopMode::Graceful | StopMode::Forced) && shared.child_may_be_running() {
+            trace_log!(
+                MCP,
+                "stdio dispatcher requesting child termination generation={}",
+                shared.generation
+            );
             terminate_child_gracefully(shared.pid);
             wait_until_set(&shared.reader_done, TERMINATION_GRACE).await;
         }
+        if shared.child_may_be_running() {
+            trace_log!(
+                MCP,
+                "stdio dispatcher forcing child termination generation={}",
+                shared.generation
+            );
+        }
         shared.kill_child();
         let reader = lock(&self.reader).take();
+        let mut reader_joined = true;
         if let Some(mut reader) = reader
             && timeout(READER_JOIN_GRACE, &mut reader).await.is_err()
         {
             reader.abort();
+            reader_joined = false;
         }
         kill_process_group(shared.pid);
         let stderr = lock(&self.stderr).take();
@@ -355,6 +383,11 @@ impl StdioDispatcher {
         if let Some(cleanup) = cleanup {
             cleanup.run().await;
         }
+        trace_log!(
+            MCP,
+            "stdio dispatcher stopped generation={} reader_joined={reader_joined}",
+            shared.generation
+        );
     }
 }
 
@@ -436,6 +469,11 @@ impl Shared {
             }
             *state = ConnectionState::Failed;
         }
+        trace_log!(
+            MCP,
+            "stdio dispatcher failed generation={} err={error}",
+            self.generation
+        );
         self.responses.close(error);
     }
 
@@ -449,6 +487,11 @@ impl Shared {
         let mut stdin = if let Ok(stdin) = self.stdin.try_lock() {
             stdin
         } else {
+            trace_log!(
+                MCP,
+                "stdio dispatcher interrupting active writer generation={}",
+                self.generation
+            );
             self.kill_child();
             self.stdin.lock().await
         };
@@ -503,9 +546,16 @@ impl Shared {
     pub(crate) async fn send_cancellation(&self, request_id: u64, reason: &str) {
         let body = build_cancellation_notification(request_id, reason);
         let phase = AtomicU8::new(WritePhase::Waiting as u8);
-        let _ = self
+        if let Err(error) = self
             .write_bounded(&body, Instant::now() + CANCELLATION_WRITE_TIMEOUT, &phase)
-            .await;
+            .await
+        {
+            trace_log!(
+                MCP,
+                "failed to send cancellation generation={} request_id={request_id} err={error}",
+                self.generation
+            );
+        }
     }
 
     fn record_rejected_output(&self, line: &[u8]) {
@@ -526,23 +576,53 @@ impl Shared {
                 return Err(error);
             }
         };
+        let generation = self.generation;
         match inbound {
             Inbound::Response(ResponseId::Integer(id)) => self.deliver_response(id, frame),
+            Inbound::Response(ResponseId::String) => trace_log!(
+                MCP,
+                "ignored unknown string response generation={generation} request_id={}",
+                server_text_preview(value.get("id").and_then(Value::as_str).unwrap_or_default())
+            ),
             Inbound::ProgressNotification(ProgressToken::Integer(id), progress) => {
                 let sink = lock(&self.pending)
                     .get(&id)
                     .and_then(|meta| meta.progress.clone());
                 if let Some(sink) = sink {
                     sink(progress);
+                    trace_log!(MCP, "routed server progress generation={generation}");
+                } else {
+                    trace_log!(
+                        MCP,
+                        "ignored late or unknown progress generation={generation}"
+                    );
                 }
             }
+            Inbound::ProgressNotification(ProgressToken::String, _) => trace_log!(
+                MCP,
+                "ignored late or unknown progress generation={generation}"
+            ),
             Inbound::Notification => {
-                let _ = self.notifications.send(value);
+                if let Err(unsent) = self.notifications.send(value) {
+                    trace_log!(
+                        MCP,
+                        "ignored server notification generation={generation} method={}",
+                        server_text_preview(method_of(&unsent.0))
+                    );
+                }
             }
-            Inbound::Request => self.dispatch_server_request(frame),
-            Inbound::Response(ResponseId::String)
-            | Inbound::ProgressNotification(ProgressToken::String, _)
-            | Inbound::Cancelled => {}
+            Inbound::Request => {
+                trace_log!(
+                    MCP,
+                    "routing server request generation={generation} method={}",
+                    server_text_preview(method_of(&value))
+                );
+                self.dispatch_server_request(frame);
+            }
+            Inbound::Cancelled(request_id) => trace_log!(
+                MCP,
+                "ignored unknown or non-subscription server cancellation generation={generation} request_id={request_id}"
+            ),
         }
         Ok(())
     }
@@ -552,6 +632,11 @@ impl Shared {
             .get(&id)
             .map(|meta| meta.max_frame_bytes)
         else {
+            trace_log!(
+                MCP,
+                "ignored late or unknown response generation={} request_id={id}",
+                self.generation
+            );
             return;
         };
         let key = request_key(id);
@@ -584,7 +669,14 @@ impl Shared {
                         .context()
                         .respond(&frame)
                         .await
-                        .unwrap_or_else(|_| server_request_failed_response(&frame)),
+                        .unwrap_or_else(|error| {
+                            trace_log!(
+                                MCP,
+                                "server request callback failed generation={} err={error}",
+                                shared.generation
+                            );
+                            server_request_failed_response(&frame)
+                        }),
                     answering.context().operation_timeout(),
                 ),
                 None => (
@@ -593,9 +685,18 @@ impl Shared {
                 ),
             };
             let phase = AtomicU8::new(WritePhase::Waiting as u8);
-            let _ = shared
+            let written = shared
                 .write_bounded(&response, Instant::now() + timeout, &phase)
                 .await;
+            if let Err(error) = written
+                && answering.is_none()
+            {
+                trace_log!(
+                    MCP,
+                    "server request rejection failed generation={} err={error}",
+                    shared.generation
+                );
+            }
             drop(answering);
         });
     }
@@ -639,14 +740,24 @@ struct CancelOnDrop<'a> {
     id: u64,
     phase: &'a AtomicU8,
     armed: bool,
+    send_cancellation: bool,
 }
 
 impl Drop for CancelOnDrop<'_> {
     fn drop(&mut self) {
-        if !self.armed || load_phase(self.phase) != WritePhase::Committed {
+        if !self.armed {
             return;
         }
-        Cancellation::Stdio(Arc::clone(&self.shared)).send_in_background(self.id);
+        let committed = load_phase(self.phase) == WritePhase::Committed;
+        trace_log!(
+            MCP,
+            "cancelling stdio request generation={} request_id={} committed={committed} caller=true lifecycle=false",
+            self.shared.generation,
+            self.id
+        );
+        if self.send_cancellation && committed {
+            Cancellation::Stdio(Arc::clone(&self.shared)).send_in_background(self.id);
+        }
     }
 }
 
@@ -678,7 +789,18 @@ async fn reader_main(shared: Arc<Shared>, stdout: ChildStdout, mut child: Child)
         shared.fail_connection(terminal);
         shared.kill_child();
     }
-    let status = child.wait().await.ok();
+    let status = child
+        .wait()
+        .await
+        .inspect_err(|error| {
+            trace_log!(
+                MCP,
+                "stdio dispatcher child wait failed generation={} err={}",
+                shared.generation,
+                McpError::from(io::Error::from(error.kind()))
+            );
+        })
+        .ok();
     shared.child_reaped.store(true, Ordering::Release);
     lock(&shared.diagnostics).status = status;
     shared.reader_done.send_replace(true);
@@ -686,10 +808,20 @@ async fn reader_main(shared: Arc<Shared>, stdout: ChildStdout, mut child: Child)
 
 async fn drain_stderr(shared: Arc<Shared>, mut stderr: ChildStderr) {
     let mut buffer = [0_u8; 4096];
-    while let Ok(count) = stderr.read(&mut buffer).await {
-        if count == 0 {
-            break;
-        }
+    loop {
+        let count = match stderr.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) => {
+                trace_log!(
+                    MCP,
+                    "stdio dispatcher stderr read failed generation={} err={}",
+                    shared.generation,
+                    McpError::from(error)
+                );
+                break;
+            }
+        };
         lock(&shared.diagnostics)
             .stderr
             .append(buffer.get(..count).unwrap_or_default());
@@ -709,8 +841,10 @@ fn classify_inbound(value: &Value) -> Result<Inbound, McpError> {
             let (token, progress) = parse_progress(params)?;
             return Ok(Inbound::ProgressNotification(token, progress));
         }
-        if method == "notifications/cancelled" && parse_cancelled_request_id(object.get("params")) {
-            return Ok(Inbound::Cancelled);
+        if method == "notifications/cancelled"
+            && let Some(request_id) = parse_cancelled_request_id(object.get("params"))
+        {
+            return Ok(Inbound::Cancelled(request_id));
         }
         return Ok(Inbound::Notification);
     }
@@ -726,11 +860,17 @@ fn classify_inbound(value: &Value) -> Result<Inbound, McpError> {
     }
 }
 
-fn parse_cancelled_request_id(params: Option<&Value>) -> bool {
+fn method_of(value: &Value) -> &str {
+    value
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+fn parse_cancelled_request_id(params: Option<&Value>) -> Option<u64> {
     params
         .and_then(|params| params.get("requestId"))
         .and_then(Value::as_u64)
-        .is_some()
 }
 
 fn parse_progress(value: &Value) -> Result<(ProgressToken, ProgressNotification), McpError> {
@@ -781,8 +921,8 @@ fn load_phase(phase: &AtomicU8) -> WritePhase {
     }
 }
 
-fn write_error(error: std::io::Error) -> McpError {
-    if error.kind() == std::io::ErrorKind::BrokenPipe {
+fn write_error(error: io::Error) -> McpError {
+    if error.kind() == io::ErrorKind::BrokenPipe {
         McpError::McpConnectionClosed
     } else {
         McpError::from(error)
@@ -906,6 +1046,14 @@ done"#;
                 json!({"jsonrpc":"2.0","id":9,"method":"sampling/createMessage","params":{}}),
                 Inbound::Request,
             ),
+            (
+                json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}}),
+                Inbound::Cancelled(4),
+            ),
+            (
+                json!({"jsonrpc":"2.0","id":"late","result":{}}),
+                Inbound::Response(ResponseId::String),
+            ),
         ];
         for (value, expected) in cases {
             assert_eq!(classify_inbound(&value), Ok(expected));
@@ -965,7 +1113,7 @@ done"#;
             classify_inbound(
                 &json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}})
             ),
-            Ok(Inbound::Cancelled)
+            Ok(Inbound::Cancelled(3))
         );
         assert_eq!(
             classify_inbound(

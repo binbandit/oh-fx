@@ -10,6 +10,10 @@ pub(crate) fn server_name_preview(name: &str) -> String {
     ofx_trace::terminal_preview(name, NAME_PREVIEW_BYTES)
 }
 
+pub(crate) fn server_text_preview(text: &str) -> String {
+    ofx_trace::terminal_preview(text, NAME_PREVIEW_BYTES)
+}
+
 pub(crate) fn variable_preview(name: &str) -> String {
     ofx_trace::terminal_preview(name, VARIABLE_PREVIEW_BYTES)
 }

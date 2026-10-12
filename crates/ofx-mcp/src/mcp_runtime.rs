@@ -1430,6 +1430,49 @@ done
         }
     }
 
+    const STDIO_TRACE_CHILD: &str = "OH_FX_MCP_STDIO_TRACE_CHILD";
+    const STDIO_TRACE_TEST: &str =
+        "mcp_runtime::tests::stdio_connections_write_their_generation_lines";
+
+    #[test]
+    fn stdio_connections_write_their_generation_lines() {
+        if let Some(root) = std::env::var_os(STDIO_TRACE_CHILD) {
+            ofx_trace::configure_from_env(Path::new(&root), None);
+            a_crashed_server_restarts_once_then_reports_the_limit();
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([STDIO_TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env(STDIO_TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [mcp] stdio dispatcher started generation=",
+            " [mcp] stdio dispatcher failed generation=",
+            " [mcp] restarting stdio server server=fixture generation=",
+            " [mcp] stdio server recovery failed server=fixture generation=",
+            " err=McpRestartLimitReached\n",
+            " [mcp] stdio dispatcher stopped generation=",
+        ] {
+            assert!(written.contains(line), "{line}\n{written}");
+        }
+        let started: Vec<u64> = written
+            .lines()
+            .filter_map(|line| line.split(" stdio dispatcher started generation=").nth(1))
+            .filter_map(|rest| rest.split(' ').next()?.parse().ok())
+            .collect();
+        assert_eq!(started.len(), 2, "{written}");
+        assert!(started[0] < started[1], "{written}");
+    }
+
     #[tokio::test]
     async fn a_required_server_that_exits_names_its_failure() {
         let state = tempfile::tempdir().unwrap();
