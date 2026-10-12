@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::menu::ReloadMarks;
 use crate::error::McpError;
-use crate::feature_operations::{FeatureFailure, PromptSummary, ResourceSummary};
+use crate::feature_operations::{FeatureFailure, FeatureInput, PromptSummary, ResourceSummary};
 use crate::features::common::ResourceContent;
 use crate::features::completion::{CompletionArgument, CompletionReference, CompletionResult};
 use crate::features::prompts::PromptGetResult;
@@ -374,8 +374,18 @@ impl McpRuntime {
         server_name: &str,
         uri: &str,
     ) -> Result<Arc<[ResourceContent]>, FeatureFailure> {
+        self.read_resource_with(server_name, uri, FeatureInput::Withheld)
+            .await
+    }
+
+    pub(crate) async fn read_resource_with(
+        &self,
+        server_name: &str,
+        uri: &str,
+        input: FeatureInput,
+    ) -> Result<Arc<[ResourceContent]>, FeatureFailure> {
         let (server, deadline) = self.feature_server(server_name).await?;
-        server.read_resource(uri, deadline).await
+        server.read_resource(uri, deadline, input).await
     }
 
     pub async fn list_prompts(&self, server_name: &str) -> Result<Vec<PromptSummary>, McpError> {
@@ -389,8 +399,21 @@ impl McpRuntime {
         name: &str,
         arguments_json: &str,
     ) -> Result<PromptGetResult, FeatureFailure> {
+        self.get_prompt_with(server_name, name, arguments_json, FeatureInput::Withheld)
+            .await
+    }
+
+    pub(crate) async fn get_prompt_with(
+        &self,
+        server_name: &str,
+        name: &str,
+        arguments_json: &str,
+        input: FeatureInput,
+    ) -> Result<PromptGetResult, FeatureFailure> {
         let (server, deadline) = self.feature_server(server_name).await?;
-        server.get_prompt(name, arguments_json, deadline).await
+        server
+            .get_prompt(name, arguments_json, deadline, input)
+            .await
     }
 
     pub async fn complete_prompt_argument(

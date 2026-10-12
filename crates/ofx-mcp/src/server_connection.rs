@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
 use std::time::Duration;
 
+use ofx_jsonrpc::RpcError;
 use serde_json::Value;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
@@ -10,7 +11,8 @@ use tokio::time::Instant;
 use crate::auth_state::AuthState;
 use crate::catalog_freshness::SnapshotMetadata;
 use crate::elicitation::{
-    URL_REQUIRED_ERROR_CODE, UrlRequest, completed_elicitation, parse_url_required,
+    ElicitationError, URL_REQUIRED_ERROR_CODE, UrlRequest, completed_elicitation,
+    parse_url_required,
 };
 use crate::error::McpError;
 use crate::feature_catalog::Invalidation;
@@ -168,12 +170,19 @@ impl McpClient {
         let ToolCallOutcome::ProtocolFailure(error) = outcome else {
             return None;
         };
+        self.url_required_error(error)?.ok()
+    }
+
+    pub(crate) fn url_required_error(
+        &self,
+        error: &RpcError,
+    ) -> Option<Result<Vec<(String, UrlRequest)>, ElicitationError>> {
         if self.wire != Some(ElicitationWire::LegacyMcp2025_11)
             || error.code != URL_REQUIRED_ERROR_CODE
         {
             return None;
         }
-        parse_url_required(error.data.as_ref()?).ok()
+        Some(parse_url_required(error.data.as_ref()?))
     }
 
     fn classify_notification(&self, value: &Value) -> Option<ServerNotification> {

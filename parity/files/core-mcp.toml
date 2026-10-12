@@ -77,7 +77,7 @@ note = "Resource, template and prompt catalogs are fetched page by page and refr
 upstream = "src/core/mcp/feature_operations.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/feature_operations.rs"]
-note = "Resource, template and prompt listing, resource reads and prompt gets exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one until OAuth lands, as docs/differences/mcp.md records. A prompt get resolves the prompt and checks its arguments, restarts a stopped stdio server, refuses a changed prompt catalog before it is sent, and returns a JSON-RPC error as its protocol diagnostic. A completion resolves its prompt or exact resource template, restarts a stopped stdio server, checks its request and refuses a changed catalog before it is sent. Modern resource update subscriptions, URL elicitation and input-required rounds are missing."
+note = "Resource, template and prompt listing, resource reads and prompt gets exist. Reads have the 64-entry read cache, the stale fallback for transient transport failures and a restart past its limit, and the checks before a read is sent and before it is cached. A read cached under a private cacheScope is shared like a public one until OAuth lands, as docs/differences/mcp.md records. A prompt get resolves the prompt and checks its arguments, restarts a stopped stdio server, refuses a changed prompt catalog before it is sent, and returns a JSON-RPC error as its protocol diagnostic. A completion resolves its prompt or exact resource template, restarts a stopped stdio server, checks its request and refuses a changed catalog before it is sent. A read or get that may ask answers its server's elicitation requests, and one refused with a 2025-11-25 URL-required error asks for the URL flow and is sent again, up to 8 rounds, failing as McpInputRequired when it cannot ask or the flow ends, as prepareFeatureContinuation does. Modern resource update subscriptions and the input-required rounds of the 2026-07-28 protocol are missing."
 
 [[file]]
 upstream = "src/core/mcp/feature_result.zig"
@@ -154,7 +154,7 @@ note = "The same Unicode 13.0 Letter ranges (general categories Lu, Ll, Lt, Lm a
 upstream = "src/core/mcp/legacy_elicitation_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-mcp/src/legacy_elicitation_runtime.rs", "crates/ofx-mcp/src/server_lifecycle.rs"]
-note = "A tool call's elicitation requests are checked, answered through the responder with the operation deadline paused for input, refused by name when the call's connection, catalogs or credentials changed, and their responses validated, as handleLegacyServerRequest does, and a tool call's URL-required error is answered with consent, the completion wait and a retry; completion windows and the feature-operation contexts are missing."
+note = "A tool call's elicitation requests are checked, answered through the responder with the operation deadline paused for input, refused by name when the call's connection, catalogs or credentials changed, and their responses validated, as handleLegacyServerRequest does, and a tool call's or a feature read's URL-required error is answered with consent, the completion wait and a retry; completion windows are missing."
 
 [[file]]
 upstream = "src/core/mcp/legacy_http_sse.zig"

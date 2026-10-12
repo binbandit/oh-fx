@@ -4,13 +4,13 @@ use std::sync::Arc;
 use ofx_contract::{
     BoxFuture, CallDescription, CallPresentation, Concurrency, DEFAULT_MAX_TOOL_RESULT_BYTES,
     PreparedCall, Tool, ToolActivity, ToolContext, ToolEffect, ToolImage, ToolOutput, ToolSpec,
-    format_plain_action, format_tool_execution_error_json, parse_strict_json_value,
-    parse_tool_args_object,
+    ToolStatusDetail, format_plain_action, format_tool_execution_error_json,
+    parse_strict_json_value, parse_tool_args_object,
 };
 use serde_json::{Map, Value};
 
 use crate::error::McpError;
-use crate::feature_operations::FeatureFailure;
+use crate::feature_operations::{FeatureFailure, FeatureInput};
 use crate::feature_result::{self, FeatureAction};
 use crate::features::completion::CompletionArgument;
 use crate::mcp_runtime::McpRuntime;
@@ -33,6 +33,7 @@ const MAX_ARGUMENTS_JSON_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_ARGUMENTS: usize = 128;
 const MAX_CONTEXT_BYTES: usize = 128 * 1024;
 const NO_RUNTIME: &str = "No MCP runtime is available.";
+const INPUT_REQUIRED: &str = "{\"error\":\"McpInputRequired\"}";
 const PRESENTATION: CallPresentation = CallPresentation {
     activity: ToolActivity::Read,
     action_label: "Using MCP feature",
@@ -127,6 +128,11 @@ impl PreparedCall for FeatureCall {
 }
 
 fn failure(error: &McpError) -> ToolOutput {
+    if *error == McpError::McpInputRequired {
+        return ToolOutput::failure(INPUT_REQUIRED)
+            .with_status_detail(ToolStatusDetail::McpInputRequired)
+            .finishing_turn();
+    }
     ToolOutput::failure(format_tool_execution_error_json(NAME, &error.to_string()))
 }
 
@@ -278,7 +284,10 @@ async fn model_output(
             ))
         }
         FeatureAction::ResourceRead => {
-            match runtime.read_resource(server, &request.identity).await {
+            match runtime
+                .read_resource_with(server, &request.identity, FeatureInput::Ask)
+                .await
+            {
                 Ok(contents) => {
                     *images = feature_result::resource_images(&contents)?;
                     Ok(feature_result::resource_read(
@@ -296,7 +305,12 @@ async fn model_output(
         }
         FeatureAction::PromptGet => {
             match runtime
-                .get_prompt(server, &request.identity, &request.arguments_json)
+                .get_prompt_with(
+                    server,
+                    &request.identity,
+                    &request.arguments_json,
+                    FeatureInput::Ask,
+                )
                 .await
             {
                 Ok(result) => {

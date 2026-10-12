@@ -619,3 +619,19 @@ async fn resource_reads_attach_their_images_and_refuse_unusable_ones() {
         ))
     );
 }
+
+#[test]
+fn input_required_is_upstream_terminal_failure_and_other_errors_stay_named() {
+    let required = failure(&McpError::McpInputRequired);
+    assert_eq!(required.status, ToolResultStatus::Failure);
+    assert_eq!(required.content, r#"{"error":"McpInputRequired"}"#);
+    assert_eq!(
+        required.status_detail,
+        Some(ToolStatusDetail::McpInputRequired)
+    );
+    assert!(required.finish_turn);
+    let other = failure(&McpError::McpInputRequiredLimitExceeded);
+    assert!(!other.finish_turn);
+    assert_eq!(other.status_detail, None);
+    assert!(other.content.contains("McpInputRequiredLimitExceeded"));
+}

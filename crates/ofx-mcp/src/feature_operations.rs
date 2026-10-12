@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
+use ofx_jsonrpc::RpcError;
 use serde_json::Value;
 use tokio::time::Instant;
 
 use crate::catalog_freshness::page_expiry;
 use crate::error::McpError;
 use crate::feature_catalog_runtime::FEATURE_RESPONSE_FRAME_CAP_BYTES;
+use crate::feature_snapshot::FeatureIdentity;
 use crate::features::common::ResourceContent;
 use crate::features::completion::{
     self, CompletionArgument, CompletionReference, CompletionResult, parse_result, request_params,
@@ -17,6 +19,10 @@ use crate::features::prompts::{
 use crate::features::resources::{
     Details, Limits, ReadOutcome, Resource, ResourceTemplate, parse_read_outcome,
     stale_fallback_eligible,
+};
+use crate::legacy_elicitation_runtime::{
+    ElicitationContext, ElicitationOwner, MAX_INPUT_ROUNDS, OperationElicitation, UrlRetry,
+    coordinate_url_required,
 };
 use crate::mcp_contract::TransportType;
 use crate::operation_control::monotonic_millis;
@@ -37,6 +43,43 @@ pub enum FeatureFailure {
 impl From<McpError> for FeatureFailure {
     fn from(error: McpError) -> Self {
         Self::Error(error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FeatureInput {
+    Ask,
+    Withheld,
+}
+
+struct FeatureOwner {
+    server: Weak<Server>,
+    client: Weak<McpClient>,
+    identity: FeatureIdentity,
+    auth: Option<u64>,
+}
+
+impl FeatureOwner {
+    fn new(server: &Arc<Server>, client: &Arc<McpClient>, identity: &FeatureIdentity) -> Self {
+        Self {
+            server: Arc::downgrade(server),
+            client: Arc::downgrade(client),
+            identity: identity.clone(),
+            auth: server.auth.current_generation().ok(),
+        }
+    }
+}
+
+impl ElicitationOwner for FeatureOwner {
+    fn current(&self) -> bool {
+        let (Some(server), Some(client)) = (self.server.upgrade(), self.client.upgrade()) else {
+            return false;
+        };
+        server.serves(&client)
+            && client.is_running()
+            && self.auth.is_some()
+            && server.auth.current_generation().ok() == self.auth
+            && server.check_current(&client, &self.identity).is_ok()
     }
 }
 
@@ -103,10 +146,13 @@ impl Server {
         self: &Arc<Self>,
         uri: &str,
         deadline: Instant,
+        input: FeatureInput,
     ) -> Result<Arc<[ResourceContent]>, FeatureFailure> {
         if !self.features.advertises_resources() {
             return Err(McpError::McpResourcesUnsupported.into());
         }
+        let mut deadline = deadline;
+        let mut round = 0;
         loop {
             let identity = self.resource_identity(uri, deadline).await?;
             let client = match self.lifecycle() {
@@ -148,17 +194,23 @@ impl Server {
             if !current || client.resources_invalidation.pending() {
                 return Err(McpError::McpFeatureCatalogChanged.into());
             }
-            let (outcome, received_at_ms) = match request_read(&client, uri, deadline).await {
-                Ok(received) => received,
-                Err(error) => {
-                    let eligible = stale_fallback_eligible(&error);
-                    return fall_back(error, eligible);
-                }
-            };
+            let elicitation = self.feature_elicitation(&client, &identity, input, deadline);
+            let (outcome, received_at_ms) =
+                match request_read(&client, uri, deadline, elicitation).await {
+                    Ok(received) => received,
+                    Err(error) => {
+                        let eligible = stale_fallback_eligible(&error);
+                        return fall_back(error, eligible);
+                    }
+                };
             let result = match outcome {
                 ReadOutcome::Complete(result) => result,
                 ReadOutcome::ProtocolFailure(error) => {
-                    return Err(FeatureFailure::Diagnostic(protocol_diagnostic(&error)));
+                    self.answer_url_required(&client, &identity, &error, input, round)
+                        .await?;
+                    round += 1;
+                    deadline = Instant::now() + client.operation_timeout;
+                    continue;
                 }
             };
             let contents: Arc<[ResourceContent]> = result.contents.into();
@@ -178,10 +230,13 @@ impl Server {
         name: &str,
         arguments_json: &str,
         deadline: Instant,
+        input: FeatureInput,
     ) -> Result<PromptGetResult, FeatureFailure> {
         if !self.features.advertises_prompts() {
             return Err(McpError::McpPromptsUnsupported.into());
         }
+        let mut deadline = deadline;
+        let mut round = 0;
         loop {
             let (identity, arguments) = self
                 .prompt_identity(name, deadline, |prompt| {
@@ -192,12 +247,68 @@ impl Server {
                 continue;
             };
             self.check_current(&client, &identity)?;
-            return match request_prompt(&client, name, &arguments, deadline).await? {
-                GetOutcome::Complete(result) => Ok(result),
+            let elicitation = self.feature_elicitation(&client, &identity, input, deadline);
+            match request_prompt(&client, name, &arguments, deadline, elicitation).await? {
+                GetOutcome::Complete(result) => return Ok(result),
                 GetOutcome::ProtocolFailure(error) => {
-                    Err(FeatureFailure::Diagnostic(protocol_diagnostic(&error)))
+                    self.answer_url_required(&client, &identity, &error, input, round)
+                        .await?;
+                    round += 1;
+                    deadline = Instant::now() + client.operation_timeout;
                 }
-            };
+            }
+        }
+    }
+
+    fn feature_elicitation(
+        self: &Arc<Self>,
+        client: &Arc<McpClient>,
+        identity: &FeatureIdentity,
+        input: FeatureInput,
+        deadline: Instant,
+    ) -> Option<Arc<ElicitationContext>> {
+        if input == FeatureInput::Withheld {
+            return None;
+        }
+        let operation = OperationElicitation {
+            responder: self.responder()?.clone(),
+            server_name: self.config.name.clone(),
+            owner: Box::new(FeatureOwner::new(self, client, identity)),
+        };
+        ElicitationContext::new(client.wire?, operation, deadline, client.operation_timeout)
+            .map(Arc::new)
+    }
+
+    async fn answer_url_required(
+        self: &Arc<Self>,
+        client: &Arc<McpClient>,
+        identity: &FeatureIdentity,
+        error: &RpcError,
+        input: FeatureInput,
+        round: usize,
+    ) -> Result<(), FeatureFailure> {
+        if round >= MAX_INPUT_ROUNDS {
+            return Err(McpError::McpInputRequiredLimitExceeded.into());
+        }
+        let Some(parsed) = client.url_required_error(error) else {
+            return Err(FeatureFailure::Diagnostic(protocol_diagnostic(error)));
+        };
+        let requests = parsed.map_err(|_| McpError::McpProtocolError(error.clone()))?;
+        let (FeatureInput::Ask, Some(responder)) = (input, self.responder()) else {
+            return Err(McpError::McpInputRequired.into());
+        };
+        let owner = FeatureOwner::new(self, client, identity);
+        match coordinate_url_required(
+            responder,
+            &self.config.name,
+            &client.url_completions,
+            &requests,
+            &owner,
+        )
+        .await?
+        {
+            UrlRetry::Retry => Ok(()),
+            UrlRetry::Declined | UrlRetry::Cancelled => Err(McpError::McpInputRequired.into()),
         }
     }
 
@@ -281,16 +392,20 @@ async fn request_prompt(
     name: &str,
     arguments: &Value,
     deadline: Instant,
+    elicitation: Option<Arc<ElicitationContext>>,
 ) -> Result<GetOutcome, McpError> {
     let id = client.transport.next_request_id()?;
     let response = client
         .transport
-        .request(TransportRequest::new(
-            id,
-            build_prompt_get_request(id, name, arguments),
-            FEATURE_RESPONSE_FRAME_CAP_BYTES,
-            deadline,
-        ))
+        .request(TransportRequest {
+            elicitation,
+            ..TransportRequest::new(
+                id,
+                build_prompt_get_request(id, name, arguments),
+                FEATURE_RESPONSE_FRAME_CAP_BYTES,
+                deadline,
+            )
+        })
         .await?;
     parse_get_outcome(&response, prompts::Limits::default())
 }
@@ -299,16 +414,20 @@ async fn request_read(
     client: &McpClient,
     uri: &str,
     deadline: Instant,
+    elicitation: Option<Arc<ElicitationContext>>,
 ) -> Result<(ReadOutcome, u64), McpError> {
     let id = client.transport.next_request_id()?;
     let response = client
         .transport
-        .request(TransportRequest::new(
-            id,
-            build_resource_read_request(id, uri),
-            FEATURE_RESPONSE_FRAME_CAP_BYTES,
-            deadline,
-        ))
+        .request(TransportRequest {
+            elicitation,
+            ..TransportRequest::new(
+                id,
+                build_resource_read_request(id, uri),
+                FEATURE_RESPONSE_FRAME_CAP_BYTES,
+                deadline,
+            )
+        })
         .await?;
     let received_at_ms = monotonic_millis();
     Ok((
@@ -316,3 +435,6 @@ async fn request_read(
         received_at_ms,
     ))
 }
+
+#[cfg(test)]
+mod tests;

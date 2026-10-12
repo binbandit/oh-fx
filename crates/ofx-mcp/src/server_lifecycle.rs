@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth_state::AuthState;
 use crate::catalog_freshness::Freshness;
+use crate::elicitation_interaction::InputResponder;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
@@ -432,7 +433,11 @@ impl Server {
             })
     }
 
-    fn serves(&self, client: &Arc<McpClient>) -> bool {
+    pub(crate) fn responder(&self) -> Option<&InputResponder> {
+        self.options.elicitation.as_ref()
+    }
+
+    pub(crate) fn serves(&self, client: &Arc<McpClient>) -> bool {
         matches!(&*lock(&self.state), State::Ready(connection) if Arc::ptr_eq(&connection.client, client))
     }
 

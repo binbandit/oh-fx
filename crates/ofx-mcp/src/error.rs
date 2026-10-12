@@ -126,6 +126,8 @@ pub enum McpError {
     UnsupportedServerRequest,
     #[error("McpInputRequiredLimitExceeded")]
     McpInputRequiredLimitExceeded,
+    #[error("McpInputRequired")]
+    McpInputRequired,
     #[error("McpDuplicateElicitationId")]
     McpDuplicateElicitationId,
     #[error("{0}")]

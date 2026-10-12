@@ -18,7 +18,15 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
       printf '%s\n' "$line" > "$MCP_STATE/initialize"
-      reply "$id" '{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1.0"}}' ;;
+      if [ -f "$MCP_STATE/resources" ]; then
+        reply "$id" '{"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"fixture","version":"1.0"}}'
+      else
+        reply "$id" '{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1.0"}}'
+      fi ;;
+    *'"method":"resources/list"'*)
+      reply "$id" '{"resources":[{"uri":"memory://notes","name":"notes"}]}' ;;
+    *'"method":"resources/read"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32042,"message":"URL required","data":%s}}\n' "$id" "$(cat "$MCP_STATE/params")" ;;
     *'"method":"tools/list"'*)
       reply "$id" '{"tools":[{"name":"profile","description":"Ask for a profile.","inputSchema":{"type":"object"}}]}' ;;
     *'"method":"tools/call"'*)
@@ -438,6 +446,43 @@ fn an_ask_that_cannot_ask_for_a_url_ends_the_turn_as_mcp_input_required() {
     assert!(
         !String::from_utf8_lossy(&output.stderr).contains("oh-fx: McpInputRequired"),
         "{output:?}"
+    );
+}
+
+#[test]
+fn an_ask_that_cannot_ask_for_a_resources_url_ends_the_turn_as_mcp_input_required() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_tool_call_events(
+            "features_1",
+            "mcp_features",
+            r#"{"action":"resource_read","server":"fixture","uri":"memory://notes"}"#,
+        )),
+        Reply::sse(&chat_text_events(&["done"])),
+    ]);
+    let home = Home::with(
+        &server,
+        "ask",
+        r#"{"elicitations":[{"mode":"url","message":"Connect your account","url":"https://example.test/connect?state=opaque","elicitationId":"connect-1"}]}"#,
+    );
+    fs::write(home.state.join("resources"), "").expect("offer resources");
+    let output = home
+        .command()
+        .arg("--json")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run oh-fx");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).expect("a JSON result");
+    assert_eq!(result["error"], "McpInputRequired", "{result}");
+    assert_eq!(
+        result["tool_calls"][0],
+        json!({"name": "mcp_features", "status": "error"})
+    );
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "no request follows the input-required result"
     );
 }
 
