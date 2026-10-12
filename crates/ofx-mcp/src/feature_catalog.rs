@@ -24,6 +24,7 @@ struct CachedRead {
 pub(crate) struct Snapshot<T> {
     pub(crate) items: Arc<[T]>,
     pub(crate) metadata: SnapshotMetadata,
+    pub(crate) generation: u64,
 }
 
 #[derive(Default)]
@@ -133,11 +134,25 @@ fn expire<T>(slot: &Mutex<Option<Snapshot<T>>>) {
 pub(crate) struct Invalidation {
     generation: AtomicU64,
     handled: AtomicU64,
+    seen: AtomicU64,
+    coalesced: AtomicU64,
 }
 
 impl Invalidation {
     pub(crate) fn invalidate(&self) {
+        if self.pending() {
+            self.coalesced.fetch_add(1, Ordering::AcqRel);
+        }
+        self.seen.fetch_add(1, Ordering::AcqRel);
         self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn seen(&self) -> u64 {
+        self.seen.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn coalesced(&self) -> u64 {
+        self.coalesced.load(Ordering::Acquire)
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -155,7 +170,9 @@ impl Invalidation {
     }
 }
 
-pub(crate) trait FeatureCatalog: Listed + Clone + Send + Sync + 'static {
+pub(crate) trait FeatureCatalog: Listed + Clone + PartialEq + Send + Sync + 'static {
+    const KIND: &'static str;
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>>;
 
     fn invalidation(client: &McpClient) -> &Invalidation;
@@ -164,6 +181,8 @@ pub(crate) trait FeatureCatalog: Listed + Clone + Send + Sync + 'static {
 }
 
 impl FeatureCatalog for Resource {
+    const KIND: &'static str = "resources";
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
         &catalogs.resources
     }
@@ -178,6 +197,8 @@ impl FeatureCatalog for Resource {
 }
 
 impl FeatureCatalog for ResourceTemplate {
+    const KIND: &'static str = "resource_templates";
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
         &catalogs.templates
     }
@@ -192,6 +213,8 @@ impl FeatureCatalog for ResourceTemplate {
 }
 
 impl FeatureCatalog for Prompt {
+    const KIND: &'static str = "prompts";
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
         &catalogs.prompts
     }
@@ -239,6 +262,7 @@ mod tests {
         catalogs.publish(Snapshot {
             items: Arc::clone(&items),
             metadata: SnapshotMetadata::fresh(u64::MAX),
+            generation: 1,
         });
         catalogs.record_failed_refresh(&Arc::from(vec![resource("a://")]), 10);
         assert_eq!(
@@ -269,6 +293,7 @@ mod tests {
         catalogs.publish(Snapshot {
             items: Arc::clone(&prompts),
             metadata: SnapshotMetadata::fresh(u64::MAX),
+            generation: 1,
         });
         catalogs.request_refresh();
         let requested = catalogs.snapshot::<Prompt>().unwrap();

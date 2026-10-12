@@ -238,9 +238,16 @@ impl McpRuntime {
             let Lifecycle::Ready(client) = server.lifecycle() else {
                 continue;
             };
-            server
+            if let Some(error) = server
                 .refresh_tools(&client, Instant::now() + client.operation_timeout)
-                .await;
+                .await
+            {
+                trace_log!(
+                    MCP,
+                    "tool cache refresh check failed server={} err={error}",
+                    server.config.name
+                );
+            }
         }
     }
 
@@ -565,9 +572,16 @@ impl McpRuntime {
             };
             server.features.request_refresh();
             client.request_tool_refresh();
-            server
+            if let Some(error) = server
                 .refresh_tools(&client, Instant::now() + client.operation_timeout)
-                .await;
+                .await
+            {
+                trace_log!(
+                    MCP,
+                    "catalog reload failed server={} err={error}",
+                    server.config.name
+                );
+            }
             server.mark_reload_pending(false);
         }
     }
@@ -1383,6 +1397,39 @@ done
         assert!(!written.contains("secret detail"), "{written}");
     }
 
+    const CATALOG_TRACE_CHILD: &str = "OH_FX_MCP_CATALOG_TRACE_CHILD";
+    const CATALOG_TRACE_TEST: &str = "mcp_runtime::tests::catalog_refreshes_write_their_mcp_lines";
+
+    #[test]
+    fn catalog_refreshes_write_their_mcp_lines() {
+        if let Some(root) = std::env::var_os(CATALOG_TRACE_CHILD) {
+            ofx_trace::configure_from_env(Path::new(&root), None);
+            a_tool_list_change_republishes_the_server_tools();
+            resource_catalogs_page_cache_and_refresh_after_list_changes();
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([CATALOG_TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env(CATALOG_TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [mcp] tool cache snapshot replaced server=fixture catalog_generation=2 tools=4 notifications_seen=1 notifications_coalesced=0\n",
+            " [mcp] feature cache snapshot replaced server=fixture feature=resources generation=1\n",
+            " [mcp] feature cache snapshot replaced server=fixture feature=resources generation=2\n",
+        ] {
+            assert!(written.contains(line), "{line}\n{written}");
+        }
+    }
+
     #[tokio::test]
     async fn a_required_server_that_exits_names_its_failure() {
         let state = tempfile::tempdir().unwrap();
@@ -2004,6 +2051,7 @@ done
                 details: Details::default(),
             }]),
             metadata: SnapshotMetadata::fresh(u64::MAX),
+            generation: 1,
         };
         assert!(!server.publish_catalog(&stopped, outdated));
         assert_eq!(
