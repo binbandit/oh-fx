@@ -173,6 +173,7 @@ impl Session {
                 fast_mode: false,
                 ultrafast_mode: false,
                 auto_compact_percent: AutoCompactPercent::resolve(None, None),
+                provider_routing: ofx_contract::ProviderRouting::default(),
             },
         )
         .with_approvals(approvals.clone());

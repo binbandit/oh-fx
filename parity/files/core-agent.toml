@@ -104,7 +104,7 @@ note = "Kernel history/usage checkpoint codec, inline image roundtrip and fresh-
 upstream = "src/core/agent/runtime/config.zig"
 status = "partial"
 modules = ["crates/ofx-agent/src/orchestrator.rs"]
-note = "AgentConfig covers model, effort, step limits and compaction; turn-origin authority, image policy and recovery-pause configuration are absent."
+note = "AgentConfig covers model, effort, step limits, compaction and gateway provider routing; turn-origin authority, image policy and recovery-pause configuration are absent."
 
 [[file]]
 upstream = "src/core/agent/runtime/deps.zig"

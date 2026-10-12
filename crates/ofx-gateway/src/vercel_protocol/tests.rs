@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fs;
 
-use ofx_contract::{ProviderOptions, ToolCallId, ToolChoice};
+use ofx_contract::{ProviderOptions, ProviderRouting, ToolCallId, ToolChoice};
 use serde_json::Value;
 
 use super::*;
@@ -167,6 +167,7 @@ fn fast_mode_caching_and_xai_parallel_calls_share_one_provider_options_object() 
         reasoning_effort: Some("future-tier"),
         fast: true,
         prompt_caching: false,
+        routing: None,
     };
     let sent =
         parsed(&build_request(&request(MODEL, &[], &messages, &[], fast), USER_AGENT).unwrap());
@@ -205,6 +206,72 @@ fn fast_mode_caching_and_xai_parallel_calls_share_one_provider_options_object() 
     )
     .unwrap();
     assert!(plain.contains(r#""providerOptions":{"xai":{"parallelToolCalls":true}}"#));
+}
+
+fn routed(routing: &ProviderRouting, fast: bool, prompt_caching: bool) -> String {
+    let messages = [ChatMessage::user("question")];
+    let options = ProviderOptions {
+        fast,
+        prompt_caching,
+        routing: Some(routing),
+        ..ProviderOptions::default()
+    };
+    build_request(&request(MODEL, &[], &messages, &[], options), USER_AGENT).unwrap()
+}
+
+#[test]
+fn provider_routing_follows_speed_and_caching_as_an_order_or_a_strict_only_list() {
+    let order = vec!["azure".to_owned(), "bedrock".to_owned()];
+    let preferred = ProviderRouting {
+        order: order.clone(),
+        strict: false,
+    };
+    assert!(
+        routed(&preferred, false, false)
+            .contains(r#","providerOptions":{"gateway":{"order":["azure","bedrock"]}}"#)
+    );
+    let strict = ProviderRouting {
+        order,
+        strict: true,
+    };
+    assert!(
+        routed(&strict, true, false).contains(
+            r#","providerOptions":{"gateway":{"speed":"fast","only":["azure","bedrock"]}}"#
+        )
+    );
+    assert!(routed(&strict, true, true).contains(
+        r#","providerOptions":{"gateway":{"speed":"fast","caching":"auto","only":["azure","bedrock"]}}"#
+    ));
+    let unordered = ProviderRouting {
+        order: Vec::new(),
+        strict: true,
+    };
+    assert!(!routed(&unordered, false, false).contains("providerOptions"));
+    assert!(
+        routed(&unordered, false, true)
+            .contains(r#","providerOptions":{"gateway":{"caching":"auto"}}"#)
+    );
+}
+
+#[test]
+fn provider_routing_joins_the_xai_options() {
+    let messages = [ChatMessage::user("question")];
+    let routing = ProviderRouting {
+        order: vec!["xai".to_owned()],
+        strict: true,
+    };
+    let options = ProviderOptions {
+        routing: Some(&routing),
+        ..ProviderOptions::default()
+    };
+    let body = build_request(
+        &request("xai/grok-4", &[], &messages, &[], options),
+        USER_AGENT,
+    )
+    .unwrap();
+    assert!(body.contains(
+        r#""providerOptions":{"gateway":{"only":["xai"]},"xai":{"parallelToolCalls":true}}"#
+    ));
 }
 
 #[test]

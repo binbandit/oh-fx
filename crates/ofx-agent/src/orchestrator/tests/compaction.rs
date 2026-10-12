@@ -195,6 +195,38 @@ async fn manual_compaction_asks_the_conversations_model_for_notes_on_tool_work()
 }
 
 #[tokio::test]
+async fn turns_and_the_compaction_notes_request_carry_the_provider_routing() {
+    let mut scripts = vec![
+        tool_reply(&[("call-1", r#"{"value":"notes.md"}"#)]),
+        text_reply("Read the notes."),
+    ];
+    scripts.extend(chat_replies(4));
+    scripts.push(text_reply("Turn 1\nIn between: Echoed the notes."));
+    let provider = FakeProvider::new(scripts);
+    let mut agent = new_agent(Arc::clone(&provider), vec![echo_tool()]);
+    let routing = ProviderRouting {
+        order: vec!["azure".to_owned(), "bedrock".to_owned()],
+        strict: true,
+    };
+    agent.set_config(AgentConfig {
+        provider_routing: routing.clone(),
+        ..config()
+    });
+    run(&mut agent, "read the notes").await;
+    chat(&mut agent, 4).await;
+    assert_eq!(
+        agent.compact(&mut || {}, &CancellationToken::new()).await,
+        Ok(Compaction::Compacted)
+    );
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 7);
+    assert!(requests[6].instructions[0].starts_with("You write compaction notes"));
+    for request in requests {
+        assert_eq!(request.routing.as_ref(), Some(&routing));
+    }
+}
+
+#[tokio::test]
 async fn manual_compaction_keeps_approval_feedback_in_the_notes_on_its_step() {
     let mut scripts = vec![
         tool_reply(&[("call-1", r#"{"value":"outside"}"#)]),

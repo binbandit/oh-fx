@@ -9,9 +9,9 @@ use ofx_contract::{
     AutoCompactPercent, CallDescription, ChatMessage, Completion, Concurrency, FileChange,
     FileMutation, FileMutationState, FinishReason, ModelProvider, ModelRequest, PathAccess,
     PermissionGate, PreparedCall, ProposedFileChange, ProviderError, ProviderErrorKind,
-    ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, StreamEvent, StreamSink,
-    SubagentRequestInput, SubagentStatus, SubagentStatusSink, Tool, ToolActivity, ToolCall,
-    ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
+    ProviderRouting, ReviewRequest, ReviewVerdict, Reviewed, RootUserRequests, StreamEvent,
+    StreamSink, SubagentRequestInput, SubagentStatus, SubagentStatusSink, Tool, ToolActivity,
+    ToolCall, ToolCallId, ToolEffect, ToolResultStatus, ToolSpec, TurnId, UiEvent, Usage,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -257,6 +257,7 @@ impl ChildAgents for Agents {
                 fast_mode: settings.fast_mode,
                 ultrafast_mode: false,
                 auto_compact_percent: AutoCompactPercent::resolve(None, None),
+                provider_routing: ProviderRouting::default(),
             },
         );
         if self.asks {
@@ -1165,6 +1166,7 @@ fn intent_config() -> AgentConfig {
         fast_mode: false,
         ultrafast_mode: false,
         auto_compact_percent: AutoCompactPercent::resolve(None, None),
+        provider_routing: ProviderRouting::default(),
     }
 }
 

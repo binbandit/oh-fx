@@ -155,6 +155,7 @@ fn agent_config(model: &str, effort: Option<&str>, fast_mode: bool) -> AgentConf
         fast_mode,
         ultrafast_mode: false,
         auto_compact_percent: AutoCompactPercent::resolve(None, None),
+        provider_routing: ofx_contract::ProviderRouting::default(),
     }
 }
 

@@ -481,7 +481,10 @@ async fn answer(
     received: &ReceivedSignals,
 ) -> Result<Answered, Signalled> {
     let mut mcp = None;
-    let answered = respond(request, endpoints, echo, cancel, received, &mut mcp).await;
+    let answered = Box::pin(respond(
+        request, endpoints, echo, cancel, received, &mut mcp,
+    ))
+    .await;
     if let Some(mcp) = mcp {
         mcp.shutdown(ShutdownMode::Immediate).await;
     }
@@ -3200,6 +3203,7 @@ mod tests {
             fast_mode: false,
             ultrafast_mode: false,
             auto_compact_percent: ofx_contract::AutoCompactPercent::new(80).unwrap(),
+            provider_routing: ofx_contract::ProviderRouting::default(),
         }
     }
 

@@ -110,6 +110,75 @@ fn ask_streams_a_gateway_reply_with_the_environment_key() {
     assert!(!stderr(&output).contains(API_KEY));
 }
 
+fn routed_ask(home: &Home, environment: &[(&str, &str)]) -> Value {
+    let server = FakeServer::start([reply("routed")]);
+    let url = chat_url(&server);
+    let mut variables = vec![
+        ("AI_GATEWAY_API_KEY", API_KEY),
+        ("OH_FX_E2E_GATEWAY_CHAT_URL", url.as_str()),
+    ];
+    variables.extend_from_slice(environment);
+    let output = home.run(&["ask", "--no-save", "hello"], &variables);
+    assert!(output.status.success(), "{}", stderr(&output));
+    only_request(&server).json()["providerOptions"]["gateway"].clone()
+}
+
+#[test]
+fn provider_routing_from_settings_the_project_and_the_environment_reaches_the_gateway() {
+    let home = Home::with_settings(&json!({
+        "provider_order": ["bedrock", "azure"],
+        "provider_strict": true,
+    }));
+    assert_eq!(
+        routed_ask(&home, &[]),
+        json!({"caching": "auto", "only": ["bedrock", "azure"]})
+    );
+    assert_eq!(
+        routed_ask(
+            &home,
+            &[
+                ("OH_FX_PROVIDER_ORDER", " vertex, azure "),
+                ("OH_FX_PROVIDER_STRICT", "off"),
+            ],
+        ),
+        json!({"caching": "auto", "order": ["vertex", "azure"]})
+    );
+    let trace = home.root.join("trace.log");
+    assert_eq!(
+        routed_ask(
+            &home,
+            &[
+                ("OH_FX_PROVIDER_ORDER", "Bad Slug"),
+                ("OH_FX_PROVIDER_STRICT", "sometimes"),
+                ("OH_FX_TRACE_LOG", trace.to_str().expect("a text path")),
+            ],
+        ),
+        json!({"caching": "auto", "only": ["bedrock", "azure"]})
+    );
+    let log = fs::read_to_string(&trace).expect("read the trace log");
+    for variable in ["OH_FX_PROVIDER_ORDER", "OH_FX_PROVIDER_STRICT"] {
+        assert!(
+            log.lines().any(|line| line.contains("[config]")
+                && line.ends_with(&format!("ignoring invalid {variable} value"))),
+            "{log}"
+        );
+    }
+    let project = Home::with_settings(&json!({}));
+    fs::write(
+        project.workspace.join(".oh-fx.json"),
+        json!({"provider_order": ["azure"]}).to_string(),
+    )
+    .expect("write the project file");
+    assert_eq!(
+        routed_ask(&project, &[]),
+        json!({"caching": "auto", "order": ["azure"]})
+    );
+    assert_eq!(
+        routed_ask(&project, &[("OH_FX_PROVIDER_STRICT", "1")]),
+        json!({"caching": "auto", "only": ["azure"]})
+    );
+}
+
 #[test]
 fn the_oidc_token_outranks_the_api_key_and_blank_values_do_not_count() {
     for (oidc, bearer) in [(OIDC_TOKEN, OIDC_TOKEN), (" \t", API_KEY)] {
