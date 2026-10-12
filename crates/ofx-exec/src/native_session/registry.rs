@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use ofx_contract::valid_session_id;
 use ofx_vt::Grid;
-use tokio::time::Instant;
+use rustix::process::Signal;
+use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
 use super::launch::{LaunchError, TerminalLaunch, launch_terminal};
@@ -16,7 +17,7 @@ use crate::shell_resolver::{ResolveError, configured_login_shell, resolve_termin
 use crate::terminal_contracts::{
     Action, ClosePolicy, Dimensions, Lifecycle, MAX_AUTHORITY_TEXT_BYTES, MAX_COMMAND_BYTES,
     MAX_WRITE_BYTES, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec, StructuredErrorCode,
-    TerminalFailure,
+    TerminalFailure, TerminalSignal,
 };
 use crate::terminal_store::{
     DurableTerminal, NewTerminal, StoreError, TerminalRecord, TerminalStore, now_ms,
@@ -28,6 +29,7 @@ const DEFAULT_DIMENSIONS: Dimensions = Dimensions {
 };
 const EXIT_GRACE: Duration = Duration::from_millis(500);
 const EXIT_JOIN: Duration = Duration::from_millis(500);
+const EXIT_POLL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone)]
 pub struct StartRequest<'a> {
@@ -73,6 +75,12 @@ pub struct InspectResult {
     pub shell: String,
     pub cwd: String,
     pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignalResult {
+    pub session: SessionFacts,
+    pub signal: TerminalSignal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +333,29 @@ impl Terminals {
             .collect())
     }
 
+    pub fn signal(
+        &self,
+        owner: &str,
+        session_id: &str,
+        signal: TerminalSignal,
+    ) -> Result<SignalResult, TerminalFailure> {
+        let failure = |code| TerminalFailure::new(Action::Signal, code, Some(session_id));
+        let session = self
+            .live(Action::Signal, owner, session_id)?
+            .ok_or_else(|| failure(StructuredErrorCode::SessionNotFound))?;
+        let raw = match signal {
+            TerminalSignal::Hangup => Signal::HUP,
+            TerminalSignal::Interrupt => Signal::INT,
+            TerminalSignal::Quit => Signal::QUIT,
+            TerminalSignal::Terminate => Signal::TERM,
+            TerminalSignal::Kill => Signal::KILL,
+        };
+        Ok(SignalResult {
+            session: session.signal(raw).map_err(failure)?,
+            signal,
+        })
+    }
+
     pub async fn close(
         &self,
         owner: &str,
@@ -356,6 +387,11 @@ impl Terminals {
             let deadline = Instant::now() + EXIT_GRACE;
             for session in &sessions {
                 session.settle_before(deadline).await;
+            }
+            while sessions.iter().any(|session| session.exit_tree_alive())
+                && Instant::now() < deadline
+            {
+                sleep(EXIT_POLL).await;
             }
             for session in &sessions {
                 session.kill_for_exit();

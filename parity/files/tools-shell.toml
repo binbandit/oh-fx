@@ -7,8 +7,8 @@ note = "Browser-host completion-only shell adapter; the native product does not 
 [[file]]
 upstream = "src/tools/shell/process_provider.zig"
 status = "partial"
-modules = ["crates/ofx-exec/src/managed_execution.rs"]
-note = "Managed process handles exist; provider-bound process-instance token capture/matching and unavailable-provider contract are absent."
+modules = ["crates/ofx-exec/src/managed_execution.rs", "crates/ofx-exec/src/native_session/processes.rs", "crates/ofx-exec/src/process_tree.rs"]
+note = "Managed process handles exist. Linux process-instance token capture and matching exist for the terminal sessions' shells; the injected provider contract, macOS tokens and the recovered-process signalling that needs saved tokens are absent."
 
 [[file]]
 upstream = "src/tools/shell/shell.zig"
