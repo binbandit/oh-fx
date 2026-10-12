@@ -77,35 +77,47 @@ fn reload_feedback_follows_upstreams_menu_wording() {
     };
     assert_eq!(
         reload_feedback(published(&[], true)),
-        Some((true, "MCP configuration reloaded.".to_owned()))
+        Some((
+            McpMenuOutcome::Succeeded,
+            "MCP configuration reloaded.".to_owned()
+        ))
     );
     assert_eq!(
         reload_feedback(published(&["alpha"], false)),
-        Some((true, "MCP reloaded with 1 unavailable server.".to_owned()))
+        Some((
+            McpMenuOutcome::Succeeded,
+            "MCP reloaded with 1 unavailable server.".to_owned()
+        ))
     );
     assert_eq!(
         reload_feedback(published(&["alpha", "beta"], false)),
-        Some((true, "MCP reloaded with 2 unavailable servers.".to_owned()))
+        Some((
+            McpMenuOutcome::Succeeded,
+            "MCP reloaded with 2 unavailable servers.".to_owned()
+        ))
     );
     assert_eq!(
         reload_feedback(Ok(ReloadOutcome::RetainedRequiredFailure(
             "boom".to_owned()
         ))),
         Some((
-            false,
+            McpMenuOutcome::Failed,
             "MCP reload failed; the previous runtime remains active.".to_owned()
         ))
     );
     assert_eq!(
         reload_feedback(Err(ReloadFailure::AuthorityReduced)),
         Some((
-            false,
+            McpMenuOutcome::Failed,
             "MCP reload failed: McpAuthorityReducedReloadFailed".to_owned()
         ))
     );
     assert_eq!(
         reload_feedback(Err(ReloadFailure::Failed("LockBusy".to_owned()))),
-        Some((false, "MCP reload failed: LockBusy".to_owned()))
+        Some((
+            McpMenuOutcome::Failed,
+            "MCP reload failed: LockBusy".to_owned()
+        ))
     );
     assert_eq!(reload_feedback(Err(ReloadFailure::Cancelled)), None);
 }
@@ -116,19 +128,22 @@ fn authentication_feedback_follows_upstreams_menu_wording() {
         |repaired_entries| Ok(AuthenticationOutcome::Authenticated { repaired_entries });
     assert_eq!(
         authentication_feedback("docs", authenticated(0), None),
-        (true, "Authenticated MCP server 'docs'.".to_owned())
+        (
+            McpMenuOutcome::Succeeded,
+            "Authenticated MCP server 'docs'.".to_owned()
+        )
     );
     assert_eq!(
         authentication_feedback("docs", authenticated(3), None),
         (
-            true,
+            McpMenuOutcome::Succeeded,
             "Authenticated 'docs'; repaired 3 credential entries.".to_owned()
         )
     );
     assert_eq!(
         authentication_feedback("docs", authenticated(0), Some(McpError::McpConnectionClosed)),
         (
-            false,
+            McpMenuOutcome::Failed,
             "Authenticated MCP server 'docs'. Connection failed: McpConnectionClosed. Check /mcp list."
                 .to_owned()
         )
@@ -145,14 +160,14 @@ fn authentication_feedback_follows_upstreams_menu_wording() {
             None
         ),
         (
-            false,
+            McpMenuOutcome::Failed,
             "MCP authentication for 'docs' rejected an issuer mismatch.".to_owned()
         )
     );
     assert_eq!(
         authentication_feedback("docs", Err(McpError::McpAuthorizationCallbackTimedOut), None),
         (
-            false,
+            McpMenuOutcome::Failed,
             "MCP authentication for 'docs' failed: Authorization timed out. Run the connection command again and finish authorization in your browser while oh-fx stays open".to_owned()
         )
     );
@@ -186,7 +201,7 @@ async fn a_menu_reload_settles_its_own_generation_with_the_new_servers() {
         settled,
         McpMenuSettled {
             generation: 7,
-            succeeded: true,
+            outcome: McpMenuOutcome::Succeeded,
             feedback: "MCP configuration reloaded.".to_owned(),
         }
     );
@@ -210,7 +225,7 @@ async fn a_refused_menu_sign_in_settles_as_a_failed_operation() {
         refused,
         McpMenuSettled {
             generation: 3,
-            succeeded: false,
+            outcome: McpMenuOutcome::Failed,
             feedback: "MCP operation failed: McpServerNotFound".to_owned(),
         }
     );
@@ -228,7 +243,7 @@ async fn a_refused_menu_sign_in_settles_as_a_failed_operation() {
         busy,
         McpMenuSettled {
             generation: 4,
-            succeeded: false,
+            outcome: McpMenuOutcome::Failed,
             feedback: "MCP operation failed: McpAuthenticationBusy".to_owned(),
         }
     );

@@ -191,3 +191,114 @@ fn back_leaves_a_screen_and_closes_from_the_server_list() {
     assert_eq!(state.load_state, LoadState::Cancelled);
     assert_eq!(state.apply(Event::Back), Some(Effect::Close));
 }
+
+#[test]
+fn destructive_actions_require_a_matching_confirmation() {
+    let mut state = McpMenuState::open(1);
+    assert_eq!(state.apply(Event::RequestAction(Action::Remove)), None);
+    state.apply(Event::ShowConfirmation(Action::Remove));
+    assert_eq!(state.screen, Screen::Confirm);
+    assert_eq!(state.apply(Event::RequestAction(Action::Logout)), None);
+    assert_eq!(
+        state.apply(Event::RequestAction(Action::Remove)),
+        Some(Effect::Action {
+            generation: 1,
+            action: Action::Remove
+        })
+    );
+    state.apply(Event::ActionSucceeded(1));
+    assert_eq!(state.confirmation_action, None);
+    for action in [
+        Action::Logout,
+        Action::TrustReject,
+        Action::TrustApproveAll,
+        Action::TrustReset,
+    ] {
+        assert_eq!(
+            McpMenuState::open(1).apply(Event::RequestAction(action)),
+            None
+        );
+    }
+    for action in [Action::TrustApprove, Action::AddLocal, Action::AddHttp] {
+        assert!(
+            McpMenuState::open(1)
+                .apply(Event::RequestAction(action))
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn add_form_transport_and_field_movement_are_pure_and_bounded() {
+    let mut state = McpMenuState::open(0);
+    state.apply(Event::CycleAddTransport);
+    assert_eq!(state.add_transport, McpMenuAddTransport::Local);
+    state.apply(Event::ShowAdd);
+    assert_eq!(state.screen, Screen::Add);
+    assert_eq!(state.add_transport, McpMenuAddTransport::Local);
+    state.apply(Event::CycleAddTransport);
+    assert_eq!(state.add_transport, McpMenuAddTransport::Http);
+    state.apply(Event::MoveAddField {
+        delta: -1,
+        field_count: 2,
+    });
+    assert_eq!(state.add_field_index, 1);
+    state.apply(Event::MoveAddField {
+        delta: 1,
+        field_count: 2,
+    });
+    assert_eq!(state.add_field_index, 0);
+    state.apply(Event::MoveAddField {
+        delta: 1,
+        field_count: 0,
+    });
+    assert_eq!(state.add_field_index, 0);
+    state.apply(Event::MoveAddField {
+        delta: 1,
+        field_count: 3,
+    });
+    state.apply(Event::CycleAddTransport);
+    assert_eq!(state.add_field_index, 0);
+}
+
+#[test]
+fn server_changes_follow_upstreams_availability() {
+    let mut fixture = server("fixture");
+    assert!(server_action_available(Action::Remove, &fixture));
+    assert!(!server_action_available(Action::Logout, &fixture));
+    fixture.authentication = McpMenuAuthentication::Authenticated;
+    assert!(server_action_available(Action::Logout, &fixture));
+    fixture.transport = McpMenuTransport::Sse;
+    assert!(!server_action_available(Action::Logout, &fixture));
+    assert!(!server_action_available(Action::TrustApprove, &fixture));
+    assert!(!server_action_available(Action::TrustReject, &fixture));
+    fixture.source = McpMenuSource::Project;
+    assert!(!server_action_available(Action::Remove, &fixture));
+    assert!(server_action_available(Action::TrustReject, &fixture));
+    fixture.admission = Some(McpMenuAdmission::Pending);
+    assert!(server_action_available(Action::TrustApprove, &fixture));
+    assert!(server_action_available(Action::TrustReject, &fixture));
+    fixture.admission = Some(McpMenuAdmission::Rejected);
+    assert!(!server_action_available(Action::TrustApprove, &fixture));
+    assert!(!server_action_available(Action::TrustReject, &fixture));
+    for action in [
+        Action::TrustApproveAll,
+        Action::TrustReset,
+        Action::AddLocal,
+        Action::AddHttp,
+    ] {
+        assert!(server_action_available(action, &fixture));
+    }
+}
+
+#[test]
+fn returning_to_servers_keeps_the_selected_server_and_drops_the_confirmation() {
+    let mut state = McpMenuState::open(3);
+    state.apply(moved(1, 3, 3));
+    state.apply(Event::ShowConfirmation(Action::Remove));
+    state.return_to_servers();
+    assert_eq!(state.screen, Screen::Browse);
+    assert_eq!(state.selected_index, 1);
+    assert_eq!(state.window_start, 0);
+    assert_eq!(state.confirmation_action, None);
+}

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use ofx_contract::{McpMenuRequest, McpMenuSettled, McpMenuSnapshot, UiEvent};
+use ofx_contract::{McpMenuOutcome, McpMenuRequest, McpMenuSettled, McpMenuSnapshot, UiEvent};
 use ofx_mcp::{
     AuthenticationOutcome, McpError, McpRuntime, ReloadOutcome, authentication_error_message,
 };
 
-use super::{AuthenticationRefusal, McpHost, ReloadFailure, reload};
+use super::{AuthenticationRefusal, McpHost, ReloadFailure, Settle};
 
 const RELOADED: &str = "MCP configuration reloaded.";
 const RETAINED: &str = "MCP reload failed; the previous runtime remains active.";
@@ -26,7 +26,27 @@ impl McpHost {
             McpMenuRequest::Authenticate { generation, server } => {
                 self.begin_menu_authentication(generation, &server);
             }
+            McpMenuRequest::Logout { generation, server } => {
+                self.begin_menu_logout(generation, server);
+            }
+            McpMenuRequest::Add { generation, form } => self.add_from_menu(generation, &form),
+            McpMenuRequest::Remove { generation, server } => {
+                self.remove_from_menu(generation, &server);
+            }
+            McpMenuRequest::Trust { generation, change } => {
+                self.trust_from_menu(generation, change);
+            }
         }
+    }
+
+    fn settle_menu(&self, generation: u64, outcome: McpMenuOutcome, feedback: String) {
+        (self.emit)(settled(
+            &self.runtime,
+            self.profile_config(),
+            generation,
+            outcome,
+            feedback,
+        ));
     }
 
     fn profile_config(&self) -> Option<String> {
@@ -35,27 +55,25 @@ impl McpHost {
             .map(|path| path.display().to_string())
     }
 
-    fn begin_menu_reload(&self, generation: u64) {
-        self.discard_authentication("reload");
+    pub(super) fn begin_menu_reload(&self, generation: u64) {
+        self.reload_with(self.menu_settle(generation));
+    }
+
+    pub(super) fn menu_settle(&self, generation: u64) -> Settle {
         let runtime = Arc::clone(&self.runtime);
-        let sources = self.sources.clone();
-        let reported = Arc::clone(&self.runtime);
         let profile = self.profile_config();
-        self.replace_pending(
-            |cancel| async move { reload(&runtime, &sources, &cancel).await },
-            move |result| {
-                let (succeeded, feedback) = reload_feedback(result)?;
-                Some(settled(&reported, profile, generation, succeeded, feedback))
-            },
-        );
+        Box::new(move |result| {
+            let (outcome, feedback) = reload_feedback(result)?;
+            Some(settled(&runtime, profile, generation, outcome, feedback))
+        })
     }
 
     fn begin_menu_authentication(&self, generation: u64, server: &str) {
         let runtime = Arc::clone(&self.runtime);
         let profile = self.profile_config();
         let started = self.start_authentication(server, move |name, result, reconnect| {
-            let (succeeded, feedback) = authentication_feedback(name, result, reconnect);
-            settled(&runtime, profile, generation, succeeded, feedback)
+            let (outcome, feedback) = authentication_feedback(name, result, reconnect);
+            settled(&runtime, profile, generation, outcome, feedback)
         });
         let Err(refusal) = started else {
             return;
@@ -64,13 +82,11 @@ impl McpHost {
             AuthenticationRefusal::Busy => AUTHENTICATION_BUSY.to_owned(),
             AuthenticationRefusal::Invalid(error) => error.to_string(),
         };
-        (self.emit)(settled(
-            &self.runtime,
-            self.profile_config(),
+        self.settle_menu(
             generation,
-            false,
+            McpMenuOutcome::Failed,
             format!("MCP operation failed: {error}"),
-        ));
+        );
     }
 }
 
@@ -81,42 +97,52 @@ fn snapshot(runtime: &McpRuntime, profile_config: Option<String>) -> McpMenuSnap
     }
 }
 
-fn settled(
+pub(super) fn settled(
     runtime: &McpRuntime,
     profile_config: Option<String>,
     generation: u64,
-    succeeded: bool,
+    outcome: McpMenuOutcome,
     feedback: String,
 ) -> UiEvent {
     UiEvent::McpMenuSettled {
         settled: McpMenuSettled {
             generation,
-            succeeded,
+            outcome,
             feedback,
         },
         snapshot: snapshot(runtime, profile_config),
     }
 }
 
-fn reload_feedback(result: Result<ReloadOutcome, ReloadFailure>) -> Option<(bool, String)> {
+pub(super) fn reload_feedback(
+    result: Result<ReloadOutcome, ReloadFailure>,
+) -> Option<(McpMenuOutcome, String)> {
     Some(match result {
-        Ok(ReloadOutcome::Published { healthy: true, .. }) => (true, RELOADED.to_owned()),
+        Ok(ReloadOutcome::Published { healthy: true, .. }) => {
+            (McpMenuOutcome::Succeeded, RELOADED.to_owned())
+        }
         Ok(ReloadOutcome::Published { unavailable, .. }) => {
             let plural = if unavailable.len() == 1 { "" } else { "s" };
             (
-                true,
+                McpMenuOutcome::Succeeded,
                 format!(
                     "MCP reloaded with {} unavailable server{plural}.",
                     unavailable.len()
                 ),
             )
         }
-        Ok(ReloadOutcome::RetainedRequiredFailure(_)) => (false, RETAINED.to_owned()),
-        Err(ReloadFailure::Cancelled) => return None,
-        Err(ReloadFailure::AuthorityReduced) => {
-            (false, format!("MCP reload failed: {AUTHORITY_REDUCED}"))
+        Ok(ReloadOutcome::RetainedRequiredFailure(_)) => {
+            (McpMenuOutcome::Failed, RETAINED.to_owned())
         }
-        Err(ReloadFailure::Failed(error)) => (false, format!("MCP reload failed: {error}")),
+        Err(ReloadFailure::Cancelled) => return None,
+        Err(ReloadFailure::AuthorityReduced) => (
+            McpMenuOutcome::Failed,
+            format!("MCP reload failed: {AUTHORITY_REDUCED}"),
+        ),
+        Err(ReloadFailure::Failed(error)) => (
+            McpMenuOutcome::Failed,
+            format!("MCP reload failed: {error}"),
+        ),
     })
 }
 
@@ -124,7 +150,7 @@ fn authentication_feedback(
     name: &str,
     result: Result<AuthenticationOutcome, McpError>,
     reconnect: Option<McpError>,
-) -> (bool, String) {
+) -> (McpMenuOutcome, String) {
     match result {
         Ok(AuthenticationOutcome::Authenticated { repaired_entries }) => {
             let authenticated = if repaired_entries == 0 {
@@ -134,18 +160,18 @@ fn authentication_feedback(
             };
             match reconnect {
                 Some(error) => (
-                    false,
+                    McpMenuOutcome::Failed,
                     format!("{authenticated} Connection failed: {error}. Check /mcp list."),
                 ),
-                None => (true, authenticated),
+                None => (McpMenuOutcome::Succeeded, authenticated),
             }
         }
         Ok(AuthenticationOutcome::IssuerMismatch(_)) => (
-            false,
+            McpMenuOutcome::Failed,
             format!("MCP authentication for '{name}' rejected an issuer mismatch."),
         ),
         Err(error) => (
-            false,
+            McpMenuOutcome::Failed,
             format!(
                 "MCP authentication for '{name}' failed: {}",
                 authentication_error_message(&error)
@@ -153,6 +179,8 @@ fn authentication_feedback(
         ),
     }
 }
+
+mod changes;
 
 #[cfg(test)]
 mod tests;

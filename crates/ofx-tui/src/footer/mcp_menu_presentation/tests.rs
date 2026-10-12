@@ -41,13 +41,14 @@ fn snapshot(servers: Vec<McpMenuServer>) -> McpMenuSnapshot {
 }
 
 fn frame(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize, budget: usize) -> String {
-    frame_with(state, snapshot, None, width, budget)
+    frame_with(state, snapshot, None, AddFields::default(), width, budget)
 }
 
 fn frame_with(
     state: &McpMenuState,
     snapshot: &McpMenuSnapshot,
     feedback: Option<&str>,
+    add: AddFields<'_>,
     width: usize,
     budget: usize,
 ) -> String {
@@ -55,6 +56,7 @@ fn frame_with(
         state,
         snapshot,
         feedback,
+        add,
     };
     let rows = mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget));
     rows.iter()
@@ -75,6 +77,7 @@ fn hint(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize) -> Strin
         state,
         snapshot,
         feedback: None,
+        add: AddFields::default(),
     };
     mcp_menu_hint_row(&theme(), view, width, false).text()
 }
@@ -87,6 +90,7 @@ fn the_empty_server_state_is_compact_and_actionable() {
         state: &state,
         snapshot: &empty,
         feedback: None,
+        add: AddFields::default(),
     };
     assert_eq!(menu_row_count(view, 20), 3);
     let rows = frame(&state, &empty, 100, 20);
@@ -146,6 +150,7 @@ fn the_selection_stays_visible_with_one_body_row() {
         state: &state,
         snapshot: &servers,
         feedback: None,
+        add: AddFields::default(),
     };
     assert_eq!(menu_row_count(view, 3), 3);
     let rows = frame(&state, &servers, 40, 3);
@@ -261,8 +266,10 @@ fn the_details_and_help_screens_render_their_upstream_facts() {
     for line in [
         "  Profile config      ~/.config/oh-fx/mcp.json",
         "  Project config      <workspace>/.mcp.json",
-        "  servers: r reload · enter inspect",
-        "  details: enter sign in",
+        "  servers: a add · r reload · enter inspect",
+        "  project trust: p approve all · z reset",
+        "  details: enter sign in · l logout · d remove",
+        "  project details: a approve · x reject",
     ] {
         assert!(info.contains(line), "{line:?} in {info}");
     }
@@ -276,6 +283,7 @@ fn feedback_takes_the_second_header_row_and_warns_after_a_failure() {
         &state,
         &servers,
         Some("MCP configuration reloaded."),
+        AddFields::default(),
         80,
         12,
     );
@@ -286,6 +294,7 @@ fn feedback_takes_the_second_header_row_and_warns_after_a_failure() {
             state,
             snapshot: &servers,
             feedback: failure,
+            add: AddFields::default(),
         };
         mcp_menu_rows(&theme(), view, 80, 3)[1].segments()[1].paint
     };
@@ -308,20 +317,35 @@ fn hints_fit_the_width_and_name_only_available_actions() {
     let servers = snapshot(vec![remote]);
     assert_eq!(
         hint(&state, &servers, 100),
-        "↑↓ move  enter inspect  r reload  c help  esc close"
+        "↑↓ move  enter inspect  a add  r reload  c help  esc close"
     );
     assert_eq!(
-        hint(&state, &servers, 40),
-        "↑↓ move  enter  r reload  c help  esc"
+        hint(&state, &servers, 48),
+        "↑↓ move  enter  a add  r reload  c help  esc"
     );
-    assert_eq!(hint(&state, &servers, 20), "enter r c esc");
+    assert_eq!(hint(&state, &servers, 20), "enter a r c esc");
     state.apply(Event::ShowDetails);
     assert_eq!(
         hint(&state, &servers, 100),
-        "enter sign in  c help  esc back"
+        "enter sign in  d remove  c help  esc back"
     );
-    let signed_in = snapshot(vec![ready("local")]);
-    assert_eq!(hint(&state, &signed_in, 100), "c help  esc back");
+    let signed_in = snapshot(vec![McpMenuServer {
+        transport: McpMenuTransport::Http,
+        ..ready("signed")
+    }]);
+    assert_eq!(
+        hint(&state, &signed_in, 100),
+        "d remove  l logout  c help  esc back"
+    );
+    let project = snapshot(vec![McpMenuServer {
+        source: McpMenuSource::Project,
+        admission: Some(McpMenuAdmission::Pending),
+        ..ready("project")
+    }]);
+    assert_eq!(
+        hint(&state, &project, 100),
+        "a approve  x reject  c help  esc back"
+    );
     assert_eq!(hint(&state, &servers, 20), "c help  esc back");
     assert_eq!(hint(&state, &servers, 10), "c esc");
     state.apply(Event::ShowInfo);
@@ -330,9 +354,100 @@ fn hints_fit_the_width_and_name_only_available_actions() {
         state: &state,
         snapshot: &servers,
         feedback: None,
+        add: AddFields::default(),
     };
     assert_eq!(
         mcp_menu_hint_row(&theme(), view, 100, true).text(),
         "press ctrl+c again to exit"
     );
+}
+
+#[test]
+fn the_add_form_shows_its_transport_fields_and_the_draft() {
+    let mut state = McpMenuState::open(0);
+    state.apply(Event::ShowAdd);
+    let empty = snapshot(Vec::new());
+    let add = AddFields {
+        name: "",
+        target: "/usr/bin/env",
+        arguments: "node fixture.mjs",
+        draft: "fixture",
+    };
+    let local = frame_with(&state, &empty, None, add, 100, MAX_INLINE_ROWS);
+    for line in [
+        "  Transport           Local",
+        "  > Name              fixture",
+        "  Command             /usr/bin/env",
+        "  Arguments           node fixture.mjs",
+        "  Scope               Profile",
+    ] {
+        assert!(local.contains(line), "{line:?} in {local}");
+    }
+    assert_eq!(
+        hint(&state, &empty, 100),
+        "type field     enter next/save     tab transport     esc cancel"
+    );
+    state.apply(Event::CycleAddTransport);
+    state.apply(Event::MoveAddField {
+        delta: 1,
+        field_count: 2,
+    });
+    let http = frame_with(
+        &state,
+        &empty,
+        None,
+        AddFields {
+            name: "remote",
+            target: "",
+            arguments: "",
+            draft: "https://mcp.example/mcp",
+        },
+        100,
+        MAX_INLINE_ROWS,
+    );
+    for line in [
+        "  Transport           HTTP",
+        "  Name                remote",
+        "  > URL               https://mcp.example/mcp",
+        "  Scope               Profile",
+    ] {
+        assert!(http.contains(line), "{line:?} in {http}");
+    }
+    assert!(!http.contains("Arguments"), "{http}");
+    assert_eq!(http.lines().count(), 6);
+}
+
+#[test]
+fn a_confirmation_names_the_destructive_action() {
+    let servers = snapshot(vec![ready("fixture")]);
+    for (action, text) in [
+        (
+            Action::Remove,
+            "Remove this profile MCP server? press enter to confirm.",
+        ),
+        (
+            Action::Logout,
+            "Log out of this MCP server? press enter to confirm.",
+        ),
+        (
+            Action::TrustReject,
+            "Reject this project MCP server? press enter to confirm.",
+        ),
+        (
+            Action::TrustApproveAll,
+            "Approve all pending project MCP servers? press enter to confirm.",
+        ),
+        (
+            Action::TrustReset,
+            "Reset all project MCP choices? press enter to confirm.",
+        ),
+    ] {
+        let mut state = McpMenuState::open(1);
+        state.apply(Event::ShowConfirmation(action));
+        let shown = frame(&state, &servers, 100, MAX_INLINE_ROWS);
+        assert_eq!(shown.lines().nth(2), Some(text), "{shown}");
+        assert_eq!(shown.lines().count(), 3);
+        assert_eq!(hint(&state, &servers, 100), "enter confirm     esc cancel");
+        assert_eq!(hint(&state, &servers, 20), "enter confirm  esc");
+    }
 }

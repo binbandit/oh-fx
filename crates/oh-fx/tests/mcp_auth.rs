@@ -827,7 +827,7 @@ fn the_mcp_menu_signs_in_a_server_from_its_details() {
         &server_row("fixture", "Needs authentication", "HTTP · Profile"),
     );
     session.send(b"\r");
-    shown(&session, "enter sign in  c help  esc back");
+    shown(&session, "enter sign in  d remove  c help  esc back");
     shown(
         &session,
         "  Error               Authentication is required or the saved credentials lack access",
@@ -846,7 +846,7 @@ fn the_mcp_menu_signs_in_a_server_from_its_details() {
     assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
     shown(&session, "  Authenticated MCP server 'fixture'.");
     shown(&session, "  State               Ready");
-    shown(&session, "c help  esc back");
+    shown(&session, "d remove  l logout  c help  esc back");
     let screen = session.screen();
     assert!(!screen.contains("enter sign in"), "{screen}");
     assert!(
@@ -856,9 +856,6 @@ fn the_mcp_menu_signs_in_a_server_from_its_details() {
     for secret in [ACCESS, REFRESH, "browser-code", "authorize?"] {
         assert!(!screen.contains(secret), "{screen}");
     }
-    session.send(b"\x1b");
-    shown(&session, MENU_HINT);
-    close_menu(&session);
     assert!(
         authority
             .mcp_authorizations()
@@ -866,6 +863,27 @@ fn the_mcp_menu_signs_in_a_server_from_its_details() {
             .any(|bearer| bearer.as_deref() == Some(format!("Bearer {ACCESS}").as_str()))
     );
     assert_eq!(mode(&home.store()), 0o600);
+    session.send(b"l");
+    shown(
+        &session,
+        "Log out of this MCP server? press enter to confirm.",
+    );
+    session.send(b"\r");
+    shown(
+        &session,
+        "  Logged out of MCP server 'fixture'. Run /mcp auth fixture --open to sign in again.",
+    );
+    shown(
+        &session,
+        &server_row("fixture", "Disconnected", "HTTP · Profile"),
+    );
+    assert!(!home.store().exists());
+    assert_eq!(authority.revocations().len(), 2);
+    let screen = session.screen();
+    for secret in [ACCESS, REFRESH] {
+        assert!(!screen.contains(secret), "{screen}");
+    }
+    close_menu(&session);
 }
 
 fn logout(home: &Home) -> std::process::Output {
@@ -1079,7 +1097,7 @@ fn mcp_logout_in_the_shell_disconnects_until_auth_signs_in_again() {
         &server_row("fixture", "Disconnected", "HTTP · Profile"),
     );
     session.send(b"\r");
-    shown(&session, "enter sign in  c help  esc back");
+    shown(&session, "enter sign in  d remove  c help  esc back");
     session.send(b"\x1b");
     shown(&session, MENU_HINT);
     close_menu(&session);

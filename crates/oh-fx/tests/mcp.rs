@@ -1088,7 +1088,7 @@ fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
     let screen = menu_shows(&session, b"/mcp\r", std::slice::from_ref(&fixture_row));
     assert!(screen.contains("MCP 1  [Servers]"), "{screen}");
     assert!(
-        screen.contains("↑↓ move  enter inspect  r reload  c help  esc close"),
+        screen.contains("↑↓ move  enter inspect  a add  r reload  c help  esc close"),
         "{screen}"
     );
     let profile = home.root.join("config/oh-fx/mcp.json");
@@ -1104,7 +1104,7 @@ fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
         ],
     );
     session.send(b"c");
-    shown(&session, "  servers: r reload · enter inspect");
+    shown(&session, "  servers: a add · r reload · enter inspect");
     session.send(b"\x1b");
     shown(&session, MENU_HINT);
     close_menu(&session);
@@ -1409,4 +1409,81 @@ fn mcp_list_shows_configured_servers_and_connects_them_only_when_asked() {
         "{}",
         stderr(&usage)
     );
+}
+
+#[test]
+fn the_mcp_menu_adds_removes_and_trusts_servers() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let script = home.script("fixture.sh", FIXTURE_SERVER);
+    fs::write(
+        home.workspace.join(".mcp.json"),
+        json!({"mcpServers": {"docs": {"command": "/bin/sh", "args": [&script]}}}).to_string(),
+    )
+    .expect("write .mcp.json");
+    let session = home.shell();
+    let pending = server_row("docs", "Pending trust", "stdio · Project");
+    menu_shows(&session, b"/mcp\r", &[pending]);
+    session.send(b"a");
+    shown(&session, "> Name");
+    session.send(b"fixture\r");
+    shown(&session, "> Command");
+    session.send(b"/bin/sh\r");
+    shown(&session, "> Arguments");
+    session.send(script.display().to_string().as_bytes());
+    session.send(b"\r");
+    let added = server_row("fixture", "Ready", "stdio · Profile");
+    menu_shows(&session, b"", std::slice::from_ref(&added));
+    let profile: Value = serde_json::from_str(
+        &fs::read_to_string(home.root.join("config/oh-fx/mcp.json")).expect("read mcp.json"),
+    )
+    .expect("mcp.json is JSON");
+    assert_eq!(
+        profile["mcp"]["fixture"]["command"],
+        json!(["/bin/sh", script.display().to_string()])
+    );
+    session.send(b"\r");
+    shown(&session, "  Server              docs");
+    session.send(b"a");
+    menu_shows(
+        &session,
+        b"",
+        &[server_row("docs", "Ready", "stdio · Project")],
+    );
+    session.send(b"\x1b[A\r");
+    shown(&session, "  Server              fixture");
+    session.send(b"d");
+    shown(
+        &session,
+        "Remove this profile MCP server? press enter to confirm.",
+    );
+    session.send(b"\r");
+    session
+        .wait_for(SHELL_WAIT, |screen| {
+            screen.contains("MCP 1  [Servers]") && !screen.contains(&added)
+        })
+        .unwrap_or_else(|screen| panic!("the removed server stayed listed:\n{screen}"));
+    session.send(b"\r");
+    session.send(b"x");
+    shown(
+        &session,
+        "Reject this project MCP server? press enter to confirm.",
+    );
+    session.send(b"\r");
+    menu_shows(
+        &session,
+        b"",
+        &[server_row("docs", "Disabled", "stdio · Project")],
+    );
+    close_menu(&session);
+    let settings: Value = serde_json::from_str(
+        &fs::read_to_string(home.root.join("config/oh-fx/settings.json")).expect("read settings"),
+    )
+    .expect("settings are JSON");
+    let workspace = fs::canonicalize(&home.workspace).expect("canonical workspace");
+    assert_eq!(
+        settings["workspaces"][workspace.to_string_lossy().as_ref()]["disabledMcpjsonServers"],
+        json!(["docs"])
+    );
+    exit(session);
 }
