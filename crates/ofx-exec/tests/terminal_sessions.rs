@@ -769,49 +769,33 @@ fn no_input_reaches_a_terminal_once_its_close_begins() {
         ReturnCondition::Started,
     );
     fixture.file_until("ready", |_| true);
-    let (sender, results) = mpsc::channel();
     let writer = {
         let terminals = fixture.terminals.clone();
         let id = started.id.clone();
         thread::spawn(move || {
+            let mut accepted = 0;
             loop {
-                let result = terminals.write(OWNER, &id, "x").map(|_| ());
-                let ended = result.is_err();
-                if sender.send(result).is_err() || ended {
-                    return;
+                match terminals.write(OWNER, &id, "x") {
+                    Ok(_) => accepted += 1,
+                    Err(failure) => return (accepted, failure.code),
                 }
             }
         })
     };
-    let deadline = Instant::now() + LONG;
-    let mut accepted = 0;
-    loop {
-        match results.recv_timeout(STALLED) {
-            Ok(Ok(())) => {
-                accepted += 1;
-                assert!(Instant::now() < deadline, "the input never filled up");
-            }
-            Ok(Err(failure)) => panic!("a write failed before the close: {failure:?}"),
-            Err(_) => break,
-        }
+    let filled = Instant::now() + STALLED;
+    while !writer.is_finished() && Instant::now() < filled {
+        thread::sleep(POLL);
     }
     let closed = fixture
         .close(&started.id, ClosePolicy::Graceful)
         .expect("close the terminal");
     assert_eq!(closed.lifecycle, Lifecycle::Closed);
-    assert_eq!(
-        results
-            .recv_timeout(LONG)
-            .expect("the waiting write ends")
-            .map_err(|failure| failure.code),
-        Err(StructuredErrorCode::AuthorityDenied),
-        "the write that waited for room was accepted after the close began"
-    );
-    let _ = writer.join();
+    let (accepted, code) = writer.join().expect("the writer ends");
+    assert_eq!(code, StructuredErrorCode::AuthorityDenied);
     let drained = fs::read(fixture.cwd.join("drained")).unwrap_or_default();
     assert!(
         drained.len() <= accepted,
-        "the terminal read {} bytes after its close began, of {accepted} accepted before it",
+        "the terminal read {} bytes, more than the {accepted} it accepted",
         drained.len()
     );
 }

@@ -699,3 +699,73 @@ impl Drop for Launcher {
         let _ = self.0.wait();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{ErrorKind, Read};
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+
+    use super::*;
+    use crate::terminal_contracts::Dimensions;
+    use crate::terminal_store::{NewTerminal, TerminalStore};
+
+    fn running(directory: &Path) -> (Session, UnixStream) {
+        let durable = TerminalStore::new(directory)
+            .unwrap()
+            .create(
+                &NewTerminal {
+                    owner_session_id: "owner-session",
+                    shell: "/bin/bash",
+                    cwd: "/",
+                    command: "true",
+                    timeout_ms: None,
+                    dimensions: Dimensions {
+                        rows: 24,
+                        columns: 80,
+                    },
+                },
+                0,
+            )
+            .unwrap();
+        let session = Session::new(durable, None);
+        let (master, terminal) = UnixStream::pair().unwrap();
+        terminal.set_nonblocking(true).unwrap();
+        {
+            let mut state = session.lock();
+            state.lifecycle = Lifecycle::Running;
+            state.master = Some(Arc::new(OwnedFd::from(master)));
+        }
+        (session, terminal)
+    }
+
+    fn received(terminal: &mut UnixStream) -> Vec<u8> {
+        let mut bytes = vec![0; 16];
+        match terminal.read(&mut bytes) {
+            Ok(count) => bytes[..count].to_vec(),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Vec::new(),
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn a_running_terminal_takes_input_until_its_close_begins() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, mut terminal) = running(directory.path());
+        assert_eq!(session.write(b"ok"), Ok(2));
+        assert_eq!(received(&mut terminal), b"ok");
+        session.lock().close_committed = true;
+        assert_eq!(
+            session.write(b"late"),
+            Err(StructuredErrorCode::AuthorityDenied)
+        );
+        assert_eq!(received(&mut terminal), b"");
+        session.lock().lifecycle = Lifecycle::Exited;
+        session.lock().close_committed = false;
+        assert_eq!(
+            session.write(b"late"),
+            Err(StructuredErrorCode::InvalidLifecycle)
+        );
+        assert_eq!(received(&mut terminal), b"");
+    }
+}
