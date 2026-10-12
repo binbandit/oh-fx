@@ -358,3 +358,60 @@ async fn an_outage_after_a_tool_start_keeps_the_fast_route() {
     assert_eq!(report.final_text, "done");
     assert_eq!(sent_options(&provider), [(None, true), (None, true)]);
 }
+
+fn ultra_capable() -> CapabilityLookup {
+    CapabilityLookup::Resolved(ModelCapabilities {
+        supports_fast_mode: true,
+        supports_ultrafast_mode: true,
+        ..ModelCapabilities::default()
+    })
+}
+
+fn requesting_ultra(model: &str) -> AgentConfig {
+    AgentConfig {
+        model: model.to_owned(),
+        fast_mode: true,
+        ultrafast_mode: true,
+        ..config()
+    }
+}
+
+#[tokio::test]
+async fn ultra_mode_reaches_every_request_for_a_verified_openai_model() {
+    let provider = FakeProvider::new(vec![tool_reply(&[("call-1", "{}")]), text_reply("done")]);
+    let resolver = FakeResolver::new(vec![ultra_capable()]);
+    let mut agent = agent_with(
+        &provider,
+        Some(&resolver),
+        requesting_ultra("openai/gpt-6-astra"),
+    );
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.outcome, TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        assert!(request.ultrafast && !request.fast);
+    }
+}
+
+#[tokio::test]
+async fn an_ultra_request_the_model_cannot_take_fails_before_anything_is_sent() {
+    for (model, lookup) in [
+        ("vendor/model", ultra_capable()),
+        ("openai/gpt-6-astra", supporting(&[], true)),
+        ("openai/gpt-6-astra", CapabilityLookup::CatalogUnavailable),
+    ] {
+        let provider = FakeProvider::new(vec![text_reply("never")]);
+        let resolver = FakeResolver::new(vec![lookup]);
+        let mut agent = agent_with(&provider, Some(&resolver), requesting_ultra(model));
+        let (report, _) = run(&mut agent, "go").await;
+        assert_eq!(report.outcome, TurnOutcome::Failed, "{model}");
+        assert_eq!(report.failure, Some(TurnFailure::UltrafastUnavailable));
+        assert!(provider.requests().is_empty(), "{model}");
+    }
+    let provider = FakeProvider::new(vec![text_reply("never")]);
+    let mut agent = agent_with(&provider, None, requesting_ultra("openai/gpt-6-astra"));
+    let (report, _) = run(&mut agent, "go").await;
+    assert_eq!(report.failure, Some(TurnFailure::UltrafastUnavailable));
+    assert!(provider.requests().is_empty());
+}

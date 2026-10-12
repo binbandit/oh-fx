@@ -198,6 +198,7 @@ fn listed_model(model: &Map<String, Value>) -> Option<CodexModel> {
         capabilities: ModelCapabilities {
             reasoning_efforts,
             supports_fast_mode,
+            supports_ultrafast_mode: false,
             context_window,
             image_input_support: ImageInputSupport::from_vision(supports_vision),
         },

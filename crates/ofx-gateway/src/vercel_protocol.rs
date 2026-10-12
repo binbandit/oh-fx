@@ -21,6 +21,7 @@ const TOOL_IMAGE_FOLLOW_UP: &str = "Attached image(s) from the tool result.";
 const TOOL_ERROR_PREFIX: &str = "Tool error: ";
 const USER_AGENT_MODEL: &str = "zai/glm-5.2";
 const HIGHEST_REASONING_TIER: &str = "xhigh";
+const ULTRAFAST_PROVIDER: &str = "openai";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum RequestError {
@@ -38,6 +39,8 @@ pub(crate) enum RequestError {
     ToolCallIdMappingExhausted,
     #[error("ProtectedToolCallId")]
     ProtectedToolCallId,
+    #[error("UltrafastProviderRestricted")]
+    UltrafastProviderRestricted,
     #[error("{0}")]
     Image(AttachmentError),
 }
@@ -72,7 +75,7 @@ pub(crate) fn build_request(request: &ModelRequest<'_>, user_agent: &str) -> Res
         &mut out,
         &request.provider_options,
         parallel_tool_calls(request.model),
-    );
+    )?;
     if request.model == USER_AGENT_MODEL {
         out.push_str(",\"headers\":{\"user-agent\":");
         push_json_string(&mut out, user_agent);
@@ -183,27 +186,39 @@ fn write_provider_options(
     out: &mut String,
     options: &ProviderOptions<'_>,
     parallel_tool_calls: Option<bool>,
-) {
+) -> Result<()> {
     let routing = options.routing.filter(|routing| !routing.order.is_empty());
-    let gateway = options.fast || options.prompt_caching || routing.is_some();
+    if options.ultrafast
+        && routing.is_some_and(|routing| {
+            routing.strict && !routing.order.iter().any(|slug| slug == ULTRAFAST_PROVIDER)
+        })
+    {
+        return Err(RequestError::UltrafastProviderRestricted);
+    }
+    let gateway = options.fast || options.ultrafast || options.prompt_caching || routing.is_some();
     if !gateway && parallel_tool_calls.is_none() {
-        return;
+        return Ok(());
     }
     out.push_str(",\"providerOptions\":{");
     if gateway {
         let mut fields = Vec::new();
-        if options.fast {
+        if options.fast && !options.ultrafast {
             fields.push("\"speed\":\"fast\"".to_owned());
         }
         if options.prompt_caching {
             fields.push("\"caching\":\"auto\"".to_owned());
         }
-        if let Some(routing) = routing {
+        if options.ultrafast {
+            fields.push(format!("\"only\":[\"{ULTRAFAST_PROVIDER}\"]"));
+        } else if let Some(routing) = routing {
             fields.push(routing_field(routing));
         }
         out.push_str("\"gateway\":{");
         out.push_str(&fields.join(","));
         out.push('}');
+    }
+    if options.ultrafast {
+        out.push_str(",\"openai\":{\"serviceTier\":\"ultrafast\"}");
     }
     if let Some(parallel) = parallel_tool_calls {
         if gateway {
@@ -214,6 +229,7 @@ fn write_provider_options(
         out.push('}');
     }
     out.push('}');
+    Ok(())
 }
 
 fn routing_field(routing: &ProviderRouting) -> String {

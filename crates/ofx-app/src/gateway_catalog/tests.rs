@@ -217,6 +217,7 @@ async fn the_shell_lists_the_picker_view_once_with_capabilities_and_its_note() {
         ModelCapabilities {
             reasoning_efforts: vec!["low".to_owned(), "high".to_owned()],
             supports_fast_mode: true,
+            supports_ultrafast_mode: false,
             context_window: Some(200_000),
             image_input_support: ImageInputSupport::Native,
         }

@@ -180,7 +180,7 @@ fn catalog_retry(failure: CatalogFailure) -> Option<CatalogRetry> {
 
 #[cfg(test)]
 mod tests {
-    use ofx_contract::{ImageInputSupport, ReasoningEffort};
+    use ofx_contract::ReasoningEffort;
 
     use super::*;
 
@@ -195,8 +195,7 @@ mod tests {
                 capabilities: ModelCapabilities {
                     reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
                     supports_fast_mode: fast,
-                    context_window: None,
-                    image_input_support: ImageInputSupport::Unknown,
+                    ..ModelCapabilities::default()
                 },
                 max_output_tokens: None,
             }],
