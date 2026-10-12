@@ -354,3 +354,62 @@ async fn a_starting_server_cannot_be_authenticated_yet() {
     );
     settling.abandon().await;
 }
+
+#[tokio::test]
+async fn a_health_listing_reports_stored_grants_without_connecting() {
+    let data = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(data.path()).unwrap();
+    let url = "http://127.0.0.1:9/mcp";
+    let runtime = |profile: bool, allow_stored_credentials: bool| {
+        McpRuntime::new(
+            NativeConfigLoad {
+                configs: vec![
+                    McpServerConfig {
+                        allow_stored_credentials,
+                        ..McpServerConfig::remote("remote", TransportType::Http, url)
+                    },
+                    McpServerConfig::stdio("local", "/bin/true", Vec::new()),
+                ],
+                ..NativeConfigLoad::default()
+            },
+            ConnectOptions {
+                profile_data: profile.then(|| root.clone()),
+                ..ConnectOptions::default()
+            },
+            Vec::new(),
+            ContextLimits::default(),
+        )
+    };
+    let missing = runtime(true, true);
+    assert_eq!(missing.load_stored_credentials_for_health().await, Ok(()));
+    assert!(
+        missing
+            .render_health()
+            .contains("remote source=profile scope=profile policy=optional transport=http state=disconnected auth=none")
+    );
+    save_expiring_grant(&root, url);
+    let stored = runtime(true, true);
+    assert_eq!(stored.load_stored_credentials_for_health().await, Ok(()));
+    let health = stored.render_health();
+    assert!(
+        health.contains("transport=http state=disconnected auth=authenticated status=unavailable"),
+        "{health}"
+    );
+    assert!(
+        health.contains("transport=stdio state=disconnected auth=none status=unavailable"),
+        "{health}"
+    );
+    assert!(!health.contains("stored-token"), "{health}");
+    assert!(matches!(stored.current()[0].lifecycle(), Lifecycle::Idle));
+    for unloaded in [runtime(false, true), runtime(true, false)] {
+        assert_eq!(unloaded.load_stored_credentials_for_health().await, Ok(()));
+        assert!(unloaded.render_health().contains("auth=none"));
+    }
+    std::fs::write(root.join("mcp-credentials/credentials.json"), "{").unwrap();
+    assert_eq!(
+        runtime(true, true)
+            .load_stored_credentials_for_health()
+            .await,
+        Err(crate::error::McpError::UnexpectedEndOfInput)
+    );
+}

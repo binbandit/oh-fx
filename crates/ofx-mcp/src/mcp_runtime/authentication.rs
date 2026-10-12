@@ -4,8 +4,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::McpRuntime;
 use crate::error::McpError;
+use crate::mcp_auth_store::{CredentialStore, GrantLookup};
+use crate::mcp_contract::TransportType;
 use crate::server_auth::{
-    AuthenticationOutcome, GrantUse, LogoutResult, authenticate, authentication_target, logout,
+    AuthenticationOutcome, GrantUse, LogoutResult, authenticate, authentication_target,
+    load_stored, logout,
 };
 use crate::server_lifecycle::{Lifecycle, Server};
 
@@ -64,6 +67,26 @@ impl McpRuntime {
             &|variable| std::env::var(variable).ok(),
         )
         .await
+    }
+
+    pub async fn load_stored_credentials_for_health(&self) -> Result<(), McpError> {
+        let Some(store) = self
+            .options
+            .profile_data
+            .as_deref()
+            .map(CredentialStore::new)
+        else {
+            return Ok(());
+        };
+        for server in self.current() {
+            let config = &server.config;
+            if config.transport == TransportType::Stdio || !config.allow_stored_credentials {
+                continue;
+            }
+            let stored = load_stored(GrantLookup::for_server(config)?, &store).await?;
+            server.auth.note_stored_credentials(stored.is_some());
+        }
+        Ok(())
     }
 
     pub async fn logout_server(&self, name: &str) -> Result<LogoutResult, McpError> {

@@ -1311,3 +1311,48 @@ fn mcp_tool_images_stay_out_of_requests_to_unconfirmed_models() {
     assert!(result.contains(r#""delivery":"image content""#), "{result}");
     assert!(!requests[2].body_text().contains("image_url"));
 }
+
+#[test]
+fn mcp_list_shows_configured_servers_and_connects_them_only_when_asked() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let empty = home.ask(&["mcp", "list"]);
+    assert!(empty.status.success(), "{}", stderr(&empty));
+    assert_eq!(
+        String::from_utf8_lossy(&empty.stdout),
+        "No MCP servers configured.\n"
+    );
+    home.profile_servers(&fixture(&home));
+    let listed = home.ask(&["mcp", "list"]);
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let listing = String::from_utf8_lossy(&listed.stdout);
+    assert!(listing.starts_with("MCP health (1 server):\n"), "{listing}");
+    assert!(
+        listing.contains(
+            "fixture source=profile scope=profile policy=optional transport=stdio state=disconnected auth=none status=unavailable"
+        ),
+        "{listing}"
+    );
+    assert!(!home.state.join("pid").exists());
+    let connected = home.ask(&["mcp", "list", "--connect"]);
+    assert!(connected.status.success(), "{}", stderr(&connected));
+    let listing = String::from_utf8_lossy(&connected.stdout);
+    assert!(
+        listing.contains(
+            "fixture source=profile scope=profile policy=optional transport=stdio state=ready auth=none status=ready"
+        ),
+        "{listing}"
+    );
+    assert!(
+        listing.contains("tools=1 resources=0 templates=0 prompts=0 cache=fresh"),
+        "{listing}"
+    );
+    assert!(wait_until_gone(read_pid(&home.state)));
+    let usage = home.ask(&["mcp", "list", "--all"]);
+    assert_eq!(usage.status.code(), Some(1));
+    assert!(
+        stderr(&usage).starts_with("usage: oh-fx mcp <command> ..."),
+        "{}",
+        stderr(&usage)
+    );
+}
