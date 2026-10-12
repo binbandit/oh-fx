@@ -7,6 +7,7 @@ use ofx_contract::{
     AutoCompactPercent, PermissionAction, PermissionMode, PermissionRule, ProviderRouting,
     ReasoningEffort, StatuslineItem, StatuslineToggles, parse_strict_json_value,
 };
+use ofx_trace::trace_log;
 use serde_json::{Map, Value};
 
 use crate::agent_steps::{DEFAULT_MAX_AGENT_STEPS, resolve_max_agent_steps_with_override};
@@ -18,7 +19,7 @@ use crate::context_limits::{
 };
 use crate::model_provider::ProviderId;
 use crate::paths::ProfilePaths;
-use crate::provider_routing::{RoutingLayer, resolve};
+use crate::provider_routing::{RoutingLayer, parse_env_switch, resolve};
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 const PROJECT_FILE: &str = ".oh-fx.json";
@@ -30,9 +31,10 @@ pub const DEFAULT_GATEWAY_MODEL: &str = "spacexai/grok-4.7";
 const MAX_AGENT_STEPS_VARIABLE: &str = "OH_FX_MAX_AGENT_STEPS";
 const PERMISSION_MODE_VARIABLE: &str = "OH_FX_PERMISSION_MODE";
 const AUTO_COMPACT_PERCENT_VARIABLE: &str = "OH_FX_AUTO_COMPACT_PERCENT";
+const ULTRAFAST_VARIABLE: &str = "OH_FX_ULTRAFAST";
 pub(crate) const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
 const TRIMMED: [char; 4] = [' ', '\t', '\r', '\n'];
-const PROFILE_ONLY_KEYS: [&str; 29] = [
+const PROFILE_ONLY_KEYS: [&str; 30] = [
     "model",
     "models",
     "provider",
@@ -42,6 +44,7 @@ const PROFILE_ONLY_KEYS: [&str; 29] = [
     "review_model",
     "effort",
     "fast_mode",
+    "ultrafast_mode",
     "fast_mode_model_bound",
     "slash_menu_categories",
     "collapse_tool_calls",
@@ -106,6 +109,7 @@ enum DiagnosticCause {
     InvalidContextLimits,
     InvalidAdditionalDirectories,
     InvalidSkillSymlinkAuthorities,
+    InvalidUltrafastModeOverride,
 }
 
 impl DiagnosticCause {
@@ -119,7 +123,7 @@ impl DiagnosticCause {
             Self::SettingsTooLarge => Some("SettingsPrimaryTooLarge"),
             Self::DurablePathUnsafe => Some("DurablePathUnsafe"),
             Self::InvalidModelId => Some("InvalidModelValue"),
-            Self::IgnoredProjectUserOnlySetting => None,
+            Self::IgnoredProjectUserOnlySetting | Self::InvalidUltrafastModeOverride => None,
         }
     }
 
@@ -131,7 +135,8 @@ impl DiagnosticCause {
             | Self::InvalidModelId
             | Self::RetiredSkillMatchFuzzy
             | Self::InvalidContextLimits
-            | Self::InvalidSkillSymlinkAuthorities => true,
+            | Self::InvalidSkillSymlinkAuthorities
+            | Self::InvalidUltrafastModeOverride => true,
             Self::InvalidAdditionalDirectories | Self::IgnoredProjectUserOnlySetting => false,
         }
     }
@@ -147,6 +152,7 @@ impl DiagnosticCause {
             Self::InvalidContextLimits => "invalid_context_limits",
             Self::InvalidAdditionalDirectories => "invalid_additional_directories",
             Self::InvalidSkillSymlinkAuthorities => "invalid_skill_symlink_authorities",
+            Self::InvalidUltrafastModeOverride => "invalid_ultrafast_mode_override",
         }
     }
 }
@@ -210,6 +216,9 @@ impl fmt::Display for DiagnosticMetadata<'_> {
                 formatter,
                 "; skill_symlink_authorities must be an array of at most {MAX_SKILL_SYMLINK_AUTHORITIES} absolute directory paths without .. components"
             ),
+            DiagnosticCause::InvalidUltrafastModeOverride => {
+                write!(formatter, "; {ULTRAFAST_VARIABLE} must be a boolean value")
+            }
             _ => Ok(()),
         }
     }
@@ -309,6 +318,8 @@ pub enum LayerError {
     InvalidProviderOrderValue,
     #[error("InvalidProviderStrictType")]
     InvalidProviderStrictType,
+    #[error("InvalidUltrafastModeType")]
+    InvalidUltrafastModeType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -357,6 +368,7 @@ struct Layer {
     effort: Option<ReasoningEffort>,
     fast_mode: Option<bool>,
     fast_mode_model_bound: Option<bool>,
+    ultrafast_mode: Option<bool>,
     context_limits: ContextLimitOverrides,
     context: Option<bool>,
     skill_symlink_authorities: Option<Vec<PathBuf>>,
@@ -421,6 +433,7 @@ pub struct Settings {
     project_max_agent_steps: Option<u64>,
     project_context: Option<bool>,
     project_routing: RoutingLayer,
+    ultrafast_override: Option<bool>,
     additional_directories: Vec<String>,
     additional_directories_read_at: usize,
     diagnostics: Vec<ConfigDiagnostic>,
@@ -655,6 +668,45 @@ impl Settings {
         self.workspace
             .fast_mode_for(provider, model)
             .or_else(|| self.global.fast_mode_for(provider, model))
+            .unwrap_or(false)
+    }
+
+    pub fn observe_ultrafast_override(&mut self, lookup: EnvironmentLookup<'_>) {
+        let Some(raw) = lookup(ULTRAFAST_VARIABLE) else {
+            return;
+        };
+        let Some(requested) = parse_env_switch(raw.trim_matches(TRIMMED)) else {
+            self.diagnose(
+                ConfigLayer::User,
+                DiagnosticCause::InvalidUltrafastModeOverride,
+                None,
+            );
+            trace_log!(
+                "config",
+                "invalid {ULTRAFAST_VARIABLE} value err=InvalidUltrafastMode"
+            );
+            return;
+        };
+        self.ultrafast_override = Some(requested);
+    }
+
+    pub fn ultrafast_override_invalid(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.cause == DiagnosticCause::InvalidUltrafastModeOverride)
+    }
+
+    pub const fn ultrafast_override(&self) -> Option<bool> {
+        self.ultrafast_override
+    }
+
+    pub fn configured_ultrafast_mode(&self) -> Option<bool> {
+        self.workspace.ultrafast_mode.or(self.global.ultrafast_mode)
+    }
+
+    pub fn ultrafast_mode(&self) -> bool {
+        self.ultrafast_override
+            .or_else(|| self.configured_ultrafast_mode())
             .unwrap_or(false)
     }
 
@@ -1149,6 +1201,11 @@ fn parse_layer(object: &Map<String, Value>, scope: LayerScope) -> Result<ParsedL
         .transpose()?;
     layer.effort = object.get("effort").map(parse_effort).transpose()?;
     layer.fast_mode = parse_switch(object, "fast_mode", LayerError::InvalidFastModeType)?;
+    layer.ultrafast_mode = parse_switch(
+        object,
+        "ultrafast_mode",
+        LayerError::InvalidUltrafastModeType,
+    )?;
     layer.fast_mode_model_bound = parse_switch(
         object,
         "fast_mode_model_bound",
@@ -3009,5 +3066,77 @@ mod tests {
                 "config user: invalid_context_limits; context_limits keys must be documented limit names with a non-negative integer or \"off\" value",
             ]
         );
+    }
+
+    #[test]
+    fn the_ultra_setting_is_a_profile_preference_the_workspace_entry_can_override() {
+        assert!(!fixture_settings("{}").ultrafast_mode());
+        let profile = fixture_settings(r#"{"ultrafast_mode":true}"#);
+        assert!(profile.ultrafast_mode());
+        assert_eq!(profile.configured_ultrafast_mode(), Some(true));
+        let layered = fixture(None, None);
+        let workspace = serde_json::to_string(&layered.workspace.to_string_lossy()).unwrap();
+        fs::write(
+            layered.paths.config.join(SETTINGS_FILE),
+            format!(r#"{{"ultrafast_mode":true,"workspaces":{{{workspace}:{{"ultrafast_mode":false}}}}}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            load(&layered).unwrap().configured_ultrafast_mode(),
+            Some(false)
+        );
+        let rejected = fixture_settings(r#"{"ultrafast_mode":"yes","model":"m"}"#);
+        assert!(!rejected.ultrafast_mode());
+        assert_eq!(
+            rejected
+                .diagnostics()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["config user: malformed_settings"]
+        );
+        let project = load(&fixture(None, Some(r#"{"ultrafast_mode":true}"#))).unwrap();
+        assert!(!project.ultrafast_mode());
+        assert_eq!(
+            project.diagnostics()[0].to_string(),
+            "config project: ignored_project_user_only_setting; key=ultrafast_mode"
+        );
+    }
+
+    #[test]
+    fn the_ultra_variable_overrides_the_setting_and_a_bad_value_is_diagnosed() {
+        let with = |value: &'static str| {
+            move |name: &str| (name == "OH_FX_ULTRAFAST").then(|| value.to_owned())
+        };
+        for (value, requested) in [
+            ("1", true),
+            (" TRUE ", true),
+            ("on", true),
+            ("Yes", true),
+            ("0", false),
+            ("false", false),
+            ("OFF", false),
+            ("no", false),
+        ] {
+            let mut settings = fixture_settings(r#"{"ultrafast_mode":true}"#);
+            settings.observe_ultrafast_override(&with(value));
+            assert_eq!(settings.ultrafast_override(), Some(requested), "{value:?}");
+            assert_eq!(settings.ultrafast_mode(), requested, "{value:?}");
+            assert!(!settings.ultrafast_override_invalid());
+        }
+        let mut unset = fixture_settings(r#"{"ultrafast_mode":true}"#);
+        unset.observe_ultrafast_override(&no_environment);
+        assert_eq!(unset.ultrafast_override(), None);
+        assert!(unset.ultrafast_mode());
+        for value in ["maybe", ""] {
+            let mut invalid = fixture_settings(r#"{"ultrafast_mode":true}"#);
+            invalid.observe_ultrafast_override(&with(value));
+            assert!(invalid.ultrafast_override_invalid(), "{value:?}");
+            assert_eq!(invalid.ultrafast_override(), None);
+            assert_eq!(
+                invalid.diagnostics()[0].to_string(),
+                "config user: invalid_ultrafast_mode_override; OH_FX_ULTRAFAST must be a boolean value"
+            );
+        }
     }
 }

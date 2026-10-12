@@ -155,12 +155,15 @@ impl ControllerState {
     }
 
     fn model_controls(&self) -> ModelControls {
-        model_controls(
-            self.setup.models_source().cached().as_ref(),
-            &self.model,
-            &self.effort,
-            self.fast_mode(),
-        )
+        ModelControls {
+            ultrafast: self.ultrafast_requested(),
+            ..model_controls(
+                self.setup.models_source().cached().as_ref(),
+                &self.model,
+                &self.effort,
+                self.fast_mode(),
+            )
+        }
     }
 
     fn sync_model_controls(&mut self) {
@@ -210,6 +213,19 @@ impl ControllerState {
     }
 
     pub(crate) fn save_model_preference(&self, topic: &str, effort: Option<&ReasoningEffort>) {
+        self.save_preference(topic, effort, Some(self.ultrafast_requested()));
+    }
+
+    fn save_effort_preference(&self, effort: &ReasoningEffort) {
+        self.save_preference(EFFORT_TOPIC, Some(effort), None);
+    }
+
+    fn save_preference(
+        &self,
+        topic: &str,
+        effort: Option<&ReasoningEffort>,
+        ultrafast_mode: Option<bool>,
+    ) {
         let provider = self.setup.provider();
         let saved = user_settings::save(self.setup.preferences(), |paths| {
             save_model_preference(
@@ -217,7 +233,7 @@ impl ControllerState {
                 &provider,
                 &self.model,
                 effort.map(ReasoningEffort::label),
-                self.fast_mode(),
+                (self.fast_mode(), ultrafast_mode),
             )
         });
         if let Err(unsaved) = saved {
@@ -1612,10 +1628,13 @@ fn apply_change(
 ) {
     let saves_ultrafast = change.saves_ultrafast();
     let topic = change_topic(&change);
-    let turns_ultrafast_on = matches!(change, ModelChange::RequestUltrafast);
-    let turns_ultrafast_off = matches!(change, ModelChange::WithdrawUltrafast);
-    let speed_line = SpeedLine::of(&change);
     let (fast_before, ultrafast_before) = (state.fast_mode(), state.ultrafast_requested());
+    let toggles_ultrafast = matches!(change, ModelChange::ToggleUltrafast);
+    let turns_ultrafast_on =
+        matches!(change, ModelChange::RequestUltrafast) || (toggles_ultrafast && !ultrafast_before);
+    let turns_ultrafast_off =
+        matches!(change, ModelChange::WithdrawUltrafast) || (toggles_ultrafast && ultrafast_before);
+    let speed_line = SpeedLine::of(&change);
     let Outcome::Changed { effort } = change_model(state, change, models, work) else {
         return;
     };
@@ -1645,7 +1664,9 @@ fn change_topic(change: &ModelChange) -> &'static str {
         ModelChange::Query(_) => MODEL_TOPIC,
         ModelChange::Pick(_) | ModelChange::FromSettings(_) => MODEL_PICKER_TOPIC,
         ModelChange::ToggleFast => FAST_TOPIC,
-        ModelChange::RequestUltrafast | ModelChange::WithdrawUltrafast => ULTRAFAST_TOPIC,
+        ModelChange::RequestUltrafast
+        | ModelChange::WithdrawUltrafast
+        | ModelChange::ToggleUltrafast => ULTRAFAST_TOPIC,
         ModelChange::StepEffort(_) => EFFORT_TOPIC,
     }
 }
@@ -1661,7 +1682,9 @@ impl SpeedLine {
     fn of(change: &ModelChange) -> Self {
         match change {
             ModelChange::ToggleFast => Self::Fast,
-            ModelChange::RequestUltrafast | ModelChange::WithdrawUltrafast => Self::Ultrafast,
+            ModelChange::RequestUltrafast
+            | ModelChange::WithdrawUltrafast
+            | ModelChange::ToggleUltrafast => Self::Ultrafast,
             ModelChange::Query(_)
             | ModelChange::Pick(_)
             | ModelChange::StepEffort(_)
@@ -3733,6 +3756,7 @@ mod tests {
                 effort: "default".to_owned(),
                 reasoning_efforts: Vec::new(),
                 fast_mode: FastModeSetting::Unavailable,
+                ultrafast_mode: FastModeSetting::Unavailable,
                 permission_mode: PermissionMode::Auto,
                 statusline: StatuslineToggles::default(),
                 session_titles: true,
@@ -3821,6 +3845,58 @@ mod tests {
         assert_eq!(saved["session_titles"], false);
         assert_eq!(saved["startup_scrollback"], false);
         assert_eq!(saved["prompt_history"], json!({"enabled": false}));
+    }
+
+    #[tokio::test]
+    async fn the_ultra_row_and_the_marker_follow_the_ultra_request() {
+        let server = FakeServer::start([]);
+        let home = tempfile::tempdir().unwrap();
+        let setup = agent_setup(&home, &server).await;
+        let mut harness = Harness::requesting_ultrafast(home, setup);
+        assert!(last_controls(harness.until(controls_changed).await).ultrafast);
+        harness.command("/settings");
+        let shown = harness.until(settings_opened).await;
+        assert_eq!(last_settings(shown).ultrafast_mode, FastModeSetting::On);
+        let shown = step_setting(&mut harness, SettingId::UltrafastMode, 1).await;
+        assert_eq!(notice_body(&shown), ["ultrafast|requested off"]);
+        assert_eq!(
+            last_settings(&shown).ultrafast_mode,
+            FastModeSetting::Unavailable
+        );
+        assert!(!last_controls(harness.until(controls_changed).await).ultrafast);
+        assert_eq!(saved_settings(&harness)["ultrafast_mode"], false);
+    }
+
+    async fn step_effort(harness: &mut Harness) -> Value {
+        harness.command("/settings");
+        harness.until(settings_opened).await;
+        let shown = step_setting(harness, SettingId::Effort, 1).await;
+        assert_eq!(last_settings(&shown).effort, "low");
+        saved_settings(harness)
+    }
+
+    #[tokio::test]
+    async fn an_effort_change_leaves_the_saved_ultra_choice_alone() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(false, 8);
+        let home = codex_home();
+        let setup =
+            agent_setup_with(&home, &codex_settings(), codex_endpoints(&codex, &catalog)).await;
+        let mut launched = Harness::requesting_ultrafast(home, setup);
+        let saved = step_effort(&mut launched).await;
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved.get("ultrafast_mode"), None);
+
+        let catalog = codex_catalog(false, 8);
+        let settings = json!({
+            "provider": "codex",
+            "models": {"codex": CODEX_MODEL},
+            "ultrafast_mode": true
+        });
+        let mut opted_out = Harness::codex_saved(&codex, &catalog, &settings).await;
+        let saved = step_effort(&mut opted_out).await;
+        assert_eq!(saved["effort"], "low");
+        assert_eq!(saved["ultrafast_mode"], true);
     }
 
     #[tokio::test]
@@ -4841,6 +4917,7 @@ mod tests {
                 effort: ReasoningEffort::Auto,
                 effort_supported: true,
                 fast: false,
+                ultrafast: false,
             }
         );
         harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
@@ -4851,6 +4928,7 @@ mod tests {
                 effort: low(),
                 effort_supported: true,
                 fast: true,
+                ultrafast: false,
             }
         );
         harness.command("/fast");
@@ -4861,6 +4939,7 @@ mod tests {
                 effort: low(),
                 effort_supported: true,
                 fast: false,
+                ultrafast: false,
             }
         );
     }

@@ -4,7 +4,7 @@ use ofx_text::{prefix_by_width, visible_width};
 use crate::footer::statusline::{
     MAX_STATUS_LINE_BYTES, StatuslineView, context_segment, workspace_identity_segment,
 };
-use crate::row_text::{Row, terminal_safe};
+use crate::row_text::{Paint, Row, terminal_safe};
 use crate::theme::Theme;
 
 const STATUSLINE_SEPARATOR: &str = " · ";
@@ -73,7 +73,9 @@ pub(crate) fn hint_line(
     if let (true, ReasoningEffort::Named(effort)) = (controls.effort_supported, &controls.effort) {
         push_segment(&mut row, theme, effort);
     }
-    if controls.fast {
+    if controls.ultrafast {
+        push_painted_segment(&mut row, theme, FAST_MARKER, theme.ultrafast_marker);
+    } else if controls.fast {
         push_segment(&mut row, theme, FAST_MARKER);
     }
     if let Some(title) = statusline.session_title {
@@ -97,13 +99,17 @@ fn session_title_segment(title: &str) -> String {
 }
 
 fn push_segment(row: &mut Row, theme: &Theme, segment: &str) {
+    push_painted_segment(row, theme, segment, theme.statusline);
+}
+
+fn push_painted_segment(row: &mut Row, theme: &Theme, segment: &str, paint: Paint) {
     if segment.is_empty() {
         return;
     }
     if row.width() > 0 {
         row.push(STATUSLINE_SEPARATOR, theme.statusline);
     }
-    row.push(segment, theme.statusline);
+    row.push(segment, paint);
 }
 
 fn push_workspace_identity(
@@ -142,7 +148,7 @@ fn push_workspace_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::row_text::Paint;
+    use crate::row_text::{Color, Paint};
 
     fn line(
         model: &str,
@@ -169,6 +175,7 @@ mod tests {
             }),
             effort_supported,
             fast,
+            ultrafast: false,
         };
         hint_line(
             &Theme::builtin(false, false, true),
@@ -547,5 +554,46 @@ mod tests {
             .map(Row::text)
             .collect();
         assert_eq!(narrow, ["oh-fx v0.1.0 · Run /", "help for commands", ""]);
+    }
+
+    #[test]
+    fn ultra_mode_replaces_the_fast_marker_with_one_yellow_marker() {
+        for truecolor in [true, false] {
+            let theme = Theme::builtin(false, false, truecolor);
+            let controls = ModelControls {
+                effort: ReasoningEffort::Named("xhigh".to_owned()),
+                effort_supported: true,
+                fast: true,
+                ultrafast: true,
+            };
+            let row = hint_line(
+                &theme,
+                "openai/gpt-6-astra",
+                PermissionMode::Auto,
+                &controls,
+                StatuslineView::default(),
+                false,
+                80,
+            );
+            assert_eq!(row.text(), "auto · gpt-6-astra · xhigh · ⚡︎");
+            let markers: Vec<_> = row
+                .segments()
+                .iter()
+                .filter(|segment| segment.text.contains(FAST_MARKER))
+                .collect();
+            assert_eq!(markers.len(), 1);
+            let yellow = if truecolor {
+                Color::Rgb(255, 204, 0)
+            } else {
+                Color::Indexed(220)
+            };
+            assert_eq!(markers[0].paint, Paint::colored(Some(yellow)));
+            assert!(
+                row.segments()
+                    .iter()
+                    .filter(|segment| !segment.text.contains(FAST_MARKER))
+                    .all(|segment| segment.paint != markers[0].paint)
+            );
+        }
     }
 }

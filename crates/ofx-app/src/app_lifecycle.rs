@@ -12,8 +12,8 @@ use std::time::Duration;
 use ofx_agent::WorkerRuntime;
 use ofx_cli::{LaunchModifiers, RequestedResume};
 use ofx_contract::{
-    BoxFuture, HookRegistrationError, HookView, Notice, NoticeTone, PermissionMode, UiCommand,
-    UiEvent,
+    BoxFuture, HookRegistrationError, HookView, ModelControls, Notice, NoticeTone, PermissionMode,
+    UiCommand, UiEvent,
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
@@ -145,11 +145,11 @@ async fn bootstrap(
     let saved = resumed
         .as_ref()
         .map(|resumed| resumed.session.preferences());
-    let ultrafast_requested = modifiers
-        .ultrafast_mode()
-        .or_else(|| saved.map(|preferences| preferences.ultrafast_mode))
-        .unwrap_or(false);
     let settings = profile.settings();
+    let launch_ultrafast = modifiers.ultrafast_mode().or(settings.ultrafast_override());
+    let ultrafast_requested = launch_ultrafast
+        .or_else(|| saved.map(|preferences| preferences.ultrafast_mode))
+        .unwrap_or_else(|| settings.ultrafast_mode());
     let permission_mode = settings.permission_mode(&|name| env::var(name).ok());
     let setup = profile
         .connect_interactive(
@@ -200,7 +200,7 @@ async fn bootstrap(
                 model: modifiers.model().map(|_| setup.model().to_owned()),
                 effort: modifiers.reasoning_effort().cloned(),
                 fast_mode: modifiers.fast_mode(),
-                ultrafast_mode: modifiers.ultrafast_mode(),
+                ultrafast_mode: launch_ultrafast,
             };
             Some(Persistence::new(
                 store,
@@ -231,10 +231,12 @@ fn failure_line(error: &dyn fmt::Display) -> String {
 
 fn profile_failure_lines(error: &ProfileError) -> Vec<String> {
     let mut lines: Vec<String> = match error {
-        ProfileError::Unusable(diagnostics) => diagnostics
-            .iter()
-            .map(|diagnostic| failure_line(diagnostic))
-            .collect(),
+        ProfileError::Unusable(diagnostics) | ProfileError::UltrafastOverride(diagnostics) => {
+            diagnostics
+                .iter()
+                .map(|diagnostic| failure_line(diagnostic))
+                .collect()
+        }
         ProfileError::WorkspaceUnavailable | ProfileError::Settings(_) => Vec::new(),
     };
     lines.push(failure_line(error));
@@ -278,6 +280,13 @@ impl From<io::Error> for SessionError {
     }
 }
 
+fn shell_controls(setup: &AgentSetup, ultrafast: bool) -> ModelControls {
+    ModelControls {
+        ultrafast,
+        ..setup.model_controls()
+    }
+}
+
 fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(), SessionError> {
     let (sender, receiver) = ui_channel()?;
     let steering = Arc::new(WorkerRuntime::default());
@@ -309,7 +318,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let options = ShellOptions {
         version: ofx_upgrade::VERSION.to_owned(),
         model: session.setup.model().to_owned(),
-        model_controls: session.setup.model_controls(),
+        model_controls: shell_controls(&session.setup, session.ultrafast_requested),
         provider: session.setup.provider().label().to_owned(),
         providers: provider_names(session.profile.settings()),
         permission_mode: session.permission_mode,

@@ -8,7 +8,7 @@ note = "The step limit resolves as upstream's resolveMaxAgentStepsWithOverride d
 upstream = "src/core/config/config_runtime.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/config_runtime.rs", "crates/ofx-config/src/provider_routing.rs"]
-note = "Layered settings, rejected-layer diagnostics, context-limit sources and ordered user/workspace permission-rule views exist, with the project-safe provider_order and provider_strict fields, their workspace, profile and project precedence, and the OH_FX_PROVIDER_ORDER and OH_FX_PROVIDER_STRICT overrides with parseProviderOrderList and their trace lines; upstream writeDiagnosticMetadata serialization and complete interface/notification/settings fields are absent."
+note = "Layered settings, the profile-only ultrafast_mode setting with ultrafastModeEnvOverride's OH_FX_ULTRAFAST override and its invalid_ultrafast_mode_override diagnostic, rejected-layer diagnostics, context-limit sources and ordered user/workspace permission-rule views exist, with the project-safe provider_order and provider_strict fields, their workspace, profile and project precedence, and the OH_FX_PROVIDER_ORDER and OH_FX_PROVIDER_STRICT overrides with parseProviderOrderList and their trace lines; upstream writeDiagnosticMetadata serialization and complete interface/notification/settings fields are absent."
 
 [[file]]
 upstream = "src/core/config/configured_provider.zig"
@@ -56,10 +56,10 @@ note = "Native system prompt selection exists; embedded-host prompt variants and
 upstream = "src/core/config/settings_catalog.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/settings_catalog.rs", "crates/ofx-tui/src/shell/settings_menu_runtime.rs", "crates/ofx-tui/src/shell/statusline_menu_runtime.rs", "crates/ofx-tui/src/footer/compact_command_menu_presentation.rs"]
-note = "Categories, search, option cycling, the menu's selection window and the status line menu exist for the status line, model, reasoning effort, fast mode, permission mode, session title, startup scrollback and prompt history rows, the reasoning effort row offering default and the model's efforts; the slash menu category, tool collapse, sound level and ultra mode rows are absent as documented."
+note = "Categories, search, option cycling, the menu's selection window and the status line menu exist for the status line, model, reasoning effort, fast mode, ultra mode, permission mode, session title, startup scrollback and prompt history rows, the reasoning effort row offering default and the model's efforts; the slash menu category, tool collapse and sound level rows are absent as documented."
 
 [[file]]
 upstream = "src/core/config/settings_store.zig"
 status = "partial"
 modules = ["crates/ofx-config/src/settings_store.rs", "crates/ofx-workspace/src/workspace_commands.rs"]
-note = "Permission/model preference writes, the startup scrollback, status line, session title and prompt history patches, scoped permission-rule add/remove/reset patches, the workspace directory mutation through the workspace entry writer and recovery backups exist, with the config trace lines for each settings operation and for skipped corrupt copies and backup prunes, and writes refuse settings whose provider_order or provider_strict upstream's validation rejects; the remaining settings catalog patches and project MCP mutation API remain incomplete."
+note = "Permission/model preference writes with the ultrafast_mode patch and its workspace migration snapshot, the startup scrollback, status line, session title and prompt history patches, scoped permission-rule add/remove/reset patches, the workspace directory mutation through the workspace entry writer and recovery backups exist, with the config trace lines for each settings operation and for skipped corrupt copies and backup prunes, and writes refuse settings whose provider_order or provider_strict upstream's validation rejects; the remaining settings catalog patches and project MCP mutation API remain incomplete."

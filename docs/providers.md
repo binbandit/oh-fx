@@ -6,7 +6,7 @@ oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom
 
 | File | Purpose |
 | --- | --- |
-| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound`, `context`, `context_limits`, `provider_order`, `provider_strict` |
+| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound`, `context`, `context_limits`, `provider_order`, `provider_strict`, `ultrafast_mode` |
 | `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps`, `context`, `provider_order` and `provider_strict` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
 
 Settings files are JSON objects of at most 64 KiB. A leading UTF-8 byte order mark is ignored. Duplicate keys are rejected anywhere in the document.

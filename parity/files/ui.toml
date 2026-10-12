@@ -74,7 +74,7 @@ note = "max_inline_rows, menuRowCount, visibleItemsForBudget, the header with th
 upstream = "src/ui/footer/model_menu_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/model_menu_presentation.rs"]
-note = "Model menu layout, row budget, vendor tabs, model rows with their facts, load states and catalog notes, including the Vercel AI Gateway's access notes, are implemented; the Grok catalog status lines and the stale-catalog retry note are absent."
+note = "Model menu layout, row budget, vendor tabs, model rows with their facts, including Fast and Ultra, load states and catalog notes, including the Vercel AI Gateway's access notes, are implemented; the Grok catalog status lines and the stale-catalog retry note are absent."
 
 [[file]]
 upstream = "src/ui/footer/paint_plan.zig"
@@ -198,7 +198,7 @@ note = "Text, paste placeholders and skill tokens wrap and navigate; registered 
 upstream = "src/ui/render.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/render.rs", "crates/ofx-tui/src/theme.rs"]
-note = "Welcome, compact model labels, hints and the status line's effort, Fast, session, context and workspace segments exist; the Ultra marker, upstream named-theme application with sampled RGB shading and session-status/resume-handoff renderers are absent."
+note = "Welcome, compact model labels, hints and the status line's effort, Fast, yellow Ultra marker, session, context and workspace segments exist; upstream named-theme application with sampled RGB shading and session-status/resume-handoff renderers are absent."
 
 [[file]]
 upstream = "src/ui/render_engine.zig"

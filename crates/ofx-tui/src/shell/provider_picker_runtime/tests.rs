@@ -307,6 +307,7 @@ fn an_open_settings_or_status_line_menu_keeps_a_late_provider_reply_out() {
             effort: "default".to_owned(),
             reasoning_efforts: Vec::new(),
             fast_mode: FastModeSetting::Off,
+            ultrafast_mode: FastModeSetting::Unavailable,
             permission_mode: PermissionMode::Auto,
             statusline: StatuslineToggles::default(),
             session_titles: true,
