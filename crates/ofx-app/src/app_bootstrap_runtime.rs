@@ -31,7 +31,7 @@ use ofx_exec::ManagedExecutions;
 use ofx_gateway::{
     CODEX_TITLE_MODEL, ChatCompletionsProvider, ChatCompletionsReviewTransport,
     CodexReviewTransport, GATEWAY_TITLE_MODEL, GatewayCredential, GatewayEndpoints,
-    GatewayProvider, GatewayReviewTransport,
+    GatewayModelsEndpoints, GatewayProvider, GatewayReviewTransport,
 };
 use ofx_http::ClientError;
 use ofx_mcp::{ConnectOptions, McpRuntime, ProfileStoreError};
@@ -55,6 +55,7 @@ use crate::context::{
     GATEWAY_SYSTEM_PROMPT, HostProjectContext, HostRuntimeContext, InstructionLimits,
     ProfileLocation, gather_project_context,
 };
+use crate::gateway_catalog::{CatalogCredential, GatewayCatalog};
 use crate::mcp_model_catalog::McpServers;
 use crate::model_cache_runtime::{ModelSource, model_controls};
 use crate::output_contracts::StatusSnapshot;
@@ -621,6 +622,11 @@ impl Profile {
             })?
             .map_err(ConnectError::InvalidModel)?;
             let configured_model = self.settings.selected_gateway_model(None, &lookup);
+            let explicit = self
+                .settings
+                .credential_source()
+                .and_then(GatewaySource::parse)
+                .is_some();
             let (credential, source, team) = if host_managed_auth() {
                 (
                     GatewayCredential::new(None, None),
@@ -644,8 +650,9 @@ impl Profile {
             return gateway_route(
                 model,
                 configured_model,
-                endpoints.gateway,
+                (endpoints.gateway, endpoints.gateway_models),
                 (credential, source, team),
+                explicit,
             );
         }
         if self.settings.codex_selected(&lookup)? {
@@ -856,20 +863,33 @@ fn connection_route(
 fn gateway_route(
     model: String,
     configured_model: String,
-    endpoints: GatewayEndpoints,
+    (endpoints, catalog_endpoints): (GatewayEndpoints, GatewayModelsEndpoints),
     (credential, source, team): (GatewayCredential, CredentialSource, Option<String>),
+    explicit: bool,
 ) -> Result<Route, ConnectError> {
     let uses_tls = uses_tls(&endpoints.chat);
     let gateway = Arc::new(
         GatewayProvider::new(credential, &user_agent(), endpoints)
             .map_err(ConnectError::InvalidConnection)?,
     );
+    let catalog_credential = match source {
+        CredentialSource::Gateway(source) => CatalogCredential::Route {
+            provider: Arc::clone(&gateway),
+            source,
+            explicit,
+        },
+        _ => CatalogCredential::HostManaged,
+    };
+    let models = ModelSource::Gateway(Arc::new(
+        GatewayCatalog::new(&user_agent(), catalog_endpoints, catalog_credential)
+            .map_err(ConnectError::InvalidConnection)?,
+    ));
     let reviewer = GatewayReviewTransport::new(Arc::clone(&gateway), None);
     Ok(Route {
         provider: gateway,
         reviewer: Arc::new(reviewer),
         title_model: Some(GATEWAY_TITLE_MODEL),
-        models: ModelSource::Unavailable,
+        models,
         selection: ProviderId::Gateway,
         connection: None,
         model,

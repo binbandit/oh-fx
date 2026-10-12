@@ -140,6 +140,10 @@ fn note(catalog: &CatalogLoad) -> Option<&'static str> {
             source: ModelCatalogSource::Subscription,
             ..
         } => Some("Codex catalog: authenticated with a subscription."),
+        CatalogLoad::Listed {
+            source: ModelCatalogSource::Gateway { note },
+            ..
+        } => Some(note),
         _ => None,
     }
 }
@@ -353,6 +357,21 @@ mod tests {
         assert_eq!(band[3].segments()[1].paint, theme().selected_completion);
         assert_eq!(band[4].segments()[1].paint, theme().dim);
         assert_eq!(band[3].segments()[3].paint, theme().dim);
+    }
+
+    #[test]
+    fn a_gateway_catalog_shows_the_note_its_access_chose() {
+        let catalog = listed(
+            vec![option("openai/gpt-5")],
+            ModelCatalogSource::Gateway {
+                note: "Your Gateway credential was rejected; using the public model catalog.",
+            },
+        );
+        let rows = texts(&ModelMenu::default(), &catalog, 23, 120);
+        assert_eq!(
+            rows[5],
+            "Your Gateway credential was rejected; using the public model catalog."
+        );
     }
 
     #[test]

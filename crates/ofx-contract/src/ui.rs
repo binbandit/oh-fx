@@ -236,6 +236,7 @@ pub struct ModelOption {
 pub enum ModelCatalogSource {
     ProfileSettings,
     Subscription,
+    Gateway { note: &'static str },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

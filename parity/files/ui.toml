@@ -74,7 +74,7 @@ note = "No Rust implementation of upstream max_inline_rows, menuRowCount, visibl
 upstream = "src/ui/footer/model_menu_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/model_menu_presentation.rs"]
-note = "Model menu layout, row budget, vendor tabs, model rows with their facts, load states and catalog notes are implemented; the Vercel and Grok catalog status lines are absent with those providers."
+note = "Model menu layout, row budget, vendor tabs, model rows with their facts, load states and catalog notes, including the Vercel AI Gateway's access notes, are implemented; the Grok catalog status lines and the stale-catalog retry note are absent."
 
 [[file]]
 upstream = "src/ui/footer/paint_plan.zig"
