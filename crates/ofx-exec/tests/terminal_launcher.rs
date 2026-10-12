@@ -25,6 +25,7 @@ const BASH: &str = "/bin/bash";
 const LONG: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(10);
 const SCENARIO_VARIABLE: &str = "OH_FX_TEST_TERMINAL_SCENARIO";
+const NEVER_PREPARES_VARIABLE: &str = "OH_FX_TEST_TERMINAL_NEVER_PREPARES";
 const SOCKET_MODE_VARIABLE: &str = "OH_FX_TEST_TERMINAL_SOCKET_MODES";
 const SIGKILL: u32 = 9;
 
@@ -70,6 +71,9 @@ fn main() -> ExitCode {
         run_terminal_control(&args);
     }
     if is_terminal_launcher_invocation(&args) {
+        if env::var_os(NEVER_PREPARES_VARIABLE).is_some() {
+            return consume_launcher_config();
+        }
         run_terminal_launcher();
     }
     if let Some(scenario) = env::var_os(SCENARIO_VARIABLE) {
@@ -439,7 +443,26 @@ fn scenario(name: &str, home: &Path, environment: &[(&str, &Path)]) -> String {
     report.expect("the scenario reports in time")
 }
 
+fn consume_launcher_config() -> ExitCode {
+    let mut stdin = io::stdin().lock();
+    let mut length = [0; 4];
+    let consumed = io::Read::read_exact(&mut stdin, &mut length).and_then(|()| {
+        let mut config = vec![0; usize::try_from(u32::from_le_bytes(length)).unwrap_or(0)];
+        io::Read::read_exact(&mut stdin, &mut config)
+    });
+    if consumed.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn run_scenario(name: &OsString) -> ExitCode {
+    if name == "never-prepares" {
+        let launched = Terminal::launch(Path::new(BASH), true, &env::temp_dir(), "true");
+        let _ = writeln!(io::stdout(), "{:?}", launched.err());
+        return ExitCode::SUCCESS;
+    }
     let login = name == "profile";
     let command = if login { "true" } else { "exit 0" };
     let mut terminal = Terminal::launch(Path::new(BASH), !login, &env::temp_dir(), command)
@@ -517,21 +540,10 @@ fn the_control_socket_is_private_to_its_owner() {
 }
 
 fn a_launcher_that_never_prepares_fails_the_launch() {
-    let true_program = ["/usr/bin/true", "/bin/true"]
-        .into_iter()
-        .map(Path::new)
-        .find(|path| path.exists())
-        .expect("a true program");
-    let launched = Terminal::launch_with(
-        true_program,
-        Path::new(BASH),
-        true,
-        &env::temp_dir(),
-        "true",
-    );
+    let (_home, home) = canonical_temp_dir();
     assert_eq!(
-        launched.err(),
-        Some(LaunchError::LauncherNotPrepared),
-        "a launch through a program that is not a launcher"
+        scenario("never-prepares", &home, &[(NEVER_PREPARES_VARIABLE, &home)]),
+        format!("{:?}\n", Some(LaunchError::LauncherNotPrepared)),
+        "a launch through a program that takes its configuration and never prepares"
     );
 }
