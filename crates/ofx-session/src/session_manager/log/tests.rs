@@ -83,3 +83,51 @@ fn the_last_line_end_ignores_a_partial_line() {
     let (_empty, file) = file_with(b"");
     assert_eq!(last_line_end(&file, 0), Ok(0));
 }
+
+fn read_back(bytes: &[u8]) -> (Vec<u64>, Option<ReadError>) {
+    let (_directory, file) = file_with(bytes);
+    let end = last_line_end(&file, bytes.len() as u64).unwrap();
+    let mut reader = BackwardReader::new(&file, end);
+    let mut seqs = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(Some(line)) => seqs.push(line.header.seq),
+            Ok(None) => return (seqs, None),
+            Err(error) => return (seqs, Some(error)),
+        }
+    }
+}
+
+#[test]
+fn forward_and_backward_readers_agree_on_a_log_fx_wrote() {
+    let log = fixture_log("kill_tool", "NYXx_508J28b");
+    let (forward, _) = read_all(&log);
+    let (mut backward, error) = read_back(&log);
+    assert_eq!(error, None);
+    backward.reverse();
+    assert_eq!(backward, forward);
+}
+
+#[test]
+fn the_backward_reader_reports_any_bad_line_and_a_seq_gap() {
+    let mut bad_last = three_lines();
+    let end = bad_last.len();
+    bad_last[end - 5] ^= 1;
+    assert_eq!(
+        read_back(&bad_last),
+        (Vec::new(), Some(ReadError::Corrupt(end as u64)))
+    );
+    let gap = [
+        line(1, "turn_started", ",\"turn\":1"),
+        line(3, "closed", ""),
+    ]
+    .concat();
+    let first = line(1, "turn_started", ",\"turn\":1").len() as u64;
+    assert_eq!(read_back(&gap), (vec![3], Some(ReadError::Corrupt(first))));
+    let mut long = vec![b'x'; BLOCK_BYTES + 10];
+    long.extend(three_lines());
+    long.push(b'y');
+    let (seqs, error) = read_back(&long);
+    assert_eq!(seqs, [3, 2]);
+    assert!(matches!(error, Some(ReadError::Corrupt(_))));
+}

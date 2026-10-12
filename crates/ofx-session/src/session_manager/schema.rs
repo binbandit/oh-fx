@@ -82,6 +82,7 @@ tags!(SetKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Header {
     pub(crate) seq: u64,
+    pub(crate) ts_ms: u64,
     pub(crate) kind: Option<Kind>,
 }
 
@@ -92,7 +93,7 @@ pub(crate) fn parse_header(line: &[u8]) -> Option<Header> {
     cursor.literal(b",\"seq\":")?;
     let seq = cursor.number(u64::MAX)?;
     cursor.literal(b",\"ts\":")?;
-    cursor.number(u64::MAX)?;
+    let ts_ms = cursor.number(u64::MAX)?;
     cursor.literal(b",\"kind\":\"")?;
     let name_start = cursor.at;
     while line
@@ -110,7 +111,7 @@ pub(crate) fn parse_header(line: &[u8]) -> Option<Header> {
     let kind = Kind::ALL.iter().copied().find(|kind| kind.name() == name);
     line.get(cursor.at)
         .is_none_or(|&byte| byte == b',')
-        .then_some(Header { seq, kind })
+        .then_some(Header { seq, ts_ms, kind })
 }
 
 struct Cursor<'a> {
@@ -145,15 +146,20 @@ impl Cursor<'_> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Body<'a> {
     SessionCreated {
+        role: Role,
         fork_seq: u64,
     },
     TurnStarted {
         turn: u64,
     },
     Item {
+        item_type: String,
+        data: &'a [u8],
         blobs: Vec<String>,
     },
-    Compacted,
+    Compacted {
+        data: &'a [u8],
+    },
     TurnCommitted,
     TurnInterrupted {
         turn: u64,
@@ -184,7 +190,7 @@ pub(crate) enum Body<'a> {
 impl Body<'_> {
     pub(crate) fn blob_refs(&self) -> &[String] {
         match self {
-            Self::Item { blobs } | Self::Set { blobs, .. } => blobs,
+            Self::Item { blobs, .. } | Self::Set { blobs, .. } => blobs,
             _ => &[],
         }
     }
@@ -197,7 +203,7 @@ pub(crate) fn parse_line_body(kind: Kind, line: &[u8]) -> Result<Body<'_>, BadBo
         Kind::SessionCreated => {
             fields.req_str("id")?;
             fields.req_str("workspace")?;
-            fields.req_tag::<Role>("role")?;
+            let role = fields.req_tag("role")?;
             fields.req_tag::<Host>("host")?;
             fields.opt_str("parent")?;
             let fork_seq = match fields.opt_struct("forked_from", &["id", "seq"])? {
@@ -207,7 +213,7 @@ pub(crate) fn parse_line_body(kind: Kind, line: &[u8]) -> Result<Body<'_>, BadBo
                 }
                 None => 0,
             };
-            Body::SessionCreated { fork_seq }
+            Body::SessionCreated { role, fork_seq }
         }
         Kind::TurnStarted => Body::TurnStarted {
             turn: fields.req_u64("turn")?,
@@ -218,16 +224,17 @@ pub(crate) fn parse_line_body(kind: Kind, line: &[u8]) -> Result<Body<'_>, BadBo
         }
         Kind::Item => {
             fields.req_u64("turn")?;
-            fields.req_str("type")?;
-            fields.raw("data").ok_or(BadBody)?;
             Body::Item {
+                item_type: fields.req_str("type")?.into_owned(),
+                data: fields.raw("data").ok_or(BadBody)?,
                 blobs: fields.opt_str_list("blobs")?.unwrap_or_default(),
             }
         }
         Kind::Compacted => {
             fields.opt_u64("turn")?;
-            fields.raw("data").ok_or(BadBody)?;
-            Body::Compacted
+            Body::Compacted {
+                data: fields.raw("data").ok_or(BadBody)?,
+            }
         }
         Kind::TurnInterrupted => Body::TurnInterrupted {
             turn: fields.req_u64("turn")?,

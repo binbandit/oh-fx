@@ -63,7 +63,7 @@ fn a_flipped_byte_inside_the_log_is_damage_at_its_line() {
 #[test]
 fn a_missing_or_changed_blob_counts_against_its_session() {
     let (directory, root) = root_with("tool");
-    let blobs = directory.path().join("ia8mVXaiyAf1").join(BLOBS_DIR);
+    let blobs = directory.path().join("ia8mVXaiyAf1").join("blobs");
     let names: Vec<_> = fs::read_dir(&blobs)
         .unwrap()
         .map(|entry| entry.unwrap().path())

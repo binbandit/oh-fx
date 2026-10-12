@@ -37,7 +37,7 @@ impl State {
                 self.open_turn = Some(*turn);
                 self.last_turn = self.last_turn.max(*turn);
             }
-            Body::Compacted => {
+            Body::Compacted { .. } => {
                 self.last_compaction_seq = Some(seq);
                 self.compaction_offset = Some(offset);
             }
@@ -156,6 +156,20 @@ impl State {
             });
         }
         Ok(state)
+    }
+
+    pub(crate) fn at_seq(mut self, seq: u64) -> Self {
+        self.last_seq = seq;
+        self
+    }
+
+    pub(crate) fn skip_unknown(&mut self, seq: u64) {
+        self.last_seq = seq;
+        self.clean_exit = false;
+    }
+
+    pub(crate) fn setting(&self, key: SetKey) -> Option<&[u8]> {
+        self.settings[key as usize].as_deref()
     }
 
     pub(crate) fn with_position_of(mut self, other: &Self) -> Self {

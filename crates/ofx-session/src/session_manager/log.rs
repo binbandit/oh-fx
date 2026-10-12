@@ -128,5 +128,72 @@ impl<'f> ForwardReader<'f> {
     }
 }
 
+pub(crate) struct BackwardReader<'f> {
+    file: &'f File,
+    position: u64,
+    buffer: Vec<u8>,
+    buffer_offset: u64,
+    expected_seq: Option<u64>,
+}
+
+impl<'f> BackwardReader<'f> {
+    pub(crate) fn new(file: &'f File, end: u64) -> Self {
+        Self {
+            file,
+            position: end,
+            buffer: Vec::new(),
+            buffer_offset: end,
+            expected_seq: None,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> Result<Option<Line<'_>>, ReadError> {
+        if self.position == 0 {
+            return Ok(None);
+        }
+        let held = usize::try_from(self.position - self.buffer_offset)
+            .map_err(|_| ReadError::Fault(IoFault::Io))?;
+        self.buffer.truncate(held);
+        loop {
+            let have = &self.buffer[..];
+            if have.last().is_some_and(|&byte| byte != b'\n') {
+                return Err(ReadError::Corrupt(self.position));
+            }
+            let search = &have[..have.len().saturating_sub(1)];
+            let start = match search.iter().rposition(|&byte| byte == b'\n') {
+                Some(newline) => Some(newline + 1),
+                None if self.buffer_offset == 0 && !have.is_empty() => Some(0),
+                None => None,
+            };
+            if let Some(start) = start {
+                let header = check_line(&have[start..]).ok_or(ReadError::Corrupt(self.position))?;
+                if self
+                    .expected_seq
+                    .is_some_and(|expected| header.seq != expected)
+                {
+                    return Err(ReadError::Corrupt(self.position));
+                }
+                self.expected_seq = Some(header.seq - 1);
+                self.position = self.buffer_offset + start as u64;
+                return Ok(Some(Line {
+                    offset: self.position,
+                    header,
+                    bytes: &self.buffer[start..],
+                }));
+            }
+            if have.len() > MAX_LINE_BYTES {
+                return Err(ReadError::Corrupt(self.position));
+            }
+            let want = usize::try_from(self.buffer_offset.min(BLOCK_BYTES as u64))
+                .map_err(|_| ReadError::Fault(IoFault::Io))?;
+            let mut block = vec![0_u8; want];
+            self.buffer_offset -= want as u64;
+            self.file.read_exact_at(&mut block, self.buffer_offset)?;
+            block.extend_from_slice(&self.buffer);
+            self.buffer = block;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

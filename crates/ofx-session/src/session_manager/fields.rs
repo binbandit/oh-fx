@@ -116,6 +116,18 @@ impl<'a> Fields<'a> {
         let Some(value) = self.present(name) else {
             return Ok(None);
         };
+        let required: Vec<(&str, bool)> = members.iter().map(|member| (*member, true)).collect();
+        Self::struct_members(value, &required)?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or(BadBody)
+    }
+
+    pub(crate) fn struct_members(
+        value: &'a [u8],
+        members: &[(&str, bool)],
+    ) -> Result<Vec<Option<&'a [u8]>>, BadBody> {
         let Some(Value::Object) = json::parse(value) else {
             return Err(BadBody);
         };
@@ -125,17 +137,17 @@ impl<'a> Fields<'a> {
         for (field, raw) in object.pairs {
             let slot = members
                 .iter()
-                .position(|member| *member == field)
+                .position(|(member, _)| *member == field)
                 .ok_or(BadBody)?;
             if found[slot].replace(raw).is_some() {
                 return Err(BadBody);
             }
         }
-        found
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .map(Some)
-            .ok_or(BadBody)
+        let complete = members
+            .iter()
+            .zip(&found)
+            .all(|((_, required), value)| !required || value.is_some());
+        complete.then_some(found).ok_or(BadBody)
     }
 
     pub(crate) fn string_value(raw: &[u8]) -> Result<String, BadBody> {

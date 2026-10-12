@@ -452,3 +452,99 @@ fn doctor_on_v2_warns_about_a_damaged_or_unreadable_log_and_traces_it() {
         );
     }
 }
+
+const DETAILED: [(&str, &str); 4] = [
+    ("listing", "nJI52ukeF2bU"),
+    ("listing", "hDoX4WdPFWDK"),
+    ("tool", "ia8mVXaiyAf1"),
+    ("kill_tool", "NYXx_508J28b"),
+];
+
+fn fx_detail(scenario: &str, id: &str, extension: &str) -> String {
+    let text = fs::read_to_string(
+        Path::new(FIXTURES)
+            .join(scenario)
+            .join(format!("fx-session-{id}.{extension}")),
+    )
+    .expect("read fx's detail");
+    text.replace(
+        "\"output\":\"fx stopped while this tool was running, so it may have partly run. Check its effects before running it again.\",\"output_bytes\":109,\"stored_output_bytes\":109",
+        "\"output\":\"oh-fx stopped while this tool was running, so it may have partly run. Check its effects before running it again.\",\"output_bytes\":112,\"stored_output_bytes\":112",
+    )
+}
+
+#[test]
+fn session_detail_on_v2_equals_fx_s_for_the_sessions_fx_wrote() {
+    let home = Home::new("http://127.0.0.1:9");
+    for (scenario, _) in DETAILED {
+        copy_fixture(scenario, &home.own_root());
+    }
+    private_root(&home.own_root(), 2);
+    for (scenario, id) in DETAILED {
+        assert_eq!(
+            home.listed(&["--sessions-v2", "session", id, "--json"], &[]),
+            fx_detail(scenario, id, "json"),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        home.listed(&["--sessions-v2", "session", "nJI52ukeF2bU"], &[]),
+        fx_detail("listing", "nJI52ukeF2bU", "txt")
+    );
+}
+
+#[test]
+fn session_detail_on_v2_reads_fx_s_own_v2_sessions_marked_fx() {
+    let home = Home::new("http://127.0.0.1:9");
+    copy_fixture("tool", &home.fx_root());
+    private_root(&home.fx_root(), 3);
+    let expected = fx_detail("tool", "ia8mVXaiyAf1", "json");
+    let marked = format!(
+        "{},\"source\":\"fx\"}}\n",
+        expected.trim_end().trim_end_matches('}')
+    );
+    assert_eq!(
+        home.listed(&["--sessions-v2", "session", "ia8mVXaiyAf1", "--json"], &[]),
+        marked
+    );
+}
+
+#[test]
+fn session_detail_on_v2_fails_as_upstream_does() {
+    let home = Home::new("http://127.0.0.1:9");
+    copy_fixture("listing", &home.own_root());
+    private_root(&home.own_root(), 2);
+    let missing = home.run(
+        &["--sessions-v2", "session", "NoSuchSession1", "--json"],
+        &[],
+    );
+    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(
+        text(&missing.stdout),
+        "{\"kind\":\"session\",\"error\":\"record not found\",\"code\":\"SessionNotFound\"}\n"
+    );
+    let log = home.own_root().join("nJI52ukeF2bU/log.jsonl");
+    let mut bytes = fs::read(&log).expect("read a log");
+    let end = bytes.len();
+    bytes[end - 5] ^= 1;
+    fs::write(&log, bytes).expect("damage the log");
+    let damaged = home.run(&["--sessions-v2", "session", "nJI52ukeF2bU"], &[]);
+    assert_eq!(damaged.status.code(), Some(1));
+    assert_eq!(
+        text(&damaged.stderr),
+        "oh-fx session: session nJI52ukeF2bU is corrupt; run `oh-fx session recover nJI52ukeF2bU`\n"
+    );
+    copy_fixture("tool", &home.fx_root());
+    private_root(&home.fx_root(), 3);
+    let fx_log = home.fx_root().join("ia8mVXaiyAf1/log.jsonl");
+    let mut bytes = fs::read(&fx_log).expect("read fx's log");
+    let end = bytes.len();
+    bytes[end - 5] ^= 1;
+    fs::write(&fx_log, bytes).expect("damage fx's log");
+    let unreadable = home.run(&["--sessions-v2", "session", "ia8mVXaiyAf1"], &[]);
+    assert_eq!(unreadable.status.code(), Some(1));
+    assert_eq!(
+        text(&unreadable.stderr),
+        "oh-fx session: this fx session holds data oh-fx cannot read yet; keep using it in fx\n"
+    );
+}

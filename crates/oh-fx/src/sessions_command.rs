@@ -115,12 +115,17 @@ pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
     })
 }
 
-pub(crate) fn open_v2_catalog() -> Result<SessionCatalog, Failure> {
+pub(crate) fn open_v2_sessions() -> Result<SessionsV2, Failure> {
     let profile = profile()?;
-    Ok(
-        SessionsV2::open_read_only(&profile.data, &profile.home, &profile.workspace_root)?
-            .catalog()?,
-    )
+    Ok(SessionsV2::open_read_only(
+        &profile.data,
+        &profile.home,
+        &profile.workspace_root,
+    )?)
+}
+
+pub(crate) fn open_v2_catalog() -> Result<SessionCatalog, Failure> {
+    Ok(open_v2_sessions()?.catalog()?)
 }
 
 pub(crate) fn open_writable_sessions() -> Result<SessionStore, Failure> {

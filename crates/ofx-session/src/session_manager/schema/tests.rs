@@ -72,6 +72,7 @@ fn malformed_headers_are_rejected() {
         parse_header(b"{\"v\":1,\"seq\":7,\"ts\":0,\"kind\":\"closed\""),
         Some(Header {
             seq: 7,
+            ts_ms: 0,
             kind: Some(Kind::Closed)
         })
     );
@@ -140,7 +141,10 @@ fn bodies_keep_raw_values_byte_for_byte() {
     );
     assert_eq!(
         parse_line_body(Kind::SessionCreated, &bytes),
-        Ok(Body::SessionCreated { fork_seq: 9 })
+        Ok(Body::SessionCreated {
+            role: Role::Root,
+            fork_seq: 9
+        })
     );
     for origin in [
         "{\"id\":\"s\"}",

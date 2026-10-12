@@ -40,10 +40,10 @@ use crate::session_trace::SESSION;
 use crate::session_usage::{Usage, UsageSnapshot};
 use crate::session_usage_sidecar;
 
+pub(crate) use conversation_archive::{ArchiveBuilder, check_conversation, load_archive};
 pub use conversation_archive::{
     ArchivedResult, ArchivedSteering, ArchivedTurn, ExecutedStep, SessionArchive, TurnExecution,
 };
-pub(crate) use conversation_archive::{check_conversation, load_archive};
 pub use conversation_history::{CompactedHistory, SavedHistory, SavedTurn};
 use conversation_history::{ReplayScan, replay_history, visit_turns};
 pub(crate) use conversation_progress::{ConversationProgress, ProgressPoint};

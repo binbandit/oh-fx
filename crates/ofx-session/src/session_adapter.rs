@@ -1,5 +1,7 @@
+mod codec;
 mod doctor;
 mod listing;
+mod replay;
 mod store;
 
 pub use doctor::DoctorReport;

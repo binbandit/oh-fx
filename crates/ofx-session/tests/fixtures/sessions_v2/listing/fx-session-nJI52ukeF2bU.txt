@@ -1,0 +1,17 @@
+[session] nJI52ukeF2bU
+created_at_ms: 1791772881566
+updated_at_ms: 1791772881704
+language: und-Latn
+history_len: 2
+
+[turn 1]
+[user]
+List question A.
+[assistant]
+LIST_A1
+
+[turn 2]
+[user]
+List question A two.
+[assistant]
+LIST_A2

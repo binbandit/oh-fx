@@ -6,11 +6,14 @@ use std::process;
 use ofx_config::{DurableError, PrivateDir};
 use ofx_trace::trace_log;
 
+use super::codec::{RecordError, decode_language, decode_preferences, decode_title, decode_usage};
 use super::doctor::{DoctorReport, doctor};
-use super::listing::{list_items, record_error, store_error, summary_of};
+use super::listing::{list_items, record_error, record_failure, store_error, summary_of};
+use super::replay::{ReplayError, detail_turns};
 use crate::fx_sessions::open_v2_root;
 use crate::session_error::SessionError;
-use crate::session_manager::{IoFault, Manager};
+use crate::session_log::SessionArchive;
+use crate::session_manager::{IoFault, Manager, OpenError, Role, SetKey, State};
 use crate::session_store::{SESSIONS_DIR, SessionCatalog, checked_workspace_root};
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
@@ -80,6 +83,25 @@ impl SessionsV2 {
         ))
     }
 
+    pub fn archive(&self, id: &str) -> Result<SessionArchive, SessionError> {
+        if let Some(own) = own_root(&self.data_dir)
+            .map_err(store_error)?
+            .map(Manager::new)
+        {
+            match archive_in(&own, id, SessionSource::OhFx) {
+                Err(SessionError::SessionNotFound) => {}
+                other => return other,
+            }
+        }
+        let fx = open_v2_root(&self.home)
+            .map(Manager::new)
+            .ok_or(SessionError::SessionNotFound)?;
+        archive_in(&fx, id, SessionSource::Fx).map_err(|error| match error {
+            SessionError::SessionNotFound => error,
+            _ => SessionError::FxSessionUnreadable,
+        })
+    }
+
     fn fx_summaries(&self) -> Vec<SessionSummary> {
         let Some(fx) = open_v2_root(&self.home).map(Manager::new) else {
             return Vec::new();
@@ -95,6 +117,54 @@ impl SessionsV2 {
 impl Drop for SessionsV2 {
     fn drop(&mut self) {
         trace_log!(WIRING, "action=StoreClose session=- pid={}", process::id());
+    }
+}
+
+fn archive_in(
+    manager: &Manager,
+    id: &str,
+    source: SessionSource,
+) -> Result<SessionArchive, SessionError> {
+    let peeked = manager.peek(id).map_err(open_error)?;
+    if peeked.role != Role::Root {
+        return Err(SessionError::SessionNotFound);
+    }
+    let state = &peeked.state;
+    let conversation_language = settings(state).map_err(|error| record_error(&error))?;
+    let turns = detail_turns(manager, id).map_err(|error| match error {
+        ReplayError::Open(error) => open_error(error),
+        ReplayError::Session(
+            error @ (SessionError::InvalidSessionFormat | SessionError::SessionStoreUnavailable),
+        ) => error,
+        ReplayError::Session(error) => record_failure(&error.to_string()),
+    })?;
+    Ok(SessionArchive {
+        id: id.to_owned(),
+        created_at_ms: i64::try_from(peeked.created_ms).unwrap_or(0),
+        updated_at_ms: i64::try_from(peeked.updated_ms).unwrap_or(0),
+        conversation_language,
+        turns,
+        source,
+    })
+}
+
+fn settings(state: &State) -> Result<String, RecordError> {
+    let language = decode_language(state.setting(SetKey::Language))?;
+    decode_title(state.setting(SetKey::Title))?;
+    if let Some(raw) = state.setting(SetKey::Prefs) {
+        decode_preferences(raw)?;
+    }
+    if let Some(raw) = state.setting(SetKey::Usage) {
+        decode_usage(raw)?;
+    }
+    Ok(language)
+}
+
+fn open_error(error: OpenError) -> SessionError {
+    match error {
+        OpenError::NotFound => SessionError::SessionNotFound,
+        OpenError::Corrupt => SessionError::InvalidSessionFormat,
+        OpenError::Fault(fault) => store_error(fault),
     }
 }
 

@@ -1,20 +1,14 @@
 use std::fmt;
-use std::fs::File;
-use std::io::Read;
 use std::os::fd::OwnedFd;
 
-use ofx_config::PrivateDir;
-use sha2::{Digest, Sha256};
-
+use super::blobs::{BlobError, read_blob};
 use super::fold::State;
 use super::log::{ForwardReader, ReadError, last_line_end};
-use super::schema::{Body, parse_line_body, valid_blob_hash, valid_id};
+use super::schema::{Body, parse_line_body, valid_id};
 use super::storage::{self, IoFault, StorageError};
+use ofx_config::PrivateDir;
 
 const LOG_NAME: &str = "log.jsonl";
-const BLOBS_DIR: &str = "blobs";
-const MAX_BLOB_BYTES: u64 = 512 << 20;
-const HASH_CHUNK_BYTES: usize = 256 << 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Verified {
@@ -91,7 +85,9 @@ pub(crate) fn verify_session(root: &PrivateDir, id: &str) -> Result<Verified, Ve
             }
         }
         match &body {
-            Body::SessionCreated { fork_seq: origin } => fork_seq = *origin,
+            Body::SessionCreated {
+                fork_seq: origin, ..
+            } => fork_seq = *origin,
             Body::Snapshot { state: raw } => {
                 let Ok(decoded) = State::decode(raw) else {
                     verified.bad_snapshots += 1;
@@ -113,40 +109,11 @@ pub(crate) fn verify_session(root: &PrivateDir, id: &str) -> Result<Verified, Ve
 }
 
 fn blob_is_whole(session: &OwnedFd, hash: &str) -> Result<bool, VerifyError> {
-    if !valid_blob_hash(hash) {
-        return Ok(false);
+    match read_blob(session, hash) {
+        Ok(_) => Ok(true),
+        Err(BlobError::NotFound | BlobError::Corrupt) => Ok(false),
+        Err(BlobError::Fault(fault)) => Err(VerifyError::Fault(fault)),
     }
-    let blob = match storage::open_dir(session, BLOBS_DIR)
-        .and_then(|blobs| storage::open_file(&blobs, hash))
-    {
-        Ok(blob) => blob,
-        Err(StorageError::NotFound) => return Ok(false),
-        Err(StorageError::Fault(fault)) => return Err(VerifyError::Fault(fault)),
-    };
-    let len = blob.metadata().map_err(StorageError::from)?.len();
-    if len > MAX_BLOB_BYTES {
-        return Ok(false);
-    }
-    Ok(hash_of(blob, len)? == hash)
-}
-
-fn hash_of(blob: File, len: u64) -> Result<String, VerifyError> {
-    let mut hasher = Sha256::new();
-    let mut chunk = vec![0_u8; HASH_CHUNK_BYTES];
-    let mut reader = blob.take(len);
-    let mut read_total = 0_u64;
-    loop {
-        let read = reader.read(&mut chunk).map_err(StorageError::from)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&chunk[..read]);
-        read_total += read as u64;
-    }
-    if read_total != len {
-        return Err(VerifyError::Fault(IoFault::Io));
-    }
-    Ok(ofx_text::lowercase_hex(&hasher.finalize()))
 }
 
 #[cfg(test)]

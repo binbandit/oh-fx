@@ -1,26 +1,12 @@
 use ofx_trace::trace_log;
 
-use crate::session_codec::{DEFAULT_CONVERSATION_LANGUAGE, is_valid_conversation_language};
+use super::codec::{RecordError, decode_language, decode_title};
 use crate::session_error::SessionError;
-use crate::session_manager::{IoFault, ListCursor, Manager, Summary, full_string};
+use crate::session_manager::{IoFault, ListCursor, Manager, Summary};
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 use crate::session_trace::SESSION;
 
 pub(super) const LIST_PAGE_SIZE: usize = 256;
-
-pub(super) enum RecordError {
-    UnexpectedToken,
-    InvalidDurableField,
-}
-
-impl RecordError {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::UnexpectedToken => "UnexpectedToken",
-            Self::InvalidDurableField => "InvalidDurableField",
-        }
-    }
-}
 
 pub(super) fn list_items(manager: &Manager) -> Result<Vec<Summary>, IoFault> {
     let mut items = Vec::new();
@@ -39,21 +25,8 @@ pub(super) fn summary_of(
     item: &Summary,
     source: SessionSource,
 ) -> Result<SessionSummary, RecordError> {
-    let title = item
-        .title
-        .as_deref()
-        .map(|raw| full_string(raw).ok_or(RecordError::UnexpectedToken))
-        .transpose()?;
-    let conversation_language = match item.language.as_deref() {
-        Some(raw) => {
-            let tag = full_string(raw).ok_or(RecordError::UnexpectedToken)?;
-            if !is_valid_conversation_language(&tag) {
-                return Err(RecordError::InvalidDurableField);
-            }
-            tag
-        }
-        None => DEFAULT_CONVERSATION_LANGUAGE.to_owned(),
-    };
+    let title = decode_title(item.title.as_deref())?;
+    let conversation_language = decode_language(item.language.as_deref())?;
     Ok(SessionSummary {
         id: item.id.clone(),
         workspace_root: item.workspace.clone(),
@@ -77,10 +50,13 @@ pub(super) fn store_error(fault: IoFault) -> SessionError {
 }
 
 pub(super) fn record_error(error: &RecordError) -> SessionError {
+    record_failure(error.name())
+}
+
+pub(super) fn record_failure(name: &str) -> SessionError {
     trace_log!(
         SESSION,
-        "event=sessions_v2_command_failed kind=record err={}",
-        error.name()
+        "event=sessions_v2_command_failed kind=record err={name}"
     );
     SessionError::InvalidSessionFormat
 }

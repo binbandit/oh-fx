@@ -386,7 +386,7 @@ fn interactive_and_resume_launches_need_a_terminal() {
 
 #[test]
 fn json_requests_for_commands_the_binary_cannot_run_yet_print_the_failure_envelope() {
-    let output = oh_fx(&["--sessions-v2", "session", "x", "--json"], &[]);
+    let output = oh_fx(&["--sessions-v2", "session", "recover", "x", "--json"], &[]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stderr(&output), "oh-fx: session is not available yet\n");
     assert_eq!(
@@ -490,7 +490,7 @@ fn full_disk_writes_follow_each_upstream_path() {
         (&["status", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (&["sessions", "--json", "--bogus"], "oh-fx: WriteFailed\n"),
         (
-            &["--sessions-v2", "session", "x", "--json"],
+            &["--sessions-v2", "session", "recover", "x", "--json"],
             "oh-fx: session is not available yet\noh-fx: WriteFailed\n",
         ),
         (&["replay", "--json"], ""),

@@ -719,7 +719,7 @@ fn session_says_why_a_session_cannot_be_shown() {
         refused(&home.session(&["missing"], &[("OH_FX_SESSIONS_V2", "true")])),
         (
             String::new(),
-            "oh-fx: session is not available yet\n".to_owned()
+            "oh-fx session: record not found\n".to_owned()
         )
     );
 }

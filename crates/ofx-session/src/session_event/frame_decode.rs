@@ -33,8 +33,12 @@ fn event_from(value: Json<'_>) -> Option<ConversationEvent> {
         return None;
     }
     let (tag, body) = tagged.into_entries().into_iter().next()?;
+    tagged_event(tag.as_ref(), body)
+}
+
+pub(super) fn tagged_event(tag: &str, body: Json<'_>) -> Option<ConversationEvent> {
     let mut fields = Fields::new(body)?;
-    let event = match tag.as_ref() {
+    let event = match tag {
         "user" => ConversationEvent::User(user(&mut fields)?),
         "assistant" => ConversationEvent::Assistant(assistant(&mut fields)?),
         "tool_call" => ConversationEvent::ToolCall(tool_call(&mut fields)?),

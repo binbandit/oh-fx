@@ -161,7 +161,7 @@ fn read_turns(dir: &PrivateDir) -> Result<ArchiveBuilder, SessionError> {
 }
 
 #[derive(Default)]
-pub(super) struct ArchiveBuilder {
+pub(crate) struct ArchiveBuilder {
     turns: Vec<ArchivedTurn>,
     raw_turn_count: usize,
     compaction_count: usize,
@@ -181,11 +181,11 @@ impl ArchiveBuilder {
         self.open_turn_from.unwrap_or(self.last_seq)
     }
 
-    pub(super) fn into_turns(self) -> Vec<ArchivedTurn> {
+    pub(crate) fn into_turns(self) -> Vec<ArchivedTurn> {
         self.turns
     }
 
-    pub(super) fn apply(&mut self, seq: u64, event: ConversationEvent) -> Result<(), SessionError> {
+    pub(crate) fn apply(&mut self, seq: u64, event: ConversationEvent) -> Result<(), SessionError> {
         self.last_seq = seq;
         match event {
             ConversationEvent::User(user) => {
@@ -224,13 +224,39 @@ impl ArchiveBuilder {
         Ok(())
     }
 
+    pub(crate) fn push_summary(&mut self, summary: String) {
+        self.compaction_count += 1;
+        self.turns.push(ArchivedTurn::Compacted(CompactedHistory {
+            summary,
+            removed_turn_count: self.raw_turn_count,
+            compaction_count: self.compaction_count,
+        }));
+    }
+
+    pub(crate) fn discard_open_turn(&mut self) {
+        let turns = mem::take(&mut self.turns);
+        *self = Self {
+            turns,
+            raw_turn_count: self.raw_turn_count,
+            compaction_count: self.compaction_count,
+            last_seq: self.last_seq,
+            ..Self::default()
+        };
+    }
+
+    pub(crate) fn answer_last_interrupted(&mut self, step: ExecutedStep) {
+        if let Some(ArchivedTurn::Interrupted { execution, .. }) = self.turns.last_mut() {
+            execution.steps.push(step);
+        }
+    }
+
     fn complete(&mut self, turn: ArchivedTurn) {
         self.turns.push(turn);
         self.raw_turn_count += 1;
         self.open_turn_from = None;
     }
 
-    fn is_idle(&self) -> bool {
+    pub(crate) fn is_idle(&self) -> bool {
         self.user.is_none()
             && self.pending_assistant.is_none()
             && self.calls.is_empty()

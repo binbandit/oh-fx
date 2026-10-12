@@ -622,6 +622,18 @@ pub(crate) fn decode_conversation_frame(
     Ok(envelope)
 }
 
+pub(crate) fn decode_event_payload(
+    tag: &str,
+    payload: &[u8],
+) -> Result<ConversationEvent, SessionError> {
+    let event = parse_json(payload)
+        .ok()
+        .and_then(|document| frame_decode::tagged_event(tag, document))
+        .ok_or(SessionError::InvalidConversationFrame)?;
+    validate_event_shape(&event).map_err(|_| SessionError::InvalidConversationFrame)?;
+    Ok(event)
+}
+
 impl ConversationEnvelope {
     pub(crate) fn timestamp_ms(&self) -> i64 {
         self.timestamp_ms

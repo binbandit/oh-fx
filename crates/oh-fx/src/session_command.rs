@@ -10,8 +10,8 @@ use ofx_cli::{
 use ofx_session::{ListScope, SessionCatalog, SessionError, SessionRecoveryStatus};
 
 use crate::sessions_command::{
-    Failure, answer, open_saved_sessions, open_v2_catalog, open_writable_sessions,
-    selects_sessions_v2,
+    Failure, answer, open_saved_sessions, open_v2_catalog, open_v2_sessions,
+    open_writable_sessions, selects_sessions_v2,
 };
 
 const MIGRATION_UNAVAILABLE: &str = "SessionMigrationUnavailable";
@@ -35,7 +35,8 @@ pub(crate) fn run(args: &SessionArgs, modifiers: &LaunchModifiers) -> ExitCode {
                 .map_err(|_| SessionError::SessionStoreUnavailable)?;
             latest(&catalog, args.format)
         }),
-        SessionAction::Detail(SessionTarget::Id(id)) if !selects_v2 => describe(id, args.format),
+        SessionAction::Detail(SessionTarget::Id(id)) if selects_v2 => describe_v2(id, args.format),
+        SessionAction::Detail(SessionTarget::Id(id)) => describe(id, args.format),
         _ => return crate::not_available(&Command::Session(args.clone())),
     };
     answer(TopLevelKind::Session, args.format, result)
@@ -59,6 +60,13 @@ fn describe(id: &str, format: OutputFormat) -> Result<String, Failure> {
     let archive = saved
         .store
         .archive_with_fx(id, &saved.fx)
+        .map_err(|error| detail_failure(id, error))?;
+    Ok(SessionDetailSnapshot { archive: &archive }.render(format))
+}
+
+fn describe_v2(id: &str, format: OutputFormat) -> Result<String, Failure> {
+    let archive = open_v2_sessions()?
+        .archive(id)
         .map_err(|error| detail_failure(id, error))?;
     Ok(SessionDetailSnapshot { archive: &archive }.render(format))
 }
