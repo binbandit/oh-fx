@@ -80,11 +80,6 @@ fn needs_authentication(runtime: &McpRuntime) {
         runtime.model_catalog()[0].availability,
         Availability::AuthenticationRequired
     );
-    let summary = runtime.render_summary();
-    assert!(
-        summary.contains("1 needs auth, 0 failed. Run /mcp auth remote --open."),
-        "{summary}"
-    );
     let searched = runtime.search(&request("remote tools"));
     assert_eq!(searched.model_output, GUIDANCE);
     let server = &runtime.current()[0];

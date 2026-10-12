@@ -81,7 +81,7 @@ impl Shell<'_> {
         if self.route_full_transcript_input(&event)? {
             return Ok(());
         }
-        if requests_upgrade(&event) {
+        if requests_upgrade(&event) && self.mcp_menu.is_none() {
             self.apply_ready_upgrade();
             return Ok(());
         }
@@ -104,11 +104,17 @@ impl Shell<'_> {
         if self.workspace_menu.is_some() {
             return self.handle_workspace_menu_input(&event);
         }
+        let revision = self.composer.edit_revision();
+        let preserved = self.model_edit_preserved(&event);
+        if self.mcp_menu_owns(&event) {
+            if self.composer.edit_revision() != revision {
+                self.reconcile_composer_menus(revision, preserved);
+            }
+            return Ok(());
+        }
         if self.settings_menu_owns(&event) {
             return Ok(());
         }
-        let revision = self.composer.edit_revision();
-        let preserved = self.model_edit_preserved(&event);
         match event {
             InputEvent::Raw(raw) => self.handle_raw(raw)?,
             InputEvent::Text(character) => {
@@ -123,6 +129,11 @@ impl Shell<'_> {
             | InputEvent::NativeClearProbe
             | InputEvent::NativeClearDetected => {}
         }
+        self.reconcile_composer_menus(revision, preserved);
+        Ok(())
+    }
+
+    fn reconcile_composer_menus(&mut self, revision: u64, preserved: bool) {
         let edited = self.composer.edit_revision() != revision;
         if edited {
             self.file_picker_after_edit();
@@ -136,7 +147,6 @@ impl Shell<'_> {
         self.sync_model_menu(edited);
         self.settle_model_draft();
         self.ensure_catalog();
-        Ok(())
     }
 
     fn handle_raw(&mut self, raw: RawTerminalInput) -> Result<(), crate::terminal::TerminalError> {

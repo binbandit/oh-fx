@@ -55,8 +55,8 @@ note = "The header packs the category tabs and keeps a far active tab as upstrea
 [[file]]
 upstream = "src/ui/footer/input_presentation.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs"]
-note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the status line menu hint ladder, and the model, effort, Fast and provider column projections are implemented, with the composer hidden behind the status line menu; image badges and login picker footer projections are absent."
+modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/picker_presentation.rs", "crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
+note = "Composer rows, selection and warning hints, the help, model and skills menu hint rows, the server screens of composeMcpMenuHintRow (in mcp_menu_presentation.rs), the status line menu hint ladder, and the model, effort, Fast and provider column projections are implemented, with the composer hidden behind the status line menu; image badges and login picker footer projections are absent."
 
 [[file]]
 upstream = "src/ui/footer/interaction_state.zig"
@@ -66,9 +66,9 @@ note = "No Rust implementation of upstream approval_chrome_rows, approval_panel_
 
 [[file]]
 upstream = "src/ui/footer/mcp_menu_presentation.zig"
-status = "todo"
-modules = []
-note = "No Rust implementation of upstream max_inline_rows, menuRowCount, visibleItemsForBudget behavior."
+status = "partial"
+modules = ["crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
+note = "max_inline_rows, menuRowCount, visibleItemsForBudget, the header with the server count and the Servers tab, the configuration issue row, the server rows with their state label, transport and source, the details facts with the oh-fx profile path, the help rows, the empty states and terminal-safe single-line text exist, with the server screens of the MCP menu hint row from input_presentation.zig; the other tabs, the feedback row, catalog rows, previews and the add, argument and confirmation rows arrive with their screens."
 
 [[file]]
 upstream = "src/ui/footer/model_menu_presentation.zig"
@@ -103,8 +103,8 @@ note = "Question option/freeform panels, hints and resolution rows are implement
 [[file]]
 upstream = "src/ui/footer/render_input.zig"
 status = "partial"
-modules = ["crates/ofx-tui/src/footer/input_presentation.rs"]
-note = "Composer input rows and the session menu projection the resume picker draws exist; upstream prepared model, help, MCP and settings menu projection adapters are absent."
+modules = ["crates/ofx-tui/src/footer/input_presentation.rs", "crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
+note = "Composer input rows, the session menu projection the resume picker draws and the server half of the MCP menu projection (McpMenuView in mcp_menu_presentation.rs) exist; upstream prepared model, help and settings menu projection adapters are absent."
 
 [[file]]
 upstream = "src/ui/footer/resume_menu_presentation.zig"

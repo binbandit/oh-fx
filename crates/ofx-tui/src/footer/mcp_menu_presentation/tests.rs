@@ -1,0 +1,280 @@
+use ofx_contract::{
+    McpMenuAuthentication, McpMenuConnection, McpMenuCounts, McpMenuServer, McpMenuSnapshot,
+    McpMenuSource, McpMenuStatus, McpMenuTransport,
+};
+
+use super::*;
+use crate::shell::mcp_menu::{Event, McpMenuState};
+
+fn theme() -> Theme {
+    Theme::builtin(false, true, true)
+}
+
+fn ready(name: &str) -> McpMenuServer {
+    McpMenuServer {
+        name: name.to_owned(),
+        source: McpMenuSource::Profile,
+        admission: None,
+        transport: McpMenuTransport::Stdio,
+        required: false,
+        connection: McpMenuConnection::Ready,
+        authentication: McpMenuAuthentication::Authenticated,
+        status: McpMenuStatus::Ready,
+        reloading: false,
+        protocol_version: Some("2025-06-18".to_owned()),
+        counts: McpMenuCounts {
+            tools: Some(2),
+            resources: Some(3),
+            resource_templates: Some(1),
+            prompts: Some(4),
+        },
+        failure: None,
+    }
+}
+
+fn snapshot(servers: Vec<McpMenuServer>) -> McpMenuSnapshot {
+    McpMenuSnapshot {
+        servers,
+        configuration_issues: Vec::new(),
+        profile_config: Some("~/.config/oh-fx/mcp.json".to_owned()),
+    }
+}
+
+fn frame(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize, budget: usize) -> String {
+    let view = McpMenuView { state, snapshot };
+    let rows = mcp_menu_rows(&theme(), view, width, menu_row_count(view, budget));
+    rows.iter()
+        .map(|row| {
+            assert!(
+                row.width() <= width,
+                "{:?} is wider than {width}",
+                row.text()
+            );
+            row.text()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn hint(state: &McpMenuState, snapshot: &McpMenuSnapshot, width: usize) -> String {
+    let view = McpMenuView { state, snapshot };
+    mcp_menu_hint_row(&theme(), view, width, false).text()
+}
+
+#[test]
+fn the_empty_server_state_is_compact_and_actionable() {
+    let state = McpMenuState::open(0);
+    let empty = snapshot(Vec::new());
+    let view = McpMenuView {
+        state: &state,
+        snapshot: &empty,
+    };
+    assert_eq!(menu_row_count(view, 20), 3);
+    let rows = frame(&state, &empty, 100, 20);
+    let lines: Vec<&str> = rows.lines().collect();
+    assert_eq!(lines[0], "MCP 0  [Servers]");
+    assert_eq!(lines[2], "  No MCP servers configured.");
+    let issues = McpMenuSnapshot {
+        configuration_issues: vec![".mcp.json server 'broken' is invalid".to_owned()],
+        ..empty
+    };
+    assert!(
+        frame(&state, &issues, 100, 20)
+            .contains("No MCP servers available; configuration errors need attention.")
+    );
+}
+
+#[test]
+fn rows_stay_within_a_narrow_terminal() {
+    let servers = snapshot(vec![ready("a-very-long-server-name-that-wraps")]);
+    let mut state = McpMenuState::open(1);
+    for width in [1, 4, 5, 24, 55, 56, 79, 80] {
+        for budget in [1, 2, 3, 4, 12] {
+            frame(&state, &servers, width, budget);
+        }
+    }
+    state.apply(Event::ShowDetails);
+    frame(&state, &servers, 24, 4);
+    state.apply(Event::ShowInfo);
+    frame(&state, &servers, 24, 12);
+}
+
+#[test]
+fn server_text_cannot_inject_terminal_control_sequences_or_break_rows() {
+    let state = McpMenuState::open(2);
+    let hostile = snapshot(vec![
+        ready("bad\u{1b}]0;owned\u{7}"),
+        ready("multi\nline\tname"),
+    ]);
+    let rows = frame(&state, &hostile, 100, 12);
+    assert!(!rows.contains("\u{1b}]0;owned"), "{rows}");
+    assert!(rows.contains("bad\\x1b]0;owned\\x07"), "{rows}");
+    assert!(rows.contains("multi line name"), "{rows}");
+    assert_eq!(rows.lines().count(), 4);
+}
+
+#[test]
+fn the_selection_stays_visible_with_one_body_row() {
+    let servers = snapshot(
+        (0..6)
+            .map(|index| ready(&format!("server-{index}")))
+            .collect(),
+    );
+    let mut state = McpMenuState::open(6);
+    state.selected_index = 5;
+    state.selected_server_index = 5;
+    let view = McpMenuView {
+        state: &state,
+        snapshot: &servers,
+    };
+    assert_eq!(menu_row_count(view, 3), 3);
+    let rows = frame(&state, &servers, 40, 3);
+    assert_eq!(rows.lines().nth(2), Some("  server-5"));
+}
+
+#[test]
+fn the_server_list_renders_its_upstream_rows() {
+    let fixture = ready("fixture");
+    let state = McpMenuState::open(1);
+    let servers = snapshot(vec![fixture.clone()]);
+    let browse = frame(&state, &servers, 100, MAX_INLINE_ROWS);
+    assert!(browse.contains("MCP 1  [Servers]"), "{browse}");
+    assert!(
+        browse.contains("  fixture               Ready                 stdio · Profile"),
+        "{browse}"
+    );
+
+    let issues = McpMenuSnapshot {
+        configuration_issues: vec![
+            ".mcp.json server 'broken' is missing MISSING_COMMAND in field command".to_owned(),
+            ".mcp.json server 'other' is invalid".to_owned(),
+        ],
+        ..servers.clone()
+    };
+    let listed = frame(&state, &issues, 100, MAX_INLINE_ROWS);
+    assert!(
+        listed.contains("2 project MCP configuration errors. Run oh-fx mcp list for details. .mcp.json server 'broken'"),
+        "{listed}"
+    );
+
+    let needs_auth = McpMenuServer {
+        transport: McpMenuTransport::Http,
+        authentication: McpMenuAuthentication::Required,
+        status: McpMenuStatus::NeedsAuth,
+        ..fixture.clone()
+    };
+    let auth = frame(&state, &snapshot(vec![needs_auth]), 100, MAX_INLINE_ROWS);
+    assert!(
+        auth.contains("Needs authentication  HTTP · Profile"),
+        "{auth}"
+    );
+
+    let reloading = McpMenuServer {
+        reloading: true,
+        ..fixture.clone()
+    };
+    let pending = McpMenuServer {
+        name: "other".to_owned(),
+        source: McpMenuSource::Project,
+        admission: Some(McpMenuAdmission::Pending),
+        ..fixture.clone()
+    };
+    let mixed = frame(
+        &McpMenuState::open(2),
+        &snapshot(vec![reloading, pending]),
+        100,
+        MAX_INLINE_ROWS,
+    );
+    assert!(mixed.contains("fixture               Reloading"), "{mixed}");
+    assert!(
+        mixed.contains("other                 Pending trust         stdio · Project"),
+        "{mixed}"
+    );
+}
+
+#[test]
+fn the_details_and_help_screens_render_their_upstream_facts() {
+    let fixture = ready("fixture");
+    let mut state = McpMenuState::open(1);
+    let servers = snapshot(vec![fixture.clone()]);
+    state.apply(Event::ShowDetails);
+    let details = frame(&state, &servers, 100, MAX_INLINE_ROWS);
+    for fact in [
+        "  Server              fixture",
+        "  State               Ready",
+        "  Source              Profile · ~/.config/oh-fx/mcp.json",
+        "  Transport           stdio",
+        "  Policy              optional",
+        "  Protocol            2025-06-18",
+        "  Capabilities        tools=2 resources=3 templates=1 prompts=4",
+    ] {
+        assert!(details.contains(fact), "{fact:?} in {details}");
+    }
+    assert!(!details.contains("Error"), "{details}");
+    let failed = McpMenuServer {
+        status: McpMenuStatus::Failed,
+        failure: Some("boom".to_owned()),
+        counts: McpMenuCounts::default(),
+        protocol_version: None,
+        required: true,
+        source: McpMenuSource::Project,
+        ..fixture
+    };
+    let broken = frame(&state, &snapshot(vec![failed]), 100, MAX_INLINE_ROWS);
+    for fact in [
+        "  Source              Project · .mcp.json",
+        "  Policy              required",
+        "  Protocol            unavailable",
+        "  Capabilities        tools=? resources=? templates=? prompts=?",
+        "  Error               boom",
+    ] {
+        assert!(broken.contains(fact), "{fact:?} in {broken}");
+    }
+    let gone = frame(&state, &snapshot(Vec::new()), 100, MAX_INLINE_ROWS);
+    assert!(
+        gone.contains("MCP server is no longer available."),
+        "{gone}"
+    );
+
+    state.apply(Event::ShowInfo);
+    let info = frame(&state, &servers, 100, MAX_INLINE_ROWS);
+    for line in [
+        "  Profile config      ~/.config/oh-fx/mcp.json",
+        "  Project config      <workspace>/.mcp.json",
+        "  servers: enter inspect",
+    ] {
+        assert!(info.contains(line), "{line:?} in {info}");
+    }
+}
+
+#[test]
+fn hints_fit_the_width_of_each_screen() {
+    let mut state = McpMenuState::open(1);
+    let remote = McpMenuServer {
+        transport: McpMenuTransport::Http,
+        connection: McpMenuConnection::Disconnected,
+        authentication: McpMenuAuthentication::None,
+        status: McpMenuStatus::Unavailable,
+        ..ready("remote")
+    };
+    let servers = snapshot(vec![remote]);
+    assert_eq!(
+        hint(&state, &servers, 100),
+        "↑↓ move  enter inspect  c help  esc close"
+    );
+    assert_eq!(hint(&state, &servers, 30), "↑↓ move  enter  c help  esc");
+    assert_eq!(hint(&state, &servers, 20), "enter c esc");
+    state.apply(Event::ShowDetails);
+    assert_eq!(hint(&state, &servers, 100), "c help  esc back");
+    assert_eq!(hint(&state, &servers, 10), "c esc");
+    state.apply(Event::ShowInfo);
+    assert_eq!(hint(&state, &servers, 100), "esc back");
+    let view = McpMenuView {
+        state: &state,
+        snapshot: &servers,
+    };
+    assert_eq!(
+        mcp_menu_hint_row(&theme(), view, 100, true).text(),
+        "press ctrl+c again to exit"
+    );
+}

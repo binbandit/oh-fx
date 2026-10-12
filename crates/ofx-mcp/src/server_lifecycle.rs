@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
@@ -137,6 +137,7 @@ pub(crate) struct Server {
     recovery: tokio::sync::Mutex<()>,
     restarts: Mutex<u8>,
     catalog_generation: Arc<AtomicU64>,
+    reload_pending: AtomicBool,
 }
 
 impl Server {
@@ -154,7 +155,16 @@ impl Server {
             recovery: tokio::sync::Mutex::new(()),
             restarts: Mutex::new(0),
             catalog_generation,
+            reload_pending: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn reload_pending(&self) -> bool {
+        self.reload_pending.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_reload_pending(&self, pending: bool) {
+        self.reload_pending.store(pending, Ordering::Release);
     }
 
     pub(crate) fn lifecycle(&self) -> Lifecycle {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ofx_config::{
     SettingsWriteError, WorkspaceEntryKind, WorkspaceSaveError, save_workspace_entry,
 };
-use ofx_contract::NoticeTone;
+use ofx_contract::{McpMenuRequest, NoticeTone, UiEvent};
 use ofx_mcp::{
     AddIntentError, CompletionArgument, CompletionResult, FeatureFailure, McpError, McpRuntime,
     ProfileConfigWarning, ProjectMcpAction, PromptGetResult, PromptSummary, ResourceContent,
@@ -46,6 +46,7 @@ const CHOICES_UNCERTAIN: &str = "Project MCP choices may have been saved, so liv
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Outcome {
     Show(String),
+    OpenMenu,
     Reload {
         body: String,
         report: bool,
@@ -99,11 +100,8 @@ impl Completion {
 
 pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRuntime) -> Outcome {
     let command = rest.trim_matches(TRIMMED);
-    if command.is_empty() {
-        return Outcome::Show(with_profile_warning(runtime.render_summary(), config_path));
-    }
-    if command == "list" {
-        return Outcome::Show(with_profile_warning(runtime.render_health(), config_path));
+    if command.is_empty() || command == "list" {
+        return Outcome::OpenMenu;
     }
     if let Some(rest) = command.strip_prefix("resource ") {
         return resource(rest);
@@ -144,6 +142,14 @@ pub(crate) fn respond(rest: &str, config_path: Option<&Path>, runtime: &McpRunti
     show(USAGE)
 }
 
+impl ControllerState {
+    pub(crate) fn handle_mcp_menu(&self, request: McpMenuRequest) {
+        if let Some(host) = self.mcp() {
+            host.handle_menu(request);
+        }
+    }
+}
+
 pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
     let Some(host) = state.mcp() else {
         return;
@@ -151,6 +157,9 @@ pub(crate) fn handle_mcp(state: &ControllerState, rest: &str) {
     let config_path = host.sources().profile_path();
     match respond(rest, config_path.as_deref(), host.runtime()) {
         Outcome::Show(body) => state.notice(NoticeTone::Neutral, topic(&body), &body),
+        Outcome::OpenMenu => state.emit(UiEvent::McpMenuOpened {
+            snapshot: host.menu_snapshot(),
+        }),
         Outcome::Reload { body, report } => {
             host.begin_reload();
             let body = if report {
@@ -600,22 +609,6 @@ fn completion(rest: &str) -> Option<Completion> {
     })
 }
 
-fn with_profile_warning(body: String, config_path: Option<&Path>) -> String {
-    let warning = config_path
-        .and_then(|path| load_profile_document(path).ok())
-        .and_then(|document| document.diagnostic);
-    let Some(warning) = warning else {
-        return body;
-    };
-    let mut text = body;
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(&render_profile_warning(&warning));
-    text.push('\n');
-    text
-}
-
 fn render_profile_warning(warning: &ProfileConfigWarning) -> String {
     let key = warning.key.as_ref().map_or_else(String::new, |key| {
         format!(
@@ -666,31 +659,25 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_and_the_listing_describe_the_configured_servers() {
-        assert_eq!(
-            shown("", None),
-            "MCP: no servers configured. Use /mcp add <name> <command> [args...]."
-        );
-        assert_eq!(shown(" \t", None), shown("", None));
-        assert_eq!(shown("list", None), "No MCP servers configured.\n");
+    fn the_bare_command_and_the_listing_open_the_menu() {
+        let (_home, path) = profile();
+        for command in ["", " \t", "list", " list "] {
+            for config in [None, Some(path.as_path())] {
+                assert_eq!(
+                    respond(command, config, &runtime()),
+                    Outcome::OpenMenu,
+                    "{command:?}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn a_profile_warning_follows_the_summary_and_the_listing() {
+    fn a_profile_warning_precedes_the_reload_line() {
         let (_home, path) = profile();
         fs::write(&path, r#"{"mcp":{},"mcpServers":{"old":{"command":"x"}}}"#).unwrap();
         let warning =
             "MCP config warning: ignored_mcp_servers_alias key=mcpServers additional_matches=0";
-        assert_eq!(
-            shown("", Some(&path)),
-            format!(
-                "MCP: no servers configured. Use /mcp add <name> <command> [args...].\n{warning}\n"
-            )
-        );
-        assert_eq!(
-            shown("list", Some(&path)),
-            format!("No MCP servers configured.\n{warning}\n")
-        );
         assert_eq!(
             respond("reload", Some(&path), &runtime()),
             Outcome::Reload {
