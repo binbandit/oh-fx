@@ -8,7 +8,8 @@ use ofx_text::is_terminal_safe;
 
 use super::{Candidate, CandidateKind, MAX_INDEXED_FILES, accepted_candidate};
 use crate::workspace_files::{
-    DiscoveryOptions, UntrackedFiles, discover_listing_directories, discover_listing_files,
+    CandidatePaths, DiscoveryOptions, GitFileListFailed, UntrackedFiles,
+    discover_listing_directories, discover_listing_files,
 };
 
 const GIT_METADATA_NAME: &str = ".git";
@@ -32,7 +33,7 @@ pub(super) fn discover_scope(
         if candidates.len() >= MAX_INDEXED_FILES {
             break;
         }
-        if discover_root(root, index == 0, stop, &mut seen, &mut candidates)? {
+        if discover_root(root, index, stop, &mut seen, &mut candidates)? {
             succeeded += 1;
         }
     }
@@ -44,7 +45,7 @@ pub(super) fn discover_scope(
 
 fn discover_root(
     root: &Path,
-    relative: bool,
+    root_index: usize,
     stop: &AtomicBool,
     seen: &mut HashSet<PathBuf>,
     candidates: &mut Vec<Candidate>,
@@ -56,13 +57,15 @@ fn discover_root(
         sort_paths: true,
         ..DiscoveryOptions::default()
     };
-    let Some(files) = discover_listing_files(root, &options) else {
-        return Ok(false);
+    let files = match discover_listing_files(root, &options) {
+        Ok(files) => files,
+        Err(GitFileListFailed) => return Ok(false),
     };
     checkpoint(stop)?;
-    let directories = discover_listing_directories(root, &options)
-        .map(|listing| listing.files)
-        .unwrap_or_default();
+    let directories = match discover_listing_directories(root, &options) {
+        Ok(listing) => listing.files,
+        Err(GitFileListFailed) => CandidatePaths::default(),
+    };
     checkpoint(stop)?;
     let Ok(root_directory) = open(
         root,
@@ -89,29 +92,32 @@ fn discover_root(
         if candidates.len() >= MAX_INDEXED_FILES {
             break;
         }
-        let Ok(path) = std::str::from_utf8(path) else {
-            continue;
-        };
         if path
-            .split('/')
-            .any(|component| component == GIT_METADATA_NAME)
-            || !is_terminal_safe(path.as_bytes())
+            .split(|byte| *byte == b'/')
+            .any(|component| component == GIT_METADATA_NAME.as_bytes())
         {
             continue;
         }
-        if kind == CandidateKind::File
-            && !statat(&root_directory, path, AtFlags::SYMLINK_NOFOLLOW).is_ok_and(|stat| {
-                matches!(
-                    FileType::from_raw_mode(stat.st_mode),
-                    FileType::RegularFile | FileType::Symlink
-                )
-            })
-        {
+        let Some(path) = std::str::from_utf8(path)
+            .ok()
+            .filter(|path| is_terminal_safe(path.as_bytes()))
+        else {
             continue;
+        };
+        if kind == CandidateKind::File {
+            let Ok(stat) = statat(&root_directory, path, AtFlags::SYMLINK_NOFOLLOW) else {
+                continue;
+            };
+            if !matches!(
+                FileType::from_raw_mode(stat.st_mode),
+                FileType::RegularFile | FileType::Symlink
+            ) {
+                continue;
+            }
         }
         let absolute = root.join(path);
         let candidate = Candidate {
-            path: if relative {
+            path: if root_index == 0 {
                 path.to_owned()
             } else {
                 absolute.to_string_lossy().into_owned()

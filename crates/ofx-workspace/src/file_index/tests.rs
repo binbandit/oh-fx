@@ -568,7 +568,7 @@ fn a_cached_index_paints_first_and_a_real_scan_replaces_it() {
     assert_eq!(paths(&search(&index, "")), ["real.txt"]);
     assert_eq!(
         file_index_cache::load(cache.path(), &[root.as_path()]),
-        Some(vec![file("real.txt")])
+        Ok(Some(vec![file("real.txt")]))
     );
 }
 

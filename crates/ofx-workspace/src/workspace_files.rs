@@ -14,6 +14,10 @@ use crate::bounded_process::run_bounded;
 use crate::ignored_dirs::IGNORED_DIRECTORY_NAMES;
 use crate::pathing::MAX_PATH_BYTES;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("GitFileListFailed")]
+pub(crate) struct GitFileListFailed;
+
 pub const DEFAULT_CANDIDATE_CAP: usize = 100_000;
 pub const MAX_RELATIVE_PATH_BYTES: usize = 2048;
 
@@ -271,51 +275,63 @@ fn is_hidden_name(name: &[u8]) -> bool {
 pub(crate) fn discover_listing_files(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
-) -> Option<Discovery> {
-    if let Some(git) = trusted_git_executable() {
-        if let Some(raw) = git_raw_list(workspace_root, options, git) {
-            return Some(parse_raw_list(raw, options));
-        }
-        if has_git_metadata(workspace_root) {
-            return None;
-        }
+) -> Result<Discovery, GitFileListFailed> {
+    let Some(git) = trusted_git_executable() else {
+        return Ok(walk_workspace(workspace_root, options));
+    };
+    match git_raw_list(workspace_root, options, git) {
+        Ok(raw) => Ok(parse_raw_list(raw, options)),
+        Err(error) if has_git_metadata(workspace_root) => Err(error),
+        Err(GitFileListFailed) => Ok(walk_workspace(workspace_root, options)),
     }
-    Some(walk_workspace(workspace_root, options))
 }
 
 pub(crate) fn discover_listing_directories(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
-) -> Option<Discovery> {
-    if let Some(git) = trusted_git_executable() {
-        if let Some(output) = run_bounded(
-            git_command_at(git, workspace_root).args(IGNORED_DIRECTORIES_ARGS),
-            GIT_STDOUT_LIMIT,
-        )
-        .filter(|output| output.status.success())
-        {
-            let ignored = parse_ignored_directories(&output.stdout);
+) -> Result<Discovery, GitFileListFailed> {
+    let Some(git) = trusted_git_executable() else {
+        return Ok(walk_workspace_paths(
+            workspace_root,
+            options,
+            WalkTarget::Directories,
+            None,
+        ));
+    };
+    match git_ignored_directories(workspace_root, git) {
+        Ok(ignored) => {
             let git_options = DiscoveryOptions {
                 ignored_names: &[GIT_METADATA_NAME],
                 ..*options
             };
-            return Some(walk_workspace_paths(
+            Ok(walk_workspace_paths(
                 workspace_root,
                 &git_options,
                 WalkTarget::Directories,
                 Some(&ignored),
-            ));
+            ))
         }
-        if has_git_metadata(workspace_root) {
-            return None;
-        }
+        Err(error) if has_git_metadata(workspace_root) => Err(error),
+        Err(GitFileListFailed) => Ok(walk_workspace_paths(
+            workspace_root,
+            options,
+            WalkTarget::Directories,
+            None,
+        )),
     }
-    Some(walk_workspace_paths(
-        workspace_root,
-        options,
-        WalkTarget::Directories,
-        None,
-    ))
+}
+
+fn git_ignored_directories(
+    workspace_root: &Path,
+    git_executable: &Path,
+) -> Result<CandidatePaths, GitFileListFailed> {
+    run_bounded(
+        git_command_at(git_executable, workspace_root).args(IGNORED_DIRECTORIES_ARGS),
+        GIT_STDOUT_LIMIT,
+    )
+    .filter(|output| output.status.success())
+    .map(|output| parse_ignored_directories(&output.stdout))
+    .ok_or(GitFileListFailed)
 }
 
 fn has_git_metadata(workspace_root: &Path) -> bool {
@@ -375,20 +391,35 @@ fn discover_listed_by(
         );
     }
     if !options.force_fallback
-        && let Some(raw) = git_executable
-            .filter(|git| work_tree_holds_root(git))
-            .and_then(|git| git_raw_list(workspace_root, options, git))
+        && let Some(listed) = git_listing(
+            workspace_root,
+            options,
+            git_executable,
+            work_tree_holds_root,
+        )
     {
-        let parsed = parse_raw_list(raw, options);
-        if options.untracked == UntrackedFiles::Only
-            || !parsed.files.is_empty()
-            || parsed.stats.incomplete
-            || parsed.stats.skipped_overlong > 0
-        {
-            return parsed;
-        }
+        return listed;
     }
     walk_workspace(workspace_root, options)
+}
+
+fn git_listing(
+    workspace_root: &Path,
+    options: &DiscoveryOptions<'_>,
+    git_executable: Option<&Path>,
+    work_tree_holds_root: impl Fn(&Path) -> bool,
+) -> Option<Discovery> {
+    let git = git_executable?;
+    if !work_tree_holds_root(git) {
+        return None;
+    }
+    let raw = git_raw_list(workspace_root, options, git).ok()?;
+    let parsed = parse_raw_list(raw, options);
+    (options.untracked == UntrackedFiles::Only
+        || !parsed.files.is_empty()
+        || parsed.stats.incomplete
+        || parsed.stats.skipped_overlong > 0)
+        .then_some(parsed)
 }
 
 fn git_list_arguments(options: &DiscoveryOptions<'_>) -> &'static [&'static str] {
@@ -403,12 +434,14 @@ fn git_raw_list(
     workspace_root: &Path,
     options: &DiscoveryOptions<'_>,
     git_executable: &Path,
-) -> Option<Vec<u8>> {
-    let output = run_bounded(
+) -> Result<Vec<u8>, GitFileListFailed> {
+    run_bounded(
         git_command_at(git_executable, workspace_root).args(git_list_arguments(options)),
         GIT_STDOUT_LIMIT,
-    )?;
-    output.status.success().then_some(output.stdout)
+    )
+    .filter(|output| output.status.success())
+    .map(|output| output.stdout)
+    .ok_or(GitFileListFailed)
 }
 
 fn trusted_git_executable() -> Option<&'static Path> {
