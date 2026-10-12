@@ -29,6 +29,19 @@ pub(crate) enum Screen {
     Confirm,
 }
 
+impl Screen {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Screen::Browse => "browse",
+            Screen::Details => "details",
+            Screen::Preview => "preview",
+            Screen::Add => "add",
+            Screen::Info => "info",
+            Screen::Confirm => "confirm",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoadState {
     Loading,

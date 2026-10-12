@@ -181,6 +181,10 @@ impl Home {
     }
 
     fn shell(&self) -> PtySession {
+        self.shell_with(|_| {})
+    }
+
+    fn shell_with(&self, configure: impl FnOnce(&mut Command)) -> PtySession {
         let mut command = Command::new(env!("CARGO_BIN_EXE_oh-fx"));
         command
             .current_dir(&self.workspace)
@@ -196,6 +200,7 @@ impl Home {
             .env("OH_FX_AUTO_UPGRADE", "0")
             .env("MCP_STATE", &self.state)
             .process_group(0);
+        configure(&mut command);
         let session = PtySession::spawn(command, 40, 200).expect("spawn oh-fx in a pty");
         session
             .wait_for(SHELL_WAIT, |screen| {
@@ -1559,4 +1564,79 @@ fn the_mcp_menu_previews_a_resource_and_inserts_it_into_the_composer() {
         .wait_for(SHELL_WAIT, |screen| !screen.contains("RESOURCE_TEXT"))
         .unwrap_or_else(|screen| panic!("ctrl+c kept the draft:\n{screen}"));
     exit(session);
+}
+
+const STALLING_PROMPTS: &str = r#"#!/bin/sh
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{},\"prompts\":{}},\"serverInfo\":{\"name\":\"stall\",\"version\":\"1.0\"}}" ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+  esac
+done
+"#;
+
+#[test]
+fn the_mcp_menu_writes_upstreams_trace_lines() {
+    let server = FakeServer::start([]);
+    let home = Home::new(&server.base_url());
+    let features = home.script("features.sh", FEATURE_SERVER);
+    let stall = home.script("stall.sh", STALLING_PROMPTS);
+    home.profile_servers(&json!({
+        "features": {"command": "/bin/sh", "args": [features]},
+        "stall": {"command": "/bin/sh", "args": [stall]},
+    }));
+    let log = home.root.join("trace.log");
+    let session = home.shell_with(|command| {
+        command
+            .env("OH_FX_TRACE_LOG", &log)
+            .env("OH_FX_TRACE_SCOPES", "mcp");
+    });
+    menu_shows(
+        &session,
+        b"/mcp\r",
+        &[server_row("stall", "Ready", "stdio · Profile")],
+    );
+    session.send(b"\x1b[B\x1b[D");
+    shown(&session, "  Server              stall");
+    session.send(b"\x1b");
+    session
+        .wait_for(SHELL_WAIT, |screen| !screen.contains("[Prompts]"))
+        .unwrap_or_else(|screen| panic!("the MCP menu stayed open:\n{screen}"));
+    menu_shows(&session, b"/mcp\r", &ready_features());
+    session.send(b"\rd\r");
+    session
+        .wait_for(SHELL_WAIT, |screen| !screen.contains("features "))
+        .unwrap_or_else(|screen| panic!("features stayed listed:\n{screen}"));
+    close_menu(&session);
+    exit(session);
+    let trace = fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = trace
+        .lines()
+        .filter_map(|line| line.split_once(" [mcp] ").map(|(_, body)| body))
+        .collect();
+    let position = |wanted: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(wanted))
+            .unwrap_or_else(|| panic!("{wanted:?} is missing from:\n{trace}"))
+    };
+    let opened = position("opening MCP menu");
+    let escape = position("MCP menu escape screen=browse filter=false");
+    let closed = position("closing MCP menu screen=browse");
+    let discarded = position("discarding pending menu operation generation=");
+    let removed =
+        position("closing server-bound menu state because its selected server was removed");
+    assert!(
+        opened < escape && escape < closed && closed < removed,
+        "{trace}"
+    );
+    assert!(lines[discarded].ends_with("reason=menu_closed"), "{trace}");
+}
+
+fn ready_features() -> Vec<String> {
+    vec![server_row("features", "Ready", "stdio · Profile")]
 }

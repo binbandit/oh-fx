@@ -2,8 +2,11 @@ use ofx_contract::{
     McpMenuCancel, McpMenuCatalog, McpMenuCatalogRequest, McpMenuPreview, McpMenuRequest, UiCommand,
 };
 
+use ofx_trace::trace_log;
+
 use super::Shell;
 use super::mcp_menu::{Effect, Event, Section};
+use super::mcp_menu_runtime::McpMenu;
 use crate::composer::InsertResult;
 use crate::input::{COMPOSER_INPUT_LIMIT_BYTES, InputEvent, ShortcutAction};
 
@@ -84,16 +87,30 @@ impl Shell<'_> {
     }
 
     pub(super) fn mcp_menu_previewed(&mut self, generation: u64, preview: McpMenuPreview) {
-        let Some(menu) = &mut self.mcp_menu else {
+        let Some(menu) = self.mcp_menu_awaiting(generation) else {
             return;
         };
-        if menu.state.pending_generation != Some(generation) {
-            return;
-        }
         menu.preview = Some(preview);
         menu.feedback = None;
         menu.state.apply(Event::PreviewLoaded(generation));
         self.invalidate();
+    }
+
+    fn mcp_menu_awaiting(&mut self, generation: u64) -> Option<&mut McpMenu> {
+        let pending = self
+            .mcp_menu
+            .as_ref()
+            .and_then(|menu| menu.state.pending_generation);
+        if pending != Some(generation) {
+            trace_log!(
+                "mcp",
+                "discarding menu completion generation={generation} active={} pending_generation={}",
+                self.mcp_menu.is_some(),
+                pending.map_or_else(|| "null".to_owned(), |pending| pending.to_string())
+            );
+            return None;
+        }
+        self.mcp_menu.as_mut()
     }
 
     pub(super) fn insert_mcp_menu_preview(&mut self) {
@@ -115,7 +132,7 @@ impl Shell<'_> {
         {
             self.report_limit();
         } else {
-            self.mcp_menu = None;
+            self.close_mcp_menu();
         }
     }
 
@@ -126,12 +143,9 @@ impl Shell<'_> {
     }
 
     pub(super) fn mcp_menu_loaded(&mut self, generation: u64, catalog: McpMenuCatalog) {
-        let Some(menu) = &mut self.mcp_menu else {
+        let Some(menu) = self.mcp_menu_awaiting(generation) else {
             return;
         };
-        if menu.state.pending_generation != Some(generation) {
-            return;
-        }
         match catalog {
             McpMenuCatalog::Tools(tools) => menu.catalogs.tools = tools,
             McpMenuCatalog::Resources(resources) => menu.catalogs.resources = resources,

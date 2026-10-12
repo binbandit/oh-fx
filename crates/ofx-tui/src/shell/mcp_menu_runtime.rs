@@ -13,8 +13,10 @@ use crate::footer::mcp_menu_presentation::{
 };
 use crate::input::{Action as InputAction, InputEvent};
 use crate::row_text::Row;
+use ofx_trace::trace_log;
 
 const REFRESH_INTERVAL_MS: i64 = 100;
+const MCP: &str = "mcp";
 const CTRL_Z: u8 = 26;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,10 @@ impl McpMenu {
                 self.state.selected_index = self.state.selected_server_index;
             }
             if kept.is_none() {
+                trace_log!(
+                    MCP,
+                    "closing server-bound menu state because its selected server was removed"
+                );
                 dropped = self.state.selected_server_removed();
             }
         }
@@ -101,6 +107,7 @@ fn same_server(server: &McpMenuServer, previous: &McpMenuServer) -> bool {
 
 impl Shell<'_> {
     fn open_mcp_menu(&mut self, snapshot: McpMenuSnapshot) {
+        trace_log!(MCP, "opening MCP menu");
         self.skills_menu = None;
         self.help_menu = None;
         self.settings_menu = None;
@@ -140,6 +147,16 @@ impl Shell<'_> {
                 preview,
             } => self.mcp_menu_previewed(generation, preview),
             _ => {}
+        }
+    }
+
+    pub(super) fn close_mcp_menu(&mut self) {
+        let Some(menu) = self.mcp_menu.take() else {
+            return;
+        };
+        trace_log!(MCP, "closing MCP menu screen={}", menu.state.screen.name());
+        if let Some(generation) = menu.state.pending_generation {
+            self.cancel_mcp_menu_operation(generation, McpMenuCancel::Closed);
         }
     }
 
@@ -319,10 +336,15 @@ impl Shell<'_> {
     pub(super) fn mcp_menu_back(&mut self) {
         self.gestures.disarm_escape_clear();
         self.gestures.disarm_escape_interrupt();
-        let filtering = self
-            .mcp_menu
-            .as_ref()
-            .is_some_and(|menu| menu.state.filter_active);
+        let Some(state) = self.mcp_menu.as_ref().map(|menu| &menu.state) else {
+            return;
+        };
+        let filtering = state.filter_active;
+        trace_log!(
+            MCP,
+            "MCP menu escape screen={} filter={filtering}",
+            state.screen.name()
+        );
         self.apply_mcp_menu_event(if filtering {
             Event::ClearFilter
         } else {
@@ -331,16 +353,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn apply_mcp_menu_event(&mut self, event: Event) -> Option<Effect> {
-        let menu = self.mcp_menu.as_mut()?;
-        let pending = menu.state.pending_generation;
-        let effect = menu.state.apply(event);
+        let effect = self.mcp_menu.as_mut()?.state.apply(event);
         match effect {
             Some(Effect::Close) => {
-                self.mcp_menu = None;
+                self.close_mcp_menu();
                 self.composer.clear();
-                if let Some(generation) = pending {
-                    self.cancel_mcp_menu_operation(generation, McpMenuCancel::Closed);
-                }
             }
             Some(Effect::Action { generation, .. }) => self.mcp_menu_generation = generation,
             Some(Effect::LoadCatalog {

@@ -24,7 +24,7 @@ impl Shell<'_> {
         self.statusline_menu = None;
         self.usage_menu = None;
         self.model_menu = None;
-        self.mcp_menu = None;
+        self.close_mcp_menu();
         self.close_picker();
         self.workspace_menu = Some(WorkspaceMenuState::open(menu));
         self.invalidate();
