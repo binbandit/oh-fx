@@ -36,6 +36,7 @@ fn request(
             always,
         },
         command: None,
+        command_risk: None,
         file: Some(file),
         change,
         origin: ApprovalOrigin::ActiveSession,

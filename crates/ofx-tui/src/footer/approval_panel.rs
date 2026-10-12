@@ -527,6 +527,10 @@ mod tests {
     }
 
     fn command_content(command: &str) -> ApprovalContent {
+        risky_command_content(command, None)
+    }
+
+    fn risky_command_content(command: &str, risk: Option<&str>) -> ApprovalContent {
         let request = ApprovalRequest {
             id: RequestId::new(1),
             tool_name: "shell".to_owned(),
@@ -559,6 +563,7 @@ mod tests {
                 terminal: false,
                 reload: false,
             }),
+            command_risk: risk.map(str::to_owned),
             file: None,
             origin: ApprovalOrigin::ActiveSession,
             change: None,
@@ -740,6 +745,30 @@ mod tests {
     }
 
     #[test]
+    fn a_risky_command_names_its_risk_in_the_reason_row() {
+        let content = risky_command_content(
+            "rm -rf build",
+            Some("command may remove files forcefully; safer: inspect targets first"),
+        );
+        let rows = approval_panel_rows(
+            &theme(),
+            &content,
+            choosing(&choices(content.remember.as_ref()), 0),
+            frame(100, 24),
+        )
+        .rows;
+        assert_eq!(
+            texts(&rows)[1..4],
+            [
+                "  Would you like to run the following command?",
+                "  Reason: command may remove files forcefully; safer: inspect targets first",
+                "  # shell.run cwd=/ws",
+            ]
+        );
+        assert_eq!(rows[2].segments()[1].paint, theme().dim);
+    }
+
+    #[test]
     fn inline_command_panel_preserves_a_command_wider_than_any_row() {
         let command = format!("printf 'START{}END'", "x".repeat(5000));
         let rows = approval_panel_rows(
@@ -910,6 +939,7 @@ mod tests {
                 always: Some(SessionGrant::ReadsUnder(target)),
             },
             command: None,
+            command_risk: None,
             file: None,
             origin: ApprovalOrigin::ActiveSession,
             change: None,
@@ -941,6 +971,7 @@ mod tests {
                 always: None,
             },
             command: None,
+            command_risk: None,
             file: None,
             origin: ApprovalOrigin::ActiveSession,
             change: None,

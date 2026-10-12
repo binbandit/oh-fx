@@ -79,6 +79,7 @@ fn approval(turn: u64, id: u64) -> UiEvent {
                 always: None,
             },
             command: None,
+            command_risk: None,
             file: None,
             origin: ApprovalOrigin::ActiveSession,
             change: None,
