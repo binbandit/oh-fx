@@ -281,7 +281,7 @@ impl McpMenuState {
                 Some(Effect::LoadPreview { generation })
             }
             Event::InsertPreview if self.screen == Screen::Preview => {
-                let generation = self.begin_generation(false);
+                let generation = self.begin_generation(true);
                 Some(Effect::Insert { generation })
             }
             _ => None,

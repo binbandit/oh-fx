@@ -288,6 +288,7 @@ fn the_details_and_help_screens_render_their_upstream_facts() {
         "  project trust: p approve all · z reset",
         "  details: enter sign in · l logout · d remove",
         "  project details: a approve · x reject",
+        "  catalogs: / filter · enter open · i insert preview",
     ] {
         assert!(info.contains(line), "{line:?} in {info}");
     }
@@ -798,4 +799,23 @@ fn a_preview_renders_from_its_window_with_the_preview_hints() {
         mcp_menu_hint_row(&theme(), view, 30, false).text(),
         "↑↓ scroll  i insert  esc"
     );
+}
+
+#[test]
+fn a_preview_screen_without_content_says_it_is_loading() {
+    let servers = snapshot(vec![ready("docs")]);
+    let mut state = McpMenuState::open(1);
+    state.screen = Screen::Preview;
+    let view = McpMenuView {
+        state: &state,
+        snapshot: &servers,
+        feedback: None,
+        add: AddFields::default(),
+        catalogs: &NO_CATALOGS,
+        loading_visible: true,
+        preview: None,
+    };
+    let rows = mcp_menu_rows(&theme(), view, 80, menu_row_count(view, 12, 80));
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2].text(), "  Loading MCP content…");
 }

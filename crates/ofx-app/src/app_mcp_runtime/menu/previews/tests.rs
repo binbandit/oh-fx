@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use ofx_config::ContextLimits;
+use ofx_config::{ContextLimitName, ContextLimitOverride, ContextLimitValue, ContextLimits};
 use ofx_contract::{McpMenuOutcome, McpMenuSettled};
 use ofx_mcp::{ConnectOptions, McpServerConfig, NativeConfigLoad, StartupPhase};
 
@@ -15,10 +15,11 @@ while IFS= read -r line; do
     *'"method":"initialize"'*)
       version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}},\"serverInfo\":{\"name\":\"docs\",\"version\":\"1\"}}" ;;
-    *'"method":"tools/list"'*) reply "$id" '{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]}' ;;
-    *'"method":"resources/list"'*) reply "$id" '{"resources":[{"uri":"custom://alpha","name":"alpha"}]}' ;;
+    *'"method":"tools/list"'*) reply "$id" '{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}},{"name":"wide","inputSchema":{"type":"object","properties":{"first":{"type":"string","description":"a long description that does not fit"}}}}]}' ;;
+    *'"method":"resources/list"'*) reply "$id" '{"resources":[{"uri":"custom://alpha","name":"alpha"},{"uri":"custom://broken","name":"broken"}]}' ;;
     *'"method":"resources/templates/list"'*) reply "$id" '{"resourceTemplates":[]}' ;;
-    *'"method":"prompts/list"'*) reply "$id" '{"prompts":[{"name":"review"}]}' ;;
+    *'"method":"prompts/list"'*) reply "$id" '{"prompts":[{"name":"review"},{"name":"tone","arguments":[{"name":"tone","required":true}]}]}' ;;
+    *'custom://broken'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"broken"}}\n' "$id" ;;
     *'"method":"resources/read"'*) reply "$id" '{"contents":[{"uri":"custom://alpha","text":"line one\nline two"},{"uri":"custom://alpha","blob":"AAAA"}]}' ;;
     *'"method":"prompts/get"'*) reply "$id" '{"messages":[{"role":"user","content":{"type":"text","text":"Review this"}},{"role":"assistant","content":{"type":"text","text":"Sure"}}]}' ;;
   esac
@@ -31,6 +32,11 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
+    let mut limits = ContextLimits::default();
+    limits.apply_command_line(&[ContextLimitOverride {
+        name: ContextLimitName::McpSelectedSchemaBytes,
+        value: ContextLimitValue::Bytes(160),
+    }]);
     let home = tempfile::tempdir().unwrap();
     let runtime = Arc::new(McpRuntime::new(
         NativeConfigLoad {
@@ -43,7 +49,7 @@ async fn fixture() -> Fixture {
         },
         ConnectOptions::default(),
         Vec::new(),
-        ContextLimits::default(),
+        limits,
     ));
     runtime.connect(StartupPhase::All).await;
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -86,6 +92,10 @@ impl Fixture {
             UiEvent::McpMenuPreviewed { preview, .. } => preview,
             event => panic!("expected a preview: {event:?}"),
         }
+    }
+
+    async fn feedback(&self, generation: u64, target: McpMenuPreviewTarget) -> String {
+        self.failure(generation, target).await.feedback
     }
 
     async fn failure(&self, generation: u64, target: McpMenuPreviewTarget) -> McpMenuSettled {
@@ -167,6 +177,36 @@ async fn a_preview_that_cannot_load_settles_the_menu_with_its_error() {
             .await
             .feedback,
         "MCP preview failed: McpServerNotFound"
+    );
+    assert_eq!(
+        fixture
+            .feedback(3, McpMenuPreviewTarget::Tool("mcp_docs_wide".to_owned()))
+            .await,
+        "MCP preview failed: McpAccessDenied"
+    );
+    assert_eq!(
+        fixture
+            .feedback(
+                4,
+                McpMenuPreviewTarget::Resource {
+                    server: "docs".to_owned(),
+                    uri: "custom://broken".to_owned(),
+                },
+            )
+            .await,
+        "MCP preview failed: McpProtocolError"
+    );
+    assert_eq!(
+        fixture
+            .feedback(
+                5,
+                McpMenuPreviewTarget::Prompt {
+                    server: "docs".to_owned(),
+                    name: "tone".to_owned(),
+                },
+            )
+            .await,
+        "MCP preview failed: InvalidArguments"
     );
 }
 

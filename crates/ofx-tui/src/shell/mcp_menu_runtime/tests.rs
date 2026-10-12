@@ -1184,9 +1184,47 @@ fn an_insert_past_the_composer_limit_keeps_the_preview_open() {
         "MCP tool schema · untrusted metadata",
         &insert,
     ));
-    press(&mut test, b"i");
+    let screen = press(&mut test, b"i");
     assert!(test.shell.mcp_menu.is_some());
     assert_eq!(state(&test).screen, Screen::Preview);
     assert_eq!(state(&test).load_state, LoadState::Loading);
     assert!(test.shell.composer.is_empty());
+    assert!(
+        screen.contains("That edit exceeds the local prompt safety limit and was not applied."),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_preview_targets_the_filtered_item_and_starts_without_old_feedback() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"\t");
+    test.deliver(UiEvent::McpMenuLoaded {
+        generation: 1,
+        catalog: McpMenuCatalog::Tools(vec!["alpha".to_owned(), "beta".to_owned()]),
+    });
+    press(&mut test, b"\r");
+    test.deliver(outcome(
+        2,
+        McpMenuOutcome::Failed,
+        "MCP preview failed: McpToolNotFound",
+    ));
+    assert!(test.screen().contains("McpToolNotFound"));
+    press(&mut test, b"/b\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&preview_request(
+            3,
+            McpMenuPreviewTarget::Tool("beta".to_owned())
+        ))
+    );
+    let screen = test.screen();
+    assert!(!screen.contains("McpToolNotFound"), "{screen}");
+    test.deliver(previewed(3, "current", "current"));
+    test.deliver(previewed(2, "stale", "stale"));
+    let preview = test.shell.mcp_menu.as_ref().unwrap().preview.as_ref();
+    assert_eq!(
+        preview.map(|preview| preview.insert.as_str()),
+        Some("current")
+    );
 }

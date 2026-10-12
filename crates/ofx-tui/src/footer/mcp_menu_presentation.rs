@@ -139,8 +139,11 @@ pub(crate) fn mcp_menu_rows(
     width: usize,
     row_count: usize,
 ) -> Vec<Row> {
+    let body_rows = row_count.saturating_sub(if row_count > 2 { HEADER_ROWS } else { 0 });
+    let preview = (view.state.screen == Screen::Preview)
+        .then(|| preview::preview_lines(view.preview, width, body_rows, view.state.window_start));
     (0..row_count)
-        .map(|row_index| compose_row(theme, view, row_index, width, row_count))
+        .map(|row_index| compose_row(theme, view, row_index, width, row_count, preview.as_deref()))
         .collect()
 }
 
@@ -189,6 +192,7 @@ fn compose_row(
     row_index: usize,
     width: usize,
     row_count: usize,
+    preview: Option<&[&str]>,
 ) -> Row {
     if width == 0 || row_index >= row_count {
         return Row::new();
@@ -250,14 +254,11 @@ fn compose_row(
         Screen::Details => details_row(theme, view, body_index, width),
         Screen::Add => add_row(theme, view, body_index, width),
         Screen::Info => info_row(theme, view, body_index, width),
-        Screen::Preview => preview::preview_row(
-            theme,
-            view.preview,
-            body_index,
-            width,
-            row_count - body_start,
-            view.state.window_start,
-        ),
+        Screen::Preview => preview
+            .and_then(|lines| lines.get(body_index))
+            .map_or_else(Row::new, |line| {
+                text_row(line, width, theme.dim, TEXT_INDENT)
+            }),
         Screen::Confirm => text_row(
             confirmation_text(view.state.confirmation_action),
             width,

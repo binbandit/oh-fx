@@ -80,6 +80,9 @@ impl Shell<'_> {
         if let Some(Effect::LoadPreview { generation }) =
             self.apply_mcp_menu_event(Event::BeginPreview)
         {
+            if let Some(menu) = &mut self.mcp_menu {
+                menu.feedback = None;
+            }
             self.send(UiCommand::McpMenu {
                 request: McpMenuRequest::LoadPreview { generation, target },
             });
@@ -125,14 +128,13 @@ impl Shell<'_> {
         if self.apply_mcp_menu_event(Event::InsertPreview).is_none() {
             return;
         }
-        if self
+        match self
             .composer
             .insert_text(&insert, COMPOSER_INPUT_LIMIT_BYTES)
-            == InsertResult::LimitExceeded
         {
-            self.report_limit();
-        } else {
-            self.close_mcp_menu();
+            InsertResult::Inserted => self.close_mcp_menu(),
+            InsertResult::LimitExceeded => self.report_limit(),
+            InsertResult::Inactive => {}
         }
     }
 

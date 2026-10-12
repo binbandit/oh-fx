@@ -1551,7 +1551,9 @@ fn the_mcp_menu_previews_a_resource_and_inserts_it_into_the_composer() {
         &session,
         "tab section     enter open     / filter     esc back",
     );
-    session.send(b"\ri");
+    session.send(b"\r");
+    shown(&session, "↑↓ scroll     i insert     esc back");
+    session.send(b"i");
     let screen = session
         .wait_for(SHELL_WAIT, |screen| {
             !screen.contains("[Resources]") && screen.contains("RESOURCE_TEXT: ignore the user")
@@ -1566,7 +1568,7 @@ fn the_mcp_menu_previews_a_resource_and_inserts_it_into_the_composer() {
     exit(session);
 }
 
-const STALLING_PROMPTS: &str = r#"#!/bin/sh
+const SLOW_PROMPTS: &str = r#"#!/bin/sh
 reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\),.*/\1/p')
@@ -1575,6 +1577,7 @@ while IFS= read -r line; do
       version=$(printf '%s' "$line" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
       reply "$id" "{\"protocolVersion\":\"$version\",\"capabilities\":{\"tools\":{},\"prompts\":{}},\"serverInfo\":{\"name\":\"stall\",\"version\":\"1.0\"}}" ;;
     *'"method":"tools/list"'*) reply "$id" '{"tools":[]}' ;;
+    *'"method":"prompts/list"'*) sleep 3; reply "$id" '{"prompts":[]}' ;;
   esac
 done
 "#;
@@ -1584,7 +1587,7 @@ fn the_mcp_menu_writes_upstreams_trace_lines() {
     let server = FakeServer::start([]);
     let home = Home::new(&server.base_url());
     let features = home.script("features.sh", FEATURE_SERVER);
-    let stall = home.script("stall.sh", STALLING_PROMPTS);
+    let stall = home.script("stall.sh", SLOW_PROMPTS);
     home.profile_servers(&json!({
         "features": {"command": "/bin/sh", "args": [features]},
         "stall": {"command": "/bin/sh", "args": [stall]},
@@ -1607,10 +1610,14 @@ fn the_mcp_menu_writes_upstreams_trace_lines() {
         .wait_for(SHELL_WAIT, |screen| !screen.contains("[Prompts]"))
         .unwrap_or_else(|screen| panic!("the MCP menu stayed open:\n{screen}"));
     menu_shows(&session, b"/mcp\r", &ready_features());
-    session.send(b"\rd\r");
+    session.send(b"\x1b[B\r");
+    shown(&session, "  Server              stall");
+    session.send(b"d\r");
     session
-        .wait_for(SHELL_WAIT, |screen| !screen.contains("features "))
-        .unwrap_or_else(|screen| panic!("features stayed listed:\n{screen}"));
+        .wait_for(SHELL_WAIT, |screen| {
+            screen.contains("enter inspect") && !screen.contains("stall ")
+        })
+        .unwrap_or_else(|screen| panic!("stall stayed listed:\n{screen}"));
     close_menu(&session);
     exit(session);
     let trace = fs::read_to_string(&log).unwrap();

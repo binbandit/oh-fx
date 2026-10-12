@@ -1,8 +1,6 @@
 use ofx_text::{display_unit_at, prefix_by_width, trim_break_whitespace};
 
-use super::{TEXT_INDENT, text_row};
-use crate::row_text::Row;
-use crate::theme::Theme;
+use super::TEXT_INDENT;
 
 const LOADING: &str = "Loading MCP content…";
 
@@ -19,32 +17,28 @@ pub(crate) fn preview_visual_row_count(preview: Option<&str>, width: usize) -> u
         .sum()
 }
 
-pub(super) fn preview_row(
-    theme: &Theme,
+pub(super) fn preview_lines(
     preview: Option<&str>,
-    row_index: usize,
     width: usize,
     visible_rows: usize,
     window_start: usize,
-) -> Row {
-    let total = preview_visual_row_count(preview, width);
-    let start = window_start.min(total - visible_rows.min(total));
-    visual_row(preview.unwrap_or(LOADING), start + row_index, width).map_or_else(Row::new, |line| {
-        text_row(line, width, theme.dim, TEXT_INDENT)
-    })
-}
-
-fn visual_row(text: &str, target: usize, width: usize) -> Option<&str> {
+) -> Vec<&str> {
     let content_width = width.saturating_sub(TEXT_INDENT);
     if content_width == 0 {
-        return Some("");
+        return vec![""; visible_rows.min(1)];
     }
-    text.split('\n')
+    let total = preview_visual_row_count(preview, width);
+    let start = window_start.min(total - visible_rows.min(total));
+    preview
+        .unwrap_or(LOADING)
+        .split('\n')
         .flat_map(|line| {
             let empty = line.is_empty().then_some("");
             empty.into_iter().chain(chunks(line, content_width))
         })
-        .nth(target)
+        .skip(start)
+        .take(visible_rows)
+        .collect()
 }
 
 fn chunks(line: &str, content_width: usize) -> impl Iterator<Item = &str> {
