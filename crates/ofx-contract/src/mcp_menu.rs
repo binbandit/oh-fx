@@ -77,7 +77,16 @@ pub struct McpMenuCounts {
     pub prompts: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpMenuRequest {
     Refresh,
+    Reload { generation: u64 },
+    Authenticate { generation: u64, server: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuSettled {
+    pub generation: u64,
+    pub succeeded: bool,
+    pub feedback: String,
 }

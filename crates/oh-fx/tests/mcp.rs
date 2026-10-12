@@ -1088,7 +1088,7 @@ fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
     let screen = menu_shows(&session, b"/mcp\r", std::slice::from_ref(&fixture_row));
     assert!(screen.contains("MCP 1  [Servers]"), "{screen}");
     assert!(
-        screen.contains("↑↓ move  enter inspect  c help  esc close"),
+        screen.contains("↑↓ move  enter inspect  r reload  c help  esc close"),
         "{screen}"
     );
     let profile = home.root.join("config/oh-fx/mcp.json");
@@ -1104,7 +1104,7 @@ fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
         ],
     );
     session.send(b"c");
-    shown(&session, "  servers: enter inspect");
+    shown(&session, "  servers: r reload · enter inspect");
     session.send(b"\x1b");
     shown(&session, MENU_HINT);
     close_menu(&session);
@@ -1133,6 +1133,9 @@ fn the_mcp_menu_lists_inspects_and_reloads_profile_servers() {
         server_row("second", "Ready", "stdio · Profile"),
     ];
     menu_shows(&session, b"/mcp\r", &both);
+    session.send(b"r");
+    shown(&session, "  MCP configuration reloaded.");
+    menu_shows(&session, b"", &both);
     close_menu(&session);
     session.send(b"/mcp wat\r");
     shown(
