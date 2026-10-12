@@ -1979,6 +1979,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
+                    terminals: None,
                     endpoints,
                     web_fetch_progress: None,
                     mode: None,

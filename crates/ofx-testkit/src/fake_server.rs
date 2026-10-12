@@ -320,6 +320,10 @@ impl FakeServer {
     pub fn offered_protocols(&self) -> Vec<Vec<String>> {
         lock(&self.state).offered_protocols.clone()
     }
+
+    pub fn push(&self, replies: impl IntoIterator<Item = Reply>) {
+        lock(&self.state).replies.extend(replies);
+    }
 }
 
 fn server_config(certificate_pem: &str, key_pem: &str) -> Arc<ServerConfig> {
@@ -689,6 +693,16 @@ mod tests {
         assert_eq!(requests[0].path, "/v1/chat/completions");
         assert_eq!(requests[0].header("x-key"), Some("secret"));
         assert_eq!(requests[0].json(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn replies_pushed_after_the_start_are_served_after_the_scripted_ones() {
+        let server = FakeServer::start([Reply::status(200, "first")]);
+        let post = "POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
+        assert!(exchange(&server, post).ends_with("first"));
+        assert!(exchange(&server, post).ends_with("no scripted reply"));
+        server.push([Reply::status(200, "pushed")]);
+        assert!(exchange(&server, post).ends_with("pushed"));
     }
 
     #[test]

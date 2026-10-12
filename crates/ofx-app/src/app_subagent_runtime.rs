@@ -171,8 +171,12 @@ impl ChildAgents for ChildFactory {
         let tools = tool_set::with_mcp(
             tool_set::ask_tools(
                 &self.workspace_root,
-                &executions,
-                self.command_timeout,
+                tool_set::shell_tool(
+                    &self.workspace_root,
+                    &executions,
+                    None,
+                    self.command_timeout,
+                ),
                 &self.permission_mode,
                 self.skills.tool(),
                 Arc::clone(&search),

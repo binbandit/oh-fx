@@ -15,7 +15,7 @@ use ofx_agent::{
 use ofx_app::{
     CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
     ResumedSession, RoutingFlags, SubscriptionEndpoints, TitleGeneration, WebFetchProgress,
-    default_mode, open_store, recovered_turn, session_lookup_message,
+    default_mode, open_store, open_terminals, recovered_turn, session_lookup_message,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskLayout, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -29,7 +29,7 @@ use ofx_contract::{
     ToolActivity, ToolCallId, ToolEffect, ToolRejection, ToolResultStatus, TurnOutcome, UiEvent,
     Usage, format_unknown_action,
 };
-use ofx_exec::{ManagedExecutions, SessionSupervisor};
+use ofx_exec::{ManagedExecutions, SessionSupervisor, Terminals};
 use ofx_gateway::HttpFailure;
 use ofx_images::MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE;
 use ofx_mcp::{McpRuntime, ShutdownMode, render_workspace_diagnostic};
@@ -267,6 +267,7 @@ struct AskRequest<'a> {
     images: &'a [ImageAttachment],
     modifiers: &'a LaunchModifiers,
     executions: &'a ManagedExecutions,
+    terminals: Option<&'a Terminals>,
 }
 
 struct PreparedAsk {
@@ -448,15 +449,20 @@ async fn ask(
     }
     let cancel = CancellationToken::new();
     let received = watch_signals(cancel.clone());
+    let terminals = open_terminals();
     let request = AskRequest {
         args,
         prompt,
         images,
         modifiers,
         executions: &executions,
+        terminals: terminals.as_ref(),
     };
     let answered = Box::pin(answer(&request, endpoints, echo, &cancel, &received)).await;
     executions.shutdown().await;
+    if let Some(terminals) = &terminals {
+        terminals.close_owned_terminals().await;
+    }
     if args.output.layout == AskLayout::Captured {
         received.restore_default_action();
     }
@@ -616,6 +622,7 @@ async fn prepare_agent(
         context_limits: request.modifiers.context_limit_overrides(),
         command_timeout: args.timeout_ms.map(Duration::from_millis),
         executions: request.executions,
+        terminals: request.terminals,
         endpoints,
         web_fetch_progress: web_fetch_progress(output_mode(args.output)),
         mode: Some(default_mode()),
@@ -2070,6 +2077,7 @@ mod tests {
             images: &[],
             modifiers: &LaunchModifiers::default(),
             executions: &executions,
+            terminals: None,
         };
         let answered =
             runtime.block_on(answer(&request, endpoints(&auth), None, &cancel, &received));
@@ -2160,6 +2168,7 @@ mod tests {
             images: &[],
             modifiers: &LaunchModifiers::default(),
             executions: &executions,
+            terminals: None,
         };
         let answered = runtime.block_on(answer(
             &request,

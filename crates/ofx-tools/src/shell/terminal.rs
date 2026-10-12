@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use ofx_contract::{PathAccess, ToolOutput};
+use ofx_contract::{PathAccess, TERMINAL_ENDED_ERROR_CODE, ToolOutput};
 use ofx_exec::{
     Backend, ClosePolicy, Lifecycle, ManagedExecutions, Observation, Profile, ReturnCondition,
     ShellSpec, Snapshot, SnapshotState, StartRequest, SyncOutcome, TerminalFailure,
@@ -30,7 +30,6 @@ const EXECUTION_TERMINAL: &str = "ExecutionTerminal";
 const AUTHORITY_UNAVAILABLE: &str = "TerminalAuthorityUnavailable";
 const TERMINAL_NOT_READY: &str = "TerminalNotReady";
 const TERMINAL_CLOSE_FAILED: &str = "TerminalCloseFailed";
-const TERMINAL_ENDED: &str = "TerminalEnded";
 const TERMINAL_ENDED_MESSAGE: &str = "This terminal ended when the oh-fx process that started it exited. It cannot be resumed. Start a new terminal with shell action run and tty true.";
 
 #[derive(Clone, Default)]
@@ -518,7 +517,7 @@ pub(super) fn terminal_failure(failure: &TerminalFailure) -> String {
 pub(super) fn terminal_ended(session_id: &str) -> String {
     json!({"error": {
         "tool": "shell",
-        "code": TERMINAL_ENDED,
+        "code": TERMINAL_ENDED_ERROR_CODE,
         "session_id": session_id,
         "message": TERMINAL_ENDED_MESSAGE,
         "retryable": false,

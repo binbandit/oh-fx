@@ -11,8 +11,9 @@ use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::{Agent, ChildStore, MeteredProvider};
-use ofx_config::SelectionError;
+use ofx_config::{ProfilePaths, SelectionError};
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory, UsageReport, UsageReportError};
+use ofx_exec::{TerminalStore, Terminals};
 use ofx_session::{
     PendingRecovery, ProfilePublisher, ResumeTarget, RouteCredential, SavedProvider,
     SessionDisposal, SessionError, SessionLog, SessionPreferences, SessionStore, TitleGate,
@@ -34,6 +35,8 @@ pub(crate) use session_titles::{
 };
 pub(crate) use shell_recovery::{NOT_CONTINUED, RECOVERY_TOPIC, SIGN_IN_TO_CONTINUE};
 use shell_recovery::{ShellRecovery, shell_recovery};
+
+const TERMINAL_DIRECTORY: &str = "terminal";
 
 #[derive(Debug)]
 pub enum ResumeFailure {
@@ -394,6 +397,13 @@ impl LiveSession {
             Err(_) => SessionDisposal::Retained,
         }
     }
+}
+
+pub fn open_terminals() -> Option<Terminals> {
+    let paths = ProfilePaths::from_environment()?;
+    TerminalStore::new(paths.data.join(TERMINAL_DIRECTORY))
+        .ok()
+        .map(Terminals::new)
 }
 
 pub fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {

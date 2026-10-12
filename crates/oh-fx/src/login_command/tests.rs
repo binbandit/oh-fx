@@ -237,6 +237,7 @@ async fn saved_codex_request() {
                 context_limits: &[],
                 command_timeout: None,
                 executions: &executions,
+                terminals: None,
                 web_fetch_progress: None,
                 permission_prompts: false,
                 mode: None,

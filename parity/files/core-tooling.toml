@@ -140,7 +140,7 @@ note = "contentForDisplay unwraps the path and content envelope of a tool result
 upstream = "src/core/tooling/tool_result_errors.zig"
 status = "partial"
 modules = ["crates/ofx-contract/src/tool_result_errors.rs"]
-note = "Permission/review/malformed arguments, PreToolUse blocked and failed-closed results and execution failures are encoded, tool outputs are classified as failures as upstream's isToolOutputError does, and shell request corrections are recognized; terminal action field corrections, which arrive with TTY sessions, and unavailable host-tool results are absent. #1137's TerminalEnded code arrives with in-process TTY terminals."
+note = "Permission/review/malformed arguments, PreToolUse blocked and failed-closed results and execution failures are encoded, tool outputs are classified as failures as upstream's isToolOutputError does, and shell request corrections are recognized; terminal action field corrections, which no terminal action of the shell tool produces, and unavailable host-tool results are absent. #1137's terminal_ended_error_code and isTerminalEndedFailure are ported as TERMINAL_ENDED_ERROR_CODE and is_terminal_ended_failure with upstream's test."
 
 [[file]]
 upstream = "src/core/tooling/tool_result_limits.zig"

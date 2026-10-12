@@ -19,6 +19,7 @@ use super::*;
 use crate::context::{GATEWAY_SYSTEM_PROMPT, HostRuntimeContext};
 use crate::model_cache_runtime::ModelSource;
 use crate::tool_set::{self, ToolHooks};
+use ofx_tools::Shell;
 
 const SAVED_TOKEN: &str = "eyJhbGciOiJub25lIn0.c2F2ZWQtYWNjZXNz.c2lnbmF0dXJl";
 const FRESH_TOKEN: &str = "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF90ZXN0In0sImV4cCI6NDEwMjQ0NDgwMCwibWFya2VyIjoiZnJlc2gifQ.c2lnbmF0dXJl";
@@ -163,8 +164,7 @@ fn ask_tools(workspace: &Path) -> Vec<Arc<dyn Tool>> {
     let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
     tool_set::ask_tools(
         workspace,
-        &executions,
-        None,
+        Shell::new(workspace, executions.clone(), None),
         &PermissionMode::Auto.into(),
         crate::skills::rootless_skill_tool(),
         crate::skills::rootless_capability_search(),

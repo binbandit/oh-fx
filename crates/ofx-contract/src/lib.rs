@@ -103,9 +103,10 @@ pub use tool_presentation::{
 };
 pub use tool_result_errors::{
     CONTEXT_DEFERRED_TOOL_OUTPUT, DEFERRED_TOOL_OUTPUT, DetailValue, ExecutionFailure, ReviewHold,
-    ToolPermissionDenialReason, filesystem_access_denied_json, format_tool_execution_error_json,
-    is_tool_output_error, malformed_tool_arguments_json, non_object_tool_arguments_json,
-    pre_tool_use_blocked_json, pre_tool_use_failed_closed_json, shell_request_invalid_field_count,
+    TERMINAL_ENDED_ERROR_CODE, ToolPermissionDenialReason, filesystem_access_denied_json,
+    format_tool_execution_error_json, is_terminal_ended_failure, is_tool_output_error,
+    malformed_tool_arguments_json, non_object_tool_arguments_json, pre_tool_use_blocked_json,
+    pre_tool_use_failed_closed_json, shell_request_invalid_field_count,
     tool_execution_failure_json, tool_permission_denial_reason, tool_permission_denied_json,
     tool_review_held_json, valued_execution_failure_json,
 };

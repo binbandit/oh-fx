@@ -304,6 +304,19 @@ pub fn is_tool_output_error(output: &str) -> bool {
     structured || (output.starts_with("Tool ") && output.contains("failed:"))
 }
 
+pub const TERMINAL_ENDED_ERROR_CODE: &str = "TerminalEnded";
+
+pub fn is_terminal_ended_failure(output: &str) -> bool {
+    let Some(Value::Object(root)) = parse_json_value(output) else {
+        return false;
+    };
+    root.get("error")
+        .and_then(Value::as_object)
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        == Some(TERMINAL_ENDED_ERROR_CODE)
+}
+
 pub fn shell_request_invalid_field_count(output: &str) -> Option<usize> {
     let Some(Value::Object(root)) = parse_json_value(output) else {
         return None;
@@ -325,6 +338,17 @@ fn masked(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_ended_failures_are_recognized_only_by_their_exact_code() {
+        assert!(is_terminal_ended_failure(
+            r#"{"error":{"tool":"shell","code":"TerminalEnded"}}"#
+        ));
+        assert!(!is_terminal_ended_failure(
+            r#"{"error":{"tool":"shell","code":"TerminalSessionLost"}}"#
+        ));
+        assert!(!is_terminal_ended_failure("TerminalEnded"));
+    }
 
     #[test]
     fn pre_tool_use_blocks_render_upstreams_failure_envelopes() {

@@ -27,7 +27,7 @@ use ofx_contract::{
     RequestId, ReviewTransport, StatuslineToggles, Tool, is_provider_search_alias,
     parse_tool_args_object, provider_search_description,
 };
-use ofx_exec::ManagedExecutions;
+use ofx_exec::{ManagedExecutions, Terminals};
 use ofx_gateway::{
     CODEX_TITLE_MODEL, ChatCompletionsProvider, ChatCompletionsReviewTransport,
     CodexReviewTransport, GATEWAY_TITLE_MODEL, GatewayCredential, GatewayCreditsEndpoints,
@@ -37,7 +37,7 @@ use ofx_http::ClientError;
 use ofx_mcp::{ConnectOptions, InputResponder, McpRuntime, ProfileStoreError};
 use ofx_permissions::{DEFAULT_REVIEW_TIMEOUT, PermissionPolicy, Reviewer};
 use ofx_session::{ProfilePublisher, RouteCredential};
-use ofx_tools::{CapabilitySearch, WebFetchProgress};
+use ofx_tools::{CapabilitySearch, Shell, ShellTerminals, TerminalOwner, WebFetchProgress};
 use ofx_workspace::{ChangeTracker, WorkspaceAccess, WorkspaceAccessError};
 use tokio_util::sync::CancellationToken;
 
@@ -165,6 +165,7 @@ pub struct Launch<'a> {
     pub context_limits: &'a [ContextLimitOverride],
     pub command_timeout: Option<Duration>,
     pub executions: &'a ManagedExecutions,
+    pub terminals: Option<&'a Terminals>,
     pub endpoints: SubscriptionEndpoints,
     pub web_fetch_progress: Option<WebFetchProgress>,
     pub mode: Option<ActiveMode>,
@@ -208,6 +209,7 @@ pub struct AgentSetup {
     team: Option<String>,
     codex_login: Arc<CodexLogin>,
     tools: Vec<Arc<dyn Tool>>,
+    terminal_owner: TerminalOwner,
     delegation: Delegation,
     mcp: Option<Arc<McpRuntime>>,
     mcp_servers: Arc<dyn McpServersCatalog>,
@@ -431,6 +433,19 @@ impl Profile {
         self.prepare(launch, true, cancel).await
     }
 
+    fn shell(&self, launch: &Launch<'_>, owner: &TerminalOwner, interactive: bool) -> Shell {
+        tool_set::shell_tool(
+            &self.workspace_root,
+            launch.executions,
+            launch.terminals.map(|terminals| ShellTerminals {
+                terminals: terminals.clone(),
+                owner: owner.clone(),
+                always_offered: interactive,
+            }),
+            launch.command_timeout,
+        )
+    }
+
     async fn prepare(
         &self,
         mut launch: Launch<'_>,
@@ -456,10 +471,10 @@ impl Profile {
         let additional_roots = LiveAdditionalRoots::from(self.additional_roots());
         let change_tracker = interactive.then(ChangeTracker::default);
         let (questions, question_requests) = interactive.then(Questions::new).unzip();
+        let terminal_owner = TerminalOwner::default();
         let tools = tool_set::ask_tools(
             &self.workspace_root,
-            launch.executions,
-            launch.command_timeout,
+            self.shell(&launch, &terminal_owner, interactive),
             &permission_mode,
             skills.tool(),
             skills.search(),
@@ -509,6 +524,7 @@ impl Profile {
             team: route.team,
             codex_login,
             tools,
+            terminal_owner,
             delegation: Delegation::new(children),
             mcp_servers: Arc::new(McpServers::new(mcp.clone(), interactive)),
             mcp,
@@ -1232,6 +1248,8 @@ impl AgentSetup {
     }
 
     pub fn bind_children(&self, store: Option<Arc<dyn ChildStore>>) {
+        self.terminal_owner
+            .bind(store.as_ref().map(|store| store.parent_id().to_owned()));
         self.delegation.host.bind(store);
     }
 
@@ -1347,6 +1365,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
+                    terminals: None,
                     web_fetch_progress: None,
                     mode: None,
                     permission_prompts: false,
@@ -1405,6 +1424,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
+                    terminals: None,
                     endpoints: SubscriptionEndpoints::default(),
                     web_fetch_progress: None,
                     mode: None,
@@ -1506,6 +1526,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
+                    terminals: None,
                     web_fetch_progress: None,
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),
@@ -1692,6 +1713,7 @@ mod tests {
                     context_limits: &[],
                     command_timeout: None,
                     executions: &executions,
+                    terminals: None,
                     web_fetch_progress: None,
                     permission_prompts: false,
                     endpoints: SubscriptionEndpoints::default(),

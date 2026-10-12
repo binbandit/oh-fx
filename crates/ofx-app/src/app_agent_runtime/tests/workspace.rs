@@ -85,6 +85,7 @@ async fn connected(server: &FakeServer, directories: &[&Path]) -> (tempfile::Tem
                 context_limits: &[],
                 command_timeout: None,
                 executions: &executions,
+                terminals: None,
                 endpoints: SubscriptionEndpoints::default(),
                 web_fetch_progress: None,
                 mode: None,

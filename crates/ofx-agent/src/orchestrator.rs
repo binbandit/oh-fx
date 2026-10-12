@@ -496,6 +496,13 @@ impl Agent {
         &self.config
     }
 
+    pub fn refresh_tool_specs(&mut self) {
+        for (spec, tool) in self.tool_specs.iter_mut().zip(&self.tools) {
+            *spec = tool.spec().clone();
+        }
+        self.offer_tools();
+    }
+
     pub(crate) fn replace_tools(&mut self, tools: Vec<Arc<dyn Tool>>) {
         (self.tool_specs, self.provider_executed) = read_tools(&tools);
         self.tools = tools;

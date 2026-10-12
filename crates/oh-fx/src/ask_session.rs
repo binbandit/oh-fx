@@ -26,6 +26,7 @@ impl SavedAsk {
             crate::cli_ask::warn(&live.rebind_notice(&saved));
         }
         setup.bind_children(live.ask_children(&store));
+        agent.refresh_tool_specs();
         Ok(Self {
             store,
             live,
@@ -44,6 +45,7 @@ impl SavedAsk {
         let live = LiveSession::start(&store, preferences, route)?;
         live.attach(agent);
         setup.bind_children(live.ask_children(&store));
+        agent.refresh_tool_specs();
         Ok(Self {
             store,
             live,

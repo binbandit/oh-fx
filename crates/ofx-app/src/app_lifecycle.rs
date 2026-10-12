@@ -15,7 +15,7 @@ use ofx_contract::{
     BoxFuture, HookRegistrationError, HookView, Notice, NoticeTone, PermissionMode, UiCommand,
     UiEvent,
 };
-use ofx_exec::{ManagedExecutions, SessionSupervisor};
+use ofx_exec::{ManagedExecutions, SessionSupervisor, Terminals};
 use ofx_mcp::{McpRuntime, ShutdownMode, StartupPhase, render_workspace_diagnostic};
 use ofx_text::encode_terminal_safe;
 use ofx_tui::{
@@ -36,7 +36,7 @@ use crate::app_mcp_runtime;
 use crate::app_panic_runtime::PanicCapture;
 use crate::app_recording;
 use crate::app_session_runtime::{
-    LaunchOverrides, Persistence, configured_preferences, open_store, session_route,
+    LaunchOverrides, Persistence, configured_preferences, open_store, open_terminals, session_route,
 };
 use crate::app_steering_runtime::WaitingSteering;
 use crate::app_upgrade_runtime::{
@@ -66,6 +66,7 @@ struct Session {
     profile: Profile,
     setup: AgentSetup,
     executions: ManagedExecutions,
+    terminals: Option<Terminals>,
     permission_mode: PermissionMode,
     persistence: Option<Persistence>,
     opening: Opening,
@@ -121,6 +122,12 @@ fn routing_flags(modifiers: &LaunchModifiers) -> RoutingFlags {
     }
 }
 
+fn command_runtimes() -> Result<(ManagedExecutions, Option<Terminals>), Vec<String>> {
+    let supervisor = SessionSupervisor::current_executable()
+        .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
+    Ok((ManagedExecutions::new(supervisor), open_terminals()))
+}
+
 async fn bootstrap(
     modifiers: &LaunchModifiers,
     resume: Option<&RequestedResume>,
@@ -132,9 +139,7 @@ async fn bootstrap(
             modifiers.saved_directories_suppressed(),
         )
         .map_err(|error| vec![failure_line(&error)])?;
-    let supervisor = SessionSupervisor::current_executable()
-        .map_err(|_| vec![failure_line(&SELF_EXE_NOT_FOUND)])?;
-    let executions = ManagedExecutions::new(supervisor);
+    let (executions, terminals) = command_runtimes()?;
     let store = open_store(&profile);
     let resumed = match resume {
         Some(requested) => {
@@ -170,6 +175,7 @@ async fn bootstrap(
                 context_limits: modifiers.context_limit_overrides(),
                 command_timeout: None,
                 executions: &executions,
+                terminals: terminals.as_ref(),
                 endpoints: SubscriptionEndpoints::from_environment(),
                 web_fetch_progress: None,
                 mode: None,
@@ -217,6 +223,7 @@ async fn bootstrap(
         profile,
         setup,
         executions,
+        terminals,
         permission_mode,
         persistence,
         opening,
@@ -359,7 +366,7 @@ fn run(session: Session, update: Option<Notice>, runtime: Runtime) -> Result<(),
     let agent = agent_work(
         session.setup,
         (session.persistence, picking, session.ultrafast_requested),
-        session.executions,
+        (session.executions, session.terminals),
         steering,
         (runtime, shutdown.clone()),
         (lifecycle, hooks),
@@ -423,7 +430,7 @@ impl ForegroundLifecycle for Exiting {
 fn agent_work(
     setup: AgentSetup,
     (persistence, pick_at_start, ultrafast_requested): (Option<Persistence>, bool, bool),
-    executions: ManagedExecutions,
+    (executions, terminals): (ManagedExecutions, Option<Terminals>),
     steering: Arc<WorkerRuntime>,
     (runtime, shutdown): (Runtime, ShutdownTrace),
     (herdr, hooks): (Option<Arc<Herdr>>, HookView),
@@ -458,6 +465,9 @@ fn agent_work(
             }
             shutdown.mark("mcp_children_terminated");
             executions.shutdown().await;
+            if let Some(terminals) = &terminals {
+                terminals.close_owned_terminals().await;
+            }
             shutdown.mark("terminals_ended");
             if let Some(refreshes) = refreshes {
                 refreshes.settle().await;

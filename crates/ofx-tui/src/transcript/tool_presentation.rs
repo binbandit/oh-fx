@@ -3,7 +3,7 @@ use ofx_contract::{
     DEFERRED_TOOL_OUTPUT, FileChangeStats, ReasoningEffort, SavedToolCall, SubagentActionState,
     SubagentStatus, ToolActivity, ToolArgsError, ToolCallId, ToolDeferral,
     ToolPermissionDenialReason, ToolRejection, ToolResultStatus, ToolStatusDetail, TurnOutcome,
-    format_unknown_action, is_captured_command, parse_tool_args_object,
+    format_unknown_action, is_captured_command, is_terminal_ended_failure, parse_tool_args_object,
     shell_request_invalid_field_count, subagent_action, subagent_failure_label,
     subagent_result_state, tool_permission_denial_reason,
 };
@@ -15,6 +15,7 @@ const MAX_RUN_COMMAND_ACTIVITY_BYTES: usize = 120;
 const MAX_TARGET_BYTES: usize = MAX_RUN_COMMAND_ACTIVITY_BYTES * MAX_RUN_COMMAND_ACTIVITY_BYTES - 1;
 const MAX_FAILURE_DETAIL_BYTES: usize = 256;
 const SHELL_TOOL: &str = "shell";
+const TERMINAL_ENDED_SUFFIX: &str = " · ended when oh-fx exited";
 const SUBAGENT_TOOL: &str = "subagent";
 const SUBAGENT_ACTIVE_VERB: &str = " working";
 const STATUS_SEPARATOR: &str = " · ";
@@ -244,9 +245,12 @@ impl ToolActivityRow {
                 self.settled(ToolOutcome::Completed, completed, stats.as_deref(), None)
             }
         } else {
-            let suffix = self.correction_suffix(finished.content).or_else(|| {
-                failure_detail(&self.tool_name, finished.status_detail, finished.content)
-            });
+            let suffix = self
+                .terminal_ended_suffix(finished.content)
+                .or_else(|| self.correction_suffix(finished.content))
+                .or_else(|| {
+                    failure_detail(&self.tool_name, finished.status_detail, finished.content)
+                });
             self.settled(ToolOutcome::Failed, FAILED, suffix.as_deref(), None)
         };
     }
@@ -429,6 +433,11 @@ impl ToolActivityRow {
             return None;
         }
         process.map(command_outcome)
+    }
+
+    fn terminal_ended_suffix(&self, content: &str) -> Option<String> {
+        (self.tool_name == SHELL_TOOL && is_terminal_ended_failure(content))
+            .then(|| TERMINAL_ENDED_SUFFIX.to_owned())
     }
 
     fn correction_suffix(&self, content: &str) -> Option<String> {
@@ -1112,6 +1121,25 @@ mod tests {
         assert_eq!(
             finished(&mut shell, ToolResultStatus::Failure, correction),
             "Failed echo hi · 1 invalid field"
+        );
+    }
+
+    #[test]
+    fn a_terminal_that_ended_with_oh_fx_says_so_on_its_failed_row() {
+        let ended = r#"{"error":{"tool":"shell","code":"TerminalEnded","session_id":"shell-AAAAAAAAAAAAAAAAAAAAAA","message":"m","retryable":false}}"#;
+        let mut shell = row(
+            "shell",
+            ToolActivity::Command,
+            ("Running", "Ran", "session shell-AAAAAAAAAAAAAAAAAAAAAA"),
+        );
+        assert_eq!(
+            finished(&mut shell, ToolResultStatus::Failure, ended),
+            "Failed session shell-AAAAAAAAAAAAAAAAAAAAAA · ended when oh-fx exited"
+        );
+        let mut other = row("read_file", ToolActivity::Read, ("Reading", "Read", "a"));
+        assert_eq!(
+            finished(&mut other, ToolResultStatus::Failure, ended),
+            "Failed a"
         );
     }
 

@@ -18,7 +18,7 @@ use ofx_contract::{
 };
 use ofx_exec::{ManagedExecutions, SessionSupervisor};
 use ofx_permissions::PermissionPolicy;
-use ofx_tools::SubagentTool;
+use ofx_tools::{Shell, SubagentTool};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -156,8 +156,7 @@ impl Session {
             Arc::clone(&provider) as Arc<dyn ModelProvider>,
             ask_tools(
                 workspace,
-                &executions,
-                None,
+                Shell::new(workspace, executions.clone(), None),
                 mode,
                 crate::skills::rootless_skill_tool(),
                 crate::skills::rootless_capability_search(),
@@ -891,8 +890,7 @@ fn subagent_and_mcp_features_take_their_places_in_upstreams_tool_order() {
     let executions = ManagedExecutions::new(SessionSupervisor::new("/nonexistent"));
     let tools = ask_tools(
         Path::new("/"),
-        &executions,
-        None,
+        Shell::new(Path::new("/"), executions.clone(), None),
         &PermissionMode::Ask.into(),
         crate::skills::rootless_skill_tool(),
         crate::skills::rootless_capability_search(),

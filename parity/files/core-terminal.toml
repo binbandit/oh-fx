@@ -8,7 +8,7 @@ note = "The executor validates a request, queues it on the terminal client and p
 upstream = "src/core/terminal/client.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/native_session/registry.rs", "crates/ofx-exec/src/native_session/descriptor_budget.rs"]
-note = "Terminals is the terminal client: it opens nothing until a terminal starts, the first start raises the soft descriptor limit to 1024 within the hard limit with upstream's terminal_client lines, and close_owned_terminals ends every terminal of the process and refuses later starts. The request queue, worker thread, correlation ids, completion polling and the terminal UI projection are not ported, because oh-fx's terminal actions are async calls that nothing queues, as docs/differences/tool-shell.md records."
+note = "Terminals is the terminal client: it opens nothing until a terminal starts, the first start raises the soft descriptor limit to 1024 within the hard limit with upstream's terminal_client lines, and close_owned_terminals ends every terminal of the process and refuses later starts when the interactive shell or ask exits. The request queue, worker thread, correlation ids, completion polling and the terminal UI projection are not ported, because oh-fx's terminal actions are async calls that nothing queues, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/terminal/contracts.zig"

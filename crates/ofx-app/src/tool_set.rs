@@ -6,8 +6,8 @@ use ofx_contract::{LiveAdditionalRoots, LivePermissionMode, McpToolSearch, Quest
 use ofx_exec::ManagedExecutions;
 use ofx_mcp::{McpFeatures, McpRuntime, McpSelectTool};
 use ofx_tools::{
-    AskUserQuestion, CapabilitySearch, EditFile, GlobFiles, GrepFiles, ReadFile, Shell, SkillTool,
-    WebFetch, WebFetchProgress, WebSearch, WriteFile,
+    AskUserQuestion, CapabilitySearch, EditFile, GlobFiles, GrepFiles, ReadFile, Shell,
+    ShellTerminals, SkillTool, WebFetch, WebFetchProgress, WebSearch, WriteFile,
 };
 use ofx_workspace::ChangeTracker;
 
@@ -21,10 +21,26 @@ pub(crate) struct ToolHooks<'a> {
     pub(crate) additional_roots: LiveAdditionalRoots,
 }
 
-pub(crate) fn ask_tools(
+pub(crate) fn shell_tool(
     workspace_root: &Path,
     executions: &ManagedExecutions,
+    terminals: Option<ShellTerminals>,
     command_timeout: Option<Duration>,
+) -> Shell {
+    match terminals {
+        Some(terminals) => Shell::with_terminals(
+            workspace_root,
+            executions.clone(),
+            command_timeout,
+            terminals,
+        ),
+        None => Shell::new(workspace_root, executions.clone(), command_timeout),
+    }
+}
+
+pub(crate) fn ask_tools(
+    workspace_root: &Path,
+    shell: Shell,
     permission_mode: &LivePermissionMode,
     skill: Arc<SkillTool>,
     search: Arc<CapabilitySearch>,
@@ -46,11 +62,7 @@ pub(crate) fn ask_tools(
         Arc::new(GrepFiles::new(workspace_root)),
         Arc::new(edit_file),
         Arc::new(write_file),
-        Arc::new(Shell::new(
-            workspace_root,
-            executions.clone(),
-            command_timeout,
-        )),
+        Arc::new(shell),
         search,
         skill,
         Arc::new(AskUserQuestion::new(hooks.questions)),
