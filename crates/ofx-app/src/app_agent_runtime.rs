@@ -1588,8 +1588,8 @@ fn apply_change(
 
 fn change_topic(change: &ModelChange) -> &'static str {
     match change {
-        ModelChange::Query(_) | ModelChange::FromSettings(_) => MODEL_TOPIC,
-        ModelChange::Pick(_) => MODEL_PICKER_TOPIC,
+        ModelChange::Query(_) => MODEL_TOPIC,
+        ModelChange::Pick(_) | ModelChange::FromSettings(_) => MODEL_PICKER_TOPIC,
         ModelChange::ToggleFast => FAST_TOPIC,
         ModelChange::WithdrawUltrafast => ULTRAFAST_TOPIC,
         ModelChange::StepEffort(_) => EFFORT_TOPIC,
