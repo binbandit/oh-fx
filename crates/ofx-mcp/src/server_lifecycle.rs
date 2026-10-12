@@ -11,6 +11,7 @@ use crate::catalog_freshness::Freshness;
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
+use crate::legacy_elicitation_runtime::{ElicitationOwner, OperationElicitation};
 use crate::mcp_contract::McpServerConfig;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{
@@ -93,6 +94,37 @@ pub(crate) struct Advertised {
 impl From<McpError> for CallFailure {
     fn from(error: McpError) -> Self {
         Self::Mcp(error)
+    }
+}
+
+struct CallOwner {
+    server: Weak<Server>,
+    client: Weak<McpClient>,
+    catalog: Arc<ToolCatalog>,
+    auth: Option<u64>,
+}
+
+impl CallOwner {
+    fn new(server: &Arc<Server>, client: &Arc<McpClient>) -> Self {
+        Self {
+            server: Arc::downgrade(server),
+            client: Arc::downgrade(client),
+            catalog: client.tool_catalog(),
+            auth: server.auth.current_generation().ok(),
+        }
+    }
+}
+
+impl ElicitationOwner for CallOwner {
+    fn current(&self) -> bool {
+        let (Some(server), Some(client)) = (self.server.upgrade(), self.client.upgrade()) else {
+            return false;
+        };
+        server.serves(&client)
+            && client.is_running()
+            && Arc::ptr_eq(&client.tool_catalog(), &self.catalog)
+            && self.auth.is_some()
+            && server.auth.current_generation().ok() == self.auth
     }
 }
 
@@ -250,7 +282,7 @@ impl Server {
         self: &Arc<Self>,
         advertised: &Advertised,
         arguments_json: &str,
-        options: CallOptions,
+        mut options: CallOptions,
     ) -> Result<ToolCallOutcome, CallFailure> {
         let deadline =
             Instant::now() + Duration::from_millis(self.config.operation_timeout_ms.into());
@@ -281,6 +313,15 @@ impl Server {
         if Instant::now() >= deadline {
             return Err(McpError::McpRequestTimedOut.into());
         }
+        options.elicitation =
+            self.options
+                .elicitation
+                .clone()
+                .map(|responder| OperationElicitation {
+                    responder,
+                    server_name: self.config.name.clone(),
+                    owner: Box::new(CallOwner::new(self, &client)),
+                });
         let outcome = client
             .call_tool(name, arguments_json, options, deadline)
             .await;
@@ -290,6 +331,10 @@ impl Server {
             self.authentication_failed(&client);
         }
         Ok(outcome?)
+    }
+
+    fn serves(&self, client: &Arc<McpClient>) -> bool {
+        matches!(&*lock(&self.state), State::Ready(connection) if Arc::ptr_eq(&connection.client, client))
     }
 
     fn authentication_failed(&self, client: &McpClient) {

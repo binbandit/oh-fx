@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::future::{Future, poll_fn};
+use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::Poll;
 
 use tokio::sync::oneshot;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::{Instant, sleep_until};
 
 use crate::jsonrpc::RequestId;
 
@@ -131,8 +134,20 @@ pub struct PendingResponse<T, E> {
 }
 
 impl<T, E> PendingResponse<T, E> {
-    pub async fn wait_until(mut self, deadline: Instant) -> Result<T, WaitError<E>> {
-        if let Ok(received) = timeout_at(deadline, &mut self.receiver).await {
+    pub async fn wait_until(self, deadline: Instant) -> Result<T, WaitError<E>> {
+        self.wait_while(sleep_until(deadline)).await
+    }
+
+    pub async fn wait_while(mut self, expiry: impl Future<Output = ()>) -> Result<T, WaitError<E>> {
+        let mut expiry = pin!(expiry);
+        let received = poll_fn(|context| {
+            if let Poll::Ready(received) = Pin::new(&mut self.receiver).poll(context) {
+                return Poll::Ready(Some(received));
+            }
+            expiry.as_mut().poll(context).map(|()| None)
+        })
+        .await;
+        if let Some(received) = received {
             return match received {
                 Ok(outcome) => outcome.map_err(WaitError::Failed),
                 Err(_) => Err(WaitError::Abandoned),

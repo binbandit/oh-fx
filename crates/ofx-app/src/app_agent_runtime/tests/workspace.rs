@@ -90,6 +90,7 @@ async fn connected(server: &FakeServer, directories: &[&Path]) -> (tempfile::Tem
                 permission_prompts: false,
                 open_browser: false,
                 context_targets: &[],
+                mcp_questioner: None,
             },
             &CancellationToken::new(),
         )
