@@ -31,7 +31,7 @@ impl Shell<'_> {
         self.settings_menu = None;
         self.workspace_menu = None;
         self.usage_menu = None;
-        self.mcp_menu = None;
+        self.close_mcp_menu();
         self.close_picker();
         self.statusline_menu = Some(StatuslineMenu::default());
         self.invalidate();

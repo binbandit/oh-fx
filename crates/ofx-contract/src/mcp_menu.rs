@@ -107,6 +107,10 @@ pub enum McpMenuRequest {
         generation: u64,
         catalog: McpMenuCatalogRequest,
     },
+    LoadPreview {
+        generation: u64,
+        target: McpMenuPreviewTarget,
+    },
     Cancel {
         generation: u64,
         reason: McpMenuCancel,
@@ -118,6 +122,19 @@ pub enum McpMenuCatalogRequest {
     Tools,
     Resources(String),
     Prompts(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpMenuPreviewTarget {
+    Tool(String),
+    Resource { server: String, uri: String },
+    Prompt { server: String, name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpMenuPreview {
+    pub display: String,
+    pub insert: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

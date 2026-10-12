@@ -227,7 +227,8 @@ impl Shell<'_> {
             event @ (UiEvent::McpMenuOpened { .. }
             | UiEvent::McpMenuRefreshed { .. }
             | UiEvent::McpMenuSettled { .. }
-            | UiEvent::McpMenuLoaded { .. }) => self.mcp_menu_event(event),
+            | UiEvent::McpMenuLoaded { .. }
+            | UiEvent::McpMenuPreviewed { .. }) => self.mcp_menu_event(event),
             UiEvent::SettingsChanged { snapshot } => self.settings_changed(snapshot),
             UiEvent::PromptHistoryChanged { enabled } => self.prompt_history_changed(enabled),
             UiEvent::SignInStarted { url } => self.sign_in_started(url),

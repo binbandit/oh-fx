@@ -1,6 +1,6 @@
 use ofx_contract::{
-    McpMenuCancel, McpMenuOutcome, McpMenuRequest, McpMenuServer, McpMenuSettled, McpMenuSnapshot,
-    UiCommand, UiEvent,
+    McpMenuCancel, McpMenuOutcome, McpMenuPreview, McpMenuRequest, McpMenuServer, McpMenuSettled,
+    McpMenuSnapshot, UiCommand, UiEvent,
 };
 
 use super::Shell;
@@ -9,12 +9,14 @@ use super::mcp_menu::{
 };
 use crate::footer::mcp_menu_presentation::{
     AddFields, MAX_INLINE_ROWS, McpMenuCatalogs, McpMenuView, mcp_menu_hint_row, mcp_menu_rows,
-    menu_row_count, visible_items_for_budget,
+    menu_row_count, preview_visual_row_count, visible_items_for_budget,
 };
 use crate::input::{Action as InputAction, InputEvent};
 use crate::row_text::Row;
+use ofx_trace::trace_log;
 
 const REFRESH_INTERVAL_MS: i64 = 100;
+const MCP: &str = "mcp";
 const CTRL_Z: u8 = 26;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub(super) struct McpMenu {
     pub(super) add: AddForm,
     pub(super) confirmation_target: Option<String>,
     pub(super) catalogs: McpMenuCatalogs,
+    pub(super) preview: Option<McpMenuPreview>,
     refresh_due_ms: Option<i64>,
     pub(super) reveal_due_ms: Option<i64>,
 }
@@ -50,6 +53,10 @@ impl McpMenu {
             },
             catalogs: &self.catalogs,
             loading_visible: self.reveal_due_ms.is_none(),
+            preview: self
+                .preview
+                .as_ref()
+                .map(|preview| preview.display.as_str()),
         }
     }
 
@@ -82,6 +89,10 @@ impl McpMenu {
                 self.state.selected_index = self.state.selected_server_index;
             }
             if kept.is_none() {
+                trace_log!(
+                    MCP,
+                    "closing server-bound menu state because its selected server was removed"
+                );
                 dropped = self.state.selected_server_removed();
             }
         }
@@ -96,6 +107,7 @@ fn same_server(server: &McpMenuServer, previous: &McpMenuServer) -> bool {
 
 impl Shell<'_> {
     fn open_mcp_menu(&mut self, snapshot: McpMenuSnapshot) {
+        trace_log!(MCP, "opening MCP menu");
         self.skills_menu = None;
         self.help_menu = None;
         self.settings_menu = None;
@@ -112,6 +124,7 @@ impl Shell<'_> {
             add: AddForm::default(),
             confirmation_target: None,
             catalogs: McpMenuCatalogs::default(),
+            preview: None,
             refresh_due_ms: Some(self.now_ms() + REFRESH_INTERVAL_MS),
             reveal_due_ms: None,
         });
@@ -129,7 +142,21 @@ impl Shell<'_> {
                 generation,
                 catalog,
             } => self.mcp_menu_loaded(generation, catalog),
+            UiEvent::McpMenuPreviewed {
+                generation,
+                preview,
+            } => self.mcp_menu_previewed(generation, preview),
             _ => {}
+        }
+    }
+
+    pub(super) fn close_mcp_menu(&mut self) {
+        let Some(menu) = self.mcp_menu.take() else {
+            return;
+        };
+        trace_log!(MCP, "closing MCP menu screen={}", menu.state.screen.name());
+        if let Some(generation) = menu.state.pending_generation {
+            self.cancel_mcp_menu_operation(generation, McpMenuCancel::Closed);
         }
     }
 
@@ -217,7 +244,7 @@ impl Shell<'_> {
             return None;
         }
         let view = menu.view(self.composer.text());
-        let row_count = menu_row_count(view, self.menu_budget(MAX_INLINE_ROWS));
+        let row_count = menu_row_count(view, self.menu_budget(MAX_INLINE_ROWS), self.cols());
         let rows = mcp_menu_rows(&self.theme, view, self.cols(), row_count);
         let mut band = Vec::with_capacity(rows.len() + 2);
         band.push(Row::new());
@@ -280,6 +307,7 @@ impl Shell<'_> {
                 b'p' | b'P' => self.confirm_mcp_menu_action(Action::TrustApproveAll),
                 b'z' | b'Z' => self.confirm_mcp_menu_action(Action::TrustReset),
                 b'r' | b'R' => self.reload_from_mcp_menu(),
+                b'i' | b'I' => self.insert_mcp_menu_preview(),
                 10 => self.move_mcp_menu(1),
                 11 => self.move_mcp_menu(-1),
                 _ => {}
@@ -308,10 +336,15 @@ impl Shell<'_> {
     pub(super) fn mcp_menu_back(&mut self) {
         self.gestures.disarm_escape_clear();
         self.gestures.disarm_escape_interrupt();
-        let filtering = self
-            .mcp_menu
-            .as_ref()
-            .is_some_and(|menu| menu.state.filter_active);
+        let Some(state) = self.mcp_menu.as_ref().map(|menu| &menu.state) else {
+            return;
+        };
+        let filtering = state.filter_active;
+        trace_log!(
+            MCP,
+            "MCP menu escape screen={} filter={filtering}",
+            state.screen.name()
+        );
         self.apply_mcp_menu_event(if filtering {
             Event::ClearFilter
         } else {
@@ -320,16 +353,11 @@ impl Shell<'_> {
     }
 
     pub(super) fn apply_mcp_menu_event(&mut self, event: Event) -> Option<Effect> {
-        let menu = self.mcp_menu.as_mut()?;
-        let pending = menu.state.pending_generation;
-        let effect = menu.state.apply(event);
+        let effect = self.mcp_menu.as_mut()?.state.apply(event);
         match effect {
             Some(Effect::Close) => {
-                self.mcp_menu = None;
+                self.close_mcp_menu();
                 self.composer.clear();
-                if let Some(generation) = pending {
-                    self.cancel_mcp_menu_operation(generation, McpMenuCancel::Closed);
-                }
             }
             Some(Effect::Action { generation, .. }) => self.mcp_menu_generation = generation,
             Some(Effect::LoadCatalog {
@@ -338,6 +366,9 @@ impl Shell<'_> {
             }) => {
                 self.mcp_menu_generation = generation;
                 self.load_mcp_menu_catalog(generation, section);
+            }
+            Some(Effect::LoadPreview { generation } | Effect::Insert { generation }) => {
+                self.mcp_menu_generation = generation;
             }
             Some(Effect::Cancel(generation)) => {
                 self.cancel_mcp_menu_operation(generation, McpMenuCancel::Back);
@@ -348,9 +379,19 @@ impl Shell<'_> {
     }
 
     pub(super) fn move_mcp_menu(&mut self, delta: isize) {
+        let cols = self.cols();
         let Some(menu) = &mut self.mcp_menu else {
             return;
         };
+        if menu.state.screen == Screen::Preview {
+            let display = menu
+                .preview
+                .as_ref()
+                .map(|preview| preview.display.as_str());
+            let row_count = preview_visual_row_count(display, cols);
+            menu.state.apply(Event::ScrollPreview { delta, row_count });
+            return;
+        }
         let item_count = menu.view("").item_count();
         menu.state.apply(Event::Move(Move {
             delta,
@@ -365,6 +406,7 @@ impl Shell<'_> {
         };
         let view = menu.view("");
         match menu.state.screen {
+            Screen::Browse if menu.state.section != Section::Servers => self.open_mcp_menu_item(),
             Screen::Browse if view.item_count() > 0 => {
                 self.apply_mcp_menu_event(Event::ShowDetails);
             }
@@ -381,7 +423,7 @@ impl Shell<'_> {
                     self.request_mcp_menu_action(action);
                 }
             }
-            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm => {}
+            Screen::Browse | Screen::Add | Screen::Info | Screen::Confirm | Screen::Preview => {}
         }
     }
 

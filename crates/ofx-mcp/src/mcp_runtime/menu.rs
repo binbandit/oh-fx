@@ -3,9 +3,18 @@ use std::sync::Arc;
 use ofx_contract::McpMenuSnapshot;
 
 use super::{McpRuntime, lock};
+use crate::error::McpError;
 use crate::project_config::render_workspace_diagnostic;
 use crate::server_lifecycle::Server;
 use crate::server_menu::menu_server;
+use crate::tool_mcp_registry::{Projection, selected_schema};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuToolSchema {
+    Selected(String),
+    Rejected,
+    Missing,
+}
 
 impl McpRuntime {
     pub fn menu_snapshot(&self) -> McpMenuSnapshot {
@@ -21,6 +30,16 @@ impl McpRuntime {
                 .collect(),
             profile_config: None,
         }
+    }
+
+    pub async fn menu_tool_schema(&self, name: &str) -> Result<MenuToolSchema, McpError> {
+        Ok(match self.tool_schema(name).await? {
+            Some(Projection::Selected { spec, .. }) => {
+                MenuToolSchema::Selected(selected_schema(&spec))
+            }
+            Some(Projection::Rejected { .. }) => MenuToolSchema::Rejected,
+            None => MenuToolSchema::Missing,
+        })
     }
 
     pub fn menu_tool_names(&self) -> Vec<String> {
