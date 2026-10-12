@@ -1174,6 +1174,7 @@ fn reasoning_effort_and_fast_mode_follow_the_text_settings() {
         tail(ProviderOptions {
             reasoning_effort: Some("high"),
             fast: true,
+            ultrafast: false,
             prompt_caching: false,
             routing: None,
         }),
@@ -1189,6 +1190,7 @@ fn reasoning_effort_and_fast_mode_follow_the_text_settings() {
             tail(ProviderOptions {
                 reasoning_effort: Some(effort),
                 fast: false,
+                ultrafast: false,
                 prompt_caching: false,
                 routing: None,
             }),

@@ -38,6 +38,10 @@ impl SummaryModel for Summarizer<'_> {
                 messages.push(user);
                 let request = ModelRequest {
                     messages: &messages,
+                    provider_options: ProviderOptions {
+                        ultrafast: false,
+                        ..conversation.provider_options
+                    },
                     ..conversation
                 };
                 let outcome = text_completion::complete(
@@ -61,6 +65,7 @@ impl SummaryModel for Summarizer<'_> {
                     max_output_tokens: self.max_output_tokens,
                     provider_options: ProviderOptions {
                         reasoning_effort: lowest_reasoning_effort(self.reasoning_efforts),
+                        ultrafast: false,
                         ..self.options
                     },
                     session_id: self.session_id,

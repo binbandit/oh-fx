@@ -22,10 +22,10 @@ use ofx_contract::{
     RouteRecoveryKind, RouteRecoveryStatus, SkillBinding, StopOutcome, StreamEvent, SubagentStatus,
     SubagentStatusSink, Tool, ToolActivity, ToolArgumentDiagnostic, ToolArgumentIntegrity,
     ToolCall, ToolCallId, ToolContext, ToolEffect, ToolOutput, ToolRejection, ToolResultStatus,
-    ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome, TurnStop, UiEvent, Usage,
-    bound_model_output, continuation_message, format_unknown_action, join_visible_segments,
-    malformed_tool_arguments_json, non_object_tool_arguments_json, tool_execution_failure_json,
-    tool_permission_denied_json, tool_review_held_json,
+    ToolSpec, TurnId, TurnOutcome, TurnPresentationOutcome, TurnStop, UiEvent,
+    UltrafastUnavailable, Usage, bound_model_output, continuation_message, format_unknown_action,
+    join_visible_segments, malformed_tool_arguments_json, non_object_tool_arguments_json,
+    tool_execution_failure_json, tool_permission_denied_json, tool_review_held_json,
 };
 use ofx_text::encode_terminal_safe;
 use ofx_trace::{NetworkRing, Ring, TraceContext, trace_log};
@@ -163,6 +163,7 @@ pub enum TurnFailure {
     RecoveryPaused,
     ModelImageCapabilityUnavailable,
     SubscriptionNativeImageUnavailable,
+    UltrafastUnavailable,
 }
 
 impl TurnFailure {
@@ -184,6 +185,7 @@ impl TurnFailure {
             Self::RecoveryPaused => "RecoveryPaused",
             Self::ModelImageCapabilityUnavailable => "ModelImageCapabilityUnavailable",
             Self::SubscriptionNativeImageUnavailable => "SubscriptionNativeImageUnavailable",
+            Self::UltrafastUnavailable => "UltrafastUnavailable",
         }
     }
 }
@@ -923,7 +925,7 @@ impl Agent {
         events: EventSink<'_>,
         cancel: &CancellationToken,
     ) -> Result<String, Stop> {
-        if self.config.reasoning_effort.is_some() || self.config.fast_mode {
+        if self.selects_speed_or_effort() {
             self.resolve_capabilities(cancel).await?;
         }
         let skills = self
@@ -944,7 +946,7 @@ impl Agent {
             let messages = self.step_messages(turn);
             let gateway_messages = instructions.len() + messages.len();
             self.trace_step(turn, (step + 1, entered), gateway_messages);
-            let request = self.turn_request(turn, &instructions, &messages, events);
+            let request = self.turn_request(turn, &instructions, &messages, events)?;
             let (measured, body) = self.measure(turn, &request).unzip();
             match self
                 .preflight(turn, request, measured.as_ref(), events, cancel)
@@ -1140,6 +1142,12 @@ impl Agent {
         Ok(prepared)
     }
 
+    fn selects_speed_or_effort(&self) -> bool {
+        self.config.reasoning_effort.is_some()
+            || self.config.fast_mode
+            || self.config.ultrafast_mode
+    }
+
     async fn resolve_capabilities(&mut self, cancel: &CancellationToken) -> Result<(), Stop> {
         if self.capabilities.is_some() {
             return Ok(());
@@ -1192,21 +1200,25 @@ impl Agent {
         instructions: &'a [&'a str],
         messages: &'a [ChatMessage],
         events: EventSink<'_>,
-    ) -> ModelRequest<'a> {
-        ModelRequest {
+    ) -> Result<ModelRequest<'a>, Stop> {
+        Ok(ModelRequest {
             model: &self.config.model,
             instructions,
             messages,
             tools: &self.offered_specs,
             tool_choice: recovery_tool_choice(turn.recovery),
             max_output_tokens: self.config.max_output_tokens,
-            provider_options: self.provider_options(turn, events),
+            provider_options: self.provider_options(turn, events)?,
             session_id: self.session_id.as_deref(),
-        }
+        })
     }
 
-    fn provider_options(&self, turn: &mut Turn, events: EventSink<'_>) -> ProviderOptions<'_> {
-        let options = self.selected_provider_options(turn, events);
+    fn provider_options(
+        &self,
+        turn: &mut Turn,
+        events: EventSink<'_>,
+    ) -> Result<ProviderOptions<'_>, Stop> {
+        let options = self.selected_provider_options(turn, events)?;
         turn_trace::provider_options(
             turn.trace,
             &turn_trace::ProviderOptionsTrace {
@@ -1217,20 +1229,30 @@ impl Agent {
                 fast_selected: options.fast,
             },
         );
-        options
+        Ok(options)
     }
 
     fn selected_provider_options(
         &self,
         turn: &mut Turn,
         events: EventSink<'_>,
-    ) -> ProviderOptions<'_> {
+    ) -> Result<ProviderOptions<'_>, Stop> {
+        let unavailable = |UltrafastUnavailable| Stop::failed(TurnFailure::UltrafastUnavailable);
         let Some(known) = &self.capabilities else {
-            return conversation_options(ProviderOptions::default(), &self.config.provider_routing);
+            let options = ModelCapabilities::default()
+                .speed_options(&self.config.model, None, false, self.config.ultrafast_mode)
+                .map_err(unavailable)?;
+            return Ok(conversation_options(options, &self.config.provider_routing));
         };
         let options = known
             .model
-            .provider_options(self.config.reasoning_effort.as_deref(), turn.fast_mode);
+            .speed_options(
+                &self.config.model,
+                self.config.reasoning_effort.as_deref(),
+                turn.fast_mode,
+                self.config.ultrafast_mode,
+            )
+            .map_err(unavailable)?;
         if turn.fast_mode && !options.fast && known.catalog_unavailable && !turn.notices.fast {
             turn.notices.fast = true;
             events(UiEvent::Operational {
@@ -1238,7 +1260,7 @@ impl Agent {
                 text: format!("{FAST_UNAVAILABLE_NOTICE}\n"),
             });
         }
-        conversation_options(options, &self.config.provider_routing)
+        Ok(conversation_options(options, &self.config.provider_routing))
     }
 
     async fn complete(

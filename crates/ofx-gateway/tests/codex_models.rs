@@ -72,6 +72,7 @@ async fn the_catalog_is_fetched_with_the_subscription_and_the_live_client_versio
         capabilities: ModelCapabilities {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
+            supports_ultrafast_mode: false,
             context_window: window,
             image_input_support,
         },

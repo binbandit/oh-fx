@@ -24,9 +24,15 @@ impl ImageInputSupport {
 pub struct ModelCapabilities {
     pub reasoning_efforts: Vec<String>,
     pub supports_fast_mode: bool,
+    pub supports_ultrafast_mode: bool,
     pub context_window: Option<u32>,
     pub image_input_support: ImageInputSupport,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UltrafastUnavailable;
+
+const ULTRAFAST_MODEL_PREFIX: &str = "openai/";
 
 impl ModelCapabilities {
     pub fn provider_options<'a>(
@@ -43,6 +49,27 @@ impl ModelCapabilities {
             fast: fast && self.supports_fast_mode,
             ..ProviderOptions::default()
         }
+    }
+
+    pub fn speed_options<'a>(
+        &self,
+        model: &str,
+        reasoning_effort: Option<&'a str>,
+        fast: bool,
+        ultrafast: bool,
+    ) -> Result<ProviderOptions<'a>, UltrafastUnavailable> {
+        let options = self.provider_options(reasoning_effort, fast);
+        if !ultrafast {
+            return Ok(options);
+        }
+        if !model.starts_with(ULTRAFAST_MODEL_PREFIX) || !self.supports_ultrafast_mode {
+            return Err(UltrafastUnavailable);
+        }
+        Ok(ProviderOptions {
+            fast: false,
+            ultrafast: true,
+            ..options
+        })
     }
 }
 
@@ -73,8 +100,7 @@ mod tests {
         ModelCapabilities {
             reasoning_efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             supports_fast_mode: fast,
-            context_window: None,
-            image_input_support: ImageInputSupport::Unknown,
+            ..ModelCapabilities::default()
         }
     }
 
@@ -97,6 +123,31 @@ mod tests {
         assert_eq!(
             plain.provider_options(Some("low"), true),
             ProviderOptions::default()
+        );
+    }
+
+    #[test]
+    fn ultrafast_needs_an_explicit_request_and_a_verified_openai_model() {
+        let capable = ModelCapabilities {
+            supports_fast_mode: true,
+            supports_ultrafast_mode: true,
+            ..ModelCapabilities::default()
+        };
+        let normal = capable
+            .speed_options("openai/gpt-6-astra", None, true, false)
+            .unwrap();
+        assert!(normal.fast && !normal.ultrafast);
+        let ultra = capable
+            .speed_options("openai/gpt-6-astra", None, true, true)
+            .unwrap();
+        assert!(ultra.ultrafast && !ultra.fast);
+        assert_eq!(
+            ModelCapabilities::default().speed_options("openai/gpt-6-astra", None, false, true),
+            Err(UltrafastUnavailable)
+        );
+        assert_eq!(
+            capable.speed_options("vendor/model", None, false, true),
+            Err(UltrafastUnavailable)
         );
     }
 

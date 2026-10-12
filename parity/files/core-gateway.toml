@@ -14,7 +14,7 @@ note = "HTTP failure categories and which of them a picker retries, catalog acce
 upstream = "src/core/gateway/model_catalog_metadata.zig"
 status = "partial"
 modules = ["crates/ofx-gateway/src/openai_codex_models.rs", "crates/ofx-config/src/model_capabilities.rs", "crates/ofx-gateway/src/vercel_models.rs"]
-note = "Codex capabilities are parsed, and a Vercel catalog entry converts to its reasoning efforts, Fast mode, context window, output limit and image input; Ultrafast, tool use, file input, web search and caching are not carried into capabilities."
+note = "Codex capabilities are parsed, and a Vercel catalog entry converts to its reasoning efforts, Fast mode, Ultra mode, context window, output limit and image input; tool use, file input, web search and caching are not carried into capabilities."
 
 [[file]]
 upstream = "src/core/gateway/provider_set.zig"

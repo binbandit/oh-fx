@@ -50,6 +50,7 @@ pub(crate) enum CommandEffect {
     SwitchModel(String),
     Clear,
     ToggleFast,
+    RequestUltrafast,
     WithdrawUltrafast,
     Compact,
     OpenSessions,
@@ -70,6 +71,7 @@ pub(crate) enum ModelChange {
     Query(String),
     Pick(ModelPick),
     ToggleFast,
+    RequestUltrafast,
     WithdrawUltrafast,
     StepEffort(isize),
     FromSettings(String),
@@ -85,7 +87,11 @@ impl ModelChange {
         match self {
             Self::ToggleFast => !state.fast_mode(),
             Self::WithdrawUltrafast => false,
-            Self::Query(_) | Self::Pick(_) | Self::StepEffort(_) | Self::FromSettings(_) => true,
+            Self::RequestUltrafast
+            | Self::Query(_)
+            | Self::Pick(_)
+            | Self::StepEffort(_)
+            | Self::FromSettings(_) => true,
         }
     }
 
@@ -163,6 +169,14 @@ pub(crate) fn handle_command(state: &mut ControllerState, text: &str, work: Work
                 .eq_ignore_ascii_case("off") =>
         {
             CommandEffect::WithdrawUltrafast
+        }
+        SlashKind::Ultrafast
+            if command
+                .payload
+                .trim_matches([' ', '\t'])
+                .eq_ignore_ascii_case("on") =>
+        {
+            CommandEffect::RequestUltrafast
         }
         SlashKind::Settings if command.payload.trim().is_empty() => CommandEffect::OpenSettings,
         SlashKind::Compact => compaction_effect(state, work),
@@ -290,7 +304,10 @@ pub(crate) fn change_model(
         }
         ModelChange::Pick(pick) => pick_model(state, pick, models, work),
         ModelChange::ToggleFast if toggle_fast(state, models) => Outcome::Changed { effort: None },
-        ModelChange::ToggleFast => Outcome::Unchanged,
+        ModelChange::RequestUltrafast if request_ultrafast(state, models) => {
+            Outcome::Changed { effort: None }
+        }
+        ModelChange::ToggleFast | ModelChange::RequestUltrafast => Outcome::Unchanged,
         ModelChange::WithdrawUltrafast => {
             state.withdraw_ultrafast_request();
             state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested off");
@@ -368,6 +385,16 @@ fn model_switch_notice(model: &str, work: Work) -> String {
     format!("{prefix}{model}")
 }
 
+fn request_ultrafast(state: &mut ControllerState, models: &[ModelOption]) -> bool {
+    if !capabilities_of(models, state.model()).supports_ultrafast_mode {
+        state.notice(NoticeTone::Warning, ULTRAFAST_TOPIC, ULTRAFAST_UNAVAILABLE);
+        return false;
+    }
+    state.request_ultrafast();
+    state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, "requested on");
+    true
+}
+
 fn toggle_fast(state: &mut ControllerState, models: &[ModelOption]) -> bool {
     if state.fast_mode() {
         state.set_fast_mode(false);
@@ -394,8 +421,6 @@ fn ultrafast(state: &mut ControllerState, payload: &str) {
             "requested: off"
         };
         state.notice(NoticeTone::Neutral, ULTRAFAST_TOPIC, body);
-    } else if command.eq_ignore_ascii_case("on") {
-        state.notice(NoticeTone::Warning, ULTRAFAST_TOPIC, ULTRAFAST_UNAVAILABLE);
     } else {
         state.notice(NoticeTone::Error, "", ULTRAFAST_USAGE);
     }
