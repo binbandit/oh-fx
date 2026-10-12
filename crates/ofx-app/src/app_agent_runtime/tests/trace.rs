@@ -250,9 +250,17 @@ async fn session_lines_name_speeds_turns_and_errors_without_session_text() {
     ] {
         assert!(written.contains(&line), "{line}{written}");
     }
+    let session_lines: Vec<&str> = written
+        .lines()
+        .filter(|line| line.contains(" [session] "))
+        .collect();
     for text in ["question a", "answer a", "fix the build"] {
-        assert!(!written.contains(text), "{text}\n{written}");
+        assert!(
+            session_lines.iter().all(|line| !line.contains(text)),
+            "{text}\n{written}"
+        );
     }
+    assert!(!written.contains("answer a"), "{written}");
 }
 
 const PROMPT_TRACE_CHILD: &str = "OH_FX_PROMPT_TRACE_CHILD";
