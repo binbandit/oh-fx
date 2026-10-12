@@ -7,7 +7,7 @@ use ofx_cli::OutputFormat;
 use ofx_config::{DEFAULT_GATEWAY_MODEL, ProfilePaths, ProviderId, SelectionError, Settings};
 use ofx_contract::PermissionMode;
 use ofx_mcp::ProfileConfigDiagnostic;
-use ofx_session::{DoctorDiagnostic, DoctorIssueKind, SessionStore};
+use ofx_session::{DoctorDiagnostic, DoctorIssueKind, SessionStore, SessionsV2};
 
 use crate::app_lifecycle::startup_status::StatusSources;
 use crate::output_contracts::doctor::{Check, CheckStatus, DoctorReport};
@@ -25,7 +25,7 @@ pub struct Doctor {
 }
 
 impl Doctor {
-    pub fn collect(host_managed: bool) -> Result<Self, &'static str> {
+    pub fn collect(host_managed: bool, sessions_v2: bool) -> Result<Self, &'static str> {
         let workspace_root = env::current_dir()
             .and_then(fs::canonicalize)
             .map_err(|_| "WorkspaceUnavailable")?;
@@ -46,6 +46,7 @@ impl Doctor {
             sources: &sources,
             paths: paths.as_ref(),
             workspace_root: &workspace_root,
+            sessions_v2,
             checks: vec![check(
                 "workspace",
                 CheckStatus::Ok,
@@ -65,6 +66,7 @@ struct Collection<'a> {
     sources: &'a StatusSources<'a>,
     paths: Option<&'a ProfilePaths>,
     workspace_root: &'a Path,
+    sessions_v2: bool,
     checks: Vec<Check>,
 }
 
@@ -259,6 +261,10 @@ impl Collection<'_> {
     }
 
     fn state_checks(&mut self) {
+        if self.sessions_v2 {
+            self.v2_state_checks();
+            return;
+        }
         let Some(paths) = self.paths else {
             self.push(
                 "state",
@@ -307,40 +313,88 @@ impl Collection<'_> {
                 self.push("session", status, detail);
             }
             if inspection.truncated {
-                let count = inspection.inspected_count;
-                self.push(
-                    "session",
-                    CheckStatus::Warn,
-                    format!(
-                        "session diagnostics truncated after {count} session director{} to keep doctor bounded",
-                        if count == 1 { "y" } else { "ies" }
-                    ),
-                );
+                self.truncated(inspection.inspected_count);
             }
         }
         match store.catalog() {
-            Ok(catalog) => match catalog.summaries().first() {
-                Some(latest) => self.push(
-                    "sessions",
-                    CheckStatus::Ok,
-                    format!(
-                        "{} saved session(s); latest={}",
-                        catalog.summaries().len(),
-                        latest.id
-                    ),
-                ),
-                None => {
-                    self.push(
-                        "sessions",
-                        CheckStatus::Warn,
-                        "no saved sessions yet".to_owned(),
-                    );
-                }
-            },
+            Ok(catalog) => self.sessions_count(
+                catalog.summaries().len(),
+                catalog.summaries().first().map(|latest| latest.id.as_str()),
+            ),
             Err(_) => self.push(
                 "sessions",
                 CheckStatus::Warn,
                 "exact saved-session count unavailable without a full session scan".to_owned(),
+            ),
+        }
+    }
+
+    fn v2_state_checks(&mut self) {
+        let (Some(paths), Some(home)) = (self.paths, self.sources.home) else {
+            self.push(
+                "state",
+                CheckStatus::Warn,
+                "failed to inspect sessions v2: HomeNotSet".to_owned(),
+            );
+            return;
+        };
+        let root = self.workspace_root.to_string_lossy();
+        let report = SessionsV2::open_read_only(&paths.data, home, &root)
+            .map_err(|error| error.to_string())
+            .and_then(|store| {
+                store
+                    .doctor(SESSION_DIAGNOSTICS_LIMIT)
+                    .map_err(|fault| fault.to_string())
+            });
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                self.push(
+                    "state",
+                    CheckStatus::Fail,
+                    format!("failed to inspect sessions v2: {error}"),
+                );
+                return;
+            }
+        };
+        self.push("state", CheckStatus::Ok, "sessions v2".to_owned());
+        for id in &report.damaged {
+            self.push(
+                "session",
+                CheckStatus::Warn,
+                format!(
+                    "session {id} has a damaged log; `oh-fx session recover {id}` copies its good turns"
+                ),
+            );
+        }
+        if report.checked < report.sessions {
+            self.truncated(report.checked);
+        }
+        self.sessions_count(report.sessions, report.latest.as_deref());
+    }
+
+    fn truncated(&mut self, count: usize) {
+        self.push(
+            "session",
+            CheckStatus::Warn,
+            format!(
+                "session diagnostics truncated after {count} session director{} to keep doctor bounded",
+                if count == 1 { "y" } else { "ies" }
+            ),
+        );
+    }
+
+    fn sessions_count(&mut self, count: usize, latest: Option<&str>) {
+        match latest {
+            Some(latest) => self.push(
+                "sessions",
+                CheckStatus::Ok,
+                format!("{count} saved session(s); latest={latest}"),
+            ),
+            None => self.push(
+                "sessions",
+                CheckStatus::Warn,
+                "no saved sessions yet".to_owned(),
             ),
         }
     }

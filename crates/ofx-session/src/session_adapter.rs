@@ -1,7 +1,9 @@
+mod doctor;
 mod listing;
 mod store;
 
-pub use store::SessionsV2;
+pub use doctor::DoctorReport;
+pub use store::{SessionsV2, StoreFault};
 
 pub const SESSIONS_V2_VARIABLE: &str = "OH_FX_SESSIONS_V2";
 

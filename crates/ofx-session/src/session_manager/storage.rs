@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
@@ -64,16 +64,25 @@ fn fault(errno: Errno) -> IoFault {
     }
 }
 
-pub(crate) fn read_file(dir: impl AsFd, name: &str) -> Result<Vec<u8>, StorageError> {
+pub(crate) fn open_file(dir: impl AsFd, name: &str) -> Result<File, StorageError> {
     let flags =
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK;
     let fd = fs::openat(dir, name, flags, Mode::empty())?;
     if FileType::from_raw_mode(fs::fstat(&fd)?.st_mode) != FileType::RegularFile {
         return Err(StorageError::Fault(IoFault::AccessDenied));
     }
+    Ok(File::from(fd))
+}
+
+pub(crate) fn read_file(dir: impl AsFd, name: &str) -> Result<Vec<u8>, StorageError> {
     let mut bytes = Vec::new();
-    File::from(fd).read_to_end(&mut bytes)?;
+    open_file(dir, name)?.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+pub(crate) fn open_dir(dir: impl AsFd, name: &str) -> Result<OwnedFd, StorageError> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    Ok(fs::openat(dir, name, flags, Mode::empty())?)
 }
 
 pub(crate) fn is_directory(dir: impl AsFd, name: &str) -> Result<bool, IoFault> {

@@ -353,14 +353,6 @@ fn an_unusable_profile_fails_the_startup_check_as_ask_refuses_it() {
     assert!(stdout.contains("\n[doctor] model=\n"), "{stdout}");
 }
 
-#[test]
-fn doctor_refuses_the_v2_store() {
-    let home = Home::new();
-    let output = home.run(&["doctor"], &[("OH_FX_SESSIONS_V2", "1")]);
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(text(&output.stderr), "oh-fx: doctor is not available yet\n");
-}
-
 fn break_session(sessions: &Path, id: &str) {
     let session = sessions.join(id);
     fs::create_dir_all(&session).expect("create a session directory");

@@ -4,50 +4,11 @@ use ofx_config::PrivateDir;
 
 use super::fields::{BadBody, Fields, Tag};
 use super::frame::check_frame;
+use super::schema::{Host, Role};
 use super::storage::{self, IoFault, StorageError};
 
 const INDEX_NAME: &str = "index.jsonl";
 const HOST_COUNT: usize = Host::ALL.len();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Role {
-    Root,
-    Child,
-}
-
-impl Tag for Role {
-    const ALL: &'static [Self] = &[Self::Root, Self::Child];
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Root => "root",
-            Self::Child => "child",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Host {
-    App,
-    Ask,
-    Acp,
-    Sdk,
-    Child,
-}
-
-impl Tag for Host {
-    const ALL: &'static [Self] = &[Self::App, Self::Ask, Self::Acp, Self::Sdk, Self::Child];
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::App => "app",
-            Self::Ask => "ask",
-            Self::Acp => "acp",
-            Self::Sdk => "sdk",
-            Self::Child => "child",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Summary {

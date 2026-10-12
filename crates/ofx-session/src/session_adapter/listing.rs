@@ -6,7 +6,7 @@ use crate::session_manager::{IoFault, ListCursor, Manager, Summary, full_string}
 use crate::session_summary_codec::{SessionSource, SessionSummary};
 use crate::session_trace::SESSION;
 
-const LIST_PAGE_SIZE: usize = 256;
+pub(super) const LIST_PAGE_SIZE: usize = 256;
 
 pub(super) enum RecordError {
     UnexpectedToken,
