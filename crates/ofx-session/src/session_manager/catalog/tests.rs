@@ -203,3 +203,50 @@ fn a_missing_index_lists_nothing() {
         .unwrap();
     assert!(list(&root, None, 5).unwrap().items.is_empty());
 }
+
+fn summary(id: &str, updated_ms: u64) -> Summary {
+    let Some(Record::Put(summary)) = decode_record(&put(id, updated_ms, [0, 3, 0, 0, 0])) else {
+        panic!("a put decodes");
+    };
+    summary
+}
+
+#[test]
+fn a_put_encodes_as_upstream_and_cuts_a_torn_tail_before_appending() {
+    let mut bytes = put("one", 5, [0; HOST_COUNT]);
+    bytes.extend_from_slice(b"{\"op\":\"put\",\"id\":\"torn");
+    let root = Root::new(&bytes, &["one", "two"]);
+    let mut two = summary("two", 9);
+    two.title = Some(b"\"Named \\\"two\\\"\"".to_vec());
+    two.parent = Some("one".to_owned());
+    super::put(root.dir(), &two).unwrap();
+    let written = fs::read(root.directory.path().join(INDEX_NAME)).unwrap();
+    let mut expected = put("one", 5, [0; HOST_COUNT]);
+    expected.extend(framed(
+        "{\"op\":\"put\",\"id\":\"two\",\"role\":\"root\",\"host\":\"ask\",\"workspace\":\"/w\",\"title\":\"Named \\\"two\\\"\",\"parent\":\"one\",\"created\":1,\"updated\":9,\"turns\":1,\"opened\":[0,3,0,0,0]",
+    ));
+    assert_eq!(written, expected);
+    assert_eq!(
+        decode_record(&expected[put("one", 5, [0; HOST_COUNT]).len()..]),
+        Some(Record::Put(two))
+    );
+}
+
+#[test]
+fn an_index_past_one_mebibyte_is_rewritten_with_one_line_per_id_keeping_tombstones() {
+    let mut bytes = Vec::new();
+    bytes.extend(del("gone", 4));
+    let mut ts = 0;
+    while (bytes.len() as u64) < COMPACT_BYTES {
+        ts += 1;
+        bytes.extend(put("busy", ts, [ts, 0, 0, 0, 0]));
+    }
+    let root = Root::new(&bytes, &["busy", "last"]);
+    super::put(root.dir(), &summary("last", 7)).unwrap();
+    let written = fs::read(root.directory.path().join(INDEX_NAME)).unwrap();
+    let mut expected = del("gone", 4);
+    expected.extend(put("busy", ts, [ts, 0, 0, 0, 0]));
+    expected.extend(put("last", 7, [0, 3, 0, 0, 0]));
+    assert_eq!(written, expected);
+    assert!(!root.directory.path().join(INDEX_TMP_NAME).exists());
+}

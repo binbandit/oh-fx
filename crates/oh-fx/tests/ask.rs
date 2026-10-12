@@ -1264,10 +1264,23 @@ fn ask_flags_the_binary_cannot_honor_yet_fail_before_any_request() {
     fs::write(home.workspace.join("shot.png"), PNG_BYTES).unwrap();
     for (args, feature) in [
         (&["ask", "--image", "shot.png", "hi"][..], "ask --image"),
-        (&["ask", "--sessions-v2", "hi"], "ask --sessions-v2"),
-        (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
         (
-            &["--sessions-v2", "ask", "--sessions-v2", "hi"],
+            &["ask", "--sessions-v2", "--resume", "last", "hi"],
+            "ask --sessions-v2",
+        ),
+        (
+            &["--sessions-v2", "ask", "--resume", "last", "hi"],
+            "--sessions-v2",
+        ),
+        (
+            &[
+                "--sessions-v2",
+                "ask",
+                "--sessions-v2",
+                "--resume",
+                "x",
+                "hi",
+            ],
             "--sessions-v2",
         ),
     ] {
@@ -1602,35 +1615,61 @@ fn images_stop_before_any_request_when_the_model_cannot_take_them() {
 }
 
 #[test]
-fn the_sessions_v2_variable_selects_the_store_that_ask_cannot_use_yet() {
+fn the_sessions_v2_variable_saves_ask_to_the_v2_store_and_resume_waits_for_v2_resume() {
     let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["one"])),
+        Reply::sse(&chat_text_events(&["true"])),
+        Reply::sse(&chat_text_events(&["TRUE"])),
         Reply::sse(&chat_text_events(&["off"])),
         Reply::sse(&chat_text_events(&["yes"])),
     ]);
     let home = Home::with_settings(&portkey_settings(&server.base_url()));
+    let v2 = home.root.join("data/oh-fx/sessions/v2");
+    let mut saved = Vec::new();
     for value in ["1", "true", "TRUE"] {
-        let output = home.ask(&["ask", "hi"], &[KEY[0], ("OH_FX_SESSIONS_V2", value)]);
-        assert_eq!(output.status.code(), Some(1), "{value:?}");
-        assert_eq!(stdout(&output), "", "{value:?}");
-        assert_eq!(
-            stderr(&output),
-            "oh-fx: OH_FX_SESSIONS_V2 is not available yet\n",
+        let output = home.ask(
+            &["ask", "--json", "hi"],
+            &[KEY[0], ("OH_FX_SESSIONS_V2", value)],
+        );
+        assert!(output.status.success(), "{value:?}: {}", stderr(&output));
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let id = result["session_id"].as_str().unwrap().to_owned();
+        assert!(v2.join(&id).join("log.jsonl").is_file(), "{value:?}");
+        saved.push(id);
+    }
+    for (value, reply) in [("0", "off"), ("yes", "yes")] {
+        let output = home.ask(
+            &["ask", "--json", "hi"],
+            &[KEY[0], ("OH_FX_SESSIONS_V2", value)],
+        );
+        assert!(output.status.success(), "{value:?}: {}", stderr(&output));
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["final_output"], reply, "{value:?}");
+        let id = result["session_id"].as_str().unwrap();
+        assert!(!v2.join(id).exists(), "{value:?}");
+        assert!(
+            home.root.join("data/oh-fx/sessions").join(id).is_dir(),
             "{value:?}"
         );
     }
+    let listed: Vec<_> = fs::read_dir(&v2)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| saved.contains(name))
+        .collect();
+    assert_eq!(listed.len(), 3);
     let output = home.ask(
-        &["ask", "--json", "hi"],
+        &["ask", "--json", "--resume", "last", "hi"],
         &[KEY[0], ("OH_FX_SESSIONS_V2", "1")],
     );
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "oh-fx: OH_FX_SESSIONS_V2 is not available yet\n"
+    );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["error"], "NotAvailableYet");
-    assert!(server.requests().is_empty());
-    for (value, reply) in [("0", "off"), ("yes", "yes")] {
-        let output = home.ask(&["ask", "hi"], &[KEY[0], ("OH_FX_SESSIONS_V2", value)]);
-        assert!(output.status.success(), "{value:?}: {}", stderr(&output));
-        assert_eq!(stdout(&output), reply, "{value:?}");
-    }
+    assert_eq!(server.requests().len(), 5);
 }
 
 #[test]

@@ -10,10 +10,12 @@ use super::codec::{RecordError, decode_language, decode_preferences, decode_titl
 use super::doctor::{DoctorReport, doctor};
 use super::listing::{list_items, record_error, record_failure, store_error, summary_of};
 use super::replay::{ReplayError, detail_turns};
+use super::session::SessionV2;
 use crate::fx_sessions::open_v2_root;
+use crate::session_codec::SessionPreferences;
 use crate::session_error::SessionError;
 use crate::session_log::SessionArchive;
-use crate::session_manager::{IoFault, Manager, OpenError, Role, SetKey, State};
+use crate::session_manager::{Host, IoFault, Manager, OpenError, Role, SetKey, State};
 use crate::session_store::{SESSIONS_DIR, SessionCatalog, checked_workspace_root};
 use crate::session_summary_codec::{SessionSource, SessionSummary, sort_summaries_newest_first};
 
@@ -36,11 +38,7 @@ impl fmt::Display for StoreFault {
 }
 
 impl SessionsV2 {
-    pub fn open_read_only(
-        data_dir: &Path,
-        home: &Path,
-        workspace_root: &str,
-    ) -> Result<Self, SessionError> {
+    pub fn open(data_dir: &Path, home: &Path, workspace_root: &str) -> Result<Self, SessionError> {
         let workspace_root = checked_workspace_root(workspace_root)?;
         trace_log!(WIRING, "action=StoreOpen session=- pid={}", process::id());
         Ok(Self {
@@ -48,6 +46,20 @@ impl SessionsV2 {
             home: home.to_path_buf(),
             workspace_root,
         })
+    }
+
+    pub fn start_ask(
+        &self,
+        preferences: &SessionPreferences,
+        prompt: &str,
+    ) -> Result<SessionV2, SessionError> {
+        SessionV2::create(
+            &self.data_dir.join(SESSIONS_DIR).join(V2_DIR),
+            &self.workspace_root,
+            Host::Ask,
+            preferences,
+            prompt,
+        )
     }
 
     pub fn doctor(&self, limit: usize) -> Result<DoctorReport, StoreFault> {

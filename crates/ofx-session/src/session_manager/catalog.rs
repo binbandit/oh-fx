@@ -1,26 +1,53 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::os::fd::AsFd;
+use std::os::unix::fs::FileExt;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ofx_config::PrivateDir;
+use rustix::fs::Mode;
 
+use super::encode::append_json_string;
 use super::fields::{BadBody, Fields, Tag};
-use super::frame::check_frame;
+use super::frame::{check_frame, seal_frame};
+use super::log::{ReadError, last_line_end};
 use super::schema::{Host, Role};
-use super::storage::{self, IoFault, StorageError};
+use super::storage::{self, IoFault, StorageError, io_fault};
 
 const INDEX_NAME: &str = "index.jsonl";
+const INDEX_TMP_NAME: &str = "index.jsonl.tmp";
+const LOCK_NAME: &str = "index.lock";
 const HOST_COUNT: usize = Host::ALL.len();
+const COMPACT_BYTES: u64 = 1 << 20;
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+const LOCK_RETRY: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Summary {
     pub(crate) id: String,
     pub(crate) role: Role,
+    pub(crate) host: Host,
     pub(crate) workspace: String,
     pub(crate) title: Option<Vec<u8>>,
     pub(crate) language: Option<Vec<u8>>,
+    pub(crate) parent: Option<String>,
     pub(crate) created_ms: u64,
     pub(crate) updated_ms: u64,
     pub(crate) turns: u64,
-    opened_ms: [u64; HOST_COUNT],
+    pub(crate) opened_ms: [u64; HOST_COUNT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexError {
+    Busy,
+    Fault(IoFault),
+}
+
+impl From<IoFault> for IndexError {
+    fn from(fault: IoFault) -> Self {
+        Self::Fault(fault)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,11 +72,11 @@ fn decode_object(object: &[u8]) -> Result<Record, BadBody> {
     match &*op {
         "put" => {
             let role = fields.req_tag::<Role>("role")?;
-            fields.req_tag::<Host>("host")?;
+            let host = fields.req_tag::<Host>("host")?;
             let workspace = fields.req_str("workspace")?.into_owned();
             let title = fields.raw("title").map(<[u8]>::to_vec);
             let language = fields.raw("language").map(<[u8]>::to_vec);
-            fields.opt_str("parent")?;
+            let parent = fields.opt_str("parent")?.map(Into::into);
             let created_ms = fields.req_u64("created")?;
             let updated_ms = fields.req_u64("updated")?;
             let turns = fields.req_u64("turns")?;
@@ -60,9 +87,11 @@ fn decode_object(object: &[u8]) -> Result<Record, BadBody> {
             Ok(Record::Put(Summary {
                 id,
                 role,
+                host,
                 workspace,
                 title,
                 language,
+                parent,
                 created_ms,
                 updated_ms,
                 turns,
@@ -139,9 +168,11 @@ impl Index {
                     summary: Summary {
                         id,
                         role: Role::Root,
+                        host: Host::App,
                         workspace: String::new(),
                         title: None,
                         language: None,
+                        parent: None,
                         created_ms: ts_ms,
                         updated_ms: ts_ms,
                         turns: 0,
@@ -158,6 +189,115 @@ impl Index {
             .insert(entry.summary.id.clone(), self.entries.len());
         self.entries.push(entry);
     }
+}
+
+fn encode_put(out: &mut Vec<u8>, summary: &Summary) -> Result<(), IoFault> {
+    let start = out.len();
+    out.extend_from_slice(b"{\"op\":\"put\",\"id\":");
+    append_json_string(out, &summary.id);
+    out.extend_from_slice(
+        format!(
+            ",\"role\":\"{}\",\"host\":\"{}\",\"workspace\":",
+            summary.role.name(),
+            summary.host.name()
+        )
+        .as_bytes(),
+    );
+    append_json_string(out, &summary.workspace);
+    for (name, raw) in [("title", &summary.title), ("language", &summary.language)] {
+        if let Some(raw) = raw {
+            out.extend_from_slice(format!(",\"{name}\":").as_bytes());
+            out.extend_from_slice(raw);
+        }
+    }
+    if let Some(parent) = &summary.parent {
+        out.extend_from_slice(b",\"parent\":");
+        append_json_string(out, parent);
+    }
+    let opened: Vec<String> = summary.opened_ms.iter().map(u64::to_string).collect();
+    out.extend_from_slice(
+        format!(
+            ",\"created\":{},\"updated\":{},\"turns\":{},\"opened\":[{}]",
+            summary.created_ms,
+            summary.updated_ms,
+            summary.turns,
+            opened.join(",")
+        )
+        .as_bytes(),
+    );
+    seal_frame(out, start).map_err(|_| IoFault::Io)
+}
+
+fn encode_del(out: &mut Vec<u8>, id: &str, ts_ms: u64) -> Result<(), IoFault> {
+    let start = out.len();
+    out.extend_from_slice(b"{\"op\":\"del\",\"id\":");
+    append_json_string(out, id);
+    out.extend_from_slice(format!(",\"ts\":{ts_ms}").as_bytes());
+    seal_frame(out, start).map_err(|_| IoFault::Io)
+}
+
+pub(crate) fn put(root: impl AsFd, summary: &Summary) -> Result<(), IndexError> {
+    let mut line = Vec::new();
+    encode_put(&mut line, summary)?;
+    let lock = acquire_lock(&root)?;
+    let appended = append_line(&root, &line);
+    storage::unlock(&lock);
+    appended
+}
+
+fn append_line(root: &impl AsFd, line: &[u8]) -> Result<(), IndexError> {
+    let file = match storage::open_writable(root, INDEX_NAME)? {
+        Some(file) => file,
+        None => storage::create_file(root, INDEX_NAME, Mode::RUSR | Mode::WUSR)?,
+    };
+    let len = file.metadata().map_err(io_fault)?.len();
+    let end = last_line_end(&file, len).map_err(|error| match error {
+        ReadError::Fault(fault) => fault,
+        ReadError::Corrupt(_) => IoFault::Io,
+    })?;
+    if end != len {
+        file.set_len(end).map_err(io_fault)?;
+    }
+    file.write_all_at(line, end).map_err(io_fault)?;
+    if end + line.len() as u64 > COMPACT_BYTES {
+        write_fresh(root, &Index::fold(&read_index(root)?))?;
+    }
+    Ok(())
+}
+
+fn write_fresh(root: &impl AsFd, index: &Index) -> Result<(), IoFault> {
+    let mut bytes = Vec::new();
+    for entry in &index.entries {
+        if entry.deleted {
+            encode_del(&mut bytes, &entry.summary.id, entry.summary.updated_ms)?;
+        } else {
+            encode_put(&mut bytes, &entry.summary)?;
+        }
+    }
+    storage::remove(root, INDEX_TMP_NAME);
+    let file = storage::create_file(root, INDEX_TMP_NAME, Mode::RUSR | Mode::WUSR)?;
+    file.write_all_at(&bytes, 0).map_err(io_fault)?;
+    file.sync_all().map_err(io_fault)?;
+    storage::rename(root, INDEX_TMP_NAME, INDEX_NAME)?;
+    storage::sync_dir(root)
+}
+
+fn acquire_lock(root: &impl AsFd) -> Result<File, IndexError> {
+    let file = match storage::open_writable(root, LOCK_NAME)? {
+        Some(file) => file,
+        None => match storage::create_file(root, LOCK_NAME, Mode::RUSR | Mode::WUSR) {
+            Ok(file) => file,
+            Err(_) => storage::open_writable(root, LOCK_NAME)?.ok_or(IoFault::Io)?,
+        },
+    };
+    let started = Instant::now();
+    while !storage::try_lock(&file)? {
+        if started.elapsed() >= LOCK_WAIT {
+            return Err(IndexError::Busy);
+        }
+        thread::sleep(LOCK_RETRY);
+    }
+    Ok(file)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,7 +343,7 @@ pub(crate) fn list(
     Ok(page)
 }
 
-fn read_index(root: &PrivateDir) -> Result<Vec<u8>, IoFault> {
+fn read_index(root: impl AsFd) -> Result<Vec<u8>, IoFault> {
     match storage::read_file(root, INDEX_NAME) {
         Ok(bytes) => Ok(bytes),
         Err(StorageError::NotFound) => Ok(Vec::new()),

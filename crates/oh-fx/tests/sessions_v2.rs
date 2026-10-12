@@ -548,3 +548,154 @@ fn session_detail_on_v2_fails_as_upstream_does() {
         "oh-fx session: this fx session holds data oh-fx cannot read yet; keep using it in fx\n"
     );
 }
+
+fn logged(root: &Path, id: &str) -> Vec<Value> {
+    let bytes = fs::read(root.join(id).join("log.jsonl")).expect("read the log");
+    let mut lines = Vec::new();
+    for (seq, line) in (1_u64..).zip(bytes.split_inclusive(|&byte| byte == b'\n')) {
+        let text = std::str::from_utf8(line).expect("utf-8 line");
+        let (payload, crc) = text
+            .strip_suffix("\"}\n")
+            .and_then(|rest| rest.rsplit_once(",\"crc\":\""))
+            .expect("a framed line");
+        assert_eq!(crc, format!("{:08x}", crc32c(payload.as_bytes())), "{text}");
+        let line: Value = serde_json::from_str(text).expect("a JSON line");
+        assert_eq!(line["seq"], seq, "{text}");
+        lines.push(line);
+    }
+    lines
+}
+
+fn kinds(lines: &[Value]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            let kind = line["kind"].as_str().expect("kind");
+            match line["type"].as_str().or_else(|| line["key"].as_str()) {
+                Some(detail) => format!("{kind}:{detail}"),
+                None => kind.to_owned(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn ask_on_v2_saves_a_new_session_that_lists_and_reads_back_and_never_writes_v1() {
+    let server = FakeServer::start([
+        Reply::sse(&ofx_testkit::chat_tool_call_events(
+            "call_1",
+            "read_file",
+            &json!({"path": "notes.txt"}).to_string(),
+        )),
+        Reply::sse(&chat_text_events(&["Read it."])),
+    ]);
+    let home = Home::new(&server.base_url());
+    fs::write(home.root.join("workspace/notes.txt"), "NOTE_TEXT\n").expect("write notes");
+    let trace = home.root.join("trace.log");
+    let output = home.run(
+        &["--sessions-v2", "ask", "--json", "Read the notes."],
+        &[("OH_FX_TRACE_LOG", trace.to_str().expect("utf-8 path"))],
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let result: Value = serde_json::from_slice(&output.stdout).expect("ask json");
+    let id = result["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    assert_eq!(id.len(), 12);
+    assert!(result.get("recovery").is_none());
+    let lines = logged(&home.own_root(), &id);
+    assert_eq!(
+        kinds(&lines),
+        [
+            "session_created",
+            "set:prefs",
+            "set:permissions",
+            "set:language",
+            "turn_started",
+            "item:user",
+            "item:tool_call",
+            "item:tool_result",
+            "item:assistant",
+            "item:turn_end",
+            "turn_committed",
+            "set:title",
+            "closed"
+        ]
+    );
+    assert_eq!(lines[0]["workspace"], home.workspace());
+    assert_eq!(lines[0]["host"], "ask");
+    let hash = lines[5]["blobs"][0].as_str().expect("a listed blob");
+    assert_eq!(
+        lines[7]["data"]["artifact_ref"],
+        format!("result-{hash}.txt")
+    );
+    assert!(
+        fs::read_to_string(home.own_root().join(&id).join("blobs").join(hash))
+            .expect("the result blob")
+            .contains("NOTE_TEXT")
+    );
+    let v1: Vec<_> = fs::read_dir(home.root.join("data/oh-fx/sessions"))
+        .expect("the sessions folder")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(v1, ["v2"]);
+    let listed: Value =
+        serde_json::from_str(&home.listed(&["--sessions-v2", "sessions", "--json"], &[]))
+            .expect("listing json");
+    assert_eq!(listed["sessions"][0]["id"], id.as_str());
+    assert_eq!(listed["sessions"][0]["title"], "Read the notes.");
+    assert_eq!(listed["sessions"][0]["history_len"], 1);
+    let detail = home.listed(&["--sessions-v2", "session", &id], &[]);
+    assert!(detail.contains("Read the notes."), "{detail}");
+    assert!(detail.contains("Read it."), "{detail}");
+    let traced = fs::read_to_string(&trace).expect("the trace");
+    for action in [
+        format!("action=Open session={id} "),
+        format!("action=BeginTurn session={id} "),
+        format!("action=EndTurn session={id} end=commit "),
+        format!("action=Close session={id} "),
+    ] {
+        assert!(traced.contains(&action), "{action}{traced}");
+    }
+}
+
+#[test]
+fn ask_with_the_flag_after_ask_or_the_variable_saves_to_v2_and_resume_waits() {
+    let server = FakeServer::start([
+        Reply::sse(&chat_text_events(&["AFTER"])),
+        Reply::sse(&chat_text_events(&["VARIABLE"])),
+    ]);
+    let home = Home::new(&server.base_url());
+    let mut saved = Vec::new();
+    for (args, environment) in [
+        (
+            &["ask", "--sessions-v2", "--json", "Flag after ask."][..],
+            &[][..],
+        ),
+        (
+            &["ask", "--json", "From the variable."],
+            &[("OH_FX_SESSIONS_V2", "true")],
+        ),
+    ] {
+        let output = home.run(args, environment);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            text(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).expect("ask json");
+        saved.push(result["session_id"].as_str().expect("id").to_owned());
+    }
+    let mut listed = ids(&home.listed(&["--sessions-v2", "sessions", "--json"], &[]));
+    listed.sort();
+    saved.sort();
+    assert_eq!(listed, saved);
+    let output = home.run(&["--sessions-v2", "ask", "--resume", "last", "Again."], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "oh-fx: --sessions-v2 is not available yet\n"
+    );
+    assert_eq!(server.requests().len(), 2);
+}

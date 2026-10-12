@@ -5,6 +5,21 @@ const CRC_FIELD: &[u8] = b",\"crc\":\"";
 const CRC_CLOSE: &[u8] = b"\"}\n";
 const CRC_SUFFIX_LEN: usize = CRC_FIELD.len() + 8 + CRC_CLOSE.len();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TooLarge;
+
+pub(crate) fn seal_frame(out: &mut Vec<u8>, start: usize) -> Result<(), TooLarge> {
+    let crc = crc32c(&out[start..]);
+    out.extend_from_slice(CRC_FIELD);
+    out.extend_from_slice(format!("{crc:08x}").as_bytes());
+    out.extend_from_slice(CRC_CLOSE);
+    if out.len() - start > MAX_LINE_BYTES {
+        out.truncate(start);
+        return Err(TooLarge);
+    }
+    Ok(())
+}
+
 pub(crate) fn check_frame(line: &[u8]) -> Option<&[u8]> {
     if line.len() < CRC_SUFFIX_LEN || line.len() > MAX_LINE_BYTES {
         return None;
@@ -41,6 +56,22 @@ mod tests {
             check_frame(&line),
             Some(&b"{\"op\":\"del\",\"id\":\"abc\",\"ts\":11"[..])
         );
+    }
+
+    #[test]
+    fn a_sealed_frame_matches_the_reference_frame_and_refuses_lines_over_the_cap() {
+        let payload = b"{\"op\":\"del\",\"id\":\"abc\",\"ts\":11";
+        let mut out = b"kept".to_vec();
+        out.extend_from_slice(payload);
+        assert_eq!(seal_frame(&mut out, 4), Ok(()));
+        assert_eq!(
+            &out[4..],
+            framed("{\"op\":\"del\",\"id\":\"abc\",\"ts\":11")
+        );
+        let mut long = b"kept".to_vec();
+        long.extend_from_slice(&vec![b'x'; MAX_LINE_BYTES]);
+        assert_eq!(seal_frame(&mut long, 4), Err(TooLarge));
+        assert_eq!(long, b"kept");
     }
 
     #[test]

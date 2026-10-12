@@ -165,3 +165,63 @@ fn a_snapshot_state_with_children_and_absent_settings_decodes() {
         assert_eq!(State::decode(bad), Err(BadBody));
     }
 }
+
+#[test]
+fn plan_numbers_turns_and_refuses_a_batch_that_breaks_the_turn_rules() {
+    let mut state = State::default();
+    let blobs = vec!["c".repeat(64)];
+    let batch = [
+        Event::Set(SetKey::Language, b"\"und-Latn\""),
+        Event::TurnStarted,
+        Event::Item {
+            item_type: "user",
+            data: b"{}",
+            blobs: &blobs,
+        },
+        Event::TurnCommitted,
+        Event::TurnStarted,
+        Event::TurnInterrupted(Reason::Cancel),
+    ];
+    let lines = state.plan(&batch).unwrap();
+    assert_eq!(
+        lines,
+        [
+            Line::Set(SetKey::Language, b"\"und-Latn\""),
+            Line::TurnStarted(1),
+            Line::Item {
+                turn: 1,
+                item_type: "user",
+                data: b"{}",
+                blobs: &blobs,
+            },
+            Line::TurnCommitted(1),
+            Line::TurnStarted(2),
+            Line::TurnInterrupted(2, Reason::Cancel),
+        ]
+    );
+    for (seq, line) in (1..).zip(&lines) {
+        state.apply(0, seq, 0, &line.body());
+    }
+    assert_eq!(
+        (state.open_turn(), state.turns(), state.last_seq()),
+        (None, 2, 6)
+    );
+    let item = Event::Item {
+        item_type: "user",
+        data: b"{}",
+        blobs: &[],
+    };
+    for refused in [
+        &[item][..],
+        &[Event::TurnCommitted],
+        &[Event::TurnInterrupted(Reason::Failed)],
+        &[Event::TurnStarted, Event::TurnStarted],
+        &[Event::TurnStarted, Event::TurnCommitted, item],
+    ] {
+        assert_eq!(state.plan(refused), Err(InvalidTransition), "{refused:?}");
+    }
+    assert_eq!(
+        state.plan(&[Event::TurnStarted]).unwrap(),
+        [Line::TurnStarted(3)]
+    );
+}

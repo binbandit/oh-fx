@@ -15,8 +15,20 @@ use crate::session_event::{
 use crate::session_log::conversation_progress::ProgressPoint;
 use crate::session_trace::rejected;
 
+pub(crate) trait ResultSink {
+    fn store(&self, call_id: &str, tool_name: &str, output: &str) -> Result<String, SessionError>;
+}
+
+impl ResultSink for PrivateDir {
+    fn store(&self, call_id: &str, tool_name: &str, output: &str) -> Result<String, SessionError> {
+        let handle = make_handle(call_id, tool_name, output);
+        store_result(self, &handle, output)?;
+        Ok(handle)
+    }
+}
+
 pub(crate) struct TurnArtifacts<'a> {
-    pub(crate) dir: &'a PrivateDir,
+    pub(crate) results: &'a dyn ResultSink,
     pub(crate) provider: &'a SavedProvider,
     pub(crate) timestamp_ms: i64,
     pub(crate) work_id: Option<&'a str>,
@@ -133,8 +145,9 @@ fn step_events(
         events.push(ConversationEvent::ToolCall(event));
     }
     for result in &step.tool_results {
-        let handle = make_handle(result.call_id, result.tool_name, result.output);
-        store_result(artifacts.dir, &handle, result.output)?;
+        let handle = artifacts
+            .results
+            .store(result.call_id, result.tool_name, result.output)?;
         let stored_bytes =
             u64::try_from(result.output.len()).map_err(|_| rejected("tool-result-stored-bytes"))?;
         let output_bytes =

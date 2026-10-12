@@ -1,8 +1,25 @@
+use super::encode::Line;
 use super::fields::{BadBody, Fields, Tag};
 use super::json::{self, Value};
 use super::schema::{Body, Outcome, Reason, SetKey};
 
 const SETTINGS: usize = SetKey::ALL.len();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Event<'a> {
+    TurnStarted,
+    Item {
+        item_type: &'a str,
+        data: &'a [u8],
+        blobs: &'a [String],
+    },
+    TurnCommitted,
+    TurnInterrupted(Reason),
+    Set(SetKey, &'a [u8]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidTransition;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Child {
@@ -31,6 +48,58 @@ pub(crate) struct State {
 }
 
 impl State {
+    pub(crate) fn plan<'a>(
+        &self,
+        events: &[Event<'a>],
+    ) -> Result<Vec<Line<'a>>, InvalidTransition> {
+        let mut open_turn = self.open_turn;
+        let mut last_turn = self.last_turn;
+        events
+            .iter()
+            .map(|event| {
+                Ok(match *event {
+                    Event::TurnStarted => {
+                        if open_turn.is_some() {
+                            return Err(InvalidTransition);
+                        }
+                        last_turn += 1;
+                        open_turn = Some(last_turn);
+                        Line::TurnStarted(last_turn)
+                    }
+                    Event::Item {
+                        item_type,
+                        data,
+                        blobs,
+                    } => Line::Item {
+                        turn: open_turn.ok_or(InvalidTransition)?,
+                        item_type,
+                        data,
+                        blobs,
+                    },
+                    Event::TurnCommitted => {
+                        Line::TurnCommitted(open_turn.take().ok_or(InvalidTransition)?)
+                    }
+                    Event::TurnInterrupted(reason) => {
+                        Line::TurnInterrupted(open_turn.take().ok_or(InvalidTransition)?, reason)
+                    }
+                    Event::Set(key, value) => Line::Set(key, value),
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn open_turn(&self) -> Option<u64> {
+        self.open_turn
+    }
+
+    pub(crate) fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+
+    pub(crate) fn turns(&self) -> u64 {
+        self.committed + self.interrupted
+    }
+
     pub(crate) fn apply(&mut self, fork_seq: u64, seq: u64, offset: u64, body: &Body<'_>) {
         match body {
             Body::TurnStarted { turn } => {

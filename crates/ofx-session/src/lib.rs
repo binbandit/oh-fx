@@ -47,7 +47,7 @@ pub use profile_usage_runtime::{ProfilePublisher, ProfileUsage, ProfileUsageErro
 pub use profile_usage_store::UsageStoreError;
 pub use prompt_history_store::{AppendOutcome, PromptHistoryError, PromptHistoryStore};
 pub use session_adapter::{
-    DoctorReport as SessionsV2Doctor, SESSIONS_V2_VARIABLE, SessionsV2,
+    DoctorReport as SessionsV2Doctor, SESSIONS_V2_VARIABLE, SessionV2, SessionsV2,
     StoreFault as SessionsV2Fault, sessions_v2_variable_is_on,
 };
 pub use session_children::ChildSessions;

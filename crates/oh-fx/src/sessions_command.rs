@@ -117,7 +117,7 @@ pub(crate) fn open_saved_sessions() -> Result<SavedSessions, Failure> {
 
 pub(crate) fn open_v2_sessions() -> Result<SessionsV2, Failure> {
     let profile = profile()?;
-    Ok(SessionsV2::open_read_only(
+    Ok(SessionsV2::open(
         &profile.data,
         &profile.home,
         &profile.workspace_root,

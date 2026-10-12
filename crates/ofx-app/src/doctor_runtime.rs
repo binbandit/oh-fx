@@ -339,7 +339,7 @@ impl Collection<'_> {
             return;
         };
         let root = self.workspace_root.to_string_lossy();
-        let report = SessionsV2::open_read_only(&paths.data, home, &root)
+        let report = SessionsV2::open(&paths.data, home, &root)
             .map_err(|error| error.to_string())
             .and_then(|store| {
                 store

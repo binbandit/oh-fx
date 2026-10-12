@@ -15,8 +15,8 @@ use ofx_config::SelectionError;
 use ofx_contract::{HistoryEntry, RecoveredTurn, RestoredHistory, UsageReport, UsageReportError};
 use ofx_session::{
     PendingRecovery, ProfilePublisher, ResumeTarget, RouteCredential, SavedProvider,
-    SessionDisposal, SessionError, SessionLog, SessionPreferences, SessionStore, TitleGate,
-    UsagePublisher, WritableSession, prompt_excerpt,
+    SessionDisposal, SessionError, SessionLog, SessionPreferences, SessionStore, SessionsV2,
+    TitleGate, UsagePublisher, WritableSession, prompt_excerpt,
 };
 use ofx_trace::trace_log;
 
@@ -409,6 +409,20 @@ pub fn open_store(profile: &Profile) -> Result<SessionStore, SessionError> {
         Some(home) => store.with_fx_home(home.to_path_buf()),
         None => store,
     })
+}
+
+pub fn open_v2_store(profile: &Profile) -> Result<SessionsV2, SessionError> {
+    let data = profile
+        .data_dir()
+        .ok_or(SessionError::SessionStoreUnavailable)?;
+    let home = profile
+        .home()
+        .ok_or(SessionError::SessionStoreUnavailable)?;
+    let workspace = profile
+        .workspace_root()
+        .to_str()
+        .ok_or(SessionError::InvalidWorkspaceRoot)?;
+    SessionsV2::open(data, home, workspace)
 }
 
 #[derive(Clone)]

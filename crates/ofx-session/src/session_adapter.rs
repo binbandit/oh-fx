@@ -2,9 +2,11 @@ mod codec;
 mod doctor;
 mod listing;
 mod replay;
+mod session;
 mod store;
 
 pub use doctor::DoctorReport;
+pub use session::SessionV2;
 pub use store::{SessionsV2, StoreFault};
 
 pub const SESSIONS_V2_VARIABLE: &str = "OH_FX_SESSIONS_V2";

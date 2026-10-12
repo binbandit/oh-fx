@@ -619,7 +619,10 @@ fn launch_modifiers_that_ask_cannot_honor_yet_fail_with_the_shared_message() {
             ][..],
             "--context-limit",
         ),
-        (&["--sessions-v2", "ask", "hi"], "--sessions-v2"),
+        (
+            &["--sessions-v2", "ask", "--resume", "last", "hi"],
+            "--sessions-v2",
+        ),
     ] {
         let output = oh_fx(args, &[]);
         assert_eq!(output.status.code(), Some(1), "{args:?}");

@@ -226,7 +226,7 @@ fn validate_session_metadata(metadata: &SessionMetadata) -> Result<(), SessionEr
     Ok(())
 }
 
-fn effort_label(effort: &ReasoningEffort) -> &str {
+pub(crate) fn effort_label(effort: &ReasoningEffort) -> &str {
     match effort {
         ReasoningEffort::Auto => "auto",
         ReasoningEffort::Named(name) => name,

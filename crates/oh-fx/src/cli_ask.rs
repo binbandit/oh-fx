@@ -13,9 +13,9 @@ use ofx_agent::{
     text_for_completed_presentation,
 };
 use ofx_app::{
-    CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
+    AgentSetup, CodexUnavailable, ConnectError, CredentialSource, Launch, Profile, ResumeFailure,
     ResumedSession, RoutingFlags, SubscriptionEndpoints, TitleGeneration, WebFetchProgress,
-    default_mode, open_store, recovered_turn, session_lookup_message,
+    default_mode, open_store, open_v2_store, recovered_turn, session_lookup_message,
 };
 use ofx_auth::MISSING_CHATGPT_CREDENTIAL_MESSAGE;
 use ofx_cli::{AskArgs, AskError, AskLayout, AskOutput, LaunchModifiers, read_stdin_prompt};
@@ -34,7 +34,7 @@ use ofx_gateway::HttpFailure;
 use ofx_images::MODEL_IMAGE_CAPABILITY_UNAVAILABLE_NOTICE;
 use ofx_mcp::{McpRuntime, ShutdownMode, render_workspace_diagnostic};
 use ofx_session::{
-    SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, SessionStore,
+    SESSIONS_V2_VARIABLE, SessionError, SessionPreferences, SessionStore, SessionsV2,
     sessions_v2_variable_is_on,
 };
 use ofx_text::encode_terminal_safe;
@@ -396,7 +396,13 @@ fn unavailable_feature(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<St
     }
     first_requested(ask)
         .map(|flag| format!("ask {flag}"))
-        .or_else(|| sessions_v2_source(args, modifiers).map(str::to_owned))
+        .or_else(|| {
+            args.session
+                .resume
+                .as_ref()
+                .and(sessions_v2_source(args, modifiers))
+                .map(str::to_owned)
+        })
 }
 
 fn sessions_v2_source(args: &AskArgs, modifiers: &LaunchModifiers) -> Option<&'static str> {
@@ -633,20 +639,10 @@ async fn prepare_agent(
     if let Some(mcp) = setup.mcp() {
         start_mcp(mcp, args.output, cancel).await?;
     }
-    let store = match &resumed {
-        Some(_) => None,
-        None if args.session.no_save => None,
-        None => new_session_store(&profile)?,
-    };
-    let mut agent = setup.agent(resumed.is_some() || store.is_some());
-    let saved = match (resumed, store) {
-        (Some((store, resumed)), _) => Some(SavedAsk::resume(store, resumed, &setup, &mut agent)?),
-        (None, Some(store)) => Some(SavedAsk::start(store, &profile, &setup, &mut agent)?),
-        (None, None) => None,
-    };
     let prompt = recovered
         .as_ref()
         .map_or(request.prompt, |recovered| recovered.prompt.as_str());
+    let (agent, saved) = saving_agent(request, &profile, &setup, resumed, prompt)?;
     if let Some(saved) = &saved {
         saved.observe_prompt(prompt);
     }
@@ -667,6 +663,37 @@ async fn prepare_agent(
     })
 }
 
+fn saving_agent(
+    request: &AskRequest<'_>,
+    profile: &Profile,
+    setup: &AgentSetup,
+    resumed: Option<(SessionStore, ResumedSession)>,
+    prompt: &str,
+) -> Result<(Agent, Option<SavedAsk>), Failure> {
+    let args = request.args;
+    let v2 = resumed.is_none()
+        && !args.session.no_save
+        && sessions_v2_source(args, request.modifiers).is_some();
+    let store = match &resumed {
+        Some(_) => None,
+        None if args.session.no_save || v2 => None,
+        None => new_session_store(profile)?,
+    };
+    let v2_store = if v2 { new_v2_store(profile)? } else { None };
+    let mut agent = setup.agent(resumed.is_some() || store.is_some());
+    let saved = match (resumed, store, v2_store) {
+        (Some((store, resumed)), _, _) => {
+            Some(SavedAsk::resume(store, resumed, setup, &mut agent)?)
+        }
+        (None, Some(store), _) => Some(SavedAsk::start(store, profile, setup, &mut agent)?),
+        (None, None, Some(store)) => Some(SavedAsk::start_v2(
+            store, profile, setup, &mut agent, prompt,
+        )?),
+        (None, None, None) => None,
+    };
+    Ok((agent, saved))
+}
+
 fn new_session_store(profile: &Profile) -> Result<Option<SessionStore>, Failure> {
     match open_store(profile) {
         Ok(store) => Ok(Some(store)),
@@ -674,6 +701,23 @@ fn new_session_store(profile: &Profile) -> Result<Option<SessionStore>, Failure>
             trace_log!(
                 "session",
                 "event=ask_session_store_unavailable error={error}"
+            );
+            write_stderr(&format!(
+                "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
+            ))
+            .map_err(|error| Failure::written(&error))?;
+            Ok(None)
+        }
+    }
+}
+
+fn new_v2_store(profile: &Profile) -> Result<Option<SessionsV2>, Failure> {
+    match open_v2_store(profile) {
+        Ok(store) => Ok(Some(store)),
+        Err(error) => {
+            trace_log!(
+                "session",
+                "event=ask_session_store_unavailable backend=v2 error={error}"
             );
             write_stderr(&format!(
                 "oh-fx ask: warning: session persistence unavailable; error={error}; continuing without saving\n"
@@ -1743,7 +1787,7 @@ impl Presenter {
             && self.write_error.is_none()
             && summary.error.is_none();
         let untouched = summary.auth_failure && self.steps == 0;
-        let durable = saved.is_some();
+        let durable = saved.as_ref().is_some_and(SavedAsk::keeps_recovery);
         let session_id = saved
             .map(|saved| saved.close(untouched))
             .unwrap_or_default();

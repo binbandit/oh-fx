@@ -622,6 +622,21 @@ pub(crate) fn decode_conversation_frame(
     Ok(envelope)
 }
 
+pub(crate) fn encode_event_payload(event: &ConversationEvent) -> Result<Vec<u8>, SessionError> {
+    validate_event_shape(event)?;
+    let encoded = match event {
+        ConversationEvent::User(payload) => serde_json::to_vec(payload),
+        ConversationEvent::Assistant(payload) => serde_json::to_vec(payload),
+        ConversationEvent::ToolCall(payload) => serde_json::to_vec(payload),
+        ConversationEvent::ToolResult(payload) => serde_json::to_vec(payload),
+        ConversationEvent::Steering(payload) => serde_json::to_vec(payload),
+        ConversationEvent::TurnCompleted(payload) => serde_json::to_vec(payload),
+        ConversationEvent::Interrupted(payload) => serde_json::to_vec(payload),
+        ConversationEvent::ContextCheckpoint(payload) => serde_json::to_vec(payload),
+    };
+    encoded.map_err(|_| SessionError::InvalidConversationEvent)
+}
+
 pub(crate) fn decode_event_payload(
     tag: &str,
     payload: &[u8],

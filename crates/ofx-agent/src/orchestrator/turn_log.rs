@@ -194,7 +194,7 @@ impl Agent {
         consumed_attempts: usize,
         source: &str,
     ) -> Result<(), LogFailure> {
-        let Some(log) = self.log.as_ref() else {
+        let Some(log) = self.log.as_ref().filter(|log| log.keeps_recovery()) else {
             return Ok(());
         };
         if turn.start >= self.history.len() {

@@ -1,12 +1,14 @@
 mod blobs;
 mod catalog;
 mod crc32c;
+mod encode;
 mod fields;
 mod fold;
 mod frame;
 mod json;
 mod log;
 mod schema;
+mod session;
 mod storage;
 mod summary;
 #[cfg(test)]
@@ -18,8 +20,9 @@ use ofx_config::PrivateDir;
 pub(crate) use blobs::BlobError;
 pub(crate) use catalog::{ListCursor, Page, Summary};
 pub(crate) use fields::{BadBody, Fields, full_string};
-pub(crate) use fold::State;
-pub(crate) use schema::{Body, Reason, Role, SetKey};
+pub(crate) use fold::{Event, State};
+pub(crate) use schema::{Body, Host, Reason, Role, SetKey};
+pub(crate) use session::{AppendError, Session as WritingSession};
 pub(crate) use storage::IoFault;
 pub(crate) use summary::{OpenError, Peeked};
 pub(crate) use verify::{Verified, VerifyError};

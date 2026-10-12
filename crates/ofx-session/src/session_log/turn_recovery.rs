@@ -111,7 +111,7 @@ pub(crate) fn commit_checkpoint(
         ProgressPoint::default()
     };
     let artifacts = TurnArtifacts {
-        dir,
+        results: dir,
         provider,
         timestamp_ms,
         work_id: None,

@@ -192,6 +192,10 @@ pub trait ConversationLog: Send + Sync {
 
     fn record_recovery(&self, point: &RecoveryPoint<'_>) -> Result<(), LogFailure>;
 
+    fn keeps_recovery(&self) -> bool {
+        true
+    }
+
     fn clear_recovery(&self) -> Result<(), LogFailure>;
 
     fn begin_request(&self) -> Result<RequestTicket, LogFailure>;

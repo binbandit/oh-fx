@@ -57,7 +57,7 @@ impl Fixture {
     }
 
     fn open(&self) -> SessionsV2 {
-        SessionsV2::open_read_only(&self.data(), &self.home(), WORKSPACE).unwrap()
+        SessionsV2::open(&self.data(), &self.home(), WORKSPACE).unwrap()
     }
 
     fn listed(&self, scope: ListScope) -> Vec<(String, SessionSource)> {

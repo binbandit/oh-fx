@@ -57,7 +57,7 @@ use managed_file::{
     open_managed_file, publish_dir, read_managed_file, remove_dir_tree, same_directory, sync_dir,
 };
 use remembered::Remembering;
-use turn_events::{TurnArtifacts, turn_events};
+pub(crate) use turn_events::{ResultSink, TurnArtifacts, turn_events};
 pub use turn_recovery::PendingRecovery;
 pub(crate) use turn_recovery::{RECOVERY_FILE, read_checkpoint};
 use turn_recovery::{
@@ -522,7 +522,7 @@ impl WritableSession {
         timestamp_ms: i64,
     ) -> TurnArtifacts<'a> {
         TurnArtifacts {
-            dir: &self.owned.dir,
+            results: &self.owned.dir,
             provider,
             timestamp_ms,
             work_id: self.work_id.as_deref(),
