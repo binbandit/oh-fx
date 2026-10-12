@@ -1,10 +1,15 @@
-use ofx_contract::{McpMenuAuthentication, McpMenuConnection, McpMenuServer, McpMenuTransport};
+use ofx_contract::{
+    McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication, McpMenuConnection, McpMenuServer,
+    McpMenuSource, McpMenuTransport,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Screen {
     Browse,
     Details,
+    Add,
     Info,
+    Confirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +24,14 @@ pub(crate) enum LoadState {
 pub(crate) enum Action {
     Refresh,
     Authenticate,
+    Logout,
+    AddLocal,
+    AddHttp,
+    Remove,
+    TrustApprove,
+    TrustReject,
+    TrustApproveAll,
+    TrustReset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +45,12 @@ pub(crate) struct Move {
 pub(crate) enum Event {
     Back,
     Move(Move),
+    CycleAddTransport,
+    MoveAddField { delta: isize, field_count: usize },
     ShowDetails,
+    ShowAdd,
     ShowInfo,
+    ShowConfirmation(Action),
     RequestAction(Action),
     ActionSucceeded(u64),
     EffectFailed(u64),
@@ -55,6 +72,9 @@ pub(crate) struct McpMenuState {
     next_generation: u64,
     pub(crate) pending_generation: Option<u64>,
     pending_server: bool,
+    pub(crate) confirmation_action: Option<Action>,
+    pub(crate) add_transport: McpMenuAddTransport,
+    pub(crate) add_field_index: usize,
 }
 
 pub(crate) fn server_action_available(action: Action, server: &McpMenuServer) -> bool {
@@ -66,14 +86,51 @@ pub(crate) fn server_action_available(action: Action, server: &McpMenuServer) ->
                     || (server.connection == McpMenuConnection::Disconnected
                         && server.authentication != McpMenuAuthentication::Authenticated))
         }
-        Action::Refresh => true,
+        Action::Logout => {
+            server.transport == McpMenuTransport::Http
+                && server.authentication == McpMenuAuthentication::Authenticated
+        }
+        Action::Remove => server.source == McpMenuSource::Profile,
+        Action::TrustApprove => server.admission == Some(McpMenuAdmission::Pending),
+        Action::TrustReject => {
+            server.source == McpMenuSource::Project
+                && server.admission != Some(McpMenuAdmission::Rejected)
+        }
+        Action::Refresh
+        | Action::AddLocal
+        | Action::AddHttp
+        | Action::TrustApproveAll
+        | Action::TrustReset => true,
+    }
+}
+
+fn requires_confirmation(action: Action) -> bool {
+    match action {
+        Action::Logout
+        | Action::Remove
+        | Action::TrustReject
+        | Action::TrustApproveAll
+        | Action::TrustReset => true,
+        Action::Refresh
+        | Action::Authenticate
+        | Action::AddLocal
+        | Action::AddHttp
+        | Action::TrustApprove => false,
     }
 }
 
 fn targets_selected_server(action: Action) -> bool {
     match action {
-        Action::Authenticate => true,
-        Action::Refresh => false,
+        Action::Authenticate
+        | Action::Logout
+        | Action::Remove
+        | Action::TrustApprove
+        | Action::TrustReject => true,
+        Action::Refresh
+        | Action::AddLocal
+        | Action::AddHttp
+        | Action::TrustApproveAll
+        | Action::TrustReset => false,
     }
 }
 
@@ -88,6 +145,9 @@ impl McpMenuState {
             next_generation: 1,
             pending_generation: None,
             pending_server: false,
+            confirmation_action: None,
+            add_transport: McpMenuAddTransport::Local,
+            add_field_index: 0,
         };
         state.clamp_selection(server_count, server_count);
         state
@@ -103,7 +163,9 @@ impl McpMenuState {
             self.pending_generation = None;
             self.load_state = LoadState::Ready;
         }
-        self.screen = Screen::Browse;
+        if self.screen != Screen::Add {
+            self.screen = Screen::Browse;
+        }
     }
 
     pub(crate) fn apply(&mut self, event: Event) -> Option<Effect> {
@@ -111,18 +173,64 @@ impl McpMenuState {
             Event::Back if self.screen == Screen::Browse => return Some(Effect::Close),
             Event::Back => {
                 self.screen = Screen::Browse;
+                self.confirmation_action = None;
                 if self.pending_generation.take().is_some() {
                     self.load_state = LoadState::Cancelled;
                 }
             }
-            Event::Move(movement) => self.moved(movement),
+            Event::Move(movement) if self.screen != Screen::Confirm => self.moved(movement),
+            Event::CycleAddTransport if self.screen == Screen::Add => {
+                self.add_transport = match self.add_transport {
+                    McpMenuAddTransport::Local => McpMenuAddTransport::Http,
+                    McpMenuAddTransport::Http => McpMenuAddTransport::Local,
+                };
+                self.add_field_index = 0;
+            }
+            Event::MoveAddField { delta, field_count }
+                if self.screen == Screen::Add && field_count > 0 && delta != 0 =>
+            {
+                self.add_field_index = if delta > 0 {
+                    (self.add_field_index + 1) % field_count
+                } else if self.add_field_index == 0 {
+                    field_count - 1
+                } else {
+                    self.add_field_index - 1
+                };
+            }
+            Event::Move(_) | Event::CycleAddTransport | Event::MoveAddField { .. } => {}
             Event::ShowDetails => self.screen = Screen::Details,
+            Event::ShowAdd => {
+                self.screen = Screen::Add;
+                self.add_field_index = 0;
+            }
             Event::ShowInfo => self.screen = Screen::Info,
+            Event::ShowConfirmation(action) => {
+                self.screen = Screen::Confirm;
+                self.confirmation_action = Some(action);
+            }
+            Event::RequestAction(action)
+                if requires_confirmation(action)
+                    && (self.screen != Screen::Confirm
+                        || self.confirmation_action != Some(action)) => {}
             Event::RequestAction(action) => return Some(self.begin_action(action)),
-            Event::ActionSucceeded(generation) => self.settle(generation, LoadState::Ready),
-            Event::EffectFailed(generation) => self.settle(generation, LoadState::Failed),
+            Event::ActionSucceeded(generation) => {
+                if self.settle(generation, LoadState::Ready) {
+                    self.confirmation_action = None;
+                }
+            }
+            Event::EffectFailed(generation) => {
+                self.settle(generation, LoadState::Failed);
+            }
         }
         None
+    }
+
+    pub(crate) fn return_to_servers(&mut self) {
+        self.screen = Screen::Browse;
+        self.selected_index = self.selected_server_index;
+        self.window_start = 0;
+        self.confirmation_action = None;
+        self.pending_server = false;
     }
 
     fn moved(&mut self, movement: Move) {
@@ -154,12 +262,13 @@ impl McpMenuState {
         Effect::Action { generation, action }
     }
 
-    fn settle(&mut self, generation: u64, load_state: LoadState) {
+    fn settle(&mut self, generation: u64, load_state: LoadState) -> bool {
         if self.pending_generation != Some(generation) {
-            return;
+            return false;
         }
         self.pending_generation = None;
         self.load_state = load_state;
+        true
     }
 
     fn clamp_selection(&mut self, item_count: usize, visible_count: usize) {

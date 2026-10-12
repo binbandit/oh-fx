@@ -68,7 +68,7 @@ note = "No Rust implementation of upstream approval_chrome_rows, approval_panel_
 upstream = "src/ui/footer/mcp_menu_presentation.zig"
 status = "partial"
 modules = ["crates/ofx-tui/src/footer/mcp_menu_presentation.rs"]
-note = "max_inline_rows, menuRowCount, visibleItemsForBudget, the header with the server count and the Servers tab, the feedback row in its dim or failure style, the configuration issue row, the server rows with their state label, transport and source, the details facts with the oh-fx profile path, the help rows, the empty states and terminal-safe single-line text exist, with the server screens of the MCP menu hint row from input_presentation.zig; the other tabs, catalog rows, previews and the add, argument and confirmation rows arrive with their screens."
+note = "max_inline_rows, menuRowCount, visibleItemsForBudget, the header with the server count and the Servers tab, the feedback row in its dim or failure style, the configuration issue row, the server rows with their state label, transport and source, the details facts with the oh-fx profile path, the add form rows, the confirmation texts, the help rows, the empty states and terminal-safe single-line text exist, with the server, add and confirmation screens of the MCP menu hint row from input_presentation.zig and its available-action labels; the other tabs, catalog rows, previews and argument rows arrive with their screens."
 
 [[file]]
 upstream = "src/ui/footer/model_menu_presentation.zig"

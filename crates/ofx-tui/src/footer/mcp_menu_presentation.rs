@@ -1,6 +1,6 @@
 use ofx_contract::{
-    McpMenuAdmission, McpMenuServer, McpMenuSnapshot, McpMenuSource, McpMenuStatus,
-    McpMenuTransport,
+    McpMenuAddTransport, McpMenuAdmission, McpMenuServer, McpMenuSnapshot, McpMenuSource,
+    McpMenuStatus, McpMenuTransport,
 };
 use ofx_text::{encode_terminal_safe_inline, visible_width};
 
@@ -17,14 +17,33 @@ const NO_SERVERS: &str = "No MCP servers configured.";
 const NO_AVAILABLE_SERVERS: &str = "No MCP servers available; configuration errors need attention.";
 const SERVER_GONE: &str = "MCP server is no longer available.";
 const PROJECT_CONFIG: &str = "<workspace>/.mcp.json";
-const INFO_HINTS: [&str; 2] = [
-    "servers: r reload · enter inspect",
-    "details: enter sign in",
+const INFO_HINTS: [&str; 4] = [
+    "servers: a add · r reload · enter inspect",
+    "project trust: p approve all · z reset",
+    "details: enter sign in · l logout · d remove",
+    "project details: a approve · x reject",
 ];
 const ROOT_HINTS: [&str; 3] = [
-    "↑↓ move  enter inspect  r reload  c help  esc close",
-    "↑↓ move  enter  r reload  c help  esc",
-    "enter r c esc",
+    "↑↓ move  enter inspect  a add  r reload  c help  esc close",
+    "↑↓ move  enter  a add  r reload  c help  esc",
+    "enter a r c esc",
+];
+const ADD_HINTS: [&str; 3] = [
+    "type field     enter next/save     tab transport     esc cancel",
+    "type  enter next/save  tab transport  esc",
+    "enter tab esc",
+];
+const CONFIRM_HINTS: [&str; 3] = [
+    "enter confirm     esc cancel",
+    "enter confirm  esc",
+    "enter esc",
+];
+const DETAILS_ACTIONS: [(Action, &str); 5] = [
+    (Action::Authenticate, "enter sign in  "),
+    (Action::TrustApprove, "a approve  "),
+    (Action::TrustReject, "x reject  "),
+    (Action::Remove, "d remove  "),
+    (Action::Logout, "l logout  "),
 ];
 const INFO_ESCAPES: [&str; 2] = ["esc back", "esc"];
 pub(crate) const MAX_INLINE_ROWS: usize = 12;
@@ -34,6 +53,15 @@ pub(crate) struct McpMenuView<'a> {
     pub(crate) state: &'a McpMenuState,
     pub(crate) snapshot: &'a McpMenuSnapshot,
     pub(crate) feedback: Option<&'a str>,
+    pub(crate) add: AddFields<'a>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AddFields<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) target: &'a str,
+    pub(crate) arguments: &'a str,
+    pub(crate) draft: &'a str,
 }
 
 impl<'a> McpMenuView<'a> {
@@ -60,7 +88,10 @@ pub(crate) fn menu_row_count(view: McpMenuView<'_>, max_rows: usize) -> usize {
         Screen::Details => view
             .selected_server()
             .map_or(1, |server| 7 + usize::from(server.failure.is_some())),
+        Screen::Add if view.state.add_transport == McpMenuAddTransport::Local => 5,
+        Screen::Add => 4,
         Screen::Info => 2 + INFO_HINTS.len(),
+        Screen::Confirm => 1,
     };
     header_rows + body_rows.min(body_budget)
 }
@@ -94,7 +125,9 @@ pub(crate) fn mcp_menu_hint_row(
     let variants: [&str; 3] = match view.state.screen {
         Screen::Browse => ROOT_HINTS,
         Screen::Details => [&details, "c help  esc back", "c esc"],
+        Screen::Add => ADD_HINTS,
         Screen::Info => [INFO_ESCAPES[0], INFO_ESCAPES[1], INFO_ESCAPES[1]],
+        Screen::Confirm => CONFIRM_HINTS,
     };
     let hint = variants
         .into_iter()
@@ -105,11 +138,12 @@ pub(crate) fn mcp_menu_hint_row(
 
 fn details_hint(view: McpMenuView<'_>) -> String {
     let mut hint = String::new();
-    if view
-        .selected_server()
-        .is_some_and(|server| server_action_available(Action::Authenticate, server))
-    {
-        hint.push_str("enter sign in  ");
+    if let Some(server) = view.selected_server() {
+        for (action, label) in DETAILS_ACTIONS {
+            if server_action_available(action, server) {
+                hint.push_str(label);
+            }
+        }
     }
     hint.push_str("c help  esc back");
     hint
@@ -150,8 +184,50 @@ fn compose_row(
     match view.state.screen {
         Screen::Browse => browse_row(theme, view, body_index, width, row_count - body_start),
         Screen::Details => details_row(theme, view, body_index, width),
+        Screen::Add => add_row(theme, view, body_index, width),
         Screen::Info => info_row(theme, view, body_index, width),
+        Screen::Confirm => text_row(
+            confirmation_text(view.state.confirmation_action),
+            width,
+            theme.warning,
+            0,
+        ),
     }
+}
+
+fn confirmation_text(action: Option<Action>) -> &'static str {
+    match action {
+        Some(Action::Remove) => "Remove this profile MCP server? press enter to confirm.",
+        Some(Action::Logout) => "Log out of this MCP server? press enter to confirm.",
+        Some(Action::TrustReject) => "Reject this project MCP server? press enter to confirm.",
+        Some(Action::TrustApproveAll) => {
+            "Approve all pending project MCP servers? press enter to confirm."
+        }
+        Some(Action::TrustReset) => "Reset all project MCP choices? press enter to confirm.",
+        _ => "Confirm this MCP action before continuing.",
+    }
+}
+
+fn add_row(theme: &Theme, view: McpMenuView<'_>, row_index: usize, width: usize) -> Row {
+    let local = view.state.add_transport == McpMenuAddTransport::Local;
+    let add = view.add;
+    let field = |index: usize, label: &str, stored| {
+        if view.state.add_field_index == index {
+            (format!("> {label}"), add.draft)
+        } else {
+            (label.to_owned(), stored)
+        }
+    };
+    let (label, value) = match (row_index, local) {
+        (0, _) => ("Transport".to_owned(), if local { "Local" } else { "HTTP" }),
+        (1, _) => field(0, "Name", add.name),
+        (2, true) => field(1, "Command", add.target),
+        (2, false) => field(1, "URL", add.target),
+        (3, true) => field(2, "Arguments", add.arguments),
+        (3, false) | (4, true) => ("Scope".to_owned(), "Profile"),
+        _ => return Row::new(),
+    };
+    fact_row(theme, &label, value, width)
 }
 
 fn header_row(theme: &Theme, view: McpMenuView<'_>, width: usize) -> Row {

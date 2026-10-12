@@ -388,7 +388,7 @@ impl Shell<'_> {
         }
     }
 
-    fn route_shortcut(&mut self, action: ShortcutAction) {
+    pub(super) fn route_shortcut(&mut self, action: ShortcutAction) {
         let limit = COMPOSER_INPUT_LIMIT_BYTES;
         match action {
             ShortcutAction::Move(intent)

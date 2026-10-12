@@ -1,13 +1,14 @@
 use ofx_contract::{
-    McpMenuAuthentication, McpMenuConnection, McpMenuCounts, McpMenuRequest, McpMenuServer,
-    McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport, UiCommand,
-    UiEvent, UsageMenuUpdate, UsageScope,
+    McpMenuAddForm, McpMenuAddTransport, McpMenuAdmission, McpMenuAuthentication,
+    McpMenuConnection, McpMenuCounts, McpMenuOutcome, McpMenuRequest, McpMenuServer,
+    McpMenuSettled, McpMenuSnapshot, McpMenuSource, McpMenuStatus, McpMenuTransport, McpMenuTrust,
+    UiCommand, UiEvent, UsageMenuUpdate, UsageScope,
 };
 
-use super::super::mcp_menu::{LoadState, Screen};
+use super::super::mcp_menu::{Action, Event, LoadState, Screen};
 use crate::shell::test_shell::TestShell;
 
-const ROOT_HINT: &str = "↑↓ move  enter inspect  r reload  c help  esc close";
+const ROOT_HINT: &str = "↑↓ move  enter inspect  a add  r reload  c help  esc close";
 
 fn server(name: &str, transport: McpMenuTransport, status: McpMenuStatus) -> McpMenuServer {
     McpMenuServer {
@@ -75,10 +76,15 @@ fn menu(request: McpMenuRequest) -> UiCommand {
 }
 
 fn settled(generation: u64, succeeded: bool, feedback: &str, names: &[&str]) -> UiEvent {
+    let outcome = if succeeded {
+        McpMenuOutcome::Succeeded
+    } else {
+        McpMenuOutcome::Failed
+    };
     UiEvent::McpMenuSettled {
         settled: McpMenuSettled {
             generation,
-            succeeded,
+            outcome,
             feedback: feedback.to_owned(),
         },
         snapshot: servers(names),
@@ -97,7 +103,7 @@ fn the_menu_lists_servers_above_the_composer_with_its_hint() {
     ] {
         assert!(screen.contains(needle), "{needle:?} in {screen}");
     }
-    let screen = press(&mut test, b"xyz");
+    let screen = press(&mut test, b"qwe");
     assert!(test.shell.composer.text().is_empty(), "{screen}");
     assert!(test.sent().is_empty());
 }
@@ -113,7 +119,7 @@ fn enter_inspects_a_server_and_signs_in_only_where_upstream_offers_it() {
     let screen = press(&mut test, b"\x1b[B");
     assert!(screen.contains("  Server              remote"), "{screen}");
     assert!(
-        screen.contains("enter sign in  c help  esc back"),
+        screen.contains("enter sign in  d remove  c help  esc back"),
         "{screen}"
     );
     press(&mut test, b"\r");
@@ -408,4 +414,400 @@ fn a_refresh_that_drops_the_selected_server_keeps_a_reload_and_cancels_a_sign_in
         snapshot: servers(&["docs"]),
     });
     assert_eq!(pending(&test), (None, LoadState::Ready, Screen::Browse));
+}
+
+fn opened_with(servers: Vec<McpMenuServer>) -> TestShell {
+    let mut test = TestShell::start();
+    test.deliver(UiEvent::McpMenuOpened {
+        snapshot: McpMenuSnapshot {
+            servers,
+            configuration_issues: Vec::new(),
+            profile_config: None,
+        },
+    });
+    test
+}
+
+fn outcome(generation: u64, outcome: McpMenuOutcome, feedback: &str) -> UiEvent {
+    outcome_for(generation, outcome, feedback, servers(&["docs"]))
+}
+
+fn outcome_for(
+    generation: u64,
+    outcome: McpMenuOutcome,
+    feedback: &str,
+    snapshot: McpMenuSnapshot,
+) -> UiEvent {
+    UiEvent::McpMenuSettled {
+        settled: McpMenuSettled {
+            generation,
+            outcome,
+            feedback: feedback.to_owned(),
+        },
+        snapshot,
+    }
+}
+
+fn requests(test: &TestShell) -> Vec<UiCommand> {
+    test.sent()
+        .into_iter()
+        .filter(|command| command != &menu(McpMenuRequest::Refresh))
+        .collect()
+}
+
+fn state(test: &TestShell) -> &super::super::mcp_menu::McpMenuState {
+    &test.shell.mcp_menu.as_ref().unwrap().state
+}
+
+#[test]
+fn the_add_form_takes_each_field_from_the_composer_and_saves_once_on_the_last() {
+    let mut test = opened(&["docs"]);
+    let screen = press(&mut test, b"a");
+    assert!(screen.contains("> Name"), "{screen}");
+    press(&mut test, b"fixture");
+    let screen = press(&mut test, b"\r");
+    assert!(test.shell.composer.is_empty());
+    assert!(screen.contains("  Name                fixture"), "{screen}");
+    assert!(screen.contains("> Command"), "{screen}");
+    press(&mut test, b"/usr/bin/env\r");
+    press(&mut test, b"\x03");
+    press(&mut test, b"node  fixture.mjs\r");
+    press(&mut test, b"\t\r");
+    assert_eq!(state(&test).add_transport, McpMenuAddTransport::Local);
+    assert_eq!(
+        test.sent(),
+        [menu(McpMenuRequest::Add {
+            generation: 1,
+            form: McpMenuAddForm {
+                transport: McpMenuAddTransport::Local,
+                name: "fixture".to_owned(),
+                target: "/usr/bin/env".to_owned(),
+                arguments: "node  fixture.mjs".to_owned(),
+            },
+        })]
+    );
+    test.deliver(outcome(
+        1,
+        McpMenuOutcome::Continuing,
+        "Saved MCP server; reconnecting…",
+    ));
+    let screen = test.screen();
+    assert!(
+        screen.contains("  Saved MCP server; reconnecting…"),
+        "{screen}"
+    );
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert_eq!(state(&test).load_state, LoadState::Loading);
+    test.deliver(outcome(
+        1,
+        McpMenuOutcome::Succeeded,
+        "MCP configuration reloaded.",
+    ));
+    assert_eq!(state(&test).load_state, LoadState::Ready);
+}
+
+#[test]
+fn tab_switches_the_add_form_to_http_and_escape_returns_to_the_list() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"a");
+    press(&mut test, b"draft");
+    let screen = press(&mut test, b"\t");
+    assert!(screen.contains("  Transport           HTTP"), "{screen}");
+    assert!(screen.contains("> Name"), "{screen}");
+    assert!(!screen.contains("Arguments"), "{screen}");
+    assert!(test.shell.composer.is_empty());
+    press(&mut test, b"remote\r");
+    press(&mut test, b"https://mcp.example/mcp\r");
+    assert_eq!(
+        test.sent(),
+        [menu(McpMenuRequest::Add {
+            generation: 1,
+            form: McpMenuAddForm {
+                transport: McpMenuAddTransport::Http,
+                name: "remote".to_owned(),
+                target: "https://mcp.example/mcp".to_owned(),
+                arguments: String::new(),
+            },
+        })]
+    );
+    test.deliver(outcome(
+        1,
+        McpMenuOutcome::Failed,
+        "MCP operation failed: McpServerExists",
+    ));
+    assert_eq!(state(&test).screen, Screen::Add);
+    press(&mut test, b"half typed");
+    escape(&mut test);
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert!(test.shell.composer.is_empty());
+}
+
+#[test]
+fn remove_and_logout_ask_for_confirmation_where_upstream_offers_them() {
+    let mut test = opened(&["docs"]);
+    press(&mut test, b"d");
+    assert_eq!(state(&test).screen, Screen::Browse);
+    press(&mut test, b"\r");
+    press(&mut test, b"l");
+    assert_eq!(state(&test).screen, Screen::Details);
+    let screen = press(&mut test, b"d");
+    assert!(
+        screen.contains("Remove this profile MCP server? press enter to confirm."),
+        "{screen}"
+    );
+    escape(&mut test);
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert!(requests(&test).is_empty());
+    press(&mut test, b"\r");
+    press(&mut test, b"d");
+    press(&mut test, b"\r\r");
+    assert_eq!(
+        requests(&test),
+        [menu(McpMenuRequest::Remove {
+            generation: 1,
+            server: "docs".to_owned(),
+        })]
+    );
+    let mut signed_in = opened_with(vec![McpMenuServer {
+        transport: McpMenuTransport::Http,
+        authentication: McpMenuAuthentication::Authenticated,
+        ..server("remote", McpMenuTransport::Http, McpMenuStatus::Ready)
+    }]);
+    press(&mut signed_in, b"\r");
+    press(&mut signed_in, b"l");
+    signed_in.shell.mcp_menu.as_mut().unwrap().feedback = Some("earlier".to_owned());
+    press(&mut signed_in, b"\r");
+    assert_eq!(signed_in.shell.mcp_menu.as_ref().unwrap().feedback, None);
+    assert_eq!(
+        signed_in.sent(),
+        [menu(McpMenuRequest::Logout {
+            generation: 1,
+            server: "remote".to_owned(),
+        })]
+    );
+    signed_in.deliver(outcome(
+        1,
+        McpMenuOutcome::Returned,
+        "Logged out of MCP server 'remote'. Run /mcp auth remote --open to sign in again.",
+    ));
+    assert_eq!(state(&signed_in).screen, Screen::Browse);
+    assert_eq!(state(&signed_in).load_state, LoadState::Ready);
+}
+
+#[test]
+fn trust_keys_approve_directly_and_confirm_the_rest() {
+    let pending = McpMenuServer {
+        source: McpMenuSource::Project,
+        admission: Some(McpMenuAdmission::Pending),
+        ..server("docs", McpMenuTransport::Stdio, McpMenuStatus::Unavailable)
+    };
+    let listed = McpMenuSnapshot {
+        servers: vec![pending.clone()],
+        configuration_issues: Vec::new(),
+        profile_config: None,
+    };
+    let mut test = opened_with(vec![pending]);
+    press(&mut test, b"\r");
+    press(&mut test, b"a");
+    let trust = |generation, change| menu(McpMenuRequest::Trust { generation, change });
+    assert_eq!(
+        test.sent(),
+        [trust(1, McpMenuTrust::Approve("docs".to_owned()))]
+    );
+    test.deliver(outcome_for(
+        1,
+        McpMenuOutcome::Returned,
+        "Updated project MCP trust; reconnecting…",
+        listed.clone(),
+    ));
+    assert_eq!(state(&test).screen, Screen::Browse);
+    for (keys, change) in [
+        (&b"p"[..], McpMenuTrust::ApproveAll),
+        (b"z", McpMenuTrust::Reset),
+    ] {
+        let screen = press(&mut test, keys);
+        assert!(screen.contains("press enter to confirm."), "{screen}");
+        press(&mut test, b"\r");
+        let generation = u64::try_from(requests(&test).len()).unwrap();
+        assert_eq!(requests(&test).last(), Some(&trust(generation, change)));
+        test.deliver(outcome_for(
+            generation,
+            McpMenuOutcome::Continuing,
+            "Updated project MCP trust; reconnecting…",
+            listed.clone(),
+        ));
+        assert_eq!(state(&test).screen, Screen::Browse);
+        test.deliver(outcome_for(
+            generation,
+            McpMenuOutcome::Succeeded,
+            "done",
+            listed.clone(),
+        ));
+    }
+    press(&mut test, b"\r");
+    press(&mut test, b"x");
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test).last(),
+        Some(&trust(4, McpMenuTrust::Reject("docs".to_owned())))
+    );
+}
+
+#[test]
+fn the_add_form_edits_on_ctrl_d_and_dollar_without_exiting_or_mentioning_a_skill() {
+    let mut test = TestShell::start_with(|options| {
+        options.skill_catalog = Some(Box::new(OneSkill));
+    });
+    test.deliver(UiEvent::McpMenuOpened {
+        snapshot: servers(&["docs"]),
+    });
+    press(&mut test, b"a");
+    press(&mut test, b"\x04");
+    assert!(!test.shell.should_exit);
+    assert_eq!(state(&test).screen, Screen::Add);
+    let screen = press(&mut test, b"$rev");
+    assert_eq!(test.shell.composer.text(), "$rev");
+    assert!(test.shell.skills_menu.is_none(), "{screen}");
+    press(&mut test, b"\x01\x04\x0e\x03");
+    assert_eq!(test.shell.composer.text(), "rev");
+    press(&mut test, b"\r");
+    assert_eq!(state(&test).add_field_index, 1);
+    assert_eq!(test.shell.mcp_menu.as_ref().unwrap().add.name, "rev");
+    assert!(!test.shell.should_exit);
+}
+
+#[test]
+fn a_refresh_that_drops_the_selected_server_keeps_the_add_form() {
+    let mut test = opened(&["docs", "remote"]);
+    press(&mut test, b"a");
+    press(&mut test, b"na");
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["remote"]),
+    });
+    assert_eq!(state(&test).screen, Screen::Add);
+    assert_eq!(state(&test).selected_server_index, 0);
+    press(&mut test, b"pz\r");
+    assert_eq!(state(&test).screen, Screen::Add);
+    assert_eq!(state(&test).add_field_index, 1);
+    assert_eq!(test.shell.mcp_menu.as_ref().unwrap().add.name, "napz");
+    assert!(requests(&test).is_empty(), "{:?}", requests(&test));
+    press(&mut test, b"/bin/true\r\r");
+    assert_eq!(state(&test).pending_generation, Some(1));
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&[]),
+    });
+    assert_eq!(state(&test).pending_generation, Some(1));
+    test.deliver(outcome(
+        1,
+        McpMenuOutcome::Continuing,
+        "Saved MCP server; reconnecting…",
+    ));
+    assert_eq!(state(&test).screen, Screen::Browse);
+    assert_eq!(state(&test).load_state, LoadState::Loading);
+}
+
+#[test]
+fn a_change_for_a_server_the_menu_no_longer_lists_fails_in_its_feedback_row() {
+    let mut test = opened(&[]);
+    test.shell
+        .mcp_menu
+        .as_mut()
+        .unwrap()
+        .state
+        .apply(Event::ShowConfirmation(Action::Remove));
+    let screen = press(&mut test, b"\r");
+    assert!(requests(&test).is_empty(), "{:?}", requests(&test));
+    assert_eq!(state(&test).load_state, LoadState::Failed);
+    assert_eq!(state(&test).pending_generation, None);
+    assert!(
+        screen.contains("MCP operation failed: McpServerNotFound"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_removed_server_leaving_the_list_keeps_the_reload_that_follows() {
+    let mut test = opened(&["docs", "other"]);
+    press(&mut test, b"\r");
+    press(&mut test, b"d");
+    press(&mut test, b"\r");
+    assert_eq!(
+        requests(&test),
+        [menu(McpMenuRequest::Remove {
+            generation: 1,
+            server: "docs".to_owned(),
+        })]
+    );
+    test.deliver(outcome_for(
+        1,
+        McpMenuOutcome::Continuing,
+        "Removed MCP server; reconnecting…",
+        servers(&["docs", "other"]),
+    ));
+    test.deliver(UiEvent::McpMenuRefreshed {
+        snapshot: servers(&["other"]),
+    });
+    assert_eq!(state(&test).pending_generation, Some(1));
+    assert_eq!(state(&test).load_state, LoadState::Loading);
+    test.deliver(outcome_for(
+        1,
+        McpMenuOutcome::Succeeded,
+        "MCP configuration reloaded.",
+        servers(&["other"]),
+    ));
+    let screen = test.screen();
+    assert!(screen.contains("  MCP configuration reloaded."), "{screen}");
+    assert_eq!(state(&test).load_state, LoadState::Ready);
+}
+
+#[test]
+fn a_confirmation_stays_bound_to_the_server_it_was_opened_for() {
+    let profile = |name: &str| server(name, McpMenuTransport::Stdio, McpMenuStatus::Ready);
+    let signed_in = |name: &str| McpMenuServer {
+        authentication: McpMenuAuthentication::Authenticated,
+        ..server(name, McpMenuTransport::Http, McpMenuStatus::Ready)
+    };
+    let project = |name: &str| McpMenuServer {
+        source: McpMenuSource::Project,
+        admission: Some(McpMenuAdmission::Approved),
+        ..profile(name)
+    };
+    let cases = [
+        (
+            [profile("first"), profile("second")],
+            b"d",
+            McpMenuRequest::Remove {
+                generation: 1,
+                server: "first".to_owned(),
+            },
+        ),
+        (
+            [signed_in("first"), signed_in("second")],
+            b"l",
+            McpMenuRequest::Logout {
+                generation: 1,
+                server: "first".to_owned(),
+            },
+        ),
+        (
+            [project("first"), project("second")],
+            b"x",
+            McpMenuRequest::Trust {
+                generation: 1,
+                change: McpMenuTrust::Reject("first".to_owned()),
+            },
+        ),
+    ];
+    for (servers, key, request) in cases {
+        let mut test = opened_with(servers.to_vec());
+        press(&mut test, b"\r");
+        press(&mut test, key);
+        assert_eq!(state(&test).screen, Screen::Confirm);
+        press(&mut test, b"\x1b[B");
+        press(&mut test, b"\n");
+        press(&mut test, b"\x1b[A");
+        assert_eq!(state(&test).selected_server_index, 0);
+        press(&mut test, b"\r");
+        assert_eq!(requests(&test), [menu(request)]);
+    }
 }
