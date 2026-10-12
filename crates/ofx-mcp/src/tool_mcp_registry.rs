@@ -7,12 +7,15 @@ use ofx_contract::{
     ToolActivity, ToolContext, ToolEffect, ToolOutput, ToolSpec, format_tool_execution_error_json,
 };
 use ofx_text::write_scalar;
+use ofx_trace::trace_log;
 use serde_json::Value;
 
+use crate::error::McpError;
 use crate::features::tools::{Limits, Tool as CatalogTool, ToolCatalog, validate_arguments};
+use crate::mcp_trace::MCP;
 use crate::server_lifecycle::{Advertised, CallFailure, Server};
 use crate::tool_names::ToolNames;
-use crate::tool_operations::CallOptions;
+use crate::tool_operations::{CallOptions, response_frame_cap};
 use crate::tool_result::{model_output, restart_failed_output};
 
 const SELECTED_SCHEMA_LIMIT: &str = "mcp_selected_schema_bytes";
@@ -263,9 +266,15 @@ impl McpCall {
             Some(Projection::Selected { notice, .. }) => ToolOutput::failure(DEFINITION_CHANGED)
                 .with_context_notices(notice)
                 .selecting_tools([name.clone()]),
-            Some(Projection::Rejected { output, notice }) => ToolOutput::failure(output)
-                .with_context_notices([notice])
-                .retiring_tool(name.clone()),
+            Some(Projection::Rejected { output, notice }) => {
+                trace_log!(
+                    MCP,
+                    "selected tool schema unavailable because of its context limit tool={name}"
+                );
+                ToolOutput::failure(output)
+                    .with_context_notices([notice])
+                    .retiring_tool(name.clone())
+            }
             None => ToolOutput::failure(DEFINITION_WITHDRAWN).retiring_tool(name.clone()),
         }
     }
@@ -320,9 +329,24 @@ impl PreparedCall for McpCall {
                     restart_failed_output(server_name, &self.spec.name, &failure),
                 ),
                 Err(CallFailure::DefinitionChanged) => self.changed_definition(),
-                Err(CallFailure::Mcp(error)) => ToolOutput::failure(
-                    format_tool_execution_error_json(&self.spec.name, &error.to_string()),
-                ),
+                Err(CallFailure::Mcp(error)) => {
+                    if matches!(
+                        error,
+                        McpError::McpResponseFrameTooLarge
+                            | McpError::ResponseTooLarge
+                            | McpError::SseEventTooLarge
+                    ) {
+                        trace_log!(
+                            MCP,
+                            "server {server_name} exceeded response frame cap_bytes={}",
+                            response_frame_cap(DEFAULT_MAX_TOOL_RESULT_BYTES)
+                        );
+                    }
+                    ToolOutput::failure(format_tool_execution_error_json(
+                        &self.spec.name,
+                        &error.to_string(),
+                    ))
+                }
             }
         })
     }

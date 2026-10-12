@@ -9,6 +9,7 @@ use ofx_config::{ContextLimitName, ContextLimitValue, ContextLimits};
 use ofx_contract::{
     BoxFuture, DynamicTools, McpSearchHost, McpSearchRequest, McpSearchResult, McpToolSearch, Tool,
 };
+use ofx_trace::trace_log;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -22,6 +23,7 @@ use crate::features::completion::{CompletionArgument, CompletionReference, Compl
 use crate::features::prompts::PromptGetResult;
 use crate::health::{self, ConnectionState, Snapshot, StartupDecision as Health};
 use crate::mcp_contract::{ConfigSource, McpServerConfig, WorkspaceAdmission};
+use crate::mcp_trace::{MCP, server_name_preview};
 use crate::model_catalog::ServerSummary;
 use crate::native_config::NativeConfigLoad;
 use crate::project_config::{WorkspaceDiagnostic, render_workspace_diagnostic};
@@ -121,7 +123,7 @@ impl McpRuntime {
         let mut settling = Settling::all(
             self.current()
                 .into_iter()
-                .filter(|server| decide_startup(&server.config, phase) == StartupDecision::Connect)
+                .filter(|server| connects(server, phase))
                 .map(|server| (server, Step::Start)),
         );
         settling.discovery = Some(Discovery(Arc::clone(&self.discovering)));
@@ -507,9 +509,7 @@ impl McpRuntime {
         let starting = Settling::all(
             fresh
                 .iter()
-                .filter(|server| {
-                    decide_startup(&server.config, StartupPhase::All) == StartupDecision::Connect
-                })
+                .filter(|server| connects(server, StartupPhase::All))
                 .map(|server| (Arc::clone(server), Step::Start)),
         );
         if cancel.run_until_cancelled(starting).await.is_none() {
@@ -588,6 +588,21 @@ impl McpRuntime {
 
     pub(crate) fn current(&self) -> Vec<Arc<Server>> {
         lock(&self.servers).clone()
+    }
+}
+
+fn connects(server: &Server, phase: StartupPhase) -> bool {
+    match decide_startup(&server.config, phase) {
+        StartupDecision::Connect => true,
+        StartupDecision::Disabled => {
+            trace_log!(
+                MCP,
+                "skipped disabled server {}",
+                server_name_preview(&server.config.name)
+            );
+            false
+        }
+        StartupDecision::Deferred => false,
     }
 }
 
@@ -772,7 +787,15 @@ impl Drop for Settling {
 async fn settle(server: Arc<Server>, step: Step) {
     match step {
         Step::Start => {
-            let _ = server.start().await;
+            if let Err(error) = server.start().await
+                && error != McpError::Cancelled
+            {
+                trace_log!(
+                    MCP,
+                    "connection failed for server {}: {error}",
+                    server_name_preview(&server.config.name)
+                );
+            }
         }
         Step::Stop(mode) => server.stop(mode).await,
     }
@@ -1304,6 +1327,60 @@ done
             runtime.snapshot_health().servers[0].connection,
             ConnectionState::Disabled
         );
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_MCP_RUNTIME_TRACE_CHILD";
+    const TRACE_TEST: &str = "mcp_runtime::tests::startup_failures_write_their_mcp_lines";
+
+    async fn start_traced_servers(state: &Path) {
+        let exiting = McpServerConfig {
+            restart_limit: 1,
+            ..config("exiting", "echo 'secret detail' >&2; exit 3", state)
+        };
+        let garbled = McpServerConfig {
+            restart_limit: 1,
+            startup_timeout_ms: 2_000,
+            ..config("garbled", "printf 'not json\\n'; sleep 5", state)
+        };
+        let disabled = McpServerConfig {
+            enabled: false,
+            ..config("disabled", SERVER, state)
+        };
+        runtime(vec![exiting, garbled, disabled])
+            .connect(StartupPhase::All)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn startup_failures_write_their_mcp_lines() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(Path::new(&root), None);
+            start_traced_servers(Path::new(&root)).await;
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [mcp] skipping stdio startup restart server=exiting reason=stop_child_exited err=McpServerExitedDuringStartup\n",
+            " [mcp] connection failed for server exiting: McpServerExitedDuringStartup\n",
+            " [mcp] restarting stdio server after startup failure server=garbled attempt=1 err=",
+            " [mcp] connection failed for server garbled: ",
+            " [mcp] skipped disabled server disabled\n",
+        ] {
+            assert!(written.contains(line), "{line}\n{written}");
+        }
+        assert!(!written.contains("secret detail"), "{written}");
     }
 
     #[tokio::test]

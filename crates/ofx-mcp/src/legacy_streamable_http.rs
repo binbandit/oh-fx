@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
@@ -14,6 +15,7 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_elicitation_runtime::ElicitationContext;
 use crate::legacy_sse::{Event, Parser};
+use crate::mcp_trace::{MCP, TIMEOUT};
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_auth::HttpAuth;
@@ -660,10 +662,25 @@ impl HttpShared {
         if self.session_id.is_none() || self.session_retired.load(Ordering::Acquire) {
             return;
         }
-        let Ok(builder) = self.closing_builder() else {
-            return;
+        let error = match self.closing_builder() {
+            Err(error) => error.to_string(),
+            Ok(builder) => match timeout(CLOSE_TIMEOUT, builder.send()).await {
+                Ok(Ok(response)) => match response.status() {
+                    StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::METHOD_NOT_ALLOWED => {
+                        return;
+                    }
+                    status if status.is_redirection() => McpError::RedirectNotAllowed.to_string(),
+                    _ => McpError::UnexpectedHttpStatus.to_string(),
+                },
+                Ok(Err(error)) => McpError::from(error).to_string(),
+                Err(_) => TIMEOUT.to_owned(),
+            },
         };
-        let _ = timeout(CLOSE_TIMEOUT, builder.send()).await;
+        trace_log!(
+            MCP,
+            "legacy HTTP session cleanup failed version={} err={error}",
+            self.version.map_or("unknown", HttpVersion::as_str)
+        );
     }
 }
 
@@ -902,6 +919,51 @@ mod tests {
             ("DELETE", _) => Reply::status(204),
             _ => Reply::status(500),
         }
+    }
+
+    const TRACE_CHILD: &str = "OH_FX_LEGACY_HTTP_TRACE_CHILD";
+    const TRACE_TEST: &str =
+        "legacy_streamable_http::tests::a_rejected_session_cleanup_writes_its_mcp_line";
+
+    #[tokio::test]
+    async fn a_rejected_session_cleanup_writes_its_mcp_line() {
+        if let Some(root) = std::env::var_os(TRACE_CHILD) {
+            ofx_trace::configure_from_env(std::path::Path::new(&root), None);
+            let handler = session_handler("2025-11-25");
+            let server = FakeServer::start(move |request: &RecordedRequest| {
+                if request.method == "DELETE" {
+                    Reply::status(500)
+                } else {
+                    handler(request)
+                }
+            })
+            .await;
+            let client = McpClient::connect(&remote(&server.url), &ConnectOptions::default())
+                .await
+                .unwrap();
+            client.shutdown(ShutdownMode::Graceful).await;
+            assert_eq!(server.requests().last().unwrap().method, "DELETE");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env(TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            written.contains(
+                " [mcp] legacy HTTP session cleanup failed version=2025-11-25 err=UnexpectedHttpStatus\n"
+            ),
+            "{written}"
+        );
+        assert!(!written.contains("session-1"), "{written}");
     }
 
     #[tokio::test]

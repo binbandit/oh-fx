@@ -6,12 +6,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_config::{AdvisoryLock, DurableError, PrivateDir, ProfilePaths};
+use ofx_trace::trace_log;
 use serde_json::Value;
 
 use crate::command_provider::AddIntent;
+use crate::error::McpError;
 use crate::mcp_contract::{
     InvalidServerConfig, McpAuthConfig, McpServerConfig, ProfileConfigWarning, TransportType,
 };
+use crate::mcp_trace::MCP;
 use crate::project_config::{McpConfigError, ProfileParseResult, parse_profile_document};
 
 pub const PROFILE_CONFIG_FILE_NAME: &str = "mcp.json";
@@ -56,15 +59,30 @@ pub fn load_profile_document(path: &Path) -> Result<ProfileParseResult, ProfileS
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(ProfileParseResult::default());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            config_failure("open", path, &McpError::from(io::Error::from(error.kind())));
+            return Err(error.into());
+        }
     };
     let mut bytes = Vec::new();
-    file.take(MAX_PROFILE_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    if let Err(error) = file
+        .take(MAX_PROFILE_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        config_failure("read", path, &McpError::from(io::Error::from(error.kind())));
+        return Err(error.into());
+    }
     if bytes.len() as u64 > MAX_PROFILE_CONFIG_BYTES {
+        config_failure("read", path, &ProfileStoreError::StreamTooLong);
         return Err(ProfileStoreError::StreamTooLong);
     }
-    Ok(parse_profile_document(&bytes)?)
+    parse_profile_document(&bytes)
+        .inspect_err(|error| config_failure("load", path, error))
+        .map_err(ProfileStoreError::from)
+}
+
+fn config_failure(action: &str, path: &Path, error: &dyn std::fmt::Display) {
+    trace_log!(MCP, "failed to {action} config {}: {error}", path.display());
 }
 
 pub fn add_profile_server(
