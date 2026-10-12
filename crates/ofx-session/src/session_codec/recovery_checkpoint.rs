@@ -71,6 +71,7 @@ pub(crate) const CREDENTIAL_SOURCES: [&str; 8] = [
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryCheckpoint {
+    turn_id: u64,
     user: String,
     assistant_source: String,
     execution: SavedExecution,
@@ -207,6 +208,7 @@ impl RecoveryCheckpoint {
             entries.push(HistoryEntry::Assistant(self.assistant_source.clone()));
         }
         RecoveryTranscript {
+            turn_id: self.turn_id,
             entries,
             uncertain_tool: self.uncertain_tool,
         }
@@ -300,7 +302,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
     fields
         .unsigned("version")
         .filter(|version| *version == CHECKPOINT_VERSION)?;
-    fields.unsigned("turn_id")?;
+    let turn_id = fields.unsigned("turn_id")?;
     let user = user_text(fields.required("user")?)?;
     let assistant_source = durable_text(fields.required("assistant_source")?)?;
     let execution = execution(fields.required("execution")?)?;
@@ -315,6 +317,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
     let consumed_attempts = fields.unsigned("consumed_provider_attempts")?;
     let outstanding_reservation = fields.flag("outstanding_reservation")?;
     let checkpoint = RecoveryCheckpoint {
+        turn_id,
         strategy: strategy(cause, tool_state, &assistant_source),
         compaction_prepared: cause == "compaction_prepared",
         uncertain_tool: tool_state == RecoveryToolState::Uncertain,
@@ -348,6 +351,7 @@ fn checkpoint_from(value: Json<'_>) -> Option<RecoveryCheckpoint> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryTranscript {
+    pub turn_id: u64,
     pub entries: Vec<HistoryEntry>,
     pub uncertain_tool: bool,
 }

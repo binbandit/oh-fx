@@ -271,8 +271,11 @@ impl WritableSession {
             return Ok(());
         }
         let saved = self.append_turn(turn, provider, open);
-        if saved.is_err() && self.writer.turn_open() {
-            self.writer.block_open_turn();
+        if let Err(error) = &saved
+            && self.writer.turn_open()
+            && self.writer.block_open_turn()
+        {
+            trace_log!(SESSION, "open turn blocked after failed save err={error}");
         }
         saved?;
         if let Err(error) = self.clear_saved_recovery() {
