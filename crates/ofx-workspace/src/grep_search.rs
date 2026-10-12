@@ -106,14 +106,32 @@ pub fn count_regular_file_root(
 }
 
 pub fn read_model_safe(path: &Path, content: &mut Vec<u8>) -> Result<bool, PathError> {
+    read_text(path, content).map(|read| read == TextRead::Text)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextRead {
+    Text,
+    NotRegular,
+    Oversized,
+    NotText,
+}
+
+fn read_text(path: &Path, content: &mut Vec<u8>) -> Result<TextRead, PathError> {
     content.clear();
     let file = match open_regular_file(path) {
         Ok((file, _)) => file,
-        Err(RegularFileError::NotRegularFile) => return Ok(false),
+        Err(RegularFileError::NotRegularFile) => return Ok(TextRead::NotRegular),
         Err(RegularFileError::Path(error)) => return Err(error),
     };
     file.take(FILE_BYTE_CAP as u64 + 1).read_to_end(content)?;
-    Ok(content.len() <= FILE_BYTE_CAP && is_model_safe_text(content))
+    Ok(if content.len() > FILE_BYTE_CAP {
+        TextRead::Oversized
+    } else if is_model_safe_text(content) {
+        TextRead::Text
+    } else {
+        TextRead::NotText
+    })
 }
 
 fn discovery_options<'a>(query: &GrepQuery<'a>) -> DiscoveryOptions<'a> {
@@ -133,8 +151,20 @@ fn collect_directory_matches_with_options(
     collector.finish(candidates)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum GitGrepError {
+    #[error("GitGrepUnsupported")]
+    Unsupported,
+    #[error("GitGrepFailed")]
+    Failed,
+}
+
 trait GrepSink {
-    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> Option<bool>;
+    fn git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+    ) -> Result<bool, GitGrepError>;
 
     fn scan(
         &mut self,
@@ -161,7 +191,7 @@ fn search_directory(
 ) -> CandidateStats {
     let in_work_tree = !options.force_fallback && git_work_tree_contains(absolute_root);
     let tracked_matches = if in_work_tree {
-        sink.git_grep(query, absolute_root)
+        sink.git_grep(query, absolute_root).ok()
     } else {
         None
     };
@@ -275,9 +305,15 @@ fn locate_file(
         return None;
     }
     let read_path = fs::canonicalize(&display_path).ok()?;
-    let readable = path_inside(workspace_root, &read_path)
-        || (!is_symlink && path_inside(search_root, &read_path));
-    readable.then_some((
+    if !path_inside(workspace_root, &read_path) {
+        if is_symlink {
+            return None;
+        }
+        if !path_inside(search_root, &read_path) {
+            return None;
+        }
+    }
+    Some((
         CandidateFile {
             display_path,
             read_path,
@@ -312,7 +348,7 @@ impl FileScanner {
     }
 
     fn load(&mut self, read_path: &Path) -> Result<bool, PathError> {
-        if !read_model_safe(read_path, &mut self.content)? {
+        if read_text(read_path, &mut self.content)? != TextRead::Text {
             return Ok(false);
         }
         if self.case_insensitive {
@@ -437,10 +473,14 @@ impl MatchCollector {
 }
 
 impl GrepSink for MatchCollector {
-    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> Option<bool> {
+    fn git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+    ) -> Result<bool, GitGrepError> {
         let raw = run_git_grep(query, absolute_root, GitGrepOutput::Lines)?;
         self.parse_git_grep(query, absolute_root, &raw);
-        Some(!raw.is_empty())
+        Ok(!raw.is_empty())
     }
 
     fn scan(
@@ -534,10 +574,14 @@ impl LineCounter {
 }
 
 impl GrepSink for LineCounter {
-    fn git_grep(&mut self, query: &GrepQuery<'_>, absolute_root: &Path) -> Option<bool> {
+    fn git_grep(
+        &mut self,
+        query: &GrepQuery<'_>,
+        absolute_root: &Path,
+    ) -> Result<bool, GitGrepError> {
         let raw = run_git_grep(query, absolute_root, GitGrepOutput::Counts)?;
         self.parse_git_grep(query, absolute_root, &raw);
-        Some(!raw.is_empty())
+        Ok(!raw.is_empty())
     }
 
     fn scan(
@@ -593,17 +637,17 @@ fn run_git_grep(
     query: &GrepQuery<'_>,
     absolute_root: &Path,
     output: GitGrepOutput,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, GitGrepError> {
     if query.pattern.is_empty() {
-        return None;
+        return Err(GitGrepError::Unsupported);
     }
-    let mut command = git_command(absolute_root)?;
+    let mut command = git_command(absolute_root).ok_or(GitGrepError::Failed)?;
     command.args(git_grep_arguments(query, output));
-    let output = run_bounded(&mut command, GIT_GREP_STDOUT_LIMIT)?;
+    let output = run_bounded(&mut command, GIT_GREP_STDOUT_LIMIT).ok_or(GitGrepError::Failed)?;
     match output.status.code() {
-        Some(0) => Some(output.stdout),
-        Some(1) => Some(Vec::new()),
-        _ => None,
+        Some(0) => Ok(output.stdout),
+        Some(1) => Ok(Vec::new()),
+        _ => Err(GitGrepError::Failed),
     }
 }
 
@@ -626,9 +670,7 @@ fn validate_matched_git_file(
     if metadata.len() > FILE_BYTE_CAP as u64 {
         return None;
     }
-    read_model_safe(&file.read_path, scratch)
-        .ok()?
-        .then_some(file)
+    (read_text(&file.read_path, scratch).ok()? == TextRead::Text).then_some(file)
 }
 
 fn safe_git_include_pathspec(include: Option<&Pattern>) -> Option<&[u8]> {
@@ -1226,6 +1268,45 @@ mod tests {
 
         assert_eq!(read_model_safe(&file.read_path, &mut content), Ok(false));
         assert!(content.is_empty());
+    }
+
+    #[test]
+    fn reading_says_why_a_file_is_not_searched() {
+        let workspace = Workspace::new();
+        let text = workspace.write("text.txt", "needle\n");
+        let binary = workspace.write("binary.bin", "needle\0");
+        let large = workspace.write(
+            "large.txt",
+            content_with_prefix(FILE_BYTE_CAP + 1, "needle\n"),
+        );
+        let mut content = Vec::new();
+        assert_eq!(read_text(&text, &mut content), Ok(TextRead::Text));
+        assert_eq!(read_text(&binary, &mut content), Ok(TextRead::NotText));
+        assert_eq!(read_text(&large, &mut content), Ok(TextRead::Oversized));
+        assert_eq!(
+            read_text(&workspace.root, &mut content),
+            Ok(TextRead::NotRegular)
+        );
+        assert_eq!(
+            read_text(&workspace.root.join("missing.txt"), &mut content),
+            Err(PathError::FileNotFound)
+        );
+    }
+
+    #[test]
+    fn git_grep_refuses_an_empty_pattern_before_running_git() {
+        let workspace = Workspace::new();
+        let query = GrepQuery {
+            workspace_root: &workspace.root,
+            pattern: "",
+            case_insensitive: false,
+            include: None,
+            ignored_names: &[],
+        };
+        assert_eq!(
+            run_git_grep(&query, &workspace.root, GitGrepOutput::Lines),
+            Err(GitGrepError::Unsupported)
+        );
     }
 
     #[test]

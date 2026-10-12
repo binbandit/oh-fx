@@ -468,7 +468,7 @@ impl LoadJob {
         let roots: Vec<&Path> = self.roots.iter().map(PathBuf::as_path).collect();
         if self.allow_cache
             && let Some(cache_dir) = &self.cache_dir
-            && let Some(candidates) = file_index_cache::load(cache_dir, &roots)
+            && let Ok(Some(candidates)) = file_index_cache::load(cache_dir, &roots)
         {
             return match Generation::build(self.id, self.scope_epoch, &candidates, Some(&self.stop))
             {
