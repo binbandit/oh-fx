@@ -5,11 +5,13 @@ use ofx_contract::{
     BoxFuture, CapabilityLookup, CapabilityResolver, CatalogRetry, ModelCapabilities, ModelCatalog,
     ModelCatalogSource, ModelControls, ModelOption, ReasoningEffort, intrinsically_fast,
 };
-use ofx_gateway::{CatalogFailure, CodexModel};
+use ofx_gateway::{CatalogFailure, CodexModel, CreditsSnapshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::codex_provider::{CatalogCapabilities, CodexLogin};
 use crate::gateway_catalog::GatewayCatalog;
+
+const CREDITS_UNAVAILABLE: &str = "Credits are unavailable for the selected provider.";
 
 #[derive(Clone)]
 pub(crate) enum ModelSource {
@@ -39,6 +41,15 @@ impl ModelSource {
                 None => std::future::pending().await,
             },
             Self::Gateway(catalog) => catalog.ready().await,
+        }
+    }
+
+    pub(crate) async fn credits(&self) -> CreditsSnapshot {
+        match self {
+            Self::Gateway(catalog) => catalog.credits(&CancellationToken::new()).await,
+            Self::Connection(_) | Self::Codex(_) | Self::Unavailable => {
+                CreditsSnapshot::failed(CREDITS_UNAVAILABLE)
+            }
         }
     }
 

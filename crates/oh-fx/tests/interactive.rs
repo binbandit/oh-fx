@@ -386,6 +386,55 @@ fn the_permission_mode_variable_picks_the_starting_mode_and_shift_tab_cycles_on_
 }
 
 #[test]
+fn credits_and_balance_show_the_gateway_credits_in_the_shell() {
+    let key = "vck_live_0123456789abcdef";
+    let server = FakeServer::start([
+        Reply::status(200, r#"{"balance":"12.50","used":"7.50","plan":"pro"}"#),
+        Reply::status(
+            401,
+            format!(r#"{{"error":{{"message":"key {key} is not valid"}}}}"#),
+        ),
+    ]);
+    let refused = RefusedPort::reserve();
+    let home = Home::with_settings(&json!({
+        "provider": "gateway",
+        "models": {"gateway": "zai/glm-5.2"},
+    }));
+    let credits = format!("http://{}/coding-agent/v1/credits", server.address());
+    let mut command = home.command();
+    command
+        .env("AI_GATEWAY_API_KEY", key)
+        .env("OH_FX_E2E_GATEWAY_CREDITS_URL", &credits)
+        .env("OH_FX_E2E_GATEWAY_MODELS_URL", refused.base_url())
+        .env("OH_FX_GATEWAY_BASE_URL", refused.base_url());
+    let mut session = PtySession::spawn(command, 30, 100).expect("spawn oh-fx in a pty");
+    wait(&session, "Run /help for commands");
+    session.send(b"/credits\r");
+    let screen = session
+        .wait_for(WAIT, |screen| {
+            screen.contains("credits: balance=12.50")
+                && screen.contains("used=7.50")
+                && screen.contains("plan=pro")
+        })
+        .unwrap_or_else(|screen| panic!("/credits shows the balance:\n{screen}"));
+    assert!(!screen.contains(key), "{screen}");
+    session.send(b"/balance\r");
+    let screen = wait(&session, "credits: API access denied");
+    assert!(!screen.contains(key), "{screen}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(request.path, "/coding-agent/v1/credits");
+        assert_eq!(
+            request.header("authorization"),
+            Some(format!("Bearer {key}").as_str())
+        );
+    }
+    session.send(b"\x04");
+    assert!(session.wait_exit(WAIT).expect("ctrl+d exits").success());
+}
+
+#[test]
 fn logout_in_a_host_managed_shell_leaves_authentication_to_the_host() {
     let home = Home::with_settings(&settings("http://127.0.0.1:9"));
     let mut command = home.command();
@@ -1134,7 +1183,7 @@ fn slash_commands_switch_models_show_help_and_exit() {
         "  /resume         resume a saved session",
         "  /rename         rename the current session",
         "  /undo           undo the latest tracked file operation",
-        "  /ultrafast      request Ultra mode when supported",
+        "  /credits        show gateway credits balance",
         "  /logout         sign out of a provider session",
     ];
     session
