@@ -70,8 +70,8 @@ const TESTS: &[(&str, fn())] = &[
         a_forced_close_ends_a_terminal_whose_input_is_full,
     ),
     (
-        "no_input_reaches_a_terminal_once_its_close_begins",
-        no_input_reaches_a_terminal_once_its_close_begins,
+        "a_terminal_closed_while_input_waits_reads_only_what_it_accepted",
+        a_terminal_closed_while_input_waits_reads_only_what_it_accepted,
     ),
     (
         "the_screen_is_unavailable_after_output_it_cannot_parse",
@@ -762,7 +762,7 @@ fn a_forced_close_ends_a_terminal_whose_input_is_full() {
     assert_eq!(fixture.lifecycle(&started.id), Lifecycle::Closed);
 }
 
-fn no_input_reaches_a_terminal_once_its_close_begins() {
+fn a_terminal_closed_while_input_waits_reads_only_what_it_accepted() {
     let fixture = Fixture::new();
     let started = fixture.start(
         "set +m; stty raw -echo; trap 'cat > drained' TERM; : > ready; while :; do sleep 1; done",
@@ -795,7 +795,7 @@ fn no_input_reaches_a_terminal_once_its_close_begins() {
     let drained = fs::read(fixture.cwd.join("drained")).unwrap_or_default();
     assert!(
         drained.len() <= accepted,
-        "the terminal read {} bytes, more than the {accepted} it accepted",
+        "the terminal read {} bytes, more than the {accepted} it accepted; the session unit test a_write_waiting_for_room_writes_nothing_once_the_close_begins checks the ordering",
         drained.len()
     );
 }

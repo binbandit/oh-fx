@@ -705,10 +705,14 @@ mod tests {
     use std::io::{ErrorKind, Read};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
+    use std::time::Instant;
 
     use super::*;
     use crate::terminal_contracts::Dimensions;
     use crate::terminal_store::{NewTerminal, TerminalStore};
+
+    const BLOCKED: Duration = Duration::from_millis(200);
+    const DRAINED: Duration = Duration::from_secs(20);
 
     fn running(directory: &Path) -> (Session, UnixStream) {
         let durable = TerminalStore::new(directory)
@@ -730,6 +734,7 @@ mod tests {
             .unwrap();
         let session = Session::new(durable, None);
         let (master, terminal) = UnixStream::pair().unwrap();
+        master.set_nonblocking(true).unwrap();
         terminal.set_nonblocking(true).unwrap();
         {
             let mut state = session.lock();
@@ -737,6 +742,29 @@ mod tests {
             state.master = Some(Arc::new(OwnedFd::from(master)));
         }
         (session, terminal)
+    }
+
+    fn fill(master: &OwnedFd) -> usize {
+        let mut filled = 0;
+        for chunk in [vec![b'f'; 4096], vec![b'f']] {
+            while let Ok(count) = rustix::io::write(master, &chunk) {
+                filled += count;
+            }
+        }
+        filled
+    }
+
+    fn drain(terminal: &mut UnixStream) -> usize {
+        let mut drained = 0;
+        let mut bytes = vec![0; 65536];
+        loop {
+            match terminal.read(&mut bytes) {
+                Ok(0) => return drained,
+                Ok(count) => drained += count,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return drained,
+                Err(error) => panic!("{error}"),
+            }
+        }
     }
 
     fn received(terminal: &mut UnixStream) -> Vec<u8> {
@@ -767,5 +795,39 @@ mod tests {
             Err(StructuredErrorCode::InvalidLifecycle)
         );
         assert_eq!(received(&mut terminal), b"");
+    }
+
+    #[test]
+    fn a_write_waiting_for_room_writes_nothing_once_the_close_begins() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, mut terminal) = running(directory.path());
+        let session = Arc::new(session);
+        let master = session.lock().master.clone().unwrap();
+        let filled = fill(&master);
+        let writer = {
+            let session = Arc::clone(&session);
+            thread::spawn(move || session.write(b"x"))
+        };
+        let blocked = Instant::now() + BLOCKED;
+        while !writer.is_finished() && Instant::now() < blocked {
+            thread::sleep(Duration::from_millis(10));
+        }
+        session.lock().close_committed = true;
+        let deadline = Instant::now() + DRAINED;
+        let mut drained = drain(&mut terminal);
+        while !writer.is_finished() {
+            assert!(Instant::now() < deadline, "the waiting write never ended");
+            thread::sleep(Duration::from_millis(10));
+            drained += drain(&mut terminal);
+        }
+        drained += drain(&mut terminal);
+        assert_eq!(
+            writer.join().unwrap(),
+            Err(StructuredErrorCode::AuthorityDenied)
+        );
+        assert_eq!(
+            drained, filled,
+            "a byte reached the terminal after the close began"
+        );
     }
 }
