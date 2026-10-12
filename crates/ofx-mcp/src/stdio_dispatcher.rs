@@ -196,6 +196,15 @@ pub(crate) struct StdioDispatcher {
 }
 
 impl StdioDispatcher {
+    pub(crate) async fn closed(&self) {
+        let _ = self
+            .shared
+            .reader_done
+            .subscribe()
+            .wait_for(|done| *done)
+            .await;
+    }
+
     pub(crate) fn spawn(
         launch: StdioLaunch,
         notifications: mpsc::UnboundedSender<Value>,

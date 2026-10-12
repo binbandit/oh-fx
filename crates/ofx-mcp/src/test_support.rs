@@ -321,7 +321,7 @@ pub(crate) fn asking_elicitation(
     asker: Arc<dyn ofx_contract::QuestionAsker>,
 ) -> crate::legacy_elicitation_runtime::OperationElicitation {
     crate::legacy_elicitation_runtime::OperationElicitation {
-        responder: crate::elicitation_interaction::InputResponder::new(asker),
+        responder: crate::elicitation_interaction::InputResponder::new(asker, |_: &str| true),
         server_name: "fixture".to_owned(),
         owner: Box::new(CurrentOwner),
     }

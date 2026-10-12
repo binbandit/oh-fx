@@ -9,10 +9,12 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::elicitation::{
-    Answer, ElicitationCapabilities, Request, parse_request, validate_answer,
+    Answer, ElicitationCapabilities, Request, UrlRequest, parse_request, render_url_required,
+    validate_answer,
 };
-use crate::elicitation_interaction::{InputResponder, Interaction};
+use crate::elicitation_interaction::{InputResponder, Interaction, UrlConsent};
 use crate::error::McpError;
+use crate::legacy_url_completion::{Completion, UrlCompletions};
 use crate::operation_control::{DeadlineGate, ELICITATION_TIMEOUT};
 use crate::protocol_messages::parse_json;
 use crate::protocol_negotiation::ElicitationWire;
@@ -20,6 +22,9 @@ use crate::protocol_negotiation::ElicitationWire;
 const MAX_SERVER_REQUESTS: usize = 32;
 const MAX_SERVER_REQUEST_FRAME_BYTES: usize = 128 * 1024;
 const MAX_STRING_ID_BYTES: usize = 256;
+pub(crate) const MAX_INPUT_ROUNDS: usize = 8;
+pub(crate) const URL_DECLINED: &str = "MCP URL elicitation was declined";
+pub(crate) const URL_CANCELLED: &str = "MCP URL elicitation was cancelled";
 
 pub(crate) trait ElicitationOwner: Send + Sync {
     fn current(&self) -> bool;
@@ -192,6 +197,59 @@ fn result_response(id: &Value, answer: &Answer) -> String {
         "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{}}}",
         answer.to_json()
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlRetry {
+    Retry,
+    Declined,
+    Cancelled,
+}
+
+pub(crate) async fn coordinate_url_required(
+    responder: &InputResponder,
+    server_name: &str,
+    completions: &UrlCompletions,
+    requests: &[(String, UrlRequest)],
+    owner: &dyn ElicitationOwner,
+) -> Result<UrlRetry, McpError> {
+    let ids: Vec<String> = requests.iter().map(|(id, _)| id.clone()).collect();
+    let waiter = completions.wait_for(&ids)?;
+    let Some(_turn) = responder.take_turn(completions.closed()).await else {
+        return Ok(UrlRetry::Cancelled);
+    };
+    let interaction = Interaction {
+        responder,
+        server_name,
+        deadline: Instant::now() + ELICITATION_TIMEOUT,
+        finished: completions.closed(),
+    };
+    let consent = interaction
+        .consent_to_urls(requests)
+        .await
+        .map_err(|error| McpError::Elicitation(error.to_string()))?;
+    match consent {
+        UrlConsent::Declined => return Ok(UrlRetry::Declined),
+        UrlConsent::Cancelled => return Ok(UrlRetry::Cancelled),
+        UrlConsent::Accepted => {}
+    }
+    if waiter.status() != Completion::Completed
+        && !interaction
+            .await_completion(&waiter)
+            .await
+            .map_err(|error| McpError::Elicitation(error.to_string()))?
+    {
+        return Ok(UrlRetry::Cancelled);
+    }
+    Ok(if owner.current() {
+        UrlRetry::Retry
+    } else {
+        UrlRetry::Cancelled
+    })
+}
+
+pub(crate) fn rendered_url_required(requests: &[(String, UrlRequest)]) -> Result<String, McpError> {
+    render_url_required(requests).map_err(|error| McpError::Elicitation(format!("{error:?}")))
 }
 
 fn owner_changed(id: &Value) -> String {

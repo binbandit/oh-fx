@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use crate::features::tools::ToolCallOutcome;
 
 pub(crate) const IMAGE_CONTENT: &str = "image content";
+const INPUT_ROUNDS_EXCEEDED: &str =
+    "MCP protocol failure: input-required continuation limit exceeded";
 const UNSUPPORTED_MEDIA: &str = "unsupported media; content was not sent to the model";
 pub(crate) const UNSENT_BINARY_RESOURCE: &str = "binary resource content was not sent to the model";
 const TEXT_FIELDS: [&str; 4] = ["text", "data", "blob", "content"];
@@ -47,6 +49,21 @@ pub(crate) fn model_output(
         ToolCallOutcome::ProtocolFailure(error) => ToolOutput::failure(prepare_model_output(
             prefixed_name,
             protocol_diagnostic(&error),
+            max_bytes,
+        )),
+        ToolCallOutcome::InputRequired(requests) => ToolOutput::failure(prepare_model_output(
+            prefixed_name,
+            format!("{{\"resultType\":\"input_required\",\"inputRequests\":{requests}}}"),
+            max_bytes,
+        )),
+        ToolCallOutcome::InputRoundsExceeded => ToolOutput::failure(prepare_model_output(
+            prefixed_name,
+            INPUT_ROUNDS_EXCEEDED.to_owned(),
+            max_bytes,
+        )),
+        ToolCallOutcome::UrlElicitationEnded(message) => ToolOutput::failure(prepare_model_output(
+            prefixed_name,
+            message.to_owned(),
             max_bytes,
         )),
     }
@@ -255,6 +272,30 @@ mod tests {
             structured_content: None,
             result,
         })
+    }
+
+    #[test]
+    fn unanswered_and_ended_url_elicitations_fail_with_upstream_text() {
+        let output = |outcome| model_output("auth", "connect", "mcp_auth_connect", outcome, 1024);
+        let required = output(ToolCallOutcome::InputRequired(
+            r#"{"e1":{"method":"elicitation/create","params":{"mode":"url"}}}"#.to_owned(),
+        ));
+        assert_eq!(required.status, ToolResultStatus::Failure);
+        assert_eq!(
+            required.content,
+            r#"{"resultType":"input_required","inputRequests":{"e1":{"method":"elicitation/create","params":{"mode":"url"}}}}"#
+        );
+        let exceeded = output(ToolCallOutcome::InputRoundsExceeded);
+        assert_eq!(exceeded.status, ToolResultStatus::Failure);
+        assert_eq!(
+            exceeded.content,
+            "MCP protocol failure: input-required continuation limit exceeded"
+        );
+        let declined = output(ToolCallOutcome::UrlElicitationEnded(
+            "MCP URL elicitation was declined",
+        ));
+        assert_eq!(declined.status, ToolResultStatus::Failure);
+        assert_eq!(declined.content, "MCP URL elicitation was declined");
     }
 
     #[test]

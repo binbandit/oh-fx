@@ -6,12 +6,15 @@ use serde_json::Value;
 
 use super::*;
 use crate::elicitation::parse_request;
+use crate::legacy_url_completion::UrlCompletions;
 use crate::protocol_negotiation::ElicitationWire;
 
 #[derive(Default)]
 struct Script {
     answers: Mutex<Vec<String>>,
     asked: Mutex<Vec<QuestionBatchEntry>>,
+    opened: Mutex<Vec<String>>,
+    open_results: Mutex<Vec<bool>>,
     hang: bool,
 }
 
@@ -36,6 +39,26 @@ impl Script {
     fn remaining(&self) -> usize {
         self.answers.lock().unwrap().len()
     }
+
+    fn opening(self: Arc<Self>, results: &[bool]) -> Arc<Self> {
+        *self.open_results.lock().unwrap() = results.iter().rev().copied().collect();
+        self
+    }
+
+    fn opened(&self) -> Vec<String> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    fn responder(self: &Arc<Self>) -> InputResponder {
+        let browser = Arc::clone(self);
+        InputResponder::new(
+            Arc::clone(self) as Arc<dyn QuestionAsker>,
+            move |url: &str| {
+                browser.opened.lock().unwrap().push(url.to_owned());
+                browser.open_results.lock().unwrap().pop().unwrap_or(true)
+            },
+        )
+    }
 }
 
 impl QuestionAsker for Script {
@@ -56,6 +79,7 @@ fn request(params: &str) -> Request {
 
 const DECLINE: &str = r#"{"action":"decline"}"#;
 const CANCEL: &str = r#"{"action":"cancel"}"#;
+const ACCEPT: &str = r#"{"action":"accept"}"#;
 
 async fn respond_with(
     responder: &InputResponder,
@@ -75,8 +99,7 @@ async fn respond_with(
 }
 
 async fn respond_as(script: &Arc<Script>, server_name: &str, params: &str) -> Outcome<String> {
-    let responder = InputResponder::new(Arc::clone(script) as Arc<dyn QuestionAsker>);
-    respond_with(&responder, server_name, params).await
+    respond_with(&script.responder(), server_name, params).await
 }
 
 async fn respond(script: &Arc<Script>, params: &str) -> Outcome<String> {
@@ -84,9 +107,7 @@ async fn respond(script: &Arc<Script>, params: &str) -> Outcome<String> {
 }
 
 async fn respond_compactly(script: &Arc<Script>, params: &str) -> Outcome<String> {
-    let responder =
-        InputResponder::new(Arc::clone(script) as Arc<dyn QuestionAsker>).with_compact_forms();
-    respond_with(&responder, "fixture", params).await
+    respond_with(&script.responder().with_compact_forms(), "fixture", params).await
 }
 
 const PROFILE: &str = r#"{"message":"Profile","requestedSchema":{"type":"object","properties":{"name":{"type":"string","minLength":3},"ratio":{"type":"number","minimum":0,"maximum":1},"age":{"type":"integer","minimum":18},"active":{"type":"boolean"},"color":{"type":"string","oneOf":[{"const":"red","title":"Red"},{"const":"blue","title":"Blue"}]},"tags":{"type":"array","items":{"type":"string","anyOf":[{"const":"a","title":"A"},{"const":"b","title":"B"}]},"minItems":1}},"required":["name","ratio","age","active","color","tags"]}}"#;
@@ -342,7 +363,7 @@ async fn an_unanswered_question_times_out_or_ends_with_its_operation() {
         hang: true,
         ..Script::default()
     });
-    let responder = InputResponder::new(Arc::clone(&hanging) as Arc<dyn QuestionAsker>);
+    let responder = hanging.responder();
     let params = request(
         r#"{"message":"Wait","requestedSchema":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}"#,
     );
@@ -490,4 +511,243 @@ async fn compact_form_keeps_review_for_four_choices() {
     );
     assert!(reviewed(&script));
     assert_eq!(script.asked()[0].submission, QuestionSubmission::Label);
+}
+
+const AUTHORIZE: &str = r#"{"mode":"url","message":"Authorize","url":"https://example.test/full?state=opaque","elicitationId":"url-1"}"#;
+
+#[tokio::test]
+async fn url_interaction_requires_consent_and_does_not_open_on_decline() {
+    let script = Script::new(&["Decline"]);
+    assert_eq!(
+        respond(
+            &script,
+            r#"{"mode":"url","message":"Authorize","url":"https://xn--pple-43d.test/full?state=opaque","elicitationId":"url-1"}"#
+        )
+        .await
+        .unwrap(),
+        DECLINE
+    );
+    assert!(script.opened().is_empty());
+    let asked = script.asked();
+    assert_eq!(
+        asked[0].question,
+        "MCP server fixture requests an external browser action. Target host: xn--pple-43d.test\nComplete URL: https://xn--pple-43d.test/full?state=opaque\nWarning: This host uses Punycode and may disguise its destination.\nOpen it? oh-fx will not fetch this URL or see browser contents."
+    );
+    let options: Vec<_> = asked[0]
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    assert_eq!(options, ["Open URL", "Decline"]);
+    let cancelled = Script::new(&[]);
+    assert_eq!(respond(&cancelled, AUTHORIZE).await.unwrap(), CANCEL);
+    let opened = Script::new(&["Open URL"]);
+    assert_eq!(respond(&opened, AUTHORIZE).await.unwrap(), ACCEPT);
+    assert_eq!(opened.opened(), ["https://example.test/full?state=opaque"]);
+    let unknown = Script::new(&["maybe"]);
+    assert_eq!(
+        respond(&unknown, AUTHORIZE).await,
+        Err(InteractionError::InvalidAnswer)
+    );
+}
+
+#[tokio::test]
+async fn url_browser_failure_supports_manual_continuation_and_bounded_retry() {
+    let manual = Script::new(&["Open URL", "Continue manually"]).opening(&[false]);
+    assert_eq!(respond(&manual, AUTHORIZE).await.unwrap(), ACCEPT);
+    assert_eq!(manual.opened().len(), 1);
+    assert_eq!(
+        manual.asked()[1].question,
+        "oh-fx could not open the browser for example.test. The URL was not fetched. Continue manually, retry the browser, or cancel?"
+    );
+    let retry = Script::new(&["Open URL", "Retry browser"]).opening(&[false, true]);
+    assert_eq!(respond(&retry, AUTHORIZE).await.unwrap(), ACCEPT);
+    assert_eq!(retry.opened().len(), 2);
+    let exhausted = Script::new(&["Open URL", "Retry browser", "Retry browser", "Other"])
+        .opening(&[false, false, false]);
+    assert_eq!(respond(&exhausted, AUTHORIZE).await.unwrap(), CANCEL);
+    assert_eq!(exhausted.opened().len(), 3);
+    let cancelled = Script::new(&["Open URL", "Cancel"]).opening(&[false]);
+    assert_eq!(respond(&cancelled, AUTHORIZE).await.unwrap(), CANCEL);
+    let unknown = Script::new(&["Open URL", "maybe", "Continue manually"]).opening(&[false]);
+    assert_eq!(respond(&unknown, AUTHORIZE).await.unwrap(), ACCEPT);
+    assert_eq!(unknown.asked().len(), 3);
+    assert_eq!(unknown.opened().len(), 1);
+}
+
+#[tokio::test]
+async fn url_hosts_are_shown_terminal_safe_with_their_warning() {
+    let script = Script::new(&["Decline"]);
+    respond(
+        &script,
+        r#"{"mode":"url","message":"Authorize","url":"https://ex%C3%A4mple.test/\u001b[2J","elicitationId":"url-1"}"#,
+    )
+    .await
+    .unwrap();
+    let question = &script.asked()[0].question;
+    assert!(
+        question.contains("Target host: ex\u{e4}mple.test\nComplete URL: https://ex%C3%A4mple.test/\\x1b[2J\nWarning: This host contains non-ASCII characters and may be visually ambiguous."),
+        "{question}"
+    );
+    assert_eq!(classify_host(b"example.test"), HostClassification::Ordinary);
+    assert_eq!(
+        classify_host(b"XN--e1awd7f.test"),
+        HostClassification::Punycode
+    );
+    assert_eq!(
+        classify_host(b"login.xn--pple-43d.test"),
+        HostClassification::Punycode
+    );
+    assert_eq!(
+        classify_host("ex\u{e4}mple.test".as_bytes()),
+        HostClassification::NonAscii
+    );
+}
+
+fn url_required(ids: &[&str]) -> Vec<(String, UrlRequest)> {
+    ids.iter()
+        .map(|id| {
+            let RequestKind::Url(url) = request(&format!(
+                r#"{{"mode":"url","message":"Connect {id}","url":"https://{id}.test/","elicitationId":"{id}"}}"#
+            ))
+            .kind
+            else {
+                panic!("a URL request");
+            };
+            ((*id).to_owned(), url)
+        })
+        .collect()
+}
+
+fn interaction<'a>(
+    responder: &'a InputResponder,
+    finished: &'a CancellationToken,
+) -> Interaction<'a> {
+    Interaction {
+        responder,
+        server_name: "fixture",
+        deadline: Instant::now() + Duration::from_mins(1),
+        finished,
+    }
+}
+
+#[tokio::test]
+async fn url_consent_covers_every_request_and_a_cancel_ends_it() {
+    let finished = CancellationToken::new();
+    let accepted = Script::new(&["Open URL", "Open URL"]);
+    let responder = accepted.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .consent_to_urls(&url_required(&["one", "two"]))
+            .await,
+        Ok(UrlConsent::Accepted)
+    );
+    assert_eq!(
+        accepted.opened(),
+        ["https://one.test/", "https://two.test/"]
+    );
+    let declined = Script::new(&["Decline", "Open URL"]);
+    let responder = declined.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .consent_to_urls(&url_required(&["one", "two"]))
+            .await,
+        Ok(UrlConsent::Declined)
+    );
+    assert_eq!(declined.asked().len(), 2);
+    let cancelled = Script::new(&[]);
+    let responder = cancelled.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .consent_to_urls(&url_required(&["one", "two"]))
+            .await,
+        Ok(UrlConsent::Cancelled)
+    );
+    assert_eq!(cancelled.asked().len(), 1);
+}
+
+#[tokio::test]
+async fn legacy_url_completion_is_separate_from_consent_and_supports_manual_retry() {
+    let finished = CancellationToken::new();
+    let completions = UrlCompletions::default();
+    let ids = ["first".to_owned(), "second".to_owned()];
+    let manual = Script::new(&["I completed it / Retry"]);
+    let responder = manual.responder();
+    let waiter = completions.wait_for(&ids).unwrap();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Ok(true)
+    );
+    let asked = manual.asked();
+    assert_eq!(
+        asked[0].question,
+        "Complete the browser flow requested by MCP server fixture. oh-fx will continue automatically if the server confirms every URL request. Otherwise choose I completed it / Retry, or Cancel."
+    );
+    assert!(manual.opened().is_empty());
+    let cancelled = Script::new(&["Cancel"]);
+    let responder = cancelled.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Ok(false)
+    );
+    let unknown = Script::new(&["maybe"]);
+    let responder = unknown.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Err(InteractionError::InvalidAnswer)
+    );
+    let waiting = Arc::new(Script {
+        hang: true,
+        ..Script::default()
+    });
+    let responder = waiting.responder();
+    let asking = interaction(&responder, &finished);
+    let awaited = asking.await_completion(&waiter);
+    tokio::pin!(awaited);
+    tokio::select! {
+        biased;
+        _ = &mut awaited => panic!("nothing completed yet"),
+        () = std::future::ready(()) => {}
+    }
+    completions.record("first");
+    completions.record("second");
+    assert_eq!(awaited.await, Ok(true));
+}
+
+#[tokio::test]
+async fn a_closed_connection_ends_the_completion_wait_as_cancelled() {
+    let finished = CancellationToken::new();
+    let completions = UrlCompletions::default();
+    let waiter = completions.wait_for(&["open".to_owned()]).unwrap();
+    let waiting = Arc::new(Script {
+        hang: true,
+        ..Script::default()
+    });
+    let responder = waiting.responder();
+    let asking = interaction(&responder, &finished);
+    let awaited = asking.await_completion(&waiter);
+    tokio::pin!(awaited);
+    tokio::select! {
+        biased;
+        _ = &mut awaited => panic!("the connection is still open"),
+        () = std::future::ready(()) => {}
+    }
+    completions.close();
+    assert_eq!(awaited.await, Ok(false));
+    assert_eq!(waiting.asked().len(), 1);
+    let unasked = Script::new(&["I completed it / Retry"]);
+    let responder = unasked.responder();
+    assert_eq!(
+        interaction(&responder, &finished)
+            .await_completion(&waiter)
+            .await,
+        Ok(false)
+    );
+    assert!(unasked.asked().is_empty());
 }

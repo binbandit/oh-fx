@@ -124,6 +124,12 @@ pub enum McpError {
     MismatchedResponseId,
     #[error("UnsupportedServerRequest")]
     UnsupportedServerRequest,
+    #[error("McpInputRequiredLimitExceeded")]
+    McpInputRequiredLimitExceeded,
+    #[error("McpDuplicateElicitationId")]
+    McpDuplicateElicitationId,
+    #[error("{0}")]
+    Elicitation(String),
     #[error("MissingFinalResponse")]
     MissingFinalResponse,
     #[error("InvalidSseEndpointEvent")]
