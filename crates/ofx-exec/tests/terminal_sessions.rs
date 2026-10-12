@@ -65,6 +65,10 @@ const TESTS: &[(&str, fn())] = &[
         a_forced_close_ends_the_command_and_is_recorded,
     ),
     (
+        "a_forced_close_ends_a_terminal_whose_input_is_full",
+        a_forced_close_ends_a_terminal_whose_input_is_full,
+    ),
+    (
         "the_screen_is_unavailable_after_output_it_cannot_parse",
         the_screen_is_unavailable_after_output_it_cannot_parse,
     ),
@@ -714,6 +718,43 @@ fn a_forced_close_ends_the_command_and_is_recorded() {
             .collect::<Vec<_>>(),
         [(started.id.as_str(), Lifecycle::Closed)]
     );
+}
+
+fn a_forced_close_ends_a_terminal_whose_input_is_full() {
+    let fixture = Fixture::new();
+    let started = fixture.start(
+        "set +m; stty raw -echo; : > ready; sleep 30",
+        ReturnCondition::Started,
+    );
+    fixture.file_until("ready", |_| true);
+    let writer = {
+        let terminals = fixture.terminals.clone();
+        let id = started.id.clone();
+        let input = "x".repeat(64 * 1024);
+        thread::spawn(move || {
+            loop {
+                if let Err(failure) = terminals.write(OWNER, &id, &input) {
+                    return failure.code;
+                }
+            }
+        })
+    };
+    let blocked = Instant::now() + Duration::from_millis(300);
+    while !writer.is_finished() && Instant::now() < blocked {
+        thread::sleep(POLL);
+    }
+    assert!(!writer.is_finished(), "the writes ended before the close");
+    let closing = Instant::now();
+    let closed = fixture
+        .close(&started.id, ClosePolicy::Force)
+        .expect("close the terminal");
+    assert!(closing.elapsed() < LONG);
+    assert_eq!(closed.lifecycle, Lifecycle::Closed);
+    assert_eq!(
+        writer.join().expect("the writer ends"),
+        StructuredErrorCode::AuthorityDenied
+    );
+    assert_eq!(fixture.lifecycle(&started.id), Lifecycle::Closed);
 }
 
 fn saved_terminals_answer_after_their_process_ended() {

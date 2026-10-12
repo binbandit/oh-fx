@@ -1,5 +1,4 @@
 use std::future;
-use std::io;
 use std::os::fd::OwnedFd;
 use std::process::{Child, ChildStderr};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -25,6 +24,7 @@ use crate::terminal_store::{DurableTerminal, StoreError, Termination, now_ms};
 const OUTPUT_POLL: Duration = Duration::from_millis(50);
 const READ_BUFFER_BYTES: usize = 256 * 1024;
 const GRACEFUL_CLOSE: Duration = Duration::from_millis(800);
+const WRITE_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SessionLost;
@@ -220,8 +220,43 @@ impl Session {
                 _ => return Err(StructuredErrorCode::InvalidLifecycle),
             }
         };
-        write_all(&master, bytes).map_err(|_| StructuredErrorCode::InvalidRequest)?;
+        self.write_all(&master, bytes)?;
         u32::try_from(bytes.len()).map_err(|_| StructuredErrorCode::InvalidRequest)
+    }
+
+    fn write_all(&self, master: &OwnedFd, mut bytes: &[u8]) -> Result<(), StructuredErrorCode> {
+        let wait = Timespec::try_from(WRITE_POLL).unwrap_or_default();
+        while !bytes.is_empty() {
+            match rustix::io::write(master, bytes) {
+                Ok(0) => return Err(StructuredErrorCode::InvalidRequest),
+                Ok(count) => bytes = &bytes[count..],
+                Err(Errno::INTR) => {}
+                Err(Errno::AGAIN) => {
+                    self.input_open()?;
+                    let mut fds = [PollFd::new(master, PollFlags::OUT)];
+                    match poll(&mut fds, Some(&wait)) {
+                        Ok(_) | Err(Errno::INTR) => {}
+                        Err(_) => return Err(StructuredErrorCode::InvalidRequest),
+                    }
+                }
+                Err(_) => {
+                    self.input_open()?;
+                    return Err(StructuredErrorCode::InvalidRequest);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn input_open(&self) -> Result<(), StructuredErrorCode> {
+        let state = self.lock();
+        if state.close_committed {
+            Err(StructuredErrorCode::AuthorityDenied)
+        } else if state.lifecycle != Lifecycle::Running {
+            Err(StructuredErrorCode::InvalidLifecycle)
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) async fn wait_for(
@@ -301,7 +336,6 @@ impl Session {
         policy: ClosePolicy,
     ) -> Result<SessionFacts, StructuredErrorCode> {
         {
-            let _writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
             let mut state = self.lock();
             if state.close_committed {
                 return Err(StructuredErrorCode::AuthorityDenied);
@@ -651,25 +685,6 @@ async fn sleep_until_or_never(deadline: Option<Instant>) {
         Some(deadline) => sleep_until(deadline).await,
         None => future::pending().await,
     }
-}
-
-fn write_all(master: &OwnedFd, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        match rustix::io::write(master, bytes) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(count) => bytes = &bytes[count..],
-            Err(Errno::INTR) => {}
-            Err(Errno::AGAIN) => {
-                let mut fds = [PollFd::new(master, PollFlags::OUT)];
-                match poll(&mut fds, None::<&Timespec>) {
-                    Ok(_) | Err(Errno::INTR) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
 }
 
 struct Launcher(Child);
