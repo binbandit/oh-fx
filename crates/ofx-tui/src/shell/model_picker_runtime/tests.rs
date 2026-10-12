@@ -70,7 +70,7 @@ fn pick(model: &str, effort: ReasoningEffort, fast_mode: Option<bool>) -> UiComm
     UiCommand::SelectModel {
         model: model.to_owned(),
         effort,
-        fast_mode,
+        speed: fast_mode.map(|fast| ModelSpeed::of(fast, false)),
     }
 }
 
@@ -491,7 +491,7 @@ fn typed_model_effort_and_mode_choices_are_sent_and_malformed_ones_explain_the_u
     assert_eq!(test.shell.composer.text(), "/model gpt-5 high quick");
     assert!(
         test.screen()
-            .contains("usage: /model <id> <effort> [normal|fast]")
+            .contains("usage: /model <id> <effort> [normal|fast|ultrafast]")
     );
 }
 
@@ -908,4 +908,97 @@ fn committed_controls_updates_preserve_a_pending_picker_and_appear_on_dismissal(
     test.settle();
     assert_eq!(status_row(&mut test), "auto · model-a · low");
     assert!(picks(&test).is_empty());
+}
+
+fn ultra_catalog(efforts: &[&str], fast: bool) -> ModelCatalog {
+    let mut model = option("openai/gpt-6-astra", efforts, fast);
+    model.capabilities.supports_ultrafast_mode = true;
+    ModelCatalog::Listed {
+        models: vec![model, option("openai/gpt-6-luna", &["high"], true)],
+        source: ModelCatalogSource::ProfileSettings,
+    }
+}
+
+fn speed_pick(model: &str, effort: ReasoningEffort, speed: ModelSpeed) -> UiCommand {
+    UiCommand::SelectModel {
+        model: model.to_owned(),
+        effort,
+        speed: Some(speed),
+    }
+}
+
+fn pending_ultra(test: &TestShell) -> bool {
+    test.shell.status_model().1.ultrafast
+}
+
+#[test]
+fn the_mode_column_offers_ultrafast_after_fast_and_previews_the_ultra_marker() {
+    let mut test = TestShell::start();
+    press(&mut test, b"/model\r");
+    listed(&mut test, ultra_catalog(&["high"], true));
+    press(&mut test, b"\r\r");
+    assert_eq!(
+        test.shell.composer.text(),
+        "/model openai/gpt-6-astra auto "
+    );
+    let screen = test.screen();
+    assert!(screen.contains("normal"), "{screen}");
+    assert!(screen.contains("ultrafast"), "{screen}");
+    assert!(!pending_ultra(&test));
+    assert_eq!(status_row(&mut test), "auto · gpt-6-astra · ⚡︎");
+    press(&mut test, DOWN);
+    assert!(pending_ultra(&test));
+    assert_eq!(status_row(&mut test), "auto · gpt-6-astra · ⚡︎");
+    press(&mut test, b"\r");
+    assert_eq!(
+        picks(&test),
+        [speed_pick(
+            "openai/gpt-6-astra",
+            ReasoningEffort::Auto,
+            ModelSpeed::Ultrafast
+        )]
+    );
+}
+
+#[test]
+fn a_model_with_only_ultra_mode_starts_its_mode_column_at_normal() {
+    let mut test = TestShell::start();
+    press(&mut test, b"/model\r");
+    listed(&mut test, ultra_catalog(&[], false));
+    press(&mut test, b"\r");
+    assert_eq!(
+        test.shell.composer.text(),
+        "/model openai/gpt-6-astra auto "
+    );
+    assert!(!pending_ultra(&test));
+    press(&mut test, b"ultra\t");
+    assert_eq!(
+        test.shell.composer.text(),
+        "/model openai/gpt-6-astra auto ultrafast"
+    );
+    assert!(pending_ultra(&test));
+    press(&mut test, b"\r");
+    assert_eq!(
+        picks(&test),
+        [speed_pick(
+            "openai/gpt-6-astra",
+            ReasoningEffort::Auto,
+            ModelSpeed::Ultrafast
+        )]
+    );
+}
+
+#[test]
+fn ultrafast_typed_for_a_model_without_it_is_not_chosen() {
+    let mut test = TestShell::start();
+    press(&mut test, b"/model\r");
+    listed(&mut test, ultra_catalog(&["high"], true));
+    press(&mut test, DOWN);
+    press(&mut test, b"\r\r");
+    assert_eq!(test.shell.composer.text(), "/model openai/gpt-6-luna auto ");
+    let screen = test.screen();
+    assert!(!screen.contains("ultrafast"), "{screen}");
+    press(&mut test, b"ultrafast\r");
+    assert!(picks(&test).is_empty());
+    assert!(!pending_ultra(&test));
 }

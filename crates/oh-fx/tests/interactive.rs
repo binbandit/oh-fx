@@ -569,6 +569,11 @@ fn ultra_mode_on_a_verified_gateway_model_sends_the_ultrafast_tier() {
     session
         .wait_for(WAIT, |screen| !screen.contains(hint))
         .unwrap_or_else(|screen| panic!("expected the settings menu to close:\n{screen}"));
+    session.send(b"/model openai/gpt-6-astra ultrafast\r");
+    wait(
+        &session,
+        "Switched to openai/gpt-6-astra (effort: default, speed: ultrafast)",
+    );
     session.send(b"hello\r");
     wait(&session, "Ultra reply.");
     wait(

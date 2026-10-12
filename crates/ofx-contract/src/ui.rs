@@ -1,6 +1,6 @@
 use crate::ids::{RequestId, ToolCallId, TurnId};
 use crate::mcp_menu::{McpMenuCatalog, McpMenuRequest, McpMenuSettled, McpMenuSnapshot};
-use crate::model_capabilities::ModelCapabilities;
+use crate::model_capabilities::{ModelCapabilities, ModelSpeed};
 use crate::permission_gate::{
     ApprovalAnswer, ApprovalScope, CommandRequest, FileMutation, ProposedFileChange,
 };
@@ -537,7 +537,7 @@ pub enum UiCommand {
     SelectModel {
         model: String,
         effort: ReasoningEffort,
-        fast_mode: Option<bool>,
+        speed: Option<ModelSpeed>,
     },
     Cancel {
         turn_id: TurnId,

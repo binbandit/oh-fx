@@ -77,6 +77,41 @@ pub fn intrinsically_fast(model: &str) -> bool {
     model.ends_with("-fast")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSpeed {
+    Normal,
+    Fast,
+    Ultrafast,
+}
+
+impl ModelSpeed {
+    pub const ALL: [Self; 3] = [Self::Normal, Self::Fast, Self::Ultrafast];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Fast => "fast",
+            Self::Ultrafast => "ultrafast",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|speed| speed.label().eq_ignore_ascii_case(text))
+    }
+
+    pub const fn of(fast: bool, ultrafast: bool) -> Self {
+        if ultrafast {
+            Self::Ultrafast
+        } else if fast {
+            Self::Fast
+        } else {
+            Self::Normal
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityLookup {
     Resolved(ModelCapabilities),

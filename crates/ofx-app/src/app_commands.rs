@@ -4,8 +4,8 @@ use std::path::Path;
 use ofx_auth::HOST_MANAGED_AUTH_MESSAGE;
 use ofx_cli::{SLASH_REGISTRY, SlashKind, SlashPresentationCategory};
 use ofx_contract::{
-    CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, ModelOption, Notice,
-    NoticeTone, ReasoningEffort, UiEvent,
+    CompactionActivity, CompactionEnd, ModelCapabilities, ModelCatalog, ModelOption, ModelSpeed,
+    Notice, NoticeTone, ReasoningEffort, UiEvent, intrinsically_fast,
 };
 use ofx_gateway::CreditsSnapshot;
 use ofx_session::resolve_model_query_from_ids;
@@ -41,7 +41,7 @@ const NOTHING_TO_UNDO: &str = "Nothing to undo.";
 const RESUME_DURING_TURN: &str = "resume is unavailable until the response finishes";
 const SESSION_TOPIC: &str = "session";
 const RENAME_USAGE: &str = "usage: /rename <title>";
-const MODEL_USAGE: &str = "usage: /model <id> <effort> [normal|fast]";
+const MODEL_USAGE: &str = "usage: /model <id> <effort> [normal|fast|ultrafast]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandEffect {
@@ -64,7 +64,7 @@ pub(crate) enum CommandEffect {
 pub(crate) struct ModelPick {
     pub(crate) model: String,
     pub(crate) effort: ReasoningEffort,
-    pub(crate) fast_mode: Option<bool>,
+    pub(crate) speed: Option<ModelSpeed>,
 }
 
 pub(crate) enum ModelChange {
@@ -336,20 +336,21 @@ fn select_model_from_settings(
 ) -> Outcome {
     let capabilities = capabilities_of(models, &model);
     let effort = (!capabilities.reasoning_efforts.is_empty()).then(|| state.effort().clone());
-    let fast_mode = capabilities.supports_fast_mode && state.fast_mode();
-    state.notice(NoticeTone::Neutral, "", &model_switch_notice(&model, work));
-    state.apply_pick(model, effort.as_ref(), fast_mode);
+    let speed = (capabilities.supports_fast_mode && state.fast_mode(), false);
+    announce_model(state, (&model, effort.as_ref()), speed, work);
+    state.apply_pick(model, effort.as_ref(), speed);
     Outcome::Changed { effort }
 }
 
 fn switch_model(state: &mut ControllerState, query: &str, models: &[ModelOption], work: Work) {
     let ids: Vec<String> = models.iter().map(|option| option.id.clone()).collect();
     let resolved = resolve_model_query(&ids, query);
-    state.notice(
-        NoticeTone::Neutral,
-        "",
-        &model_switch_notice(&resolved, work),
-    );
+    let speed = if resolved == state.model() {
+        (state.fast_mode(), state.ultrafast_requested())
+    } else {
+        (false, false)
+    };
+    announce_model(state, (&resolved, None), speed, work);
     state.select_model(resolved);
 }
 
@@ -364,18 +365,29 @@ fn pick_model(
         ReasoningEffort::Auto => true,
         ReasoningEffort::Named(name) => capabilities.reasoning_efforts.contains(name),
     };
-    if !effort_offered || capabilities.supports_fast_mode != pick.fast_mode.is_some() {
+    if !effort_offered || !speed_offered(&capabilities, pick.speed) {
         state.notice(NoticeTone::Error, "", MODEL_USAGE);
         return Outcome::Unchanged;
     }
-    state.notice(
-        NoticeTone::Neutral,
-        "",
-        &model_switch_notice(&pick.model, work),
-    );
     let effort = (!capabilities.reasoning_efforts.is_empty()).then_some(pick.effort);
-    state.apply_pick(pick.model, effort.as_ref(), pick.fast_mode.unwrap_or(false));
+    let ultrafast_mode =
+        capabilities.supports_ultrafast_mode && pick.speed == Some(ModelSpeed::Ultrafast);
+    let fast_mode = capabilities.supports_fast_mode && pick.speed == Some(ModelSpeed::Fast);
+    let speed = (fast_mode, ultrafast_mode);
+    announce_model(state, (&pick.model, effort.as_ref()), speed, work);
+    state.apply_pick(pick.model, effort.as_ref(), speed);
     Outcome::Changed { effort }
+}
+
+fn speed_offered(capabilities: &ModelCapabilities, speed: Option<ModelSpeed>) -> bool {
+    match speed {
+        None => true,
+        Some(ModelSpeed::Normal) => {
+            capabilities.supports_fast_mode || capabilities.supports_ultrafast_mode
+        }
+        Some(ModelSpeed::Fast) => capabilities.supports_fast_mode,
+        Some(ModelSpeed::Ultrafast) => capabilities.supports_ultrafast_mode,
+    }
 }
 
 pub(crate) fn capabilities_of(models: &[ModelOption], model: &str) -> ModelCapabilities {
@@ -386,13 +398,25 @@ pub(crate) fn capabilities_of(models: &[ModelOption], model: &str) -> ModelCapab
         .unwrap_or_default()
 }
 
-fn model_switch_notice(model: &str, work: Work) -> String {
+fn announce_model(
+    state: &ControllerState,
+    (model, effort): (&str, Option<&ReasoningEffort>),
+    (fast_mode, ultrafast_mode): (bool, bool),
+    work: Work,
+) {
     let prefix = if work == Work::Turn {
         "Next turn will use "
     } else {
         "Switched to "
     };
-    format!("{prefix}{model}")
+    let effort = effort.unwrap_or_else(|| state.effort());
+    let speed = ModelSpeed::of(fast_mode || intrinsically_fast(model), ultrafast_mode);
+    let line = format!(
+        "{prefix}{model} (effort: {}, speed: {})",
+        effort.display_label(),
+        speed.label()
+    );
+    state.notice(NoticeTone::Neutral, "", &line);
 }
 
 fn request_ultrafast(state: &mut ControllerState, models: &[ModelOption]) -> bool {

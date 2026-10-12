@@ -55,7 +55,7 @@ pub use mcp_menu::{
 };
 pub use mcp_servers::{McpServersCatalog, McpServersSection};
 pub use model_capabilities::{
-    CapabilityLookup, CapabilityResolver, ImageInputSupport, ModelCapabilities,
+    CapabilityLookup, CapabilityResolver, ImageInputSupport, ModelCapabilities, ModelSpeed,
     UltrafastUnavailable, intrinsically_fast,
 };
 pub use modes::{ActiveMode, ModeRegistry, ModeSpec, ToolPolicy};

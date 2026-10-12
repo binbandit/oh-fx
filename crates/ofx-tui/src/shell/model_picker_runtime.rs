@@ -1,15 +1,16 @@
 use std::borrow::Cow;
 
 use ofx_contract::{
-    ModelCapabilities, ModelCatalog, ModelControls, Notice, NoticeTone, ReasoningEffort, UiCommand,
-    intrinsically_fast,
+    ModelCapabilities, ModelCatalog, ModelControls, ModelSpeed, Notice, NoticeTone,
+    ReasoningEffort, UiCommand, intrinsically_fast,
 };
 
 use super::Shell;
 use super::model_menu::{CatalogLoad, ModelMenu};
 use super::picker_state::{
-    Cursor, ExplicitModel, FAST_OPTIONS, MODEL_PREFIX, ModelFlow, ModelQuery, ModelStage,
-    effort_at, effort_index, effort_options, explicit_model, is_bare_model_command, matches_query,
+    Cursor, ExplicitModel, MODEL_PREFIX, ModelFlow, ModelQuery, ModelStage, effort_at,
+    effort_index, effort_options, explicit_model, is_bare_model_command, matches_query, speed_at,
+    speed_index, speed_options,
 };
 use crate::composer::projected_anchor_column;
 use crate::footer::model_menu_presentation::{MAX_INLINE_ROWS, visible_items};
@@ -19,7 +20,7 @@ use crate::list_window::{DEFAULT_MAX_PICKER_ROWS, advance_selection, update_edge
 use crate::render_engine::transcript_blocks::Entry;
 use crate::row_text::{Row, terminal_safe};
 
-const MODEL_USAGE: &str = "usage: /model <id> <effort> [normal|fast]";
+const MODEL_USAGE: &str = "usage: /model <id> <effort> [normal|fast|ultrafast]";
 const MAX_MODEL_COMPLETIONS: usize = 32;
 
 struct Column {
@@ -28,10 +29,14 @@ struct Column {
     cursor: Cursor,
     token_start: usize,
     exact: Option<String>,
+    refused: bool,
 }
 
 impl Column {
     fn selected(&self) -> Option<String> {
+        if self.refused {
+            return None;
+        }
         self.exact.clone().or_else(|| {
             let count = self.values.len();
             (count > 0).then(|| self.values[self.cursor.index % count].clone())
@@ -263,16 +268,16 @@ impl Shell<'_> {
                 query.stage == ModelStage::Effort && effort_options(efforts).contains(effort)
             })
             .unwrap_or_else(|| effort_at(efforts, flow.effort.index));
-        let speed = FAST_OPTIONS
-            .into_iter()
-            .find(|speed| query.stage == ModelStage::Fast && speed.eq_ignore_ascii_case(typed))
-            .unwrap_or(FAST_OPTIONS[flow.fast.index % FAST_OPTIONS.len()]);
+        let speed = (query.stage == ModelStage::Fast)
+            .then(|| ModelSpeed::parse(typed))
+            .flatten()
+            .unwrap_or_else(|| speed_at(flow.fast.index));
         let controls = ModelControls {
             effort,
             effort_supported: !efforts.is_empty(),
             fast: intrinsically_fast(&flow.pending)
-                || (capabilities.supports_fast_mode && speed == "fast"),
-            ultrafast: false,
+                || (capabilities.supports_fast_mode && speed == ModelSpeed::Fast),
+            ultrafast: capabilities.supports_ultrafast_mode && speed == ModelSpeed::Ultrafast,
         };
         (&flow.pending, Cow::Owned(controls))
     }
@@ -288,6 +293,7 @@ impl Shell<'_> {
         let query = self.model_query()?;
         let flow = &self.model_flow;
         let wanted = query.query.trim_matches([' ', '\t']);
+        let mut refused = false;
         let (values, cursor, exact) = match query.stage {
             ModelStage::Model => {
                 let values = self.model_completions(query.query);
@@ -313,16 +319,24 @@ impl Shell<'_> {
                 (values, flow.effort, exact)
             }
             ModelStage::Fast => {
-                let values: Vec<String> = FAST_OPTIONS
+                let offered = speed_options(&self.capabilities(&flow.pending));
+                let values: Vec<String> = offered
                     .iter()
+                    .map(|speed| speed.label())
                     .filter(|label| matches_query(label, query.query))
-                    .map(|label| (*label).to_owned())
+                    .map(str::to_owned)
                     .collect();
-                let exact = FAST_OPTIONS
-                    .iter()
-                    .find(|label| label.eq_ignore_ascii_case(wanted))
-                    .map(|label| (*label).to_owned());
-                (values, flow.fast, exact)
+                let typed = ModelSpeed::parse(wanted);
+                refused = typed.is_some_and(|speed| !offered.contains(&speed));
+                let current = speed_at(flow.fast.index).label();
+                let cursor = Cursor {
+                    index: values
+                        .iter()
+                        .position(|label| label == current)
+                        .unwrap_or(0),
+                    window_start: flow.fast.window_start,
+                };
+                (values, cursor, typed.map(|speed| speed.label().to_owned()))
             }
         };
         Some(Column {
@@ -331,6 +345,7 @@ impl Shell<'_> {
             cursor,
             token_start: query.token_start,
             exact,
+            refused,
         })
     }
 
@@ -413,9 +428,32 @@ impl Shell<'_> {
             return false;
         };
         let flow = &mut self.model_flow;
-        if column.stage == ModelStage::Model {
-            flow.model = column.cursor;
-            flow.anchor_current = false;
+        match column.stage {
+            ModelStage::Model => {
+                flow.model = column.cursor;
+                flow.anchor_current = false;
+            }
+            ModelStage::Effort => {}
+            ModelStage::Fast => {
+                let mut cursor = column.cursor;
+                advance_selection(
+                    &mut cursor.index,
+                    &mut cursor.window_start,
+                    column.values.len(),
+                    delta,
+                );
+                if let Some(speed) = column
+                    .values
+                    .get(cursor.index)
+                    .and_then(|label| ModelSpeed::parse(label))
+                {
+                    flow.fast = Cursor {
+                        index: speed_index(speed),
+                        window_start: cursor.window_start,
+                    };
+                }
+                return true;
+            }
         }
         let cursor = flow.active_cursor();
         advance_selection(
@@ -436,7 +474,7 @@ impl Shell<'_> {
         };
         let pending = self.model_flow.pending.clone();
         let efforts = self.capabilities(&pending).reasoning_efforts;
-        let fast = self.capabilities(&pending).supports_fast_mode;
+        let fast = ModelSpeed::of(self.capabilities(&pending).supports_fast_mode, false);
         match column.stage {
             ModelStage::Model => self.rewrite_model_text(&format!("{MODEL_PREFIX}{value}")),
             ModelStage::Effort => {
@@ -453,10 +491,10 @@ impl Shell<'_> {
                     "{MODEL_PREFIX}{pending} {} {value}",
                     effort.label()
                 ));
-                let fast_mode = value == FAST_OPTIONS[1];
+                let speed = ModelSpeed::parse(&value).unwrap_or(ModelSpeed::Normal);
                 let index = effort_index(&efforts, &effort);
                 self.model_flow
-                    .begin(&pending, index, fast_mode, ModelStage::Fast);
+                    .begin(&pending, index, speed, ModelStage::Fast);
             }
         }
     }
@@ -475,8 +513,10 @@ impl Shell<'_> {
             ModelStage::Model => self.begin_model_options(&value),
             ModelStage::Effort => {
                 let pending = self.model_flow.pending.clone();
-                if self.capabilities(&pending).supports_fast_mode {
-                    self.enter_fast_stage(&pending, &value);
+                let capabilities = self.capabilities(&pending);
+                if capabilities.supports_fast_mode || capabilities.supports_ultrafast_mode {
+                    let speed = ModelSpeed::of(capabilities.supports_fast_mode, false);
+                    self.enter_fast_stage(&pending, &value, speed);
                 }
             }
             ModelStage::Fast => {}
@@ -505,7 +545,7 @@ impl Shell<'_> {
                     return true;
                 };
                 if self.capabilities(&pending).supports_fast_mode {
-                    self.enter_fast_stage(&pending, &label);
+                    self.enter_fast_stage(&pending, &label, ModelSpeed::Fast);
                 } else {
                     let effort = ReasoningEffort::parse(&label).unwrap_or(ReasoningEffort::Auto);
                     self.pick_model(pending, effort, None);
@@ -517,7 +557,7 @@ impl Shell<'_> {
                 };
                 let efforts = self.capabilities(&pending).reasoning_efforts;
                 let effort = effort_at(&efforts, self.model_flow.effort.index);
-                self.pick_model(pending, effort, Some(label == FAST_OPTIONS[1]));
+                self.pick_model(pending, effort, ModelSpeed::parse(&label));
             }
         }
         true
@@ -537,7 +577,7 @@ impl Shell<'_> {
                     effort_index(&efforts, &effort_at(&efforts, self.model_flow.effort.index));
                 self.rewrite_model_text(&format!("{MODEL_PREFIX}{pending} "));
                 self.model_flow
-                    .begin(&pending, index, false, ModelStage::Effort);
+                    .begin(&pending, index, ModelSpeed::Normal, ModelStage::Effort);
             }
             ModelStage::Effort | ModelStage::Fast => {
                 self.rewrite_model_text(&format!("{MODEL_PREFIX}{pending}"));
@@ -571,27 +611,27 @@ impl Shell<'_> {
             ExplicitModel::Pick {
                 model,
                 effort,
-                fast_mode,
+                speed,
             } => {
                 let model = model.to_owned();
-                self.pick_model(model, effort, fast_mode);
+                self.pick_model(model, effort, speed);
                 true
             }
         }
     }
 
-    fn enter_fast_stage(&mut self, model: &str, effort_label: &str) {
+    fn enter_fast_stage(&mut self, model: &str, effort_label: &str, speed: ModelSpeed) {
         let efforts = self.capabilities(model).reasoning_efforts;
         let effort = ReasoningEffort::parse(effort_label).unwrap_or(ReasoningEffort::Auto);
         self.rewrite_model_text(&format!("{MODEL_PREFIX}{model} {} ", effort.label()));
         let index = effort_index(&efforts, &effort);
-        self.model_flow.begin(model, index, true, ModelStage::Fast);
+        self.model_flow.begin(model, index, speed, ModelStage::Fast);
     }
 
     fn begin_model_options(&mut self, model: &str) {
         let capabilities = self.capabilities(model);
         let efforts = !capabilities.reasoning_efforts.is_empty();
-        if !efforts && !capabilities.supports_fast_mode {
+        if !efforts && !capabilities.supports_fast_mode && !capabilities.supports_ultrafast_mode {
             self.pick_model(model.to_owned(), ReasoningEffort::Auto, None);
             return;
         }
@@ -601,8 +641,8 @@ impl Shell<'_> {
             (ModelStage::Fast, format!("{MODEL_PREFIX}{model} auto "))
         };
         self.rewrite_model_text(&text);
-        self.model_flow
-            .begin(model, 0, capabilities.supports_fast_mode, stage);
+        let speed = ModelSpeed::of(capabilities.supports_fast_mode, false);
+        self.model_flow.begin(model, 0, speed, stage);
     }
 
     fn rewrite_model_text(&mut self, text: &str) {
@@ -613,13 +653,13 @@ impl Shell<'_> {
         };
     }
 
-    fn pick_model(&mut self, model: String, effort: ReasoningEffort, fast_mode: Option<bool>) {
+    fn pick_model(&mut self, model: String, effort: ReasoningEffort, speed: Option<ModelSpeed>) {
         self.composer.clear();
         self.model_flow = ModelFlow::default();
         self.send(UiCommand::SelectModel {
             model,
             effort,
-            fast_mode,
+            speed,
         });
     }
 }

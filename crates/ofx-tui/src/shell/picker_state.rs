@@ -1,7 +1,6 @@
-use ofx_contract::ReasoningEffort;
+use ofx_contract::{ModelCapabilities, ModelSpeed, ReasoningEffort};
 
 pub(crate) const MODEL_PREFIX: &str = "/model ";
-pub(crate) const FAST_OPTIONS: [&str; 2] = ["normal", "fast"];
 const PICKER_SPACES: [char; 2] = [' ', '\t'];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,7 +80,7 @@ impl ModelFlow {
         &mut self,
         model: &str,
         effort_index: usize,
-        fast_mode: bool,
+        speed: ModelSpeed,
         stage: ModelStage,
     ) {
         model.clone_into(&mut self.pending);
@@ -91,7 +90,7 @@ impl ModelFlow {
             window_start: 0,
         };
         self.fast = Cursor {
-            index: usize::from(fast_mode),
+            index: speed_index(speed),
             window_start: 0,
         };
     }
@@ -142,6 +141,28 @@ pub(crate) fn matches_query(label: &str, query: &str) -> bool {
     query.is_empty() || ofx_text::contains_ignore_case(label, query)
 }
 
+pub(crate) fn speed_index(speed: ModelSpeed) -> usize {
+    ModelSpeed::ALL
+        .iter()
+        .position(|offered| *offered == speed)
+        .unwrap_or(0)
+}
+
+pub(crate) fn speed_at(index: usize) -> ModelSpeed {
+    ModelSpeed::ALL[index % ModelSpeed::ALL.len()]
+}
+
+pub(crate) fn speed_options(capabilities: &ModelCapabilities) -> Vec<ModelSpeed> {
+    ModelSpeed::ALL
+        .into_iter()
+        .filter(|speed| match speed {
+            ModelSpeed::Normal => true,
+            ModelSpeed::Fast => capabilities.supports_fast_mode,
+            ModelSpeed::Ultrafast => capabilities.supports_ultrafast_mode,
+        })
+        .collect()
+}
+
 pub(crate) fn effort_options(efforts: &[String]) -> Vec<ReasoningEffort> {
     if efforts.is_empty() {
         return Vec::new();
@@ -175,7 +196,7 @@ pub(crate) enum ExplicitModel<'a> {
     Pick {
         model: &'a str,
         effort: ReasoningEffort,
-        fast_mode: Option<bool>,
+        speed: Option<ModelSpeed>,
     },
 }
 
@@ -199,16 +220,18 @@ pub(crate) fn explicit_model(text: &str) -> ExplicitModel<'_> {
     let Some(effort) = ReasoningEffort::parse(effort) else {
         return ExplicitModel::None;
     };
-    let fast_mode = match tokens.get(2..) {
+    let speed = match tokens.get(2..) {
         Some([]) => None,
-        Some([mode]) if mode.eq_ignore_ascii_case(FAST_OPTIONS[1]) => Some(true),
-        Some([mode]) if mode.eq_ignore_ascii_case(FAST_OPTIONS[0]) => Some(false),
+        Some([mode]) => match ModelSpeed::parse(mode) {
+            Some(speed) => Some(speed),
+            None => return ExplicitModel::Invalid,
+        },
         _ => return ExplicitModel::Invalid,
     };
     ExplicitModel::Pick {
         model,
         effort,
-        fast_mode,
+        speed,
     }
 }
 
@@ -218,7 +241,7 @@ mod tests {
 
     fn flow(stage: ModelStage, pending: &str) -> ModelFlow {
         let mut flow = ModelFlow::default();
-        flow.begin(pending, 0, false, stage);
+        flow.begin(pending, 0, ModelSpeed::Normal, stage);
         flow
     }
 
@@ -280,10 +303,10 @@ mod tests {
 
     #[test]
     fn explicit_choices_name_a_model_an_effort_and_optionally_a_mode() {
-        let pick = |model, effort, fast_mode| ExplicitModel::Pick {
+        let pick = |model, effort, speed| ExplicitModel::Pick {
             model,
             effort,
-            fast_mode,
+            speed,
         };
         let high = || ReasoningEffort::Named("high".to_owned());
         assert_eq!(
@@ -292,11 +315,19 @@ mod tests {
         );
         assert_eq!(
             explicit_model(" /MODEL\tgpt-5  high  FAST \n"),
-            pick("gpt-5", high(), Some(true))
+            pick("gpt-5", high(), Some(ModelSpeed::Fast))
         );
         assert_eq!(
             explicit_model("/model gpt-5 default normal"),
-            pick("gpt-5", ReasoningEffort::Auto, Some(false))
+            pick("gpt-5", ReasoningEffort::Auto, Some(ModelSpeed::Normal))
+        );
+        assert_eq!(
+            explicit_model("/model gpt-5 xhigh UltraFast"),
+            pick(
+                "gpt-5",
+                ReasoningEffort::Named("xhigh".to_owned()),
+                Some(ModelSpeed::Ultrafast)
+            )
         );
         assert_eq!(explicit_model("/model gpt-5"), ExplicitModel::None);
         assert_eq!(explicit_model("/model gpt-5 very!"), ExplicitModel::None);

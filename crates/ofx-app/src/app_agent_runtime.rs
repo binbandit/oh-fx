@@ -385,16 +385,12 @@ impl ControllerState {
         &mut self,
         model: String,
         effort: Option<&ReasoningEffort>,
-        fast_mode: bool,
+        (fast_mode, ultrafast_mode): (bool, bool),
     ) {
         if let Some(effort) = effort {
             effort.clone_into(&mut self.effort);
         }
-        self.speed = if fast_mode {
-            Speed::Fast
-        } else {
-            Speed::Normal
-        };
+        self.restore_speed(fast_mode, ultrafast_mode);
         self.use_model(model);
         self.save_model_preference(MODEL_PICKER_TOPIC, effort);
     }
@@ -841,12 +837,12 @@ impl Controller {
                 UiCommand::SelectModel {
                     model,
                     effort,
-                    fast_mode,
+                    speed,
                 } => {
                     let pick = ModelPick {
                         model,
                         effort,
-                        fast_mode,
+                        speed,
                     };
                     self.change_model(ModelChange::Pick(pick)).await;
                 }
@@ -1573,11 +1569,11 @@ fn run_deferred(
         UiCommand::SelectModel {
             model,
             effort,
-            fast_mode,
+            speed,
         } => ModelChange::Pick(ModelPick {
             model,
             effort,
-            fast_mode,
+            speed,
         }),
         UiCommand::McpMenu { request } => return state.handle_mcp_menu(request),
         UiCommand::ListModels => return catalog.request(),
@@ -1642,7 +1638,7 @@ fn apply_change(
     state.config_pending = true;
     let ultrafast = state.ultrafast_requested();
     if let Some(persistence) = persistence.as_mut() {
-        if turns_ultrafast_on {
+        if turns_ultrafast_on || (ultrafast && !ultrafast_before) {
             persistence.override_launch_ultrafast(true);
         } else if turns_ultrafast_off
             || (state.fast_mode() && !fast_before)
@@ -1695,17 +1691,24 @@ impl SpeedLine {
     fn trace(self, state: &ControllerState, fast_before: bool, ultrafast_before: bool) {
         let (fast, ultrafast) = (state.fast_mode(), state.ultrafast_requested());
         let follows = self == Self::IfChanged;
+        let (mut fast_from, mut ultrafast_from) = (fast_before, ultrafast_before);
         if self == Self::Fast || (follows && fast != fast_before) {
+            let ultrafast_new = if fast { ultrafast } else { ultrafast_before };
             trace_log!(
                 "session",
-                "fast mode changed old={fast_before} new={fast} ultrafast_old={ultrafast_before} ultrafast_new={ultrafast} model={} supports_fast={}",
+                "fast mode changed old={fast_before} new={fast} ultrafast_old={ultrafast_before} ultrafast_new={ultrafast_new} model={} supports_fast={}",
                 state.model,
                 state.supports_fast_mode()
             );
-        } else if self == Self::Ultrafast || (follows && ultrafast != ultrafast_before) {
+            if !follows {
+                return;
+            }
+            (fast_from, ultrafast_from) = (fast, ultrafast_new);
+        }
+        if self == Self::Ultrafast || (follows && ultrafast != ultrafast_from) {
             trace_log!(
                 "session",
-                "ultrafast mode changed old={ultrafast_before} new={ultrafast} fast_old={fast_before} fast_new={fast} model={} supports_ultrafast={}",
+                "ultrafast mode changed old={ultrafast_from} new={ultrafast} fast_old={fast_from} fast_new={fast} model={} supports_ultrafast={}",
                 state.model,
                 state.supports_ultrafast_mode()
             );
@@ -1855,10 +1858,10 @@ mod tests {
     use ofx_contract::{
         ApprovalDecision, ApprovalOrigin, ApprovalRequest, FastModeSetting, HookRuntime,
         McpMenuAdmission, McpMenuConnection, McpMenuServer, McpMenuSnapshot, McpMenuSource,
-        McpMenuTransport, PermissionMode, ProviderErrorKind, SettingId, SettingsSnapshot,
-        SkillMenuFocus, StatuslineItem, StatuslineToggles, StopAction, ToolResultStatus, TurnId,
-        TurnOutcome, TurnPresentationOutcome, UsageCoverage, UsageMenuUpdate, UsageReport,
-        format_tool_execution_error_json,
+        McpMenuTransport, ModelSpeed, PermissionMode, ProviderErrorKind, SettingId,
+        SettingsSnapshot, SkillMenuFocus, StatuslineItem, StatuslineToggles, StopAction,
+        ToolResultStatus, TurnId, TurnOutcome, TurnPresentationOutcome, UsageCoverage,
+        UsageMenuUpdate, UsageReport, format_tool_execution_error_json,
     };
     use ofx_exec::{ManagedExecutions, SessionSupervisor};
     use ofx_gateway::{CODEX_TITLE_MODEL, CodexEndpoints, CodexModelsEndpoints};
@@ -2402,7 +2405,10 @@ mod tests {
                 model: "vendor/model-b".to_owned()
             })
         );
-        assert_eq!(notice_body(switched), ["|Switched to vendor/model-b"]);
+        assert_eq!(
+            notice_body(switched),
+            ["|Switched to vendor/model-b (effort: default, speed: normal)"]
+        );
         harness.submit("go");
         harness.until(finished(TurnOutcome::Completed)).await;
         assert_eq!(server.requests()[0].json()["model"], "vendor/model-b");
@@ -2421,7 +2427,10 @@ mod tests {
         let notice = harness
             .until(|event| matches!(event, UiEvent::Notice { .. }))
             .await;
-        assert_eq!(notice_body(notice), ["|Next turn will use vendor/model-b"]);
+        assert_eq!(
+            notice_body(notice),
+            ["|Next turn will use vendor/model-b (effort: default, speed: normal)"]
+        );
         let turn_id = harness.running_turn();
         harness.send(UiCommand::Cancel { turn_id });
         harness.until(finished(TurnOutcome::Interrupted)).await;
@@ -4000,7 +4009,9 @@ mod tests {
         let shown = harness.until(settings_changed).await.to_vec();
         assert_eq!(
             notice_body(&shown),
-            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+            [format!(
+                "|Switched to {OTHER_CODEX_MODEL} (effort: low, speed: fast)"
+            )]
         );
         assert!(shown.contains(&UiEvent::ModelSelected {
             model: OTHER_CODEX_MODEL.to_owned(),
@@ -4138,11 +4149,11 @@ mod tests {
         }
     }
 
-    fn select(model: &str, effort: ReasoningEffort, fast_mode: Option<bool>) -> UiCommand {
+    fn select(model: &str, effort: ReasoningEffort, speed: Option<ModelSpeed>) -> UiCommand {
         UiCommand::SelectModel {
             model: model.to_owned(),
             effort,
-            fast_mode,
+            speed,
         }
     }
 
@@ -4210,7 +4221,11 @@ mod tests {
         let ModelCatalog::Listed { models, .. } = listed_catalog(&mut harness).await else {
             panic!("the Codex catalog lists its models");
         };
-        harness.send(select(&models[0].id, ReasoningEffort::Auto, Some(false)));
+        harness.send(select(
+            &models[0].id,
+            ReasoningEffort::Auto,
+            Some(ModelSpeed::Normal),
+        ));
         harness
             .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
             .await;
@@ -4236,13 +4251,15 @@ mod tests {
         assert_eq!(models[1].id, OTHER_CODEX_MODEL);
         assert_eq!(models[1].capabilities.reasoning_efforts, ["low"]);
         assert!(models[1].capabilities.supports_fast_mode);
-        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(ModelSpeed::Fast)));
         let picked = harness
             .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
             .await;
         assert_eq!(
             notice_body(picked),
-            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+            [format!(
+                "|Switched to {OTHER_CODEX_MODEL} (effort: low, speed: fast)"
+            )]
         );
         harness.submit("go");
         harness.until(finished(TurnOutcome::Completed)).await;
@@ -4287,7 +4304,7 @@ mod tests {
         });
         let mut harness = Harness::codex_saved(&codex, &catalog, &settings).await;
         listed_catalog(&mut harness).await;
-        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(ModelSpeed::Fast)));
         harness
             .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
             .await;
@@ -4304,13 +4321,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_choice_without_a_mode_runs_the_model_at_normal_speed() {
+        let codex = FakeServer::start([]);
+        let catalog = codex_catalog(true, 1);
+        let mut harness = Harness::codex(&codex, &catalog).await;
+        harness.send(select(OTHER_CODEX_MODEL, low(), None));
+        let picked = harness
+            .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
+            .await;
+        assert_eq!(
+            notice_body(picked),
+            [format!(
+                "|Switched to {OTHER_CODEX_MODEL} (effort: low, speed: normal)"
+            )]
+        );
+        assert_eq!(saved_settings(&harness)["fast_mode"], false);
+    }
+
+    #[tokio::test]
     async fn a_choice_the_model_cannot_take_explains_the_usage_and_changes_nothing() {
         let codex = FakeServer::start([]);
         let catalog = codex_catalog(false, 1);
         let mut harness = Harness::codex(&codex, &catalog).await;
         for choice in [
             select(CODEX_MODEL, ReasoningEffort::Named("max".to_owned()), None),
-            select(CODEX_MODEL, low(), Some(true)),
+            select(CODEX_MODEL, low(), Some(ModelSpeed::Fast)),
+            select(CODEX_MODEL, low(), Some(ModelSpeed::Normal)),
+            select(CODEX_MODEL, low(), Some(ModelSpeed::Ultrafast)),
         ] {
             harness.send(choice);
             let shown = harness
@@ -4318,7 +4355,7 @@ mod tests {
                 .await;
             assert_eq!(
                 notice_body(shown),
-                ["|usage: /model <id> <effort> [normal|fast]"]
+                ["|usage: /model <id> <effort> [normal|fast|ultrafast]"]
             );
         }
         harness.send(select(OTHER_CODEX_MODEL, ReasoningEffort::Auto, None));
@@ -4327,7 +4364,9 @@ mod tests {
             .await;
         assert_eq!(
             notice_body(picked),
-            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+            [format!(
+                "|Switched to {OTHER_CODEX_MODEL} (effort: default, speed: normal)"
+            )]
         );
         let saved = saved_settings(&harness);
         assert_eq!(saved["effort"], "auto");
@@ -4347,7 +4386,10 @@ mod tests {
         let notice = harness
             .until(|event| matches!(event, UiEvent::Notice { .. }))
             .await;
-        assert_eq!(notice_body(notice), ["|Next turn will use vendor/model-b"]);
+        assert_eq!(
+            notice_body(notice),
+            ["|Next turn will use vendor/model-b (effort: default, speed: normal)"]
+        );
         let turn_id = harness.running_turn();
         harness.send(UiCommand::Cancel { turn_id });
         harness.until(finished(TurnOutcome::Interrupted)).await;
@@ -4367,12 +4409,15 @@ mod tests {
     #[tokio::test]
     async fn model_changes_wait_for_a_cold_catalog_without_holding_up_the_turn() {
         let changes = [
-            UiCommand::RunCommand {
-                text: "/model luna".to_owned(),
-            },
-            select(OTHER_CODEX_MODEL, low(), None),
+            (
+                UiCommand::RunCommand {
+                    text: "/model luna".to_owned(),
+                },
+                "default",
+            ),
+            (select(OTHER_CODEX_MODEL, low(), None), "low"),
         ];
-        for change in changes {
+        for (change, effort) in changes {
             let streamed = Gate::default();
             let listed = Gate::default();
             let codex = FakeServer::start([codex_partial().after(&streamed), codex_text("next")]);
@@ -4403,7 +4448,9 @@ mod tests {
                 within(harness.until(|event| matches!(event, UiEvent::ModelSelected { .. }))).await;
             assert_eq!(
                 notice_body(picked),
-                [format!("|Switched to {OTHER_CODEX_MODEL}")]
+                [format!(
+                    "|Switched to {OTHER_CODEX_MODEL} (effort: {effort}, speed: normal)"
+                )]
             );
             harness.submit("next");
             within(harness.until(finished(TurnOutcome::Completed))).await;
@@ -4426,8 +4473,8 @@ mod tests {
         assert_eq!(
             notice_body(applied),
             [
-                format!("|Next turn will use {OTHER_CODEX_MODEL}"),
-                format!("|Next turn will use {CODEX_MODEL}"),
+                format!("|Next turn will use {OTHER_CODEX_MODEL} (effort: default, speed: normal)"),
+                format!("|Next turn will use {CODEX_MODEL} (effort: low, speed: normal)"),
             ]
         );
         assert!(
@@ -4465,7 +4512,9 @@ mod tests {
         let applied = within(harness.until(catalog_event)).await;
         assert_eq!(
             notice_body(applied),
-            [format!("|Next turn will use {OTHER_CODEX_MODEL}")]
+            [format!(
+                "|Next turn will use {OTHER_CODEX_MODEL} (effort: default, speed: normal)"
+            )]
         );
         assert!(
             !harness
@@ -4643,7 +4692,7 @@ mod tests {
         let home = codex_home();
         let setup = agent_setup_with(&home, &settings, endpoints).await;
         let mut harness = Harness::saved(home, setup);
-        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(ModelSpeed::Fast)));
         harness
             .until(|event| matches!(event, UiEvent::ModelSelected { .. }))
             .await;
@@ -4814,7 +4863,9 @@ mod tests {
             .await;
         assert_eq!(
             notice_body(picked),
-            [format!("|Switched to {OTHER_CODEX_MODEL}")]
+            [format!(
+                "|Switched to {OTHER_CODEX_MODEL} (effort: default, speed: normal)"
+            )]
         );
     }
 
@@ -4920,7 +4971,7 @@ mod tests {
                 ultrafast: false,
             }
         );
-        harness.send(select(OTHER_CODEX_MODEL, low(), Some(true)));
+        harness.send(select(OTHER_CODEX_MODEL, low(), Some(ModelSpeed::Fast)));
         let picked = within(harness.until(controls_changed)).await;
         assert_eq!(
             last_controls(picked),
@@ -4959,7 +5010,7 @@ mod tests {
         harness.command("/version");
         assert_eq!(
             notices_until(&mut harness, "version").await[0],
-            format!("|Switched to {OTHER_CODEX_MODEL}")
+            format!("|Switched to {OTHER_CODEX_MODEL} (effort: default, speed: normal)")
         );
         let saved = saved_settings(&harness);
         assert_eq!(saved["models"]["codex"], OTHER_CODEX_MODEL);
@@ -4987,7 +5038,7 @@ mod tests {
         assert_eq!(
             notices_until(&mut harness, "model").await,
             [
-                format!("|Switched to {CODEX_MODEL}"),
+                format!("|Switched to {CODEX_MODEL} (effort: default, speed: fast)"),
                 "model|active for this process but not saved to user settings (InvalidSettingsFormat)".to_owned()
             ]
         );
