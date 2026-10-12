@@ -108,6 +108,7 @@ pub struct ToolOutput {
     pub file_change: Option<FileChangeStats>,
     pub model_view_covers_full_file: Option<bool>,
     pub dynamic_tools: Option<Box<DynamicToolChange>>,
+    pub finish_turn: bool,
     images: Option<Box<ToolImages>>,
 }
 
@@ -126,6 +127,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
+            finish_turn: false,
             images: None,
         }
     }
@@ -141,6 +143,7 @@ impl ToolOutput {
             file_change: None,
             model_view_covers_full_file: None,
             dynamic_tools: None,
+            finish_turn: false,
             images: None,
         }
     }
@@ -166,6 +169,12 @@ impl ToolOutput {
     #[must_use]
     pub fn with_status_detail(mut self, detail: ToolStatusDetail) -> Self {
         self.status_detail = Some(detail);
+        self
+    }
+
+    #[must_use]
+    pub fn finishing_turn(mut self) -> Self {
+        self.finish_turn = true;
         self
     }
 
