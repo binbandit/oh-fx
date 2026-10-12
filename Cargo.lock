@@ -689,6 +689,7 @@ dependencies = [
  "ofx-mcp",
  "ofx-permissions",
  "ofx-session",
+ "ofx-shell",
  "ofx-skills",
  "ofx-testkit",
  "ofx-text",

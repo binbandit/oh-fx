@@ -2985,6 +2985,7 @@ fn approval_request(id: RequestId, judged: &Judged<'_>, scope: &ApprovalScope) -
         tool_arguments_truncated: preview.truncated,
         scope: scope.clone(),
         command,
+        command_risk: None,
         file,
         origin: ApprovalOrigin::ActiveSession,
         change: judged.evidence.file.as_ref().map(FileChange::to_proposed),

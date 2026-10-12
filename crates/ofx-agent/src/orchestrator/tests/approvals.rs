@@ -167,6 +167,7 @@ async fn approved_calls_run_with_the_scope_their_request_showed_and_always_remem
                 tool_arguments_truncated: false,
                 scope: approved_tree(1),
                 command: None,
+                command_risk: None,
                 file: None,
                 origin: ApprovalOrigin::ActiveSession,
                 change: None,

@@ -2,9 +2,14 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ofx_agent::Approvals;
-use ofx_contract::{ApprovalAnswer, ApprovalDecision, ApprovalRequest, RequestId, TurnId, UiEvent};
+use ofx_contract::{
+    ApprovalAnswer, ApprovalDecision, ApprovalRequest, CommandRequest, RequestId, TurnId, UiEvent,
+};
+use ofx_shell::{command_risk_note, command_safer_alternative};
 
 use crate::app_agent_runtime::Emit;
+
+const RISK_NOTE_PREFIX: &str = "note: ";
 
 #[derive(Default)]
 pub(crate) struct ApprovalQueue {
@@ -131,8 +136,9 @@ impl ApprovalQueue {
 }
 
 impl QueueState {
-    fn show(&mut self, turn_id: TurnId, request: ApprovalRequest) -> Shown {
+    fn show(&mut self, turn_id: TurnId, mut request: ApprovalRequest) -> Shown {
         self.shown = Some(request.id);
+        request.command_risk = command_risk(&request);
         Shown {
             emit: self.emit.clone(),
             event: UiEvent::ApprovalRequested {
@@ -141,6 +147,18 @@ impl QueueState {
             },
         }
     }
+}
+
+fn command_risk(request: &ApprovalRequest) -> Option<String> {
+    let Some(CommandRequest::Run { command, .. }) = &request.command else {
+        return None;
+    };
+    let note = command_risk_note(command)?;
+    let note = note.strip_prefix(RISK_NOTE_PREFIX).unwrap_or(note);
+    Some(match command_safer_alternative(command) {
+        Some(safer) => format!("{note}; {safer}"),
+        None => note.to_owned(),
+    })
 }
 
 impl Shown {

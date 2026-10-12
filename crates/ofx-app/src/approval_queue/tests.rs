@@ -1,8 +1,9 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ofx_contract::{
-    ApprovalOrigin, ApprovalScope, CallDescription, Concurrency, PathAccess, ToolActivity,
-    ToolCallId, ToolEffect,
+    ApprovalOrigin, ApprovalScope, CallDescription, CommandProfile, Concurrency, PathAccess,
+    ToolActivity, ToolCallId, ToolEffect,
 };
 
 use super::*;
@@ -29,6 +30,7 @@ fn request(id: u64, origin: ApprovalOrigin) -> ApprovalRequest {
             always: None,
         },
         command: None,
+        command_risk: None,
         file: None,
         change: None,
         origin,
@@ -201,5 +203,55 @@ fn a_childs_feedback_reaches_the_transcript_only_during_its_turn() {
             turn_id: TurnId::new(2),
             text: "then stop".to_owned(),
         }]
+    );
+}
+
+fn run(id: u64, command: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        tool_name: "shell".to_owned(),
+        command: Some(CommandRequest::Run {
+            command: command.to_owned(),
+            cwd: PathBuf::from("/ws"),
+            profile: CommandProfile::User,
+            shell: None,
+            terminal: false,
+            reload: false,
+        }),
+        ..own(id)
+    }
+}
+
+#[test]
+fn shown_shell_commands_carry_their_risk_and_a_safer_approach() {
+    let risks = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&risks);
+    let queue = ApprovalQueue::default();
+    queue.attach(Arc::new(move |event| {
+        if let UiEvent::ApprovalRequested { request, .. } = event {
+            seen.lock().unwrap().push(request.command_risk);
+        }
+    }));
+    let turn = TurnId::new(1);
+    queue.turn_started(turn);
+    queue.own(turn, run(1, "git reset --hard"));
+    queue.child(Some(turn), run(2, "rm -rf build"));
+    queue.child(Some(turn), run(3, "cat notes.txt"));
+    queue.child(Some(turn), run(4, "cargo test"));
+    queue.child(Some(turn), child(5, "1"));
+    for id in 1..=5 {
+        queue.resolve(RequestId::new(id), ApprovalDecision::Deny);
+    }
+    assert_eq!(
+        *risks.lock().unwrap(),
+        [
+            Some(
+                "command may discard version-control state; safer: inspect git status first and revert only the intended files"
+                    .to_owned()
+            ),
+            Some("command may remove files forcefully; safer: inspect targets first".to_owned()),
+            None,
+            None,
+            None,
+        ]
     );
 }

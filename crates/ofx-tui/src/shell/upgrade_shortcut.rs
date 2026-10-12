@@ -102,6 +102,7 @@ mod tests {
                     always: None,
                 },
                 command: None,
+                command_risk: None,
                 file: None,
                 change: None,
                 origin: ApprovalOrigin::ActiveSession,

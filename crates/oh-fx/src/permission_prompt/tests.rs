@@ -32,6 +32,7 @@ fn request(tool_name: &str, target: Option<&str>) -> ApprovalRequest {
             always: None,
         },
         command: None,
+        command_risk: None,
         file: None,
         change: None,
         origin: ApprovalOrigin::ActiveSession,
@@ -65,6 +66,7 @@ fn labels_follow_upstreams_permission_label_for_each_kind_of_call() {
     assert_eq!(permission_label(&request("glob_files", None)), "glob_files");
     assert_eq!(
         permission_label(&ApprovalRequest {
+            command_risk: None,
             file: Some(FileMutation {
                 target: PathBuf::from("/workspace/notes.txt"),
                 state: FileMutationState::Changes,
