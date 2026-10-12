@@ -346,6 +346,7 @@ fn approval(
                 always: None,
             },
             command: None,
+            command_risk: None,
             file,
             origin: ApprovalOrigin::ActiveSession,
             change: None,

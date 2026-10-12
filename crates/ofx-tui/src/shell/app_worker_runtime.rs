@@ -1985,6 +1985,7 @@ mod wake_tests {
                     always: None,
                 },
                 command: None,
+                command_risk: None,
                 file: Some(FileMutation {
                     target: PathBuf::from("/workspace/notes.md"),
                     state: FileMutationState::Changes,

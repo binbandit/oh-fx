@@ -209,6 +209,7 @@ pub struct ApprovalRequest {
     pub tool_arguments_truncated: bool,
     pub scope: ApprovalScope,
     pub command: Option<CommandRequest>,
+    pub command_risk: Option<String>,
     pub file: Option<FileMutation>,
     pub change: Option<ProposedFileChange>,
     pub origin: ApprovalOrigin,
