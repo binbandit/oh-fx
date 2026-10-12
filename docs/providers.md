@@ -6,8 +6,8 @@ oh-fx talks to any OpenAI-compatible Chat Completions endpoint through a *custom
 
 | File | Purpose |
 | --- | --- |
-| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound`, `context`, `context_limits` |
-| `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps` and `context` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
+| `$XDG_CONFIG_HOME/oh-fx/settings.json` (default `~/.config/oh-fx/settings.json`) | Profile settings: `provider`, `model`, `models`, `codex_model`, `providers`, `permission_mode`, `yolo_acknowledged`, `max_agent_steps`, `effort`, `fast_mode`, `fast_mode_model_bound`, `context`, `context_limits`, `provider_order`, `provider_strict` |
+| `<workspace>/.oh-fx.json` | Project settings. Only project-safe keys such as `max_agent_steps`, `context`, `provider_order` and `provider_strict` apply; `provider`, `model`, `providers` and other profile keys are ignored with a `config project: ignored_project_user_only_setting` notice |
 
 Settings files are JSON objects of at most 64 KiB. A leading UTF-8 byte order mark is ignored. Duplicate keys are rejected anywhere in the document.
 
@@ -286,6 +286,19 @@ $ oh-fx models
 ```
 
 `oh-fx models` lists the AI Gateway's language models from `https://ai-gateway.vercel.sh/coding-agent/v1/models`: models with tool use first, then by tier, provider and release date. It sends the gateway credential the shell would use, and with the Vercel sign-in it asks for the chosen team's catalog with `?teamId=`. A sign-in without a team lists the public catalog and ends with `[models] Choose a Vercel team to load its private models.`. When `credential_source` chooses a source, a rejected credential fails the listing instead of falling back. Without a credential it lists the public catalog and ends with `[models] Using the public model catalog; sign in with Vercel or use an AI Gateway API key for team-private models.`. When the gateway rejects the credential with HTTP 401 or 403, it lists the public catalog once and ends with `[models] Your Gateway credential was rejected; using the public model catalog.`. `--json` prints `{"kind":"models","count":…,"shown_count":…,"more_count":0,"private_models_hidden":…,"ids":[…]}`. The shell's model menu (`/model` or Ctrl+P) lists the same catalog with the highlights first, and `--effort`, `--fast`, `/fast` and the menu's effort column offer what the catalog lists for the model. For tests, `OH_FX_GATEWAY_BASE_URL` replaces `https://ai-gateway.vercel.sh` and `OH_FX_E2E_GATEWAY_MODELS_URL` replaces the whole URL; both take only a loopback `http://` URL with a port.
+
+### Choose the upstream providers
+
+The gateway serves a model through one of several upstream providers. `provider_order` lists the ones to try first, by the gateway's provider slug, and `provider_strict` set to `true` restricts requests to that list:
+
+```json
+{
+  "provider_order": ["bedrock", "vertex"],
+  "provider_strict": true
+}
+```
+
+A slug is letters, digits and `-`, starts with a letter or digit, and is at most 64 bytes, and a list holds at most 8 different slugs. The keys work in `settings.json`, in a `workspaces` entry and in the project's `.oh-fx.json`: the workspace entry wins, then the top-level settings, then the project file, and an empty list clears a list from a lower layer. `OH_FX_PROVIDER_ORDER` (a comma-separated list such as `bedrock,vertex`) and `OH_FX_PROVIDER_STRICT` (`1`, `true`, `on` or `yes`, or `0`, `false`, `off` or `no`) override them for one run; an invalid value is ignored and noted in the trace log. Turns, compaction and subagents send the list as `providerOptions.gateway.order`, or as `only` when strict; session titles and the automatic permission review use the gateway's default routing. Strict routing without a list sends nothing.
 
 ## ChatGPT subscription
 

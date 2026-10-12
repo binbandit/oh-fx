@@ -41,7 +41,7 @@ impl ModelCapabilities {
                     .any(|supported| supported == effort)
             }),
             fast: fast && self.supports_fast_mode,
-            prompt_caching: false,
+            ..ProviderOptions::default()
         }
     }
 }
@@ -86,7 +86,7 @@ mod tests {
             ProviderOptions {
                 reasoning_effort: Some("high"),
                 fast: true,
-                prompt_caching: false,
+                ..ProviderOptions::default()
             }
         );
         assert_eq!(

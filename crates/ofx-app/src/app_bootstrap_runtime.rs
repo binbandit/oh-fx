@@ -567,6 +567,7 @@ impl Profile {
                 .unwrap_or_else(|| self.settings.fast_mode_for(&route.selection, &route.model)),
             ultrafast_mode: false,
             auto_compact_percent: self.settings.auto_compact_percent(&lookup),
+            provider_routing: self.settings.provider_routing(&lookup),
         }
     }
 
