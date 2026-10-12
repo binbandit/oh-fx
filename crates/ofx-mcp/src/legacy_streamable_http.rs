@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use reqwest::header::{ACCEPT, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::Value;
@@ -14,6 +15,7 @@ use tokio::time::Instant;
 use crate::error::McpError;
 use crate::legacy_elicitation_runtime::ElicitationContext;
 use crate::legacy_sse::{Event, Parser};
+use crate::mcp_trace::{MCP, TIMEOUT};
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::protocol_negotiation::ElicitationWire;
 use crate::server_auth::HttpAuth;
@@ -660,10 +662,19 @@ impl HttpShared {
         if self.session_id.is_none() || self.session_retired.load(Ordering::Acquire) {
             return;
         }
-        let Ok(builder) = self.closing_builder() else {
-            return;
+        let error = match self.closing_builder() {
+            Err(error) => error.to_string(),
+            Ok(builder) => match timeout(CLOSE_TIMEOUT, builder.send()).await {
+                Ok(Ok(_)) => return,
+                Ok(Err(error)) => McpError::from(error).to_string(),
+                Err(_) => TIMEOUT.to_owned(),
+            },
         };
-        let _ = timeout(CLOSE_TIMEOUT, builder.send()).await;
+        trace_log!(
+            MCP,
+            "legacy HTTP session cleanup failed version={} err={error}",
+            self.version.map_or("unknown", HttpVersion::as_str)
+        );
     }
 }
 

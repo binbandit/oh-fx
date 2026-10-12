@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ofx_jsonrpc::{Correlator, LineRead, LineReader, RegisterError, RequestId, WaitError};
+use ofx_trace::trace_log;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -20,6 +21,7 @@ use crate::legacy_elicitation_runtime::{
     ElicitationContext, method_not_found_response, server_request_failed_response,
 };
 use crate::mcp_contract::validate_json_rpc_response_envelope;
+use crate::mcp_trace::{MCP, kill_error_name};
 use crate::protocol_messages::{build_cancellation_notification, parse_json};
 use crate::timing::{spawn, spawn_on, timeout, timeout_at};
 use crate::transport::{
@@ -788,11 +790,21 @@ fn write_error(error: std::io::Error) -> McpError {
 }
 
 fn terminate_child(pid: u32) {
-    let Some(pid) = rustix_pid(pid) else {
+    let Some(target) = rustix_pid(pid) else {
         return;
     };
-    if rustix::process::kill_process_group(pid, rustix::process::Signal::KILL).is_err() {
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    if let Err(group_error) =
+        rustix::process::kill_process_group(target, rustix::process::Signal::KILL)
+        && let Err(child_error) =
+            rustix::process::kill_process(target, rustix::process::Signal::KILL)
+        && child_error != rustix::io::Errno::SRCH
+    {
+        trace_log!(
+            MCP,
+            "failed to terminate stdio child pid={pid} group_err={} child_err={}",
+            kill_error_name(group_error),
+            kill_error_name(child_error)
+        );
     }
 }
 
@@ -803,8 +815,15 @@ fn kill_process_group(pid: u32) {
 }
 
 fn terminate_child_gracefully(pid: u32) {
-    if let Some(pid) = rustix_pid(pid) {
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+    if let Some(target) = rustix_pid(pid)
+        && let Err(error) = rustix::process::kill_process(target, rustix::process::Signal::TERM)
+        && error != rustix::io::Errno::SRCH
+    {
+        trace_log!(
+            MCP,
+            "failed to request stdio child termination pid={pid} err={}",
+            kill_error_name(error)
+        );
     }
 }
 
