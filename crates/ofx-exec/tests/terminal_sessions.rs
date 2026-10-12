@@ -11,12 +11,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ofx_exec::{
-    Action, ClosePolicy, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, ShellSpec,
-    StartRequest, StructuredErrorCode, TerminalFailure, TerminalSignal, TerminalStore, Terminals,
+    Action, Backend, ClosePolicy, CommandStatus, ExecutionError, Lifecycle, ManagedExecutions,
+    ObserveError, ReturnCondition, ReturnOutcome, SessionFacts, SessionSupervisor, ShellSpec,
+    SnapshotState, StartRequest, StructuredErrorCode, SyncOutcome, TerminalFailure,
+    TerminalObserver, TerminalSignal, TerminalStore, Terminals, TtyCommand, TtyUpdate,
     is_terminal_control_invocation, is_terminal_launcher_invocation, run_terminal_control,
-    run_terminal_launcher,
+    run_terminal_launcher, snapshot_state,
 };
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::process::{Pid, Resource, Rlimit, Signal, getrlimit, kill_process, setrlimit};
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 
@@ -155,6 +157,30 @@ const TESTS: &[(&str, fn())] = &[
     (
         "a_close_ends_promptly_while_another_group_holds_the_terminal",
         a_close_ends_promptly_while_another_group_holds_the_terminal,
+    ),
+    (
+        "a_first_start_raises_the_descriptor_limit_as_upstream_does",
+        a_first_start_raises_the_descriptor_limit_as_upstream_does,
+    ),
+    (
+        "an_observation_drains_raw_output_once_and_resolves_the_exit_status",
+        an_observation_drains_raw_output_once_and_resolves_the_exit_status,
+    ),
+    (
+        "an_observation_of_escaped_output_returns_the_screen",
+        an_observation_of_escaped_output_returns_the_screen,
+    ),
+    (
+        "a_refresh_collects_a_managed_terminals_output_and_status",
+        a_refresh_collects_a_managed_terminals_output_and_status,
+    ),
+    (
+        "a_refresh_of_a_closed_terminal_marks_it_lost",
+        a_refresh_of_a_closed_terminal_marks_it_lost,
+    ),
+    (
+        "a_sync_indexes_saved_exited_terminals_and_ends_lost_ones",
+        a_sync_indexes_saved_exited_terminals_and_ends_lost_ones,
     ),
 ];
 
@@ -1091,6 +1117,23 @@ fn run_scenario(name: &OsString) -> ExitCode {
         let ended = fixture.start("set +m; sleep 30", ReturnCondition::Started);
         fixture.end_owner();
         format!("{} {}", exited.id, ended.id)
+    } else if name == "descriptors" {
+        let limit = getrlimit(Resource::Nofile);
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(256),
+                maximum: limit.maximum,
+            },
+        )
+        .expect("lower the descriptor limit");
+        fixture.start("exit 0", ReturnCondition::Exit);
+        let raised = getrlimit(Resource::Nofile);
+        format!(
+            "{} {}",
+            raised.current.map_or(-1, i128::from),
+            raised.maximum.map_or(-1, i128::from)
+        )
     } else if name == "never-prepares" {
         let failure = fixture.start_in("true", ReturnCondition::Exit, &bash());
         let listed = fixture.terminals.list(OWNER).map(|listed| listed.len());
@@ -1445,6 +1488,242 @@ fn a_close_ends_promptly_while_another_group_holds_the_terminal() {
             );
         }
     }
+}
+
+fn a_first_start_raises_the_descriptor_limit_as_upstream_does() {
+    let (_directory, cwd) = canonical_temp_dir();
+    let report = scenario("descriptors", &cwd, &cwd.join("store"), &[]);
+    let limits: Vec<i128> = report
+        .split_whitespace()
+        .map(|limit| limit.parse().expect("a limit"))
+        .collect();
+    let [current, maximum] = limits[..] else {
+        panic!("the scenario reported {report:?}");
+    };
+    let expected = if maximum < 0 { 1024 } else { maximum.min(1024) };
+    assert_eq!(current, expected, "{report:?}");
+}
+
+fn executions() -> ManagedExecutions {
+    ManagedExecutions::new(SessionSupervisor::new(
+        env::current_exe().expect("the test executable"),
+    ))
+}
+
+fn observer<'a>(
+    fixture: &'a Fixture,
+    executions: &'a ManagedExecutions,
+    cancel: &'a CancellationToken,
+) -> TerminalObserver<'a> {
+    TerminalObserver {
+        terminals: &fixture.terminals,
+        executions,
+        owner: OWNER,
+        max_output_bytes: 64 * 1024,
+        cancel,
+    }
+}
+
+fn nothing_new(execution_id: &str) -> TtyUpdate<'_> {
+    TtyUpdate {
+        execution_id,
+        state: SnapshotState::Running,
+        output: b"",
+        raw_bytes: 0,
+        output_incomplete: false,
+        error_name: None,
+        published_running: true,
+    }
+}
+
+fn exit_status(code: i64) -> SnapshotState {
+    SnapshotState::Completed(CommandStatus::ExitCode(code))
+}
+
+fn an_observation_drains_raw_output_once_and_resolves_the_exit_status() {
+    let fixture = Fixture::new();
+    let started = fixture.start("printf 'plain\\n'; exit 3", ReturnCondition::Exit);
+    let executions = executions();
+    let cancel = CancellationToken::new();
+    let observer = observer(&fixture, &executions, &cancel);
+    let observation = fixture
+        .runtime
+        .block_on(observer.observe(&started.id, SnapshotState::Running))
+        .expect("observe the terminal");
+    assert_eq!(observation.state, exit_status(3));
+    assert!(
+        observation
+            .output
+            .windows(7)
+            .any(|window| window == b"plain\r\n"),
+        "{:?}",
+        String::from_utf8_lossy(&observation.output)
+    );
+    assert_eq!(observation.raw_bytes, observation.output.len());
+    assert!(!observation.output_incomplete && !observation.timed_out);
+    let again = fixture
+        .runtime
+        .block_on(observer.observe(&started.id, observation.state))
+        .expect("observe the terminal again");
+    assert!(again.output.is_empty());
+    assert_eq!(again.raw_bytes, 0);
+    assert_eq!(again.state, exit_status(3));
+}
+
+fn an_observation_of_escaped_output_returns_the_screen() {
+    let fixture = Fixture::new();
+    let started = fixture.start(
+        "printf '\\033[31mred-text\\033[0m\\n'",
+        ReturnCondition::Exit,
+    );
+    let executions = executions();
+    let cancel = CancellationToken::new();
+    let observer = observer(&fixture, &executions, &cancel);
+    let observation = fixture
+        .runtime
+        .block_on(observer.observe(&started.id, SnapshotState::Running))
+        .expect("observe the terminal");
+    let screen = fixture
+        .terminals
+        .screen(OWNER, &started.id)
+        .expect("render the screen");
+    assert_eq!(observation.output, screen.text);
+    assert!(String::from_utf8_lossy(&observation.output).contains("red-text"));
+    assert!(!observation.output.contains(&0x1b));
+    assert!(observation.raw_bytes > observation.output.len());
+    assert_eq!(observation.state, exit_status(0));
+}
+
+fn a_refresh_collects_a_managed_terminals_output_and_status() {
+    let fixture = Fixture::new();
+    let command = "read -r line; echo \"got $line\"; exit 4";
+    let started = fixture.start(command, ReturnCondition::Started);
+    let executions = executions();
+    let cancel = CancellationToken::new();
+    let observer = observer(&fixture, &executions, &cancel);
+    let observation = fixture
+        .runtime
+        .block_on(observer.observe(
+            &started.id,
+            snapshot_state(&started.facts, Some(started.outcome)),
+        ))
+        .expect("observe the terminal");
+    assert_eq!(observation.state, SnapshotState::Running);
+    let registered = executions
+        .register_tty(
+            None,
+            &TtyCommand {
+                command,
+                cwd: &fixture.cwd,
+                max_output_bytes: 64 * 1024,
+            },
+            &observation.update(&started.id, true),
+        )
+        .expect("register the terminal");
+    assert_eq!(registered.backend, Backend::Tty);
+    assert_eq!(registered.state, SnapshotState::Running);
+    assert!(registered.retained);
+    fixture
+        .terminals
+        .write(OWNER, &started.id, "hi\n")
+        .expect("write to the terminal");
+    assert_eq!(fixture.wait_exit(&started.id), Ok(ReturnOutcome::Exited(4)));
+    fixture
+        .runtime
+        .block_on(observer.refresh(&started.id))
+        .expect("refresh the terminal");
+    assert_eq!(executions.state_for(&started.id), Some(exit_status(4)));
+    let delivered = executions
+        .update_tty(&nothing_new(&started.id))
+        .expect("deliver the terminal");
+    assert!(
+        String::from_utf8_lossy(&delivered.output_delta).contains("got hi"),
+        "{:?}",
+        String::from_utf8_lossy(&delivered.output_delta)
+    );
+    assert_eq!(delivered.state, exit_status(4));
+    assert!(executions.is_tombstone(&started.id));
+    assert_eq!(
+        fixture
+            .runtime
+            .block_on(observer.refresh("shell-AAAAAAAAAAAAAAAAAAAAAA")),
+        Err(ObserveError::Execution(ExecutionError::ExecutionNotFound))
+    );
+}
+
+fn a_refresh_of_a_closed_terminal_marks_it_lost() {
+    let fixture = Fixture::new();
+    let started = fixture.start("sleep 30", ReturnCondition::Started);
+    let executions = executions();
+    let cancel = CancellationToken::new();
+    let observer = observer(&fixture, &executions, &cancel);
+    let observation = fixture
+        .runtime
+        .block_on(observer.observe(&started.id, SnapshotState::Running))
+        .expect("observe the terminal");
+    executions
+        .register_tty(
+            None,
+            &TtyCommand {
+                command: "sleep 30",
+                cwd: &fixture.cwd,
+                max_output_bytes: 64 * 1024,
+            },
+            &observation.update(&started.id, true),
+        )
+        .expect("register the terminal");
+    fixture
+        .close(&started.id, ClosePolicy::Force)
+        .expect("close the terminal");
+    assert_eq!(
+        fixture.runtime.block_on(observer.refresh(&started.id)),
+        Err(ObserveError::TerminalAuthorityLost)
+    );
+    assert_eq!(executions.state_for(&started.id), Some(SnapshotState::Lost));
+}
+
+fn a_sync_indexes_saved_exited_terminals_and_ends_lost_ones() {
+    let (directory, cwd) = canonical_temp_dir();
+    let store = cwd.join("store");
+    let report = scenario("saved", &cwd, &store, &[]);
+    let ids: Vec<&str> = report.split_whitespace().collect();
+    let [exited, ended] = ids[..] else {
+        panic!("the scenario reported {report:?}");
+    };
+    let fixture = Fixture::at(Some(directory), store, cwd);
+    let executions = executions();
+    let cancel = CancellationToken::new();
+    let observer = observer(&fixture, &executions, &cancel);
+    assert_eq!(
+        fixture.runtime.block_on(observer.sync_owned(ended)),
+        Ok(SyncOutcome::EndedWithOwner)
+    );
+    assert_eq!(executions.backend_for(ended), None);
+    assert_eq!(executions.backend_for(exited), Some(Backend::Tty));
+    assert_eq!(executions.state_for(exited), Some(exit_status(5)));
+    assert_eq!(executions.command(exited).as_deref(), Some("exit 5"));
+    let delivered = executions
+        .update_tty(&nothing_new(exited))
+        .expect("deliver the terminal");
+    assert!(delivered.output_delta.is_empty());
+    assert!(delivered.output_incomplete);
+    assert_eq!(delivered.cwd, fixture.cwd);
+    assert_eq!(delivered.state, exit_status(5));
+    assert_eq!(
+        fixture.runtime.block_on(observer.sync_owned(exited)),
+        Ok(SyncOutcome::Indexed)
+    );
+    assert_eq!(
+        fixture
+            .close(ended, ClosePolicy::Graceful)
+            .map(|facts| facts.lifecycle),
+        Ok(Lifecycle::Closed)
+    );
+    assert_eq!(
+        fixture.runtime.block_on(observer.sync_owned(ended)),
+        Ok(SyncOutcome::Indexed)
+    );
+    assert_eq!(executions.backend_for(ended), None);
 }
 
 fn canonical_temp_dir() -> (tempfile::TempDir, PathBuf) {

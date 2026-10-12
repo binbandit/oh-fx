@@ -25,14 +25,14 @@ note = "Approved direct argv/pipeline route execution and route-specific foregro
 [[file]]
 upstream = "src/core/execution/managed_execution.zig"
 status = "partial"
-modules = ["crates/ofx-exec/src/managed_execution.rs"]
-note = "Captured running handles, output snapshots, waits and stop exist, with upstream's lost and indeterminate `core` lines; persisted execution/replay artifacts and reattached process identities are absent."
+modules = ["crates/ofx-exec/src/managed_execution.rs", "crates/ofx-exec/src/managed_execution/tty.rs"]
+note = "Captured running handles, output snapshots, waits and stop exist, with upstream's lost and indeterminate `core` lines. Terminal executions are registered, updated, refreshed, observed and delivered as upstream's registerTty, updateTty, refreshTty and observeTtyState do, with the terminal capacity reservation, external wait reservation and preemption, backendFor, stateFor, isTombstone and the retained ended terminals; registerTty followed by cancelDelivery is one call that indexes without delivering. A terminal's output is drained from it rather than read from a journal cursor, so TtyCursor and ttyCursorFor are absent, as docs/differences/tool-shell.md records. Persisted execution/replay artifacts and reattached process identities are absent."
 
 [[file]]
 upstream = "src/core/execution/managed_execution_contract.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/managed_execution.rs"]
-note = "Captured execution handles, snapshots and output barriers exist; TTY backend contracts, persisted backend state and delivery reservation/result-commit identity are absent."
+note = "Captured execution handles, snapshots and output barriers exist, and snapshots name upstream's backend (captured or tty) and persistence (process or session); persisted backend state and delivery reservation/result-commit identity are absent."
 
 [[file]]
 upstream = "src/core/execution/process_identity.zig"

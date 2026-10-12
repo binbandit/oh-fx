@@ -9,6 +9,7 @@ use rustix::process::Signal;
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
+use super::descriptor_budget::ensure_descriptor_budget;
 use super::launch::{LaunchError, TerminalLaunch, launch_terminal};
 use super::session::{Session, SessionLost};
 use crate::managed_execution::MAX_LIVE_ENTRIES;
@@ -123,6 +124,7 @@ impl Terminals {
         cancel: &CancellationToken,
     ) -> Result<Outcome, TerminalFailure> {
         let refuse = |code| TerminalFailure::new(Action::Start, code, None);
+        ensure_descriptor_budget();
         if !valid_start(request) {
             return Err(refuse(StructuredErrorCode::InvalidRequest));
         }

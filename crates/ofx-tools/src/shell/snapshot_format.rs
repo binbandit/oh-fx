@@ -92,8 +92,8 @@ fn format_raw(snapshot: &Snapshot, output_delta: &str, output_truncated: bool) -
         json!(snapshot.retained.then_some(snapshot.execution_id.as_str())),
     );
     object.insert("state".to_owned(), json!(state_name(snapshot.state)));
-    object.insert("backend".to_owned(), json!("captured"));
-    object.insert("persistence".to_owned(), json!("process"));
+    object.insert("backend".to_owned(), json!(snapshot.backend.name()));
+    object.insert("persistence".to_owned(), json!(snapshot.persistence.name()));
     object.insert("output_truncated".to_owned(), json!(output_truncated));
     object.insert(
         "output_incomplete".to_owned(),
@@ -257,7 +257,7 @@ pub(super) fn snapshot_failed(snapshot: &Snapshot) -> bool {
         return true;
     }
     match snapshot.state {
-        SnapshotState::Running => false,
+        SnapshotState::Running | SnapshotState::Completed(CommandStatus::Finished) => false,
         SnapshotState::Completed(CommandStatus::ExitCode(code)) => code != 0,
         SnapshotState::Completed(_) | SnapshotState::Stopped(_) | SnapshotState::Lost => true,
     }
