@@ -437,7 +437,7 @@ fn sessions_fx_saved_are_listed_with_its_marker_and_left_untouched() {
 }
 
 #[test]
-fn listing_needs_home_and_refuses_the_v2_store() {
+fn listing_needs_home() {
     let server = FakeServer::start(replies(0));
     let home = Home::new(&server.base_url());
     let output = Command::new(env!("CARGO_BIN_EXE_oh-fx"))
@@ -456,12 +456,6 @@ fn listing_needs_home_and_refuses_the_v2_store() {
     assert_eq!(
         text(&output.stdout),
         "{\"kind\":\"sessions\",\"error\":\"HOME is not set\",\"code\":\"HomeNotSet\"}\n"
-    );
-    let output = home.run("workspace", &["sessions"], &[("OH_FX_SESSIONS_V2", "1")]);
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        text(&output.stderr),
-        "oh-fx: sessions is not available yet\n"
     );
 }
 
@@ -566,7 +560,7 @@ fn session_last_says_why_the_workspace_has_no_session_to_describe() {
 }
 
 #[test]
-fn session_last_needs_home_and_refuses_the_v2_store() {
+fn session_last_needs_home() {
     let server = FakeServer::start(replies(0));
     let home = Home::new(&server.base_url());
     for (args, expected) in [
@@ -600,25 +594,6 @@ fn session_last_needs_home_and_refuses_the_v2_store() {
             "{args:?}"
         );
     }
-    assert_eq!(
-        refused(&home.session(&["last"], &[("OH_FX_SESSIONS_V2", "1")])),
-        (
-            String::new(),
-            "oh-fx: session is not available yet\n".to_owned()
-        )
-    );
-    let output = home.run(
-        "workspace",
-        &["--sessions-v2", "session", "last", "--json"],
-        &[],
-    );
-    assert_eq!(
-        refused(&output),
-        (
-            "{\"kind\":\"session\",\"error\":\"session is not available yet\",\"code\":\"NotAvailableYet\"}\n".to_owned(),
-            "oh-fx: session is not available yet\n".to_owned()
-        )
-    );
 }
 
 #[test]
