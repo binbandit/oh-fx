@@ -223,15 +223,22 @@ impl State {
         self.mode.is_some() && self.source != Some(source)
     }
 
-    pub(crate) fn stage(&mut self, source: IndexRevision, status: Status, rows: Vec<FileMatch>) {
+    pub(crate) fn stage(
+        &mut self,
+        source: IndexRevision,
+        status: Status,
+        rows: Vec<FileMatch>,
+    ) -> u64 {
+        let revision = self.next_revision;
         self.prepared = Some(Snapshot {
-            id: self.next_revision,
+            id: revision,
             episode: self.episode,
             status,
             rows,
         });
         self.next_revision = self.next_revision.wrapping_add(1);
         self.source = Some(source);
+        revision
     }
 
     fn current(&self) -> Option<&Snapshot> {
