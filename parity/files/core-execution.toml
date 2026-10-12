@@ -36,9 +36,9 @@ note = "Captured execution handles, snapshots and output barriers exist; TTY bac
 
 [[file]]
 upstream = "src/core/execution/process_identity.zig"
-status = "todo"
-modules = []
-note = "Canonical boot/start-time process instance token capture and exact PID reuse matching are unimplemented."
+status = "partial"
+modules = ["crates/ofx-exec/src/process_tree.rs", "crates/ofx-exec/src/native_session/processes.rs"]
+note = "Linux process instance tokens (linux:<boot id>:<start ticks>) are captured and matched exactly for the terminal sessions' shells. Tokens are kept in memory only, since terminals end with the process that started them, so parsing saved tokens is not ported, and macOS tokens are not ported, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/execution/process_provider.zig"
@@ -50,7 +50,7 @@ note = "Managed local process operations exist; injected identity provider and t
 upstream = "src/core/execution/process_tree.zig"
 status = "partial"
 modules = ["crates/ofx-exec/src/process_tree.rs"]
-note = "Linux tree tracking and group fallback exist; Darwin unique-process lineage witnesses are absent, as docs/differences/tool-shell.md records."
+note = "Linux tree tracking and group fallback exist, with checked delivery that reports a signal it could not send to a tracked process, for the terminal sessions' signals; Darwin unique-process lineage witnesses are absent, as docs/differences/tool-shell.md records."
 
 [[file]]
 upstream = "src/core/execution/router.zig"

@@ -38,10 +38,6 @@ name = "terminal_echo"
 harness = false
 
 [[test]]
-name = "terminal_launcher"
-harness = false
-
-[[test]]
 name = "terminal_sessions"
 harness = false
 

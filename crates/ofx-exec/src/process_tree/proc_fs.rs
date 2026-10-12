@@ -32,6 +32,25 @@ pub(super) fn capture_snapshot(pid: Pid) -> Result<ProcessSnapshot, InspectionEr
     parse_stat(&buffer[..length]).ok_or(IDENTITY_UNAVAILABLE)
 }
 
+pub(super) fn boot_id() -> Result<String, InspectionError> {
+    let text =
+        fs::read_to_string("/proc/sys/kernel/random/boot_id").map_err(|_| IDENTITY_UNAVAILABLE)?;
+    normalized_boot_id(&text).ok_or(IDENTITY_UNAVAILABLE)
+}
+
+fn normalized_boot_id(text: &str) -> Option<String> {
+    let id: String = text
+        .trim()
+        .chars()
+        .filter(|&character| character != '-')
+        .collect();
+    (id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(id)
+}
+
 pub(super) fn shows_own_pid_namespace() -> bool {
     fs::read_to_string("/proc/self/status").is_ok_and(|status| lists_only(&status, getpid()))
 }
@@ -143,7 +162,7 @@ fn errno(error: &io::Error) -> Option<Errno> {
 
 #[cfg(test)]
 mod tests {
-    use super::{lists_only, open_directory, open_file, parse_stat};
+    use super::{boot_id, lists_only, normalized_boot_id, open_directory, open_file, parse_stat};
     use crate::process_tree::{Identity, ProcessSnapshot};
 
     #[test]
@@ -167,6 +186,20 @@ mod tests {
         assert!(!lists_only(&status("\t43"), pid));
         assert!(!lists_only(&status(""), pid));
         assert!(!lists_only("Name:\tsh\nPid:\t42\n", pid));
+    }
+
+    #[test]
+    fn boot_ids_are_kept_as_lowercase_hex_without_dashes() {
+        assert_eq!(
+            normalized_boot_id("00112233-4455-6677-8899-aabbccddeeff\n").as_deref(),
+            Some("00112233445566778899aabbccddeeff")
+        );
+        assert_eq!(
+            normalized_boot_id("00112233-4455-6677-8899-AABBCCDDEEFF"),
+            None
+        );
+        assert_eq!(normalized_boot_id("0011"), None);
+        assert_eq!(boot_id().map(|id| id.len()), Ok(32));
     }
 
     #[test]

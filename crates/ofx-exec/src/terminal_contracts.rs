@@ -9,9 +9,9 @@ pub(crate) const MAX_SHELL_PATH_BYTES: usize = 4096;
 const MAX_DIMENSION: u16 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Dimensions {
-    pub rows: u16,
-    pub columns: u16,
+pub(crate) struct Dimensions {
+    pub(crate) rows: u16,
+    pub(crate) columns: u16,
 }
 
 impl Dimensions {
@@ -76,6 +76,7 @@ pub enum Action {
     Wait,
     Inspect,
     List,
+    Signal,
     Close,
 }
 
@@ -85,6 +86,7 @@ pub enum StructuredErrorCode {
     ShellUnavailable,
     PtyUnavailable,
     StartupFailed,
+    ProcessIdentityUnavailable,
     SessionLost,
     SessionNotFound,
     InvalidLifecycle,
@@ -136,6 +138,15 @@ impl ReturnOutcome {
     pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Exited(_) | Self::Signal(_))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSignal {
+    Hangup,
+    Interrupt,
+    Quit,
+    Terminate,
+    Kill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

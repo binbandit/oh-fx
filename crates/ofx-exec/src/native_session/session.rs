@@ -8,7 +8,7 @@ use std::time::Duration;
 use ofx_vt::Grid;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal};
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use super::control::{ControlKind, StartupFailure};
 use super::launch::{ControlFrame, LaunchedTerminal, Liveness, read_control_frame};
 use super::output::{Drained, Unread, read_available};
+use super::processes::{self, Descendants, GroupDelivery, Identities, Kernel, ShellIdentity, Tree};
 use crate::terminal_contracts::{
     ClosePolicy, Lifecycle, ReturnCondition, ReturnOutcome, SessionFacts, StructuredErrorCode,
 };
@@ -47,6 +48,8 @@ struct State {
     term: Option<Termination>,
     start_failure: Option<StructuredErrorCode>,
     shell_group: Option<Pid>,
+    shell_identity: Option<ShellIdentity>,
+    exit_tree: Option<Arc<Tree>>,
     shell_ready_seen: bool,
     close_committed: bool,
     ending_with_owner: bool,
@@ -55,6 +58,14 @@ struct State {
     master: Option<Arc<OwnedFd>>,
     liveness: Option<Liveness>,
     backend: Backend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreeSignal {
+    NoTarget,
+    Complete,
+    Incomplete,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +101,8 @@ impl Session {
                 term: None,
                 start_failure: None,
                 shell_group: None,
+                shell_identity: None,
+                exit_tree: None,
                 shell_ready_seen: false,
                 close_committed: false,
                 ending_with_owner: false,
@@ -337,12 +350,27 @@ impl Session {
             state.close_committed = true;
         }
         let mut still_live = self.is_live();
+        let mut forced = None;
         if still_live {
-            let signal = match policy {
-                ClosePolicy::Graceful => Signal::TERM,
-                ClosePolicy::Force => Signal::KILL,
+            let delivered = match policy {
+                ClosePolicy::Graceful => self.signal_group(Signal::TERM),
+                ClosePolicy::Force => match self.signal_processes(Signal::KILL) {
+                    TreeSignal::NoTarget => false,
+                    TreeSignal::Complete => {
+                        forced = Some(true);
+                        true
+                    }
+                    TreeSignal::Incomplete => {
+                        forced = Some(false);
+                        false
+                    }
+                    TreeSignal::Unavailable => {
+                        forced = Some(false);
+                        self.signal_group(Signal::KILL)
+                    }
+                },
             };
-            if !self.signal_group(signal) {
+            if !delivered {
                 self.mark_lost();
             }
         }
@@ -363,6 +391,16 @@ impl Session {
             .map_err(StoreError::code)?;
         self.lock().lifecycle = Lifecycle::Closed;
         self.notify();
+        if forced == Some(false) {
+            return Err(StructuredErrorCode::SessionLost);
+        }
+        Ok(self.facts())
+    }
+
+    pub(super) fn signal(&self, signal: Signal) -> Result<SessionFacts, StructuredErrorCode> {
+        if self.signal_processes(signal) != TreeSignal::Complete {
+            return Err(StructuredErrorCode::InvalidLifecycle);
+        }
         Ok(self.facts())
     }
 
@@ -374,13 +412,27 @@ impl Session {
             }
             state.ending_with_owner = true;
         }
+        let target = self.signal_target();
+        let tree = target
+            .filter(|(shell, identity)| identity.matches(*shell))
+            .and_then(|(shell, _)| Tree::record(shell).map(|tree| (shell, tree)));
         self.signal_group(Signal::HUP);
+        if let Some((shell, tree)) = tree {
+            tree.signal_outside_group(Signal::HUP, shell);
+            self.lock().exit_tree = Some(Arc::new(tree));
+        }
         true
+    }
+
+    pub(super) fn exit_tree_alive(&self) -> bool {
+        let tree = self.lock().exit_tree.clone();
+        tree.is_some_and(|tree| tree.any_alive())
     }
 
     pub(super) fn shutdown(&self) {
         self.signal_group(Signal::KILL);
         self.lock().liveness = None;
+        self.kill_exit_tree();
     }
 
     pub(super) fn kill_for_exit(&self) {
@@ -388,17 +440,57 @@ impl Session {
             self.signal_group(Signal::KILL);
             self.mark_lost();
         }
+        self.kill_exit_tree();
+    }
+
+    fn kill_exit_tree(&self) {
+        let tree = self.lock().exit_tree.take();
+        if let Some(tree) = tree {
+            tree.signal_every(Signal::KILL);
+        }
+    }
+
+    fn signal_target(&self) -> Option<(Pid, ShellIdentity)> {
+        let state = self.lock();
+        if !state.lifecycle.is_live() {
+            return None;
+        }
+        Some((state.shell_group?, state.shell_identity.clone()?))
     }
 
     fn signal_group(&self, signal: Signal) -> bool {
-        let group = {
-            let state = self.lock();
-            if !state.lifecycle.is_live() {
-                return false;
-            }
-            state.shell_group
+        self.signal_target().is_some_and(|(shell, identity)| {
+            identity.matches(shell)
+                && processes::signal_group(shell, signal) == GroupDelivery::Delivered
+        })
+    }
+
+    fn signal_processes(&self, signal: Signal) -> TreeSignal {
+        let Some((shell, identity)) = self.signal_target() else {
+            return TreeSignal::NoTarget;
         };
-        group.is_some_and(|group| kill_process_group(group, signal).is_ok())
+        if !identity.matches(shell) {
+            return TreeSignal::Incomplete;
+        }
+        let Some(tree) = Tree::record(shell) else {
+            return TreeSignal::Unavailable;
+        };
+        if !identity.matches(shell) {
+            return TreeSignal::Incomplete;
+        }
+        let group = if identity.matches(shell) {
+            processes::signal_group(shell, signal)
+        } else if processes::group_missing(shell) {
+            GroupDelivery::Missing
+        } else {
+            GroupDelivery::Failed
+        };
+        let incomplete = tree.signal_outside_group(signal, shell);
+        if incomplete || group == GroupDelivery::Failed {
+            TreeSignal::Incomplete
+        } else {
+            TreeSignal::Complete
+        }
     }
 
     fn drain_output(&self, master: &OwnedFd) {
@@ -553,12 +645,16 @@ impl Session {
         let Some(shell) = shell.filter(|_| valid) else {
             return self.fail_closed(StructuredErrorCode::SessionLost);
         };
+        let Some(identity) = Kernel::identify(shell) else {
+            return self.fail_closed(StructuredErrorCode::ProcessIdentityUnavailable);
+        };
         {
             let mut state = self.lock();
             if state.lifecycle != Lifecycle::Starting || state.shell_group.is_some() {
                 state.persist_lost();
             } else if state.durable.mark_started(raw_pid, now_ms()).is_ok() {
                 state.shell_group = Some(shell);
+                state.shell_identity = Some(identity);
                 state.lifecycle = Lifecycle::Running;
             } else {
                 state.persist_lost();
