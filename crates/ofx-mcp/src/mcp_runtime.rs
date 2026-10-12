@@ -238,9 +238,16 @@ impl McpRuntime {
             let Lifecycle::Ready(client) = server.lifecycle() else {
                 continue;
             };
-            server
+            if let Some(error) = server
                 .refresh_tools(&client, Instant::now() + client.operation_timeout)
-                .await;
+                .await
+            {
+                trace_log!(
+                    MCP,
+                    "tool cache refresh check failed server={} err={error}",
+                    server.config.name
+                );
+            }
         }
     }
 
@@ -565,9 +572,16 @@ impl McpRuntime {
             };
             server.features.request_refresh();
             client.request_tool_refresh();
-            server
+            if let Some(error) = server
                 .refresh_tools(&client, Instant::now() + client.operation_timeout)
-                .await;
+                .await
+            {
+                trace_log!(
+                    MCP,
+                    "catalog reload failed server={} err={error}",
+                    server.config.name
+                );
+            }
             server.mark_reload_pending(false);
         }
     }
@@ -877,6 +891,7 @@ mod tests {
     use ofx_config::ContextLimitName;
     use ofx_config::ContextLimits;
     use ofx_contract::{PathAccess, PreparedCall, ToolContext, ToolResultStatus};
+    use serde_json::json;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -887,6 +902,7 @@ mod tests {
     use crate::features::resources::{Details, Resource};
     use crate::mcp_contract::{ConfigScope, EnvVar, McpServerConfig};
     use crate::project_config::WorkspaceDiagnosticCause;
+    use crate::server_connection::ServerNotification;
 
     const SERVER: &str = r#"
 echo $$ >> "$STATE/pids"
@@ -1383,6 +1399,46 @@ done
         assert!(!written.contains("secret detail"), "{written}");
     }
 
+    const CATALOG_TRACE_CHILD: &str = "OH_FX_MCP_CATALOG_TRACE_CHILD";
+    const CATALOG_TRACE_TEST: &str = "mcp_runtime::tests::catalog_refreshes_write_their_mcp_lines";
+
+    #[test]
+    fn catalog_refreshes_write_their_mcp_lines() {
+        if let Some(root) = std::env::var_os(CATALOG_TRACE_CHILD) {
+            ofx_trace::configure_from_env(Path::new(&root), None);
+            a_tool_list_change_republishes_the_server_tools();
+            resource_catalogs_page_cache_and_refresh_after_list_changes();
+            resource_notifications_count_toward_the_tool_cache_lines();
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = root.path().join("trace.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([CATALOG_TRACE_TEST, "--exact", "--test-threads=1"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env(CATALOG_TRACE_CHILD, root.path())
+            .env("OH_FX_TRACE_LOG", &log)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
+        let written = std::fs::read_to_string(&log).unwrap_or_default();
+        for line in [
+            " [mcp] tool cache snapshot replaced server=fixture catalog_generation=2 tools=4 notifications_seen=1 notifications_coalesced=0\n",
+            " [mcp] feature cache snapshot replaced server=fixture feature=resources generation=1\n",
+            " [mcp] feature cache snapshot replaced server=fixture feature=resources generation=2\n",
+        ] {
+            assert!(written.contains(line), "{line}\n{written}");
+        }
+        assert!(
+            written.lines().any(|line| line.contains(
+                " [mcp] tool cache refreshed without schema change server=fixture catalog_generation=1 "
+            ) && line.ends_with(" notifications_seen=2 notifications_coalesced=1")),
+            "{written}"
+        );
+    }
+
     #[tokio::test]
     async fn a_required_server_that_exits_names_its_failure() {
         let state = tempfile::tempdir().unwrap();
@@ -1829,6 +1885,38 @@ done
     }
 
     #[tokio::test]
+    async fn resource_notifications_count_toward_the_tool_cache_lines() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime = runtime(vec![config("fixture", RESOURCE_SERVER, state.path())]);
+        runtime.connect(StartupPhase::All).await;
+        let server = Arc::clone(&runtime.current()[0]);
+        let Lifecycle::Ready(client) = server.lifecycle() else {
+            panic!("the fixture never started");
+        };
+        let changed = json!({"jsonrpc":"2.0","method":"notifications/resources/list_changed"});
+        for _ in 0..2 {
+            assert_eq!(
+                client.classify_notification(&changed),
+                Some(ServerNotification::ResourcesListChanged)
+            );
+        }
+        assert_eq!(
+            (
+                client.notification_stats.seen(),
+                client.notification_stats.coalesced()
+            ),
+            (2, 1)
+        );
+        client.request_tool_refresh();
+        assert_eq!(
+            server
+                .refresh_tools(&client, Instant::now() + Duration::from_secs(10))
+                .await,
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn resource_catalogs_page_cache_and_refresh_after_list_changes() {
         let state = tempfile::tempdir().unwrap();
         let runtime = runtime(vec![config("fixture", RESOURCE_SERVER, state.path())]);
@@ -2004,6 +2092,7 @@ done
                 details: Details::default(),
             }]),
             metadata: SnapshotMetadata::fresh(u64::MAX),
+            generation: 1,
         };
         assert!(!server.publish_catalog(&stopped, outdated));
         assert_eq!(

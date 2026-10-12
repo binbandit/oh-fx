@@ -24,6 +24,7 @@ struct CachedRead {
 pub(crate) struct Snapshot<T> {
     pub(crate) items: Arc<[T]>,
     pub(crate) metadata: SnapshotMetadata,
+    pub(crate) generation: u64,
 }
 
 #[derive(Default)]
@@ -136,8 +137,10 @@ pub(crate) struct Invalidation {
 }
 
 impl Invalidation {
-    pub(crate) fn invalidate(&self) {
+    pub(crate) fn invalidate(&self) -> bool {
+        let already_pending = self.pending();
         self.generation.fetch_add(1, Ordering::AcqRel);
+        already_pending
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -155,7 +158,32 @@ impl Invalidation {
     }
 }
 
-pub(crate) trait FeatureCatalog: Listed + Clone + Send + Sync + 'static {
+#[derive(Debug, Default)]
+pub(crate) struct NotificationStats {
+    seen: AtomicU64,
+    coalesced: AtomicU64,
+}
+
+impl NotificationStats {
+    pub(crate) fn note(&self, already_pending: bool) {
+        self.seen.fetch_add(1, Ordering::AcqRel);
+        if already_pending {
+            self.coalesced.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(crate) fn seen(&self) -> u64 {
+        self.seen.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn coalesced(&self) -> u64 {
+        self.coalesced.load(Ordering::Acquire)
+    }
+}
+
+pub(crate) trait FeatureCatalog: Listed + Clone + PartialEq + Send + Sync + 'static {
+    const KIND: &'static str;
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>>;
 
     fn invalidation(client: &McpClient) -> &Invalidation;
@@ -164,6 +192,8 @@ pub(crate) trait FeatureCatalog: Listed + Clone + Send + Sync + 'static {
 }
 
 impl FeatureCatalog for Resource {
+    const KIND: &'static str = "resources";
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
         &catalogs.resources
     }
@@ -178,6 +208,8 @@ impl FeatureCatalog for Resource {
 }
 
 impl FeatureCatalog for ResourceTemplate {
+    const KIND: &'static str = "resource_templates";
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
         &catalogs.templates
     }
@@ -192,6 +224,8 @@ impl FeatureCatalog for ResourceTemplate {
 }
 
 impl FeatureCatalog for Prompt {
+    const KIND: &'static str = "prompts";
+
     fn slot(catalogs: &FeatureCatalogs) -> &Mutex<Option<Snapshot<Self>>> {
         &catalogs.prompts
     }
@@ -216,9 +250,9 @@ mod tests {
     fn resource_invalidations_clear_only_through_the_generation_a_refresh_saw() {
         let invalidation = Invalidation::default();
         assert!(!invalidation.pending());
-        invalidation.invalidate();
+        assert!(!invalidation.invalidate());
         let seen = invalidation.generation();
-        invalidation.invalidate();
+        assert!(invalidation.invalidate());
         invalidation.clear_through(seen);
         assert!(invalidation.pending());
         invalidation.clear_through(invalidation.generation());
@@ -239,6 +273,7 @@ mod tests {
         catalogs.publish(Snapshot {
             items: Arc::clone(&items),
             metadata: SnapshotMetadata::fresh(u64::MAX),
+            generation: 1,
         });
         catalogs.record_failed_refresh(&Arc::from(vec![resource("a://")]), 10);
         assert_eq!(
@@ -269,6 +304,7 @@ mod tests {
         catalogs.publish(Snapshot {
             items: Arc::clone(&prompts),
             metadata: SnapshotMetadata::fresh(u64::MAX),
+            generation: 1,
         });
         catalogs.request_refresh();
         let requested = catalogs.snapshot::<Prompt>().unwrap();

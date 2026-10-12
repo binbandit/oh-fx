@@ -13,7 +13,7 @@ use crate::elicitation::{
     URL_REQUIRED_ERROR_CODE, UrlRequest, completed_elicitation, parse_url_required,
 };
 use crate::error::McpError;
-use crate::feature_catalog::Invalidation;
+use crate::feature_catalog::{Invalidation, NotificationStats};
 use crate::features::tools::{ToolCallOutcome, ToolCatalog};
 use crate::legacy_url_completion::UrlCompletions;
 use crate::mcp_contract::{ConfigSource, McpServerConfig, TransportType, WorkspaceAdmission};
@@ -41,6 +41,7 @@ pub(crate) enum ServerNotification {
 pub(crate) struct ToolSnapshot {
     pub(crate) catalog: Arc<ToolCatalog>,
     pub(crate) metadata: SnapshotMetadata,
+    pub(crate) generation: u64,
 }
 
 pub(crate) struct McpClient {
@@ -55,6 +56,7 @@ pub(crate) struct McpClient {
     pub(crate) tools_settled: Notify,
     pub(crate) resources_invalidation: Invalidation,
     pub(crate) prompts_invalidation: Invalidation,
+    pub(crate) notification_stats: NotificationStats,
     notifications: Mutex<mpsc::UnboundedReceiver<Value>>,
 }
 
@@ -104,11 +106,13 @@ impl McpClient {
             tools: Mutex::new(ToolSnapshot {
                 catalog: Arc::new(connected.listing.catalog),
                 metadata: SnapshotMetadata::fresh(connected.listing.expires_at_ms),
+                generation: 1,
             }),
             tools_invalidation: Invalidation::default(),
             tools_settled: Notify::new(),
             resources_invalidation: Invalidation::default(),
             prompts_invalidation: Invalidation::default(),
+            notification_stats: NotificationStats::default(),
             notifications: Mutex::new(connected.notifications),
         }
     }
@@ -176,7 +180,7 @@ impl McpClient {
         parse_url_required(error.data.as_ref()?).ok()
     }
 
-    fn classify_notification(&self, value: &Value) -> Option<ServerNotification> {
+    pub(crate) fn classify_notification(&self, value: &Value) -> Option<ServerNotification> {
         if self.url_elicitation
             && let Some(id) = completed_elicitation(value)
         {
@@ -190,7 +194,8 @@ impl McpClient {
                 if !capabilities.tools_list_changed {
                     return None;
                 }
-                self.tools_invalidation.invalidate();
+                self.notification_stats
+                    .note(self.tools_invalidation.invalidate());
                 Some(ServerNotification::ToolsListChanged)
             }
             "notifications/resources/list_changed" => {
@@ -200,7 +205,8 @@ impl McpClient {
                 {
                     return None;
                 }
-                self.resources_invalidation.invalidate();
+                self.notification_stats
+                    .note(self.resources_invalidation.invalidate());
                 Some(ServerNotification::ResourcesListChanged)
             }
             "notifications/prompts/list_changed" => {
@@ -210,7 +216,8 @@ impl McpClient {
                 {
                     return None;
                 }
-                self.prompts_invalidation.invalidate();
+                self.notification_stats
+                    .note(self.prompts_invalidation.invalidate());
                 Some(ServerNotification::PromptsListChanged)
             }
             "notifications/resources/updated"

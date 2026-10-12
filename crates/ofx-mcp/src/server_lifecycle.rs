@@ -3,11 +3,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
+use ofx_trace::trace_log;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::auth_state::AuthState;
 use crate::catalog_freshness::Freshness;
+use crate::catalog_refresh::{Refreshed, ToolRefresh};
 use crate::error::McpError;
 use crate::feature_catalog::{FeatureCatalog, FeatureCatalogs, Snapshot};
 use crate::features::tools::{Tool, ToolCallOutcome, ToolCatalog};
@@ -16,6 +18,7 @@ use crate::legacy_elicitation_runtime::{
     UrlRetry, coordinate_url_required, rendered_url_required,
 };
 use crate::mcp_contract::McpServerConfig;
+use crate::mcp_trace::MCP;
 use crate::server_connection::{McpClient, ServerNotification};
 use crate::server_transport::{
     ConnectOptions, StartupFailure, startup_deadline, startup_failure_message,
@@ -405,6 +408,7 @@ impl Server {
             return Err(McpError::McpAuthenticationRequired.into());
         }
         let refreshed = client.settled_tools(deadline).await?;
+        self.trace_refresh(client, &refreshed);
         if let Some(error) = refreshed.lost_authentication {
             self.authentication_failed(client);
             return Err(error.into());
@@ -459,21 +463,71 @@ impl Server {
         });
     }
 
-    pub(crate) async fn refresh_tools(&self, client: &McpClient, deadline: Instant) {
+    pub(crate) async fn refresh_tools(
+        &self,
+        client: &McpClient,
+        deadline: Instant,
+    ) -> Option<McpError> {
         if client.transport.stream_rejected_authentication() {
             self.authentication_failed(client);
-            return;
+            return Some(McpError::McpAuthenticationRequired);
         }
         let refreshed = client.refresh_tools(deadline).await;
+        self.trace_refresh(client, &refreshed);
         if refreshed.lost_authentication.is_some() {
             self.authentication_failed(client);
         } else if refreshed.replaced {
             self.catalog_generation.fetch_add(1, Ordering::AcqRel);
         }
+        match refreshed.outcome {
+            ToolRefresh::Failed { error, .. } => Some(error),
+            ToolRefresh::Skipped { .. }
+            | ToolRefresh::Unchanged { .. }
+            | ToolRefresh::Replaced { .. } => None,
+        }
+    }
+
+    fn trace_refresh(&self, client: &McpClient, refreshed: &Refreshed) {
+        let name = &self.config.name;
+        let seen = client.notification_stats.seen();
+        let coalesced = client.notification_stats.coalesced();
+        match &refreshed.outcome {
+            ToolRefresh::Skipped {
+                action,
+                freshness,
+                generation,
+            } => trace_log!(
+                MCP,
+                "tool cache decision server={name} action={} freshness={} catalog_generation={generation}",
+                action.label(),
+                freshness.label()
+            ),
+            ToolRefresh::Unchanged {
+                generation,
+                fetched_at_ms,
+                expires_at_ms,
+            } => trace_log!(
+                MCP,
+                "tool cache refreshed without schema change server={name} catalog_generation={generation} fetched_at_ms={fetched_at_ms} expiry_ms={expires_at_ms} notifications_seen={seen} notifications_coalesced={coalesced}"
+            ),
+            ToolRefresh::Replaced { generation, tools } => trace_log!(
+                MCP,
+                "tool cache snapshot replaced server={name} catalog_generation={generation} tools={tools} notifications_seen={seen} notifications_coalesced={coalesced}"
+            ),
+            ToolRefresh::Failed {
+                retry_at_ms,
+                preserved_tools,
+                error,
+            } => trace_log!(
+                MCP,
+                "tool cache refresh failed server={name} freshness=failed_refresh retry_at_ms={retry_at_ms} preserved_tools={preserved_tools} err={error}"
+            ),
+        }
     }
 
     async fn follow_tool_change(&self, client: &McpClient, deadline: Instant) {
         while let Ok(refreshed) = client.settled_tools(deadline).await {
+            self.trace_refresh(client, &refreshed);
             if refreshed.lost_authentication.is_some() {
                 self.authentication_failed(client);
                 return;
